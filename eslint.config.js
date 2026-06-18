@@ -14,6 +14,22 @@ export default [
       parser: tsparser,
       ecmaVersion: 2022,
       sourceType: "module",
+      globals: {
+        // Node + Web platform globals used across the SDK.
+        console: "readonly",
+        process: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+        AbortController: "readonly",
+        AbortSignal: "readonly",
+        fetch: "readonly",
+        URL: "readonly",
+        TextEncoder: "readonly",
+        TextDecoder: "readonly",
+        crypto: "readonly",
+      },
     },
     plugins: {
       "@typescript-eslint": tseslint,
