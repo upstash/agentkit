@@ -1,0 +1,38 @@
+{
+  "name": "redis-agentkit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Redis AgentKit — agent memory, chat history, semantic & tool caching, telemetry, sandbox, and RAG primitives for building AI agents on Upstash Redis.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/*\" build",
+    "dev": "pnpm -r --parallel --filter \"./packages/*\" dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "typecheck": "pnpm -r --filter \"./packages/*\" typecheck",
+    "clean": "pnpm -r --filter \"./packages/*\" clean",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm build && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.7",
+    "@eslint/js": "^8.57.0",
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.16.0",
+    "@typescript-eslint/parser": "^7.16.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "tsup": "^8.1.0",
+    "typescript": "^5.5.3",
+    "vitest": "^2.0.0"
+  },
+  "packageManager": "pnpm@11.5.3",
+  "engines": {
+    "node": ">=18"
+  }
+}
