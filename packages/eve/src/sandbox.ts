@@ -1,40 +1,67 @@
 /**
- * Integration with **Eve's code-execution sandbox** (`eve/sandbox` — see
- * https://eve.dev/docs/sandbox). Eve's `defineSandbox({ backend, bootstrap, onSession })` runs an
- * agent's commands/files in an isolated backend (vercel / docker / microsandbox / …); a session
- * exposes `run`, `spawn`, `readTextFile`, `writeTextFile`, and `setNetworkPolicy`.
+ * Sandbox integration for **Eve** (`eve/sandbox`, https://eve.dev/docs/sandbox), backed by
+ * **Upstash Box** (`@upstash/box`) — a serverless cloud sandbox for AI agents.
  *
- * This adapter does NOT bundle a sandbox runtime — it never imports `eve`. Instead it provides
- * structural types matching Eve's sandbox surface plus helpers that weave AgentKit in: every
- * `session.run(...)` can be traced via {@link Telemetry} and memoized via {@link ToolCache}. Pass the
- * instrumented config to Eve's real `defineSandbox`.
+ * The headline export is {@link upstash}: a drop-in replacement for Eve's `vercel()` backend. Take
+ * any Eve sandbox file and swap the backend import:
  *
- * (The generic tool-execution harness used to live in the core SDK; per design it now lives here,
- * aligned with Eve's sandbox model. A Vercel AI SDK sandbox integration may follow once AI SDK v7
- * ships.)
+ * ```ts
+ * import { defineSandbox } from "eve/sandbox";
+ * import { upstash } from "@upstash/agentkit-eve/sandbox";
+ *
+ * export default defineSandbox({
+ *   backend: upstash({ runtime: "node24", resources: { vcpus: 2 } }),
+ *   revalidationKey: () => "repo-bootstrap-v1",
+ *   async bootstrap({ use }) {
+ *     const sandbox = await use();
+ *     await sandbox.run({ command: "apt-get install -y jq" });
+ *   },
+ *   async onSession({ use }) {
+ *     await use({ networkPolicy: "deny-all" });
+ *   },
+ * });
+ * ```
+ *
+ * It also provides {@link instrumentSandboxSession} / {@link withSandboxInstrumentation} to memoize
+ * (via {@link ToolCache}) each `session.run`.
  */
-import { stableHash, type Telemetry, type ToolCache } from "@upstash/agentkit-sdk";
+import { Box } from "@upstash/box";
+import type { BoxSize, NetworkPolicy, Runtime } from "@upstash/box";
+import type { ToolCache } from "@upstash/agentkit-sdk";
 
-/** Result of running a command in an Eve sandbox session. */
+/** Result of running a command in a sandbox session. */
 export interface EveSandboxRunResult {
   stdout: string;
-  stderr?: string;
-  exitCode?: number;
+  stderr: string;
+  exitCode: number;
   [key: string]: unknown;
 }
 
-/** Structural shape of an Eve sandbox session (the object returned by `use()`). */
+/** A network policy: an Eve-style shorthand string or a full Box {@link NetworkPolicy}. */
+export type SandboxNetworkPolicy = "allow-all" | "deny-all" | NetworkPolicy;
+
+/** A live sandbox session. Backed by an Upstash Box when created via {@link upstash}. */
 export interface EveSandboxSession {
   run(opts: { command: string; [key: string]: unknown }): Promise<EveSandboxRunResult>;
-  spawn?(opts: unknown): Promise<unknown>;
-  readTextFile?(opts: { path: string }): Promise<string>;
-  writeTextFile?(opts: { path: string; content: string }): Promise<void>;
-  setNetworkPolicy?(policy: string): void | Promise<void>;
+  readTextFile(opts: { path: string }): Promise<string>;
+  writeTextFile(opts: { path: string; content: string }): Promise<void>;
+  setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void>;
+  /** A public URL for a port exposed inside the sandbox. */
+  getPublicURL(port: number): Promise<string>;
+  /** Pause the sandbox (keep-alive boxes can resume later). */
+  stop(): Promise<void>;
+  /** Destroy the sandbox and free its resources. */
+  destroy(): Promise<void>;
+  readonly id: string;
+  readonly cwd: string;
   [key: string]: unknown;
 }
 
-/** The `use()` callback Eve hands to `bootstrap`/`onSession` to obtain a session. */
-export type EveSandboxUse = (opts?: unknown) => Promise<EveSandboxSession>;
+/** The `use()` callback Eve hands to `bootstrap` / `onSession`. */
+export type EveSandboxUse = (opts?: {
+  networkPolicy?: SandboxNetworkPolicy;
+  [key: string]: unknown;
+}) => Promise<EveSandboxSession>;
 
 /** Structural shape of the config object accepted by Eve's `defineSandbox`. */
 export interface DefineSandboxConfig {
@@ -45,69 +72,142 @@ export interface DefineSandboxConfig {
   [key: string]: unknown;
 }
 
-export interface SandboxInstrumentation {
-  /** Record a span per `run`. */
-  telemetry?: Telemetry;
-  /** Memoize deterministic command results (keyed by command + options). */
-  toolCache?: ToolCache;
-  /** Trace id to attach `run` spans to. */
-  traceId?: string;
+/** A sandbox backend Eve's `defineSandbox` can drive (the slot `vercel()` / `upstash()` fill). */
+export interface SandboxBackend {
+  readonly providerId: string;
+  createSession(options?: {
+    sessionId?: string;
+    networkPolicy?: SandboxNetworkPolicy;
+  }): Promise<EveSandboxSession>;
+}
+
+export interface UpstashBackendConfig {
+  /** Upstash Box API key. Falls back to `UPSTASH_BOX_API_KEY`. */
+  apiKey?: string;
+  /** Box runtime. Accepts Eve-style strings like `"node24"` (mapped to Box's `"node"`). */
+  runtime?: Runtime | string;
+  /** Box resource size. Inferred from `resources.vcpus` when omitted. */
+  size?: BoxSize;
+  /** Vercel-style resource hint; `vcpus` maps to a Box size (2→small, 4→medium, 8→large). */
+  resources?: { vcpus?: number };
+  /** Keep the box alive between turns. Defaults to true. */
+  keepAlive?: boolean;
+  /** Startup script run once when a keep-alive box is created. */
+  initCommand?: string;
+  /** Environment variables available inside the box. */
+  env?: Record<string, string>;
+  /** Initial network policy applied to every session. */
+  networkPolicy?: SandboxNetworkPolicy;
+}
+
+const RUNTIMES = new Set<Runtime>(["node", "python", "golang", "ruby", "rust"]);
+
+function toBoxRuntime(runtime?: Runtime | string): Runtime {
+  if (!runtime) return "node";
+  const base = runtime.replace(/[0-9.]+$/, ""); // "node24" -> "node"
+  return (RUNTIMES.has(base as Runtime) ? base : "node") as Runtime;
+}
+
+function toBoxSize(config: UpstashBackendConfig): BoxSize {
+  if (config.size) return config.size;
+  const vcpus = config.resources?.vcpus ?? 0;
+  if (vcpus >= 8) return "large";
+  if (vcpus >= 4) return "medium";
+  return "small";
+}
+
+function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): NetworkPolicy {
+  return typeof policy === "string" ? { mode: policy } : policy;
+}
+
+function resolvePath(box: Box, path: string): string {
+  return path.startsWith("/") ? path : `${box.cwd.replace(/\/$/, "")}/${path}`;
+}
+
+/** Wrap a live Box as an {@link EveSandboxSession}. */
+function boxSession(box: Box): EveSandboxSession {
+  return {
+    get id() {
+      return box.id;
+    },
+    get cwd() {
+      return box.cwd;
+    },
+    async run({ command }) {
+      const run = await box.exec.command(command);
+      const exitCode = run.exitCode ?? 0;
+      const output = run.result ?? "";
+      return { stdout: output, stderr: exitCode === 0 ? "" : output, exitCode };
+    },
+    async readTextFile({ path }) {
+      return box.files.read(resolvePath(box, path));
+    },
+    async writeTextFile({ path, content }) {
+      await box.files.write({ path: resolvePath(box, path), content });
+    },
+    async setNetworkPolicy(policy) {
+      await box.updateNetworkPolicy(toBoxNetworkPolicy(policy));
+    },
+    async getPublicURL(port) {
+      const { url } = await box.getPublicURL(port);
+      return url;
+    },
+    async stop() {
+      await box.pause();
+    },
+    async destroy() {
+      await box.delete();
+    },
+    /** Escape hatch to the underlying Box for advanced operations (git, agents, files, …). */
+    box,
+  };
 }
 
 /**
- * Wrap a single Eve sandbox {@link EveSandboxSession} so each `run` is traced (Telemetry) and/or
- * memoized (ToolCache). Other operations (`spawn`, file IO, network policy) are delegated unchanged.
+ * An Upstash Box backend for Eve's `defineSandbox`. Drop-in replacement for `vercel()` / `docker()`.
  */
-export function instrumentSandboxSession(
-  session: EveSandboxSession,
-  instrumentation: SandboxInstrumentation,
-): EveSandboxSession {
-  const { telemetry, toolCache, traceId } = instrumentation;
-
-  const baseRun = (opts: { command: string; [key: string]: unknown }) => session.run(opts);
-  const cachedRun: (opts: {
-    command: string;
-    [key: string]: unknown;
-  }) => Promise<EveSandboxRunResult> = toolCache
-    ? (opts) =>
-        toolCache.wrap("eve.sandbox.run", (key: unknown) => baseRun(key as typeof opts))(opts)
-    : baseRun;
-
-  const wrapped: EveSandboxSession = {
-    run: (opts) => {
-      if (!telemetry) return cachedRun(opts);
-      return telemetry.trace("sandbox.run", () => cachedRun(opts), {
-        type: "tool",
-        ...(traceId !== undefined ? { traceId } : {}),
-        attributes: { command: opts.command, commandHash: stableHash(opts) },
+export function upstash(config: UpstashBackendConfig = {}): SandboxBackend {
+  return {
+    providerId: "upstash-box",
+    async createSession(options = {}) {
+      const box = await Box.create({
+        ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}),
+        runtime: toBoxRuntime(config.runtime),
+        size: toBoxSize(config),
+        keepAlive: config.keepAlive ?? true,
+        ...(config.initCommand !== undefined ? { initCommand: config.initCommand } : {}),
+        ...(config.env !== undefined ? { env: config.env } : {}),
+        ...(options.sessionId !== undefined ? { name: options.sessionId } : {}),
       });
+      const policy = options.networkPolicy ?? config.networkPolicy;
+      if (policy) await box.updateNetworkPolicy(toBoxNetworkPolicy(policy));
+      return boxSession(box);
     },
   };
+}
 
-  // Delegate the remaining session operations when present.
-  if (session.spawn) wrapped.spawn = (opts) => session.spawn!(opts);
-  if (session.readTextFile) wrapped.readTextFile = (opts) => session.readTextFile!(opts);
-  if (session.writeTextFile) wrapped.writeTextFile = (opts) => session.writeTextFile!(opts);
-  if (session.setNetworkPolicy) wrapped.setNetworkPolicy = (p) => session.setNetworkPolicy!(p);
-  return wrapped;
+export interface SandboxInstrumentation {
+  /** Memoize deterministic command results (keyed by command + options). */
+  toolCache: ToolCache;
 }
 
 /**
- * Wrap an Eve `defineSandbox` config so every session obtained via `use()` (in `bootstrap` and
- * `onSession`) is automatically instrumented with AgentKit telemetry/caching. Pass the result to
- * Eve's real `defineSandbox`.
- *
- * ```ts
- * import { defineSandbox } from "eve/sandbox";
- * import { withSandboxInstrumentation } from "@upstash/agentkit-eve";
- *
- * export default defineSandbox(
- *   withSandboxInstrumentation(
- *     { async onSession({ use }) { const s = await use(); await s.run({ command: "npm test" }); } },
- *     { telemetry, toolCache },
- *   ),
- * );
- * ```
+ * Wrap a sandbox {@link EveSandboxSession} so each `run` is memoized in a {@link ToolCache} —
+ * re-running an identical command returns the cached result. Other operations are delegated unchanged.
+ */
+export function instrumentSandboxSession<T extends Pick<EveSandboxSession, "run">>(
+  session: T,
+  instrumentation: SandboxInstrumentation,
+): T {
+  const cachedRun = instrumentation.toolCache.wrap("eve.sandbox.run", (key: unknown) =>
+    session.run(key as { command: string }),
+  );
+  return { ...session, run: (opts) => cachedRun(opts) } as T;
+}
+
+/**
+ * Wrap an Eve `defineSandbox` config so every session obtained via `use()` is automatically
+ * memoized via AgentKit's {@link ToolCache}. Pass the result to Eve's real `defineSandbox`.
  */
 export function withSandboxInstrumentation(
   config: DefineSandboxConfig,
@@ -115,7 +215,7 @@ export function withSandboxInstrumentation(
 ): DefineSandboxConfig {
   const wrapUse =
     (use: EveSandboxUse): EveSandboxUse =>
-    async (opts?: unknown) =>
+    async (opts) =>
       instrumentSandboxSession(await use(opts), instrumentation);
 
   return {

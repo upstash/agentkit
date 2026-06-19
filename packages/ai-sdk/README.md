@@ -2,9 +2,9 @@
 
 Vercel AI SDK adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk).
 
-It bridges the core AgentKit primitives (chat history, semantic cache, tool cache, long-term memory,
-telemetry) to the [Vercel AI SDK](https://sdk.vercel.dev) (the `ai` package, v5+ including the v7 tool
-harness concepts).
+It bridges the core AgentKit primitives (chat history, semantic cache, tool cache, long-term memory)
+to the [Vercel AI SDK](https://sdk.vercel.dev) (the `ai` package, v5+ including the v7 tool harness
+concepts).
 
 The adapter **never imports the `ai` package** — it codes against minimal structural interfaces, so it
 compiles and tests fully offline. The `ai` package is an optional peer dependency you bring in your app.
@@ -115,23 +115,6 @@ const injector = withMemory({ memory: new AgentMemory({ redis }), scope: userId 
 
 const messages = await injector.inject(input, [{ role: "user", content: input }]);
 const result = await generateText({ model, messages });
-```
-
-### Telemetry
-
-Wrap a generation in an AgentKit `Telemetry` `model` span recording model id and token usage.
-
-```ts
-import { Telemetry } from "@upstash/agentkit-sdk";
-import { tracedGeneration } from "@upstash/agentkit-ai-sdk";
-import { generateText } from "ai";
-
-const telemetry = new Telemetry({ redis });
-
-const result = await tracedGeneration(
-  () => generateText({ model, prompt }),
-  { telemetry, model: "gpt-4o", traceId },
-);
 ```
 
 ## Testing

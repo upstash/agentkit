@@ -16,7 +16,7 @@ and own their Redis Search index internally:
 
 ```ts
 import { Redis } from "@upstash/redis";
-import { AgentMemory, ChatHistory, SemanticCache, ToolCache, Telemetry, Rag } from "@upstash/agentkit-sdk";
+import { AgentMemory, ChatHistory, SemanticCache, ToolCache, Rag } from "@upstash/agentkit-sdk";
 
 const redis = Redis.fromEnv();
 
@@ -24,7 +24,6 @@ const memory = new AgentMemory({ redis });
 const history = new ChatHistory({ redis });
 const cache = new SemanticCache({ redis });
 const tools = new ToolCache({ redis });
-const telemetry = new Telemetry({ redis });
 const rag = new Rag({ redis });
 ```
 
@@ -70,16 +69,6 @@ await generate("capital of France?"); // fuzzy cache hit — no model call
 ```ts
 const tools = new ToolCache({ redis, ttlSeconds: 600 });
 const getWeather = tools.wrap("getWeather", (args) => fetchWeather(args));
-```
-
-### Telemetry
-
-```ts
-const telemetry = new Telemetry({ redis });
-await telemetry.trace("agent-run", async (span) => {
-  span.setAttribute("model", "claude-opus-4-8");
-  // ... do work
-}, { type: "run" });
 ```
 
 ### RAG

@@ -1,15 +1,14 @@
-import { AgentMemory, ChatHistory, Rag, Telemetry, ToolCache } from "@upstash/agentkit-sdk";
+import { AgentMemory, ChatHistory, Rag, ToolCache } from "@upstash/agentkit-sdk";
 import type { Redis } from "@upstash/redis";
 import { createHistoryHooks } from "./history.js";
 import type { HistoryHooks } from "./history.js";
 import { createMemoryHooks } from "./memory.js";
 import type { MemoryHooks } from "./memory.js";
 import { cacheTools } from "./tools.js";
-import { traceRun } from "./telemetry.js";
 import type { EveAgentConfig } from "./types.js";
 
 export interface WithAgentKitConfig {
-  /** The Upstash Redis client — enables chat history, tool caching, telemetry, memory, and RAG. */
+  /** The Upstash Redis client — enables chat history, tool caching, memory, and RAG. */
   redis?: Redis;
   /** Conversation session id. Required to persist chat history. */
   sessionId?: string;
@@ -32,40 +31,33 @@ export interface WithAgentKitConfig {
 }
 
 export interface AgentKitAugmentation {
-  /** The augmented Eve agent config: cached + traced tools and augmented instructions. */
+  /** The augmented Eve agent config: cached tools and memory/RAG-augmented instructions. */
   agent: EveAgentConfig;
   /** History hooks bound to `sessionId`, when `redis` + `sessionId` were provided. */
   history?: HistoryHooks;
   /** Memory hooks bound to `scope`, when memory is available. */
   memory?: MemoryHooks;
-  /** The telemetry collector, when `redis` was provided. */
-  telemetry?: Telemetry;
-  /**
-   * Trace an Eve run with the configured telemetry. No-op (just runs `fn`) when telemetry is absent.
-   */
-  trace<T>(name: string, fn: () => Promise<T>): Promise<T>;
 }
 
 /**
  * Wire AgentKit into an Eve agent config. Returns an augmented copy of `agentConfig` whose:
  *
- * - **tools** are memoized via a {@link ToolCache} and traced via {@link Telemetry} — see {@link cacheTools};
+ * - **tools** are memoized via a {@link ToolCache} — see {@link cacheTools};
  * - **instructions** are augmented with recalled long-term memories ({@link AgentMemory}) and/or RAG
  *   context ({@link Rag}) relevant to `context`;
  *
- * plus ready-to-use {@link HistoryHooks} (persist the conversation via {@link ChatHistory}) and a
- * `trace` helper that records each run via {@link Telemetry}. Everything is backed by Upstash Redis
- * and opt-in by what you pass; the original `agentConfig` is never mutated.
+ * plus ready-to-use {@link HistoryHooks} (persist the conversation via {@link ChatHistory}).
+ * Everything is backed by Upstash Redis and opt-in by what you pass; the original `agentConfig` is
+ * never mutated.
  *
- * For heavyweight code-execution sandboxing, see `withSandboxInstrumentation` (Eve's sandbox).
+ * For code-execution sandboxing, see the `upstash()` backend in `@upstash/agentkit-eve/sandbox`.
  *
  * ```ts
- * const { agent, history, trace } = await withAgentKit(
+ * const { agent, history } = await withAgentKit(
  *   { instructions: "You are a helpful assistant.", tools, model },
  *   { redis, sessionId: "s-1", scope: "user-123", useMemory: true, context: input },
  * );
  * const prior = await history?.load();
- * const text = await trace("run", () => runEveAgent(agent, [...(prior ?? []), userMessage]));
  * ```
  */
 export async function withAgentKit(
@@ -73,19 +65,12 @@ export async function withAgentKit(
   config: WithAgentKitConfig,
 ): Promise<AgentKitAugmentation> {
   const scope = config.scope ?? "default";
-
-  const telemetry = config.redis ? new Telemetry({ redis: config.redis }) : undefined;
   const toolCache = config.redis ? new ToolCache({ redis: config.redis }) : undefined;
 
-  // --- Tools: memoize + trace ---
+  // --- Tools: memoize ---
   const tools = agentConfig.tools ?? [];
   const wrappedTools =
-    tools.length > 0
-      ? cacheTools(tools, {
-          ...(toolCache !== undefined ? { toolCache } : {}),
-          ...(telemetry !== undefined ? { telemetry } : {}),
-        })
-      : tools;
+    tools.length > 0 && toolCache !== undefined ? cacheTools(tools, { toolCache }) : tools;
 
   // --- Memory ---
   const memory =
@@ -131,10 +116,5 @@ export async function withAgentKit(
     agent,
     ...(history !== undefined ? { history } : {}),
     ...(memoryHooks !== undefined ? { memory: memoryHooks } : {}),
-    ...(telemetry !== undefined ? { telemetry } : {}),
-    trace<T>(name: string, fn: () => Promise<T>): Promise<T> {
-      if (!telemetry) return fn();
-      return traceRun({ telemetry }, name, () => fn());
-    },
   };
 }

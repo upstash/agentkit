@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./sandbox": {
+      "types": "./dist/sandbox.d.ts",
+      "import": "./dist/sandbox.js"
     }
   },
   "files": [
@@ -36,7 +40,8 @@
     "tools"
   ],
   "dependencies": {
-    "@upstash/agentkit-sdk": "workspace:*"
+    "@upstash/agentkit-sdk": "workspace:*",
+    "@upstash/box": "^0.5.1"
   },
   "devDependencies": {
     "@upstash/redis": "^1.38.0",

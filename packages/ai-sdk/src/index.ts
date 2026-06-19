@@ -27,7 +27,3 @@ export type { WrapToolConfig } from "./tools.js";
 // Memory injection
 export { withMemory } from "./memory.js";
 export type { MemoryInjector, WithMemoryConfig } from "./memory.js";
-
-// Telemetry
-export { tracedGeneration } from "./telemetry.js";
-export type { TracedGenerationConfig } from "./telemetry.js";

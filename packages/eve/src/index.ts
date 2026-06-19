@@ -12,19 +12,12 @@ export type {
 // Message conversion
 export { fromEveMessages, toEveMessages } from "./messages.js";
 
-// Tool caching + tracing
+// Tool caching
 export { cacheTools } from "./tools.js";
 export type { CacheToolsConfig } from "./tools.js";
 
-// Code-execution sandbox integration (Eve's `eve/sandbox`)
-export { instrumentSandboxSession, withSandboxInstrumentation } from "./sandbox.js";
-export type {
-  DefineSandboxConfig,
-  EveSandboxRunResult,
-  EveSandboxSession,
-  EveSandboxUse,
-  SandboxInstrumentation,
-} from "./sandbox.js";
+// Code-execution sandbox lives at the "@upstash/agentkit-eve/sandbox" subpath
+// (it pulls in @upstash/box) — import { upstash } from "@upstash/agentkit-eve/sandbox".
 
 // Memory hooks
 export { createMemoryHooks } from "./memory.js";
@@ -37,10 +30,6 @@ export type { HistoryHooks, HistoryHooksConfig } from "./history.js";
 // Semantic cache
 export { withSemanticCache, withSemanticCacheText } from "./semantic-cache.js";
 export type { WithSemanticCacheConfig } from "./semantic-cache.js";
-
-// Telemetry
-export { traceRun } from "./telemetry.js";
-export type { TraceRunConfig } from "./telemetry.js";
 
 // Composed entry point
 export { withAgentKit } from "./with-agentkit.js";

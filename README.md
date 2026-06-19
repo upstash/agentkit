@@ -1,8 +1,8 @@
 # Redis AgentKit
 
 A toolkit for building production AI agents entirely on [Upstash Redis](https://upstash.com/). It
-gives you the stateful primitives agents need — memory, conversation history, caching, telemetry, a
-tool sandbox, and RAG — plus thin adapters for the popular agent frameworks. The "semantic" features
+gives you the stateful primitives agents need — memory, conversation history, caching, and RAG —
+plus thin adapters for the popular agent frameworks. The "semantic" features
 are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction) and its
 `$smart` fuzzy operator, so no separate vector database is required.
 
@@ -22,9 +22,9 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Chat history** — windowed conversation history with sliding TTL.
 - **Semantic cache** — reuse LLM responses for fuzzily similar prompts (`$smart`).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
-- **Telemetry** — structured spans for runs, model calls, and tool invocations.
-- **Sandbox** — an execution harness (AI SDK v7 style) wrapping tools with timeouts, retries, and error capture.
-- **RAG** — chunking, indexing, and retrieval helpers over Redis Search.
+- **RAG** — chunking, indexing, and retrieval helpers over Upstash Redis Search.
+- **Code sandbox** — a drop-in [Upstash Box](https://github.com/upstash/box) backend for Eve's
+  `defineSandbox` (and an AI SDK v7 harness provider). Lives in the adapter packages.
 
 ## Development
 

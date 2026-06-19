@@ -9,7 +9,6 @@ describe.skipIf(!hasRedisCreds)("withAgentKit (live Redis)", () => {
 
   afterAll(async () => {
     await cleanupKeys(redis, "agentkit:tool");
-    await cleanupKeys(redis, "agentkit:telemetry");
     await cleanupKeys(redis, "test:eve-wak");
   });
 
@@ -66,15 +65,8 @@ describe.skipIf(!hasRedisCreds)("withAgentKit (live Redis)", () => {
     expect(loaded[0]).toMatchObject({ role: "user", content: "hi" });
   });
 
-  it("trace runs the function and returns its value (telemetry present)", async () => {
-    const { trace } = await withAgentKit({}, { redis });
-    expect(await trace("run", async () => "done")).toBe("done");
-  });
-
-  it("trace is a passthrough when no redis is configured", async () => {
-    const { trace, telemetry, history } = await withAgentKit({}, {});
-    expect(telemetry).toBeUndefined();
+  it("returns no history when no redis is configured", async () => {
+    const { history } = await withAgentKit({}, {});
     expect(history).toBeUndefined();
-    expect(await trace("run", async () => 7)).toBe(7);
   });
 });

@@ -2,8 +2,8 @@
 
 Adapter that wires [Upstash AgentKit](https://upstash.com/) into **Eve, the Vercel agent
 framework**. It brings the core [`@upstash/agentkit-sdk`](https://www.npmjs.com/package/@upstash/agentkit-sdk)
-primitives — chat history, semantic & tool caching, telemetry, agent memory, and RAG — to an Eve
-agent, plus an integration for Eve's own code-execution sandbox.
+primitives — chat history, semantic & tool caching, agent memory, and RAG — to an Eve agent, plus a
+real code-execution sandbox backend (Upstash Box).
 
 ```bash
 pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
@@ -37,58 +37,63 @@ const text = await trace("run", () => runEveAgent(agent, [...(prior ?? []), user
 
 ## Pieces
 
-### Cached + traced tools
+### Cached tools
 
 ```ts
 import { cacheTools } from "@upstash/agentkit-eve";
-import { ToolCache, Telemetry } from "@upstash/agentkit-sdk";
+import { ToolCache } from "@upstash/agentkit-sdk";
 
-const tools = cacheTools(agent.tools, {
-  toolCache: new ToolCache({ redis }),
-  telemetry: new Telemetry({ redis }),
-});
+const tools = cacheTools(agent.tools, { toolCache: new ToolCache({ redis }) });
 ```
 
-### Code-execution sandbox (Eve's `eve/sandbox`)
+### Code-execution sandbox — `upstash()` backend
 
-Instrument [Eve's sandbox](https://eve.dev/docs/sandbox) so each `session.run(...)` is traced and
-memoized, without bundling a sandbox runtime:
+A drop-in replacement for Eve's `vercel()` backend, powered by [Upstash Box](https://github.com/upstash/box).
+Take any Eve sandbox file and swap the backend import — everything else stays the same:
 
 ```ts
 import { defineSandbox } from "eve/sandbox";
-import { withSandboxInstrumentation } from "@upstash/agentkit-eve";
-import { Telemetry, ToolCache } from "@upstash/agentkit-sdk";
+import { upstash } from "@upstash/agentkit-eve/sandbox";
+
+export default defineSandbox({
+  backend: upstash({ runtime: "node24", resources: { vcpus: 2 } }),
+  revalidationKey: () => "repo-bootstrap-v1",
+  async bootstrap({ use }) {
+    const sandbox = await use();
+    await sandbox.run({ command: "apt-get install -y jq" });
+  },
+  async onSession({ use }) {
+    await use({ networkPolicy: "deny-all" });
+  },
+});
+```
+
+Set `UPSTASH_BOX_API_KEY` (or pass `apiKey`). Each session is a real Box: `run`, `readTextFile` /
+`writeTextFile`, `setNetworkPolicy`, `getPublicURL`, `stop`/`destroy`, and `.box` for the full SDK.
+
+Optionally memoize every `session.run` via a ToolCache:
+
+```ts
+import { withSandboxInstrumentation } from "@upstash/agentkit-eve/sandbox";
+import { ToolCache } from "@upstash/agentkit-sdk";
 
 export default defineSandbox(
   withSandboxInstrumentation(
-    {
-      async onSession({ use }) {
-        const sandbox = await use({ networkPolicy: "deny-all" });
-        await sandbox.run({ command: "npm test" }); // traced + cached
-      },
-    },
-    { telemetry: new Telemetry({ redis }), toolCache: new ToolCache({ redis }) },
+    { backend: upstash(), async onSession({ use }) { await (await use()).run({ command: "npm test" }); } },
+    { toolCache: new ToolCache({ redis }) },
   ),
 );
 ```
 
-### Memory, history, semantic cache, telemetry
+### Memory, history, semantic cache
 
 ```ts
-import { AgentMemory, ChatHistory, SemanticCache, Telemetry } from "@upstash/agentkit-sdk";
-import {
-  createMemoryHooks,
-  createHistoryHooks,
-  withSemanticCache,
-  traceRun,
-} from "@upstash/agentkit-eve";
+import { AgentMemory, ChatHistory, SemanticCache } from "@upstash/agentkit-sdk";
+import { createMemoryHooks, createHistoryHooks, withSemanticCache } from "@upstash/agentkit-eve";
 
 const memory = createMemoryHooks({ memory: new AgentMemory({ redis }), scope: "user-123" });
 const history = createHistoryHooks({ history: new ChatHistory({ redis }), sessionId: "s-1" });
 const cachedGenerate = withSemanticCache(generate, { cache: new SemanticCache({ redis }) });
-await traceRun({ telemetry: new Telemetry({ redis }) }, "run", async (span) => {
-  /* ... */
-});
 ```
 
 ## Testing

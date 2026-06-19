@@ -1,22 +1,18 @@
-import { Telemetry, ToolCache } from "@upstash/agentkit-sdk";
+import { ToolCache } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   instrumentSandboxSession,
+  upstash,
   withSandboxInstrumentation,
   type EveSandboxRunResult,
-  type EveSandboxSession,
 } from "./sandbox.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
-function fakeSession(
-  run: (opts: { command: string }) => Promise<EveSandboxRunResult>,
-): EveSandboxSession {
-  return {
-    run,
-    async readTextFile() {
-      return "file-contents";
-    },
-  };
+const hasBoxCreds = Boolean(process.env.UPSTASH_BOX_API_KEY);
+
+/** A minimal runnable fake — enough for the instrumentation helpers. */
+function fakeSession(run: (opts: { command: string }) => Promise<EveSandboxRunResult>) {
+  return { run };
 }
 
 describe.skipIf(!hasRedisCreds)("eve sandbox instrumentation (live Redis)", () => {
@@ -27,42 +23,25 @@ describe.skipIf(!hasRedisCreds)("eve sandbox instrumentation (live Redis)", () =
   });
 
   it("caches run results so the same command runs once", async () => {
-    const run = vi.fn(async ({ command }: { command: string }) => ({ stdout: `ran ${command}` }));
+    const run = vi.fn(async ({ command }: { command: string }) => ({
+      stdout: `ran ${command}`,
+      stderr: "",
+      exitCode: 0,
+    }));
     const toolCache = new ToolCache({ redis, namespace: uniqueNamespace("eve-sbx") });
     const session = instrumentSandboxSession(fakeSession(run), { toolCache });
 
-    const a = await session.run({ command: "echo hi" });
-    const b = await session.run({ command: "echo hi" });
-    expect(a.stdout).toBe("ran echo hi");
-    expect(b.stdout).toBe("ran echo hi");
+    expect((await session.run({ command: "echo hi" })).stdout).toBe("ran echo hi");
+    expect((await session.run({ command: "echo hi" })).stdout).toBe("ran echo hi");
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("traces each run via telemetry", async () => {
-    const telemetry = new Telemetry({ redis, namespace: uniqueNamespace("eve-sbx-tel") });
-    const session = instrumentSandboxSession(
-      fakeSession(async ({ command }) => ({ stdout: command })),
-      { telemetry, traceId: "sbx-trace" },
-    );
-    await session.run({ command: "ls -la" });
-
-    const trace = await telemetry.getTrace("sbx-trace");
-    expect(trace).toHaveLength(1);
-    expect(trace[0]!.name).toBe("sandbox.run");
-    expect(trace[0]!.type).toBe("tool");
-    expect(trace[0]!.attributes.command).toBe("ls -la");
-  });
-
-  it("delegates non-run operations to the underlying session", async () => {
-    const session = instrumentSandboxSession(
-      fakeSession(async () => ({ stdout: "" })),
-      {},
-    );
-    expect(await session.readTextFile!({ path: "f.txt" })).toBe("file-contents");
-  });
-
   it("withSandboxInstrumentation instruments sessions obtained via use()", async () => {
-    const run = vi.fn(async ({ command }: { command: string }) => ({ stdout: command }));
+    const run = vi.fn(async ({ command }: { command: string }) => ({
+      stdout: command,
+      stderr: "",
+      exitCode: 0,
+    }));
     const toolCache = new ToolCache({ redis, namespace: uniqueNamespace("eve-sbx") });
     const config = withSandboxInstrumentation(
       {
@@ -74,9 +53,33 @@ describe.skipIf(!hasRedisCreds)("eve sandbox instrumentation (live Redis)", () =
       },
       { toolCache },
     );
-
-    // Simulate Eve invoking onSession with a real `use` that yields the fake session.
-    await config.onSession!({ use: async () => fakeSession(run) });
-    expect(run).toHaveBeenCalledTimes(1); // second run served from cache
+    // Simulate Eve invoking onSession with a `use` that yields the fake session.
+    await config.onSession!({ use: async () => fakeSession(run) as never });
+    expect(run).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("upstash() backend (offline mapping)", () => {
+  it("is a drop-in backend with the upstash-box provider id", () => {
+    const backend = upstash({ runtime: "node24", resources: { vcpus: 2 } });
+    expect(backend.providerId).toBe("upstash-box");
+    expect(typeof backend.createSession).toBe("function");
+  });
+});
+
+describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
+  it("creates a session, runs a command, round-trips a file, and destroys it", async () => {
+    const backend = upstash({ runtime: "node", resources: { vcpus: 2 } });
+    const session = await backend.createSession();
+    try {
+      const result = await session.run({ command: "echo hello-box" });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("hello-box");
+
+      await session.writeTextFile({ path: "note.txt", content: "agentkit" });
+      expect(await session.readTextFile({ path: "note.txt" })).toContain("agentkit");
+    } finally {
+      await session.destroy();
+    }
+  }, 120_000);
 });
