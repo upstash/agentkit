@@ -42,14 +42,12 @@
   },
   "devDependencies": {
     "@upstash/redis": "^1.38.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "ai": "^5",
+    "@ai-sdk/provider": "^2"
   },
   "peerDependencies": {
-    "ai": ">=4.0.0"
+    "ai": ">=5"
   },
-  "peerDependenciesMeta": {
-    "ai": {
-      "optional": true
-    }
-  }
+  "peerDependenciesMeta": {}
 }

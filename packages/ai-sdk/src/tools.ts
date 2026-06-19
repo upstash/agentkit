@@ -1,49 +1,49 @@
 import type { ToolCache } from "@upstash/agentkit-sdk";
 import type { AiTool, ToolExecuteOptions } from "./types.js";
 
-export interface WrapToolConfig {
-  /**
-   * Memoize deterministic results in this {@link ToolCache}, keyed by the tool name plus a stable
-   * hash of its arguments. When omitted the tool runs directly.
-   */
-  toolCache?: ToolCache;
+export interface CacheToolsConfig {
+  /** The {@link ToolCache} memoizing tool results. */
+  toolCache: ToolCache;
+  /** Per-result TTL (seconds). */
+  ttlSeconds?: number;
 }
 
 /**
- * Wrap an AI-SDK-style tool so its `execute` runs through AgentKit's {@link ToolCache}. The returned
- * object keeps the AI SDK tool shape (`description`, `parameters`/`inputSchema`, `execute`) so it can
- * be handed straight to `generateText({ tools: { name: wrapped } })`.
+ * Memoize a map of AI SDK tools. Returns a new map with the **same keys**, where each tool's
+ * `execute` is wrapped so identical arguments run the underlying tool at most once (cached in Redis,
+ * keyed by the tool's map key + a stable hash of its arguments). Tools without an `execute`
+ * (client-/provider-executed) are passed through unchanged.
  *
- * - With a {@link ToolCache}: identical arguments are served from cache, so the underlying `execute`
- *   runs at most once per distinct argument set.
- * - Without one: the original `execute` is called directly.
- *
- * The original tool must define `execute` (provider-/client-executed tools have nothing to wrap).
+ * ```ts
+ * const tools = cacheTools({ getWeather, search }, { toolCache: new ToolCache({ redis }) });
+ * await generateText({ model, tools, prompt });
+ * ```
  */
-export function wrapTool<A = unknown, R = unknown>(
-  name: string,
-  aiTool: AiTool<A, R>,
-  config: WrapToolConfig = {},
-): AiTool<A, R> {
-  const original = aiTool.execute;
-  if (!original) {
-    throw new Error(`wrapTool: tool "${name}" has no \`execute\` to wrap.`);
-  }
-  const { toolCache } = config;
+export function cacheTools<T extends Record<string, AiTool>>(
+  tools: T,
+  config: CacheToolsConfig,
+): T {
+  const { toolCache, ttlSeconds } = config;
+  const out: Record<string, AiTool> = {};
 
-  const wrapped: AiTool<A, R> = {
-    ...aiTool,
-    execute: async (args: A, options: ToolExecuteOptions): Promise<R> => {
-      if (toolCache) {
-        const exec = toolCache.wrap<A, R>(
+  for (const [name, tool] of Object.entries(tools)) {
+    const original = tool.execute;
+    if (!original) {
+      out[name] = tool;
+      continue;
+    }
+    out[name] = {
+      ...tool,
+      execute: (args: unknown, options: ToolExecuteOptions) => {
+        const run = toolCache.wrap(
           name,
-          (a) => Promise.resolve(original(a, options)) as Promise<R>,
+          (a: unknown) => Promise.resolve(original(a, options)),
+          ttlSeconds !== undefined ? { ttlSeconds } : {},
         );
-        return exec(args);
-      }
+        return run(args);
+      },
+    };
+  }
 
-      return original(args, options) as Promise<R>;
-    },
-  };
-  return wrapped;
+  return out as T;
 }

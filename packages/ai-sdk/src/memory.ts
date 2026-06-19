@@ -1,69 +1,72 @@
-import type { AgentMemory, RecalledMemory } from "@upstash/agentkit-sdk";
-import type { CoreMessageLike } from "./types.js";
+import { z } from "zod";
+import type { AgentMemory } from "@upstash/agentkit-sdk";
+import type { AiTool } from "./types.js";
 
-export interface WithMemoryConfig {
-  /** The AgentKit {@link AgentMemory} to recall from. */
+export interface CreateMemoryToolsConfig {
+  /** The {@link AgentMemory} the tools read from / write to. */
   memory: AgentMemory;
-  /** Recall scope (e.g. a user or agent id). Isolates memories per subject. */
+  /** Scope (e.g. a user id) the tools operate under. Defaults to `"default"`. */
   scope?: string;
-  /** Max memories to recall per input. Defaults to 5. */
+  /** Max memories returned by the recall tool. */
   topK?: number;
-  /** Similarity floor for recall. */
+  /** Minimum relevance score for recall. */
   minScore?: number;
-  /** Header line prepended to the recalled memories in the system message. */
-  header?: string;
-}
-
-export interface MemoryInjector {
-  /** Recall memories relevant to `input` for the configured scope. */
-  recall(input: string): Promise<RecalledMemory[]>;
-  /** Format recalled memories as a single system message, or `null` when nothing is relevant. */
-  toSystemMessage(input: string): Promise<CoreMessageLike | null>;
-  /** Prepend the recalled-memories system message to `messages`, if any. */
-  inject(input: string, messages: CoreMessageLike[]): Promise<CoreMessageLike[]>;
-}
-
-const DEFAULT_HEADER = "Relevant memories about the user:";
-
-/** Render recalled memories into the system-message body. */
-function formatMemories(memories: RecalledMemory[], header: string): string {
-  const lines = memories.map((m) => `- ${m.text}`);
-  return [header, ...lines].join("\n");
+  /** Override the recall tool's key/name. Defaults to `recall_memory`. */
+  recallToolName?: string;
+  /** Override the save tool's key/name. Defaults to `save_memory`. */
+  saveToolName?: string;
 }
 
 /**
- * Build a memory injector that recalls relevant long-term memories for a user input and formats them
- * as a system message you can prepend to an AI SDK message array — giving the model durable context
- * without bloating the prompt with the entire memory store.
+ * Build two AI SDK tools — `recall_memory` and `save_memory` — that let the model read and write the
+ * agent's long-term memory. Spread them into `generateText({ tools })`.
  *
  * ```ts
- * const injector = withMemory({ memory, scope: userId });
- * const messages = await injector.inject(input, [{ role: "user", content: input }]);
- * const result = await generateText({ model, messages });
+ * const tools = createMemoryTools({ memory: new AgentMemory({ redis }), scope: userId });
+ * await generateText({ model, tools, stopWhen: stepCountIs(5), prompt });
  * ```
  */
-export function withMemory(config: WithMemoryConfig): MemoryInjector {
-  const { memory, scope, topK = 5, minScore, header = DEFAULT_HEADER } = config;
+export function createMemoryTools(config: CreateMemoryToolsConfig): Record<string, AiTool> {
+  const { memory, scope, topK, minScore } = config;
+  const recallName = config.recallToolName ?? "recall_memory";
+  const saveName = config.saveToolName ?? "save_memory";
 
-  const recall = async (input: string): Promise<RecalledMemory[]> => {
-    const opts: { topK?: number; scope?: string; minScore?: number } = { topK };
-    if (scope !== undefined) opts.scope = scope;
-    if (minScore !== undefined) opts.minScore = minScore;
-    return memory.recall(input, opts);
-  };
+  const recallInput = z.object({
+    query: z.string().describe("What to recall — the user's question, topic, or keywords."),
+  });
+  const saveInput = z.object({
+    text: z.string().describe("A concise, durable fact about the user to remember for later."),
+  });
 
-  const toSystemMessage = async (input: string): Promise<CoreMessageLike | null> => {
-    const memories = await recall(input);
-    if (memories.length === 0) return null;
-    return { role: "system", content: formatMemories(memories, header) };
-  };
-
-  return {
-    recall,
-    toSystemMessage,
-    async inject(input, messages) {
-      const sys = await toSystemMessage(input);
-      return sys ? [sys, ...messages] : messages;
+  const recall: AiTool = {
+    description:
+      "Recall relevant long-term memories about the user before answering. Call this when prior " +
+      "context about the user would help.",
+    parameters: recallInput,
+    inputSchema: recallInput,
+    execute: async (args) => {
+      const { query } = args as { query: string };
+      const hits = await memory.recall(query, {
+        ...(scope !== undefined ? { scope } : {}),
+        ...(topK !== undefined ? { topK } : {}),
+        ...(minScore !== undefined ? { minScore } : {}),
+      });
+      return hits.map((h) => ({ text: h.text, score: h.score }));
     },
   };
+
+  const save: AiTool = {
+    description:
+      "Save a durable fact about the user to long-term memory so it can be recalled in future " +
+      "conversations (preferences, identity, goals, …).",
+    parameters: saveInput,
+    inputSchema: saveInput,
+    execute: async (args) => {
+      const { text } = args as { text: string };
+      const record = await memory.add(text, scope !== undefined ? { scope } : {});
+      return { id: record.id, saved: true };
+    },
+  };
+
+  return { [recallName]: recall, [saveName]: save };
 }

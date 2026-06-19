@@ -1,29 +1,18 @@
-// Structural AI SDK interfaces (the adapter never imports the real `ai` package).
-export type {
-  AiTool,
-  CoreMessageLike,
-  GenerateTextResultLike,
-  PromptGenerator,
-  TextPartLike,
-  TokenUsageLike,
-  ToolExecuteOptions,
-} from "./types.js";
+// Tool shape
+export type { AiTool, ToolExecuteOptions } from "./types.js";
 
-// Message conversion
-export { fromCoreMessages, toCoreMessages } from "./messages.js";
+// Semantic caching as AI SDK language-model middleware
+export { semanticCacheMiddleware, semanticCachedModel } from "./semantic-cache.js";
+export type { SemanticCacheMiddlewareConfig, SemanticCachedModelConfig } from "./semantic-cache.js";
 
-// Semantic-cached generation
-export { withSemanticCache, withSemanticCacheText } from "./semantic-cache.js";
-export type { WithSemanticCacheConfig } from "./semantic-cache.js";
+// Tool-call caching (map in -> map out, keys preserved)
+export { cacheTools } from "./tools.js";
+export type { CacheToolsConfig } from "./tools.js";
 
-// Tool wrapping (tool cache memoization)
-export { wrapTool } from "./tools.js";
-export type { WrapToolConfig } from "./tools.js";
+// Long-term memory as tools (recall + save)
+export { createMemoryTools } from "./memory.js";
+export type { CreateMemoryToolsConfig } from "./memory.js";
 
-// Memory injection
-export { withMemory } from "./memory.js";
-export type { MemoryInjector, WithMemoryConfig } from "./memory.js";
-
-// Schema-driven Redis Search tools (query / aggregate / count)
+// Schema-driven Redis Search tools (search / aggregate / count)
 export { createSearchTools } from "./search-tools.js";
 export type { CreateSearchToolsConfig } from "./search-tools.js";
