@@ -19,3 +19,9 @@ export type { CreateMemoryToolsConfig, MemoryNamespace } from "./memory.js";
 // Schema-driven Redis Search tools (search / aggregate / count)
 export { createSearchTools } from "./search-tools.js";
 export type { CreateSearchToolsConfig } from "./search-tools.js";
+
+// Durable chat history (Redis-backed source of truth for UIMessage transcripts)
+export { createChatHistory } from "./chat-history.js";
+export type { CreateChatHistoryConfig } from "./chat-history.js";
+export { ChatHistory } from "@upstash/agentkit-sdk";
+export type { ChatRecord, ChatSearchHit, ChatSummary } from "@upstash/agentkit-sdk";

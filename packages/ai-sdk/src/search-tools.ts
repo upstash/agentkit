@@ -1,6 +1,7 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { Redis } from "@upstash/redis";
+import { withIndex } from "@upstash/agentkit-sdk";
 
 /** The schema type accepted by `redis.search.index` (an `s.object({...})`). */
 type SearchSchema = NonNullable<Parameters<Redis["search"]["index"]>[0]["schema"]>;
@@ -99,34 +100,25 @@ export function createSearchTools(config: CreateSearchToolsConfig): ToolSet {
   const index = redis.search.index({ name, schema: config.schema });
   const fields = describeSchema(config.schema as Record<string, unknown>);
 
-  /**
-   * Make sure the index exists and is queryable before any tool runs. A missing Upstash search index
-   * doesn't throw — `query` returns `null` and `count` returns `-1` — so we can't reliably detect it
-   * after the fact. Instead we create the index (idempotent) and `waitIndexing()` up front, memoized
-   * so only the first tool call pays for it. Disabled when `ensureIndex` is `false`.
-   */
-  let ready: Promise<void> | undefined;
-  const ensureReady = (): Promise<void> => {
-    if (!ensureIndex) return Promise.resolve();
-    if (!ready) {
-      ready = (async () => {
-        await redis.search
-          .createIndex({ name, dataType: "json", prefix, schema: config.schema })
-          .catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (!/already exists/i.test(msg)) throw err;
-          });
-        await index.waitIndexing();
-      })();
-    }
-    return ready;
+  /** Create the index (idempotent) and wait until it's queryable — the missing-index recovery path. */
+  const provision = async (): Promise<void> => {
+    await redis.search
+      .createIndex({ name, dataType: "json", prefix, schema: config.schema })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/already exists/i.test(msg)) throw err;
+      });
+    await index.waitIndexing();
   };
 
-  /** Create the index + `waitIndexing` (if needed), then run the tool's main logic. */
-  const withIndex = async <T>(op: () => Promise<T>): Promise<T> => {
-    await ensureReady();
-    return op();
-  };
+  /**
+   * Run a tool's index op; if the index doesn't exist yet, create it (+ `waitIndexing`) and retry.
+   * A missing Upstash index surfaces differently per op — `query`→`null`, `count`→`{ count: -1 }`,
+   * `aggregate`→throws — so we pass the right `isMissingResult` sentinel for each. When `ensureIndex`
+   * is `false`, the op runs raw with no recovery.
+   */
+  const runOp = <T>(op: () => Promise<T>, isMissingResult?: (r: T) => boolean): Promise<T> =>
+    ensureIndex ? withIndex(provision, op, isMissingResult) : op();
 
   const schemaGuide = `\n\nFields:\n${fieldGuide(fields)}\n\n${FILTER_GUIDE}`;
 
@@ -158,16 +150,22 @@ export function createSearchTools(config: CreateSearchToolsConfig): ToolSet {
     description: `Search the "${name}" index and return matching documents, ranked by relevance.${schemaGuide}`,
     inputSchema: searchInput,
     execute: ({ filter, limit }) =>
-      withIndex(() =>
-        index.query({ filter: filter as never, limit: limit ?? defaultLimit } as never),
+      runOp(
+        () =>
+          index.query({
+            filter: filter as never,
+            limit: limit ?? defaultLimit,
+          } as never) as Promise<unknown[] | null>,
+        (r) => r === null, // missing index → query returns null
       ),
   });
 
   const aggregate = tool({
     description: `Run aggregations over the "${name}" index (group, stats, histograms, …).${schemaGuide}`,
     inputSchema: aggregateInput,
+    // missing index → aggregate throws (caught by withIndex), so no sentinel needed.
     execute: ({ aggregations, filter }) =>
-      withIndex(() =>
+      runOp(() =>
         index.aggregate({
           aggregations,
           ...(filter !== undefined ? { filter } : {}),
@@ -178,7 +176,11 @@ export function createSearchTools(config: CreateSearchToolsConfig): ToolSet {
   const count = tool({
     description: `Count documents in the "${name}" index, optionally matching a filter.${schemaGuide}`,
     inputSchema: countInput,
-    execute: ({ filter }) => withIndex(() => index.count({ filter: (filter ?? {}) as never })),
+    execute: ({ filter }) =>
+      runOp(
+        () => index.count({ filter: (filter ?? {}) as never }),
+        (r) => (r as { count: number }).count === -1, // missing index → { count: -1 }
+      ),
   });
 
   return { search, aggregate, count };
