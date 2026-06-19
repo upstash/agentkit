@@ -15,8 +15,8 @@
     "typecheck": "pnpm --filter @upstash/agentkit-sdk build && pnpm -r --filter \"./packages/*\" typecheck",
     "clean": "pnpm -r --filter \"./packages/*\" clean",
     "changeset": "changeset",
-    "version": "changeset version",
-    "release": "pnpm build && changeset publish"
+    "ci:version": "changeset version",
+    "ci:publish": "changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.7",

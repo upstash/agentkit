@@ -42,8 +42,10 @@ This repo uses [Changesets](https://github.com/changesets/changesets).
 
 ```bash
 pnpm changeset        # describe a change
-pnpm version          # bump versions + changelogs
-pnpm release          # build + publish
+pnpm ci:version       # bump versions + changelogs
+pnpm ci:publish       # publish to npm
+
+# (`version`/`release` script names are avoided — they collide with pnpm's built-in commands.)
 ```
 
 ## License
