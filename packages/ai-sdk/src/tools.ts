@@ -1,5 +1,5 @@
+import type { ToolSet } from "ai";
 import type { ToolCache } from "@upstash/agentkit-sdk";
-import type { AiTool, ToolExecuteOptions } from "./types.js";
 
 export interface CacheToolsConfig {
   /** The {@link ToolCache} memoizing tool results. */
@@ -19,30 +19,28 @@ export interface CacheToolsConfig {
  * await generateText({ model, tools, prompt });
  * ```
  */
-export function cacheTools<T extends Record<string, AiTool>>(
-  tools: T,
-  config: CacheToolsConfig,
-): T {
+export function cacheTools<T extends ToolSet>(tools: T, config: CacheToolsConfig): T {
   const { toolCache, ttlSeconds } = config;
-  const out: Record<string, AiTool> = {};
+  const out: ToolSet = {};
 
-  for (const [name, tool] of Object.entries(tools)) {
-    const original = tool.execute;
-    if (!original) {
-      out[name] = tool;
+  for (const [name, t] of Object.entries(tools)) {
+    const original = t.execute;
+    if (typeof original !== "function") {
+      out[name] = t;
       continue;
     }
     out[name] = {
-      ...tool,
-      execute: (args: unknown, options: ToolExecuteOptions) => {
+      ...t,
+      execute: (args: unknown, options: unknown) => {
         const run = toolCache.wrap(
           name,
-          (a: unknown) => Promise.resolve(original(a, options)),
+          (a: unknown) =>
+            Promise.resolve((original as (i: unknown, o: unknown) => unknown)(a, options)),
           ttlSeconds !== undefined ? { ttlSeconds } : {},
         );
         return run(args);
       },
-    };
+    } as T[string];
   }
 
   return out as T;

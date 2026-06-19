@@ -3,6 +3,11 @@ import { afterAll, describe, expect, it } from "vitest";
 import { createSearchTools } from "./search-tools.js";
 import { hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
+const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
+function call<R>(execute: unknown, input: unknown): Promise<R> {
+  return (execute as (i: unknown, o: unknown) => Promise<R>)(input, TOOL_OPTS);
+}
+
 const schema = s.object({
   name: s.string(),
   age: s.number(),
@@ -38,17 +43,17 @@ describe.skipIf(!hasRedisCreds)("createSearchTools (live Redis)", () => {
     await redis.json.set(`${prefix}2`, "$", { name: "Alan Turing", age: 41, city: "London" });
     await redis.search.index({ name }).waitIndexing();
 
-    const hits = (await tools.search!.execute!({ filter: { name: { $smart: "ada" } } }, {})) as {
-      data?: { name?: string };
-    }[];
+    const hits = await call<{ data?: { name?: string } }[]>(tools.search!.execute, {
+      filter: { name: { $smart: "ada" } },
+    });
     expect(hits.length).toBeGreaterThan(0);
     expect(hits.some((h) => h.data?.name?.includes("Ada"))).toBe(true);
   });
 
   it("count tool counts matching documents", async () => {
-    const result = (await tools.count!.execute!({ filter: { city: { $eq: "London" } } }, {})) as {
-      count: number;
-    };
+    const result = await call<{ count: number }>(tools.count!.execute, {
+      filter: { city: { $eq: "London" } },
+    });
     expect(result.count).toBeGreaterThanOrEqual(2);
   });
 });

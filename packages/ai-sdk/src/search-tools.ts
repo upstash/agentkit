@@ -1,6 +1,6 @@
+import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { Redis } from "@upstash/redis";
-import type { AiTool } from "./types.js";
 
 /** The schema type accepted by `redis.search.index` (an `s.object({...})`). */
 type SearchSchema = NonNullable<Parameters<Redis["search"]["index"]>[0]["schema"]>;
@@ -90,7 +90,7 @@ const FILTER_GUIDE = [
  * });
  * ```
  */
-export function createSearchTools(config: CreateSearchToolsConfig): Record<string, AiTool> {
+export function createSearchTools(config: CreateSearchToolsConfig): ToolSet {
   const redis = config.redis ?? Redis.fromEnv();
   const name = config.name ?? "agentkit:search";
   const prefix = config.prefix ?? `${name}:`;
@@ -140,44 +140,35 @@ export function createSearchTools(config: CreateSearchToolsConfig): Record<strin
     filter: z.record(z.string(), z.unknown()).optional().describe(`Optional filter.${schemaGuide}`),
   });
 
-  const search: AiTool = {
+  const search = tool({
     description: `Search the "${name}" index and return matching documents, ranked by relevance.${schemaGuide}`,
-    parameters: searchInput,
     inputSchema: searchInput,
-    execute: async (args) => {
-      const { filter, limit } = args as { filter: Record<string, unknown>; limit?: number };
+    execute: async ({ filter, limit }) => {
       await ensure();
       return index.query({ filter: filter as never, limit: limit ?? defaultLimit } as never);
     },
-  };
+  });
 
-  const aggregate: AiTool = {
+  const aggregate = tool({
     description: `Run aggregations over the "${name}" index (group, stats, histograms, …).${schemaGuide}`,
-    parameters: aggregateInput,
     inputSchema: aggregateInput,
-    execute: async (args) => {
-      const { aggregations, filter } = args as {
-        aggregations: Record<string, unknown>;
-        filter?: Record<string, unknown>;
-      };
+    execute: async ({ aggregations, filter }) => {
       await ensure();
       return index.aggregate({
         aggregations,
         ...(filter !== undefined ? { filter } : {}),
       } as never);
     },
-  };
+  });
 
-  const count: AiTool = {
+  const count = tool({
     description: `Count documents in the "${name}" index, optionally matching a filter.${schemaGuide}`,
-    parameters: countInput,
     inputSchema: countInput,
-    execute: async (args) => {
-      const { filter } = args as { filter?: Record<string, unknown> };
+    execute: async ({ filter }) => {
       await ensure();
       return index.count({ filter: (filter ?? {}) as never });
     },
-  };
+  });
 
   return { search, aggregate, count };
 }

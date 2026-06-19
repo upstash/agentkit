@@ -1,6 +1,3 @@
-// Tool shape
-export type { AiTool, ToolExecuteOptions } from "./types.js";
-
 // Semantic caching as AI SDK language-model middleware
 export { semanticCacheMiddleware, semanticCachedModel } from "./semantic-cache.js";
 export type { SemanticCacheMiddlewareConfig, SemanticCachedModelConfig } from "./semantic-cache.js";
