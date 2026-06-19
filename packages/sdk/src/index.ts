@@ -13,3 +13,6 @@ export type { ToolCacheConfig, ToolCacheHit } from "./tool-cache.js";
 
 export { chunkText, Rag } from "./rag.js";
 export type { Chunk, ChunkOptions, RagConfig, RagDocument, RetrievedChunk } from "./rag.js";
+
+export { createRateLimit } from "./rate-limit.js";
+export type { RateLimitConfig } from "./rate-limit.js";

@@ -23,7 +23,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
   Eve's `defineSandbox`.
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
-- **Rate limiting** — a rate-limited model wrapper backed by Upstash Ratelimit (`rateLimitedModel`).
+- **Rate limiting** — a configured Upstash Ratelimit factory (`createRateLimit`) you call before the model.
 
 ## Examples
 

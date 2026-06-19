@@ -1,5 +1,6 @@
 import { ToolCache } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
+import { defineTool } from "eve/tools";
 import type { ToolContext, ToolDefinition } from "eve/tools";
 
 /** The cache key for a tool call: a fixed string, or a function of the tool input + context. */
@@ -18,23 +19,20 @@ export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOu
 
 /**
  * Like Eve's `defineTool`, but the tool's `execute` is memoized in an Upstash {@link ToolCache}.
- * Takes the same fields as `defineTool` plus `cachePrefix` (and an optional `redis`); returns a
- * `ToolDefinition` you hand to `defineTool`.
+ * Takes the same fields as `defineTool` plus `namespace` (and an optional `redis`), calls `defineTool`
+ * for you, and returns the branded `ToolDefinition` — export it directly, no extra wrapping.
  *
  * ```ts
  * // agent/tools/get_weather.ts
- * import { defineTool } from "eve/tools";
  * import { z } from "zod";
  * import { defineCachedTool } from "@upstash/agentkit-eve";
  *
- * export default defineTool(
- *   defineCachedTool({
- *     description: "Get the current weather for a city.",
- *     inputSchema: z.object({ city: z.string() }),
- *     namespace: "get_weather",
- *     execute: async ({ city }) => fetchWeather(city),
- *   }),
- * );
+ * export default defineCachedTool({
+ *   description: "Get the current weather for a city.",
+ *   inputSchema: z.object({ city: z.string() }),
+ *   namespace: "get_weather",
+ *   execute: async ({ city }) => fetchWeather(city),
+ * });
  * ```
  */
 export function defineCachedTool<TInput, TOutput>(
@@ -43,7 +41,7 @@ export function defineCachedTool<TInput, TOutput>(
   const { redis, toolCache, namespace, ttlSeconds, execute, ...rest } = config;
   const cache = toolCache ?? new ToolCache({ redis: redis ?? Redis.fromEnv() });
 
-  return {
+  return defineTool({
     ...rest,
     execute: (input: TInput, ctx: ToolContext) => {
       const name = typeof namespace === "function" ? namespace(input, ctx) : namespace;
@@ -54,5 +52,5 @@ export function defineCachedTool<TInput, TOutput>(
       );
       return run(input);
     },
-  } as ToolDefinition<TInput, TOutput>;
+  } as Parameters<typeof defineTool>[0]) as ToolDefinition<TInput, TOutput>;
 }

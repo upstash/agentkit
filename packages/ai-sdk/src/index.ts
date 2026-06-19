@@ -1,6 +1,7 @@
-// Rate limiting as AI SDK language-model middleware
-export { rateLimitMiddleware, rateLimitedModel, RateLimitExceededError } from "./rate-limit.js";
-export type { RateLimitMiddlewareConfig, RateLimitedModelConfig } from "./rate-limit.js";
+// Rate limiting — re-exported from the core adapter. Call `.limit(identifier)` yourself before
+// `generateText` (no model wrapper). Keys are `agentkit:rateLimit:<identifier>`.
+export { createRateLimit } from "@upstash/agentkit-sdk";
+export type { RateLimitConfig } from "@upstash/agentkit-sdk";
 
 // Tool-call caching (self-contained cached tools)
 export { cachedTool, cachedTools } from "./tools.js";

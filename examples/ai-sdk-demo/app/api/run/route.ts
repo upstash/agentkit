@@ -6,8 +6,8 @@ import { z } from "zod";
 import {
   cachedTools,
   createMemoryTools,
+  createRateLimit,
   createSearchTools,
-  rateLimitedModel,
 } from "@upstash/agentkit-ai-sdk";
 import { getRedis } from "../../lib/redis";
 
@@ -46,15 +46,19 @@ export async function POST(req: Request) {
       { redis },
     );
 
-    // Rate limiting — every model call is checked against an Upstash Ratelimit, by user.
-    const model = rateLimitedModel({
-      model: openai(DEMO_MODEL),
-      redis,
-      limit: 30,
-      window: "1 m",
-      identifier: "demo-user",
+    // Rate limiting — check an Upstash Ratelimit (by user) before doing any model work.
+    const ratelimit = createRateLimit({
+      redis, // the Upstash Redis client backing the limiter
+      limit: 30, // optional: requests allowed per window (default 10)
+      window: "1 m", // optional: sliding-window duration (default "60 s")
+      // namespace: "agentkit:rateLimit", // optional: key prefix; keys are `<namespace>:<identifier>`
     });
+    const { success } = await ratelimit.limit("demo-user");
+    if (!success) {
+      return NextResponse.json({ error: "rate limited" }, { status: 429 });
+    }
 
+    const model = openai(DEMO_MODEL);
     const tools = { ...memoryTools, ...searchTools, ...cachedToolSet };
     const result = await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: input });
 

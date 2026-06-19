@@ -22,16 +22,19 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 `langchain` and `tanstack-ai` packages were **removed** — don't reintroduce them.
 
 ### Core SDK exports (`@upstash/agentkit-sdk`)
-- `AgentMemory`, `ToolCache`, `Rag` + `chunkText`, `s` (schema builder, re-exported from
-  `@upstash/redis`), types `FilterValue`/`SearchHit`/`SearchIndexHandle`, utils `key`/`now`/`stableHash`/`stableStringify`.
-  (**Model cache removed** — no `ModelCache`.)
+- `AgentMemory`, `ToolCache`, `Rag` + `chunkText`, `createRateLimit` (+ `RateLimitConfig`; thin
+  `@upstash/ratelimit` factory with AgentKit defaults — returns a plain `Ratelimit`), `s` (schema
+  builder, re-exported from `@upstash/redis`), types `FilterValue`/`SearchHit`/`SearchIndexHandle`,
+  utils `key`/`now`/`stableHash`/`stableStringify`. (**Model cache removed** — no `ModelCache`.)
+- `@upstash/ratelimit` is a **dependency** of core (not a peer); rate limiting lives here now.
 - Testing: `@upstash/agentkit-sdk/testing` → `MockModel`.
 - **Design rule:** every feature takes only `redis` and **creates/owns its search index internally**,
   exposing the raw handle via `.searchIndex`. Callers never pass a search index in.
 
 ### ai-sdk exports
-- `rateLimitedModel` / `rateLimitMiddleware` / `RateLimitExceededError`, `cachedTool`, `cachedTools`,
-  `createMemoryTools`, `createSearchTools`. (**No model cache** — removed.)
+- `createRateLimit` (re-exported from core — call `.limit(id)` before `generateText`, **no model
+  wrapper**), `cachedTool`, `cachedTools`, `createMemoryTools`, `createSearchTools`. (**No model
+  cache** — removed.)
 - `cachedTool` config = the AI SDK's `tool()` config (full input/output inference) plus `redis?` /
   `namespace` / `ttlSeconds?` — **no `toolCache`**. `cachedTools(map, { redis?, ttlSeconds? })` takes a
   map of `tool()`-built tools (so each keeps inference) and caches each under its map key.
@@ -39,10 +42,16 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   build their own `ToolCache`/`AgentMemory` internally. No `@upstash/agentkit-sdk` import required by users.
 
 ### eve exports
-- `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`, **plus** the ai-sdk model
-  wrappers (`rateLimitedModel` + rate-limit middleware) re-exported here (no `./model` subpath anymore).
+- `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`, **plus** rate limiting:
+  `createRateLimitAuth` (a ready eve route-auth `AuthFn`, `packages/eve/src/auth.ts`) and the core
+  `createRateLimit` factory re-exported. **No model wrapper / no `./model` subpath.**
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
-- Eve is file-centric: factories return `defineTool`-compatible configs the user wraps with `defineTool`.
+- Eve is file-centric, but the tool factories now **call `defineTool` internally** and return the
+  branded `ToolDefinition` — users export them directly (no outer `defineTool(...)` wrap). Because of
+  this, **`eve` is a required (non-optional) peer dep** of `packages/eve`.
+- Rate limiting in eve = a route-auth gate: `createRateLimitAuth(config)` goes first in
+  `eveChannel({ auth: [...] })`; it `.limit()`s, throws `ForbiddenError` (403) over the limit, else
+  returns `null` to fall through to the real authenticators (`localDev()`/`vercelOidc()`/…).
 
 ## Naming history (so you don't resurrect old names)
 - ai-sdk `cacheTools(map)` → `cachedTool(single)` → now **`cachedTool` + `cachedTools`**; `cachePrefix` → **`namespace`**.

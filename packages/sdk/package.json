@@ -38,6 +38,9 @@
     "llm",
     "cache"
   ],
+  "dependencies": {
+    "@upstash/ratelimit": "^2.0.5"
+  },
   "peerDependencies": {
     "@upstash/redis": ">=1.38.0"
   },

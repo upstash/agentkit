@@ -202,9 +202,6 @@ importers:
       '@upstash/agentkit-sdk':
         specifier: workspace:*
         version: link:../sdk
-      '@upstash/ratelimit':
-        specifier: ^2.0.5
-        version: 2.0.8(@upstash/redis@1.38.0)
       '@upstash/redis':
         specifier: ^1.38.0
         version: 1.38.0
@@ -254,6 +251,10 @@ importers:
         version: 0.11.7(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   packages/sdk:
+    dependencies:
+      '@upstash/ratelimit':
+        specifier: ^2.0.5
+        version: 2.0.8(@upstash/redis@1.38.0)
     devDependencies:
       '@upstash/redis':
         specifier: ^1.38.0

@@ -3,7 +3,7 @@
 Adapter that brings [Upstash AgentKit](https://upstash.com/) to **Eve, the Vercel agent framework**.
 Eve is file-centric, so this package ships small pieces you drop into your `agent/` tree: long-term
 memory tools, a real code-execution **sandbox backend** powered by [Upstash Box](https://github.com/upstash/box),
-cached tools, and a rate-limited model wrapper.
+cached tools, and a rate limiter you drive from an eve `AuthFn`.
 
 ```bash
 pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
@@ -21,37 +21,32 @@ export const redis = Redis.fromEnv();
 
 ## Memory tools (`agent/tools/*.ts`)
 
-`defineMemoryRecallTool` and `defineMemorySaveTool` return ready `defineTool` configs — one file each,
-one import. Pass a `namespace` (a string shared across users, or a function deriving it from the
-context); `redis` defaults to env. Memories are stored at `agentkit:memory:<namespace>:<id>`.
+`defineMemoryRecallTool` and `defineMemorySaveTool` are ready eve tools — they call `defineTool`
+internally, so you export them directly (no extra wrapping). One file each, one import. Pass a
+`namespace` (a string shared across users, or a function deriving it from the context); `redis`
+defaults to env. Memories are stored at `agentkit:memory:<namespace>:<id>`.
 
 ```ts
 // agent/tools/recall_memory.ts
-import { defineTool } from "eve/tools";
 import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
 
-export default defineTool(
-  defineMemoryRecallTool({
-    namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
-    redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-    topK: 5, // optional: max memories to return
-    minScore: 0, // optional: BM25 relevance floor for recall
-    // memory, // optional: a pre-built AgentMemory (overrides `redis`)
-  }),
-);
+export default defineMemoryRecallTool({
+  namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  topK: 5, // optional: max memories to return
+  minScore: 0, // optional: BM25 relevance floor for recall
+  // memory, // optional: a pre-built AgentMemory (overrides `redis`)
+});
 ```
 
 ```ts
 // agent/tools/save_memory.ts
-import { defineTool } from "eve/tools";
 import { defineMemorySaveTool } from "@upstash/agentkit-eve";
 
-export default defineTool(
-  defineMemorySaveTool({
-    namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
-    redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  }),
-);
+export default defineMemorySaveTool({
+  namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+});
 ```
 
 ## Code-execution sandbox (`agent/sandbox.ts`)
@@ -87,48 +82,55 @@ needed when you import `@upstash/agentkit-eve/sandbox`.
 ## Cached tools (`agent/tools/*.ts`)
 
 `defineCachedTool` is like Eve's `defineTool`, but its result is memoized — pass a `namespace` (string,
-or a function of the input + context). `redis` defaults to env. Keys are
-`agentkit:toolCache:<namespace>:<hash>`.
+or a function of the input + context). It calls `defineTool` internally, so you export it directly.
+`redis` defaults to env. Keys are `agentkit:toolCache:<namespace>:<hash>`.
 
 ```ts
 // agent/tools/get_weather.ts
-import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { defineCachedTool } from "@upstash/agentkit-eve";
 
-export default defineTool(
-  defineCachedTool({
-    description: "Get the current weather for a city.", // (defineTool field) shown to the model
-    inputSchema: z.object({ city: z.string() }), // (defineTool field) zod schema for the input
-    execute: async ({ city }) => fetchWeather(city), // (defineTool field) memoized
-    namespace: "get_weather", // the cache key — a string, or (input, ctx) => string
-    redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-    ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
-    // toolCache, // optional: a pre-built ToolCache (overrides `redis`)
-  }),
-);
+export default defineCachedTool({
+  description: "Get the current weather for a city.", // (defineTool field) shown to the model
+  inputSchema: z.object({ city: z.string() }), // (defineTool field) zod schema for the input
+  execute: async ({ city }) => fetchWeather(city), // (defineTool field) memoized
+  namespace: "get_weather", // the cache key — a string, or (input, ctx) => string
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
+  // toolCache, // optional: a pre-built ToolCache (overrides `redis`)
+});
 ```
 
-## Rate limiting (`agent/agent.ts`)
+## Rate limiting (`agent/channels/eve.ts`)
 
-Wrap your agent's model with `rateLimitedModel` (re-exported from the AI SDK adapter — Eve uses Vercel
-AI SDK models). Keys are `agentkit:rateLimit:<identifier>`. See [agent config](https://eve.dev/docs/agent-config).
+Eve gates inbound HTTP routes with an ordered [auth walk](https://eve.dev/docs/guides/auth-and-route-protection):
+each `AuthFn` accepts (returns a `SessionAuthContext`), skips (returns `null`/`undefined`), or rejects
+(throws). `createRateLimitAuth` returns a ready `AuthFn` — drop it into the walk ahead of your real
+authenticators. It's a _gate_: it throttles, then returns `null` to fall through (over the limit it
+throws a 403). Backed by [Upstash Ratelimit](https://github.com/upstash/ratelimit-js); keys are
+`agentkit:rateLimit:<identifier>`.
 
 ```ts
-// agent/agent.ts
-import { openai } from "@ai-sdk/openai";
-import { rateLimitedModel } from "@upstash/agentkit-eve";
-import { redis } from "./redis";
+// agent/channels/eve.ts
+import { createRateLimitAuth } from "@upstash/agentkit-eve";
+import { localDev, vercelOidc } from "eve/channels/auth";
+import { eveChannel } from "eve/channels/eve";
+import { redis } from "../redis";
 
-export const model = rateLimitedModel({
-  model: openai("gpt-5.4-mini"), // the language model to wrap
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  limit: 20, // optional: requests allowed per window (default: 10)
-  window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
-  namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
-  identifier: "global", // optional: per-user id — string or () => string | Promise<string> (default: "global")
-  onLimit: "throw", // optional: "throw" a RateLimitExceededError (default) or "wait" for a free token
-  waitTimeoutMs: 10000, // optional: max wait when onLimit is "wait" (default: 10000)
+export default eveChannel({
+  auth: [
+    createRateLimitAuth({
+      redis, // the Upstash Redis client backing the limiter
+      limit: 20, // optional: requests allowed per window (default: 10)
+      window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
+      identifier: "global", // optional: who to limit — a string, or (request) => string (default: "global")
+      namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
+      message: "Rate limit exceeded.", // optional: message in the 403 body when over the limit
+      // limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
+    }),
+    localDev(), // throttle first, then authenticate
+    vercelOidc(),
+  ],
 });
 ```
 

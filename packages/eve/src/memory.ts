@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
+import { defineTool } from "eve/tools";
 import type { ToolContext, ToolDefinition } from "eve/tools";
 
 /**
@@ -38,21 +39,21 @@ function resolveNamespace(
 }
 
 /**
- * A `defineTool` config that lets the agent recall long-term memories. One import, drop into a file:
+ * A ready eve tool (already `defineTool`-branded) that lets the agent recall long-term memories. One
+ * import, drop into a file — export it directly, no extra wrapping:
  *
  * ```ts
  * // agent/tools/recall_memory.ts
- * import { defineTool } from "eve/tools";
  * import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
  *
- * export default defineTool(defineMemoryRecallTool({ namespace: (_, ctx) => ctx.session.id }));
+ * export default defineMemoryRecallTool({ namespace: (_, ctx) => ctx.session.id });
  * ```
  */
 export function defineMemoryRecallTool(
   config: MemoryToolConfig,
 ): ToolDefinition<{ query: string }, { text: string; score: number }[]> {
   const memory = resolveMemory(config);
-  return {
+  return defineTool({
     description:
       "Recall relevant long-term memories about the user before answering. Call this when prior " +
       "context about the user would help.",
@@ -67,22 +68,26 @@ export function defineMemoryRecallTool(
       });
       return hits.map((h) => ({ text: h.text, score: h.score }));
     },
-  } as ToolDefinition<{ query: string }, { text: string; score: number }[]>;
+  } as Parameters<typeof defineTool>[0]) as ToolDefinition<
+    { query: string },
+    { text: string; score: number }[]
+  >;
 }
 
 /**
- * A `defineTool` config that lets the agent save a durable fact to long-term memory.
+ * A ready eve tool (already `defineTool`-branded) that lets the agent save a durable fact to
+ * long-term memory. Export it directly, no extra wrapping.
  *
  * ```ts
  * // agent/tools/save_memory.ts
- * export default defineTool(defineMemorySaveTool({ namespace: (_, ctx) => ctx.session.id }));
+ * export default defineMemorySaveTool({ namespace: (_, ctx) => ctx.session.id });
  * ```
  */
 export function defineMemorySaveTool(
   config: MemoryToolConfig,
 ): ToolDefinition<{ text: string }, { id: string; saved: boolean }> {
   const memory = resolveMemory(config);
-  return {
+  return defineTool({
     description:
       "Save a durable fact about the user to long-term memory so it can be recalled in future " +
       "conversations (preferences, identity, goals, …).",
@@ -93,5 +98,8 @@ export function defineMemorySaveTool(
       const record = await memory.add(text, { namespace: resolveNamespace(config, { text }, ctx) });
       return { id: record.id, saved: true };
     },
-  } as ToolDefinition<{ text: string }, { id: string; saved: boolean }>;
+  } as Parameters<typeof defineTool>[0]) as ToolDefinition<
+    { text: string },
+    { id: string; saved: boolean }
+  >;
 }

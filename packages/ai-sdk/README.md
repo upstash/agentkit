@@ -2,8 +2,8 @@
 
 [Vercel AI SDK](https://ai-sdk.dev) adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk).
 Everything is a drop-in for `generateText` / `streamText`: ready-made memory + Redis-Search tools, a
-self-contained cached tool, and a rate-limited model wrapper. `redis` defaults to `Redis.fromEnv()`
-everywhere, so you import only from this package.
+self-contained cached tool, and a rate limiter you call before the model. `redis` defaults to
+`Redis.fromEnv()` everywhere, so you import only from this package.
 
 ```bash
 pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
@@ -112,29 +112,28 @@ await generateText({ model, tools, prompt: "What's the weather in Paris?" });
 
 ## Rate limiting
 
-`rateLimitedModel` wraps a model so each call is rate-limited with
-[Upstash Ratelimit](https://github.com/upstash/ratelimit-js) — throwing (or waiting) when the limit
-is exceeded. Build the model per request with a per-user `identifier` to limit by user. Keys are
+`createRateLimit` returns a configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js)
+`Ratelimit` with AgentKit defaults. There is no model wrapper — call `.limit(identifier)` yourself
+before `generateText` and short-circuit when you're over the limit. Keys are
 `agentkit:rateLimit:<identifier>`.
 
 ```ts
 import { openai } from "@ai-sdk/openai";
 import { generateText } from "ai";
-import { rateLimitedModel } from "@upstash/agentkit-ai-sdk";
+import { createRateLimit } from "@upstash/agentkit-ai-sdk";
 
-const model = rateLimitedModel({
-  model: openai("gpt-5.4-mini"), // the language model to wrap
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+const ratelimit = createRateLimit({
+  redis, // the Upstash Redis client backing the limiter
   limit: 20, // optional: requests allowed per window (default: 10)
   window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
   namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
-  identifier: userId, // optional: per-user id — string or () => string | Promise<string> (default: "global")
-  onLimit: "throw", // optional: "throw" a RateLimitExceededError (default) or "wait" for a free token
-  waitTimeoutMs: 10000, // optional: max wait when onLimit is "wait" (default: 10000)
-  // ratelimit, // optional: a pre-built @upstash/ratelimit Ratelimit (overrides limit/window)
+  // limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
 });
 
-await generateText({ model, prompt: "..." }); // throws RateLimitExceededError once over the limit
+const { success } = await ratelimit.limit(userId); // pass a per-user identifier to limit by user
+if (!success) throw new Error("rate limited"); // or return a 429 from your route
+
+await generateText({ model: openai("gpt-5.4-mini"), prompt: "..." });
 ```
 
 ## Testing

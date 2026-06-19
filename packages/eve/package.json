@@ -59,9 +59,6 @@
   "peerDependenciesMeta": {
     "@upstash/box": {
       "optional": true
-    },
-    "eve": {
-      "optional": true
     }
   }
 }
