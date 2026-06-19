@@ -39,7 +39,8 @@
     "cache"
   ],
   "dependencies": {
-    "@upstash/ratelimit": "^2.0.5"
+    "@upstash/ratelimit": "^2.0.5",
+    "zod": "^3.23.8 || ^4"
   },
   "peerDependencies": {
     "@upstash/redis": ">=1.38.0"

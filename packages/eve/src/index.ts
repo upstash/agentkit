@@ -6,6 +6,10 @@ export type { CacheNamespace, DefineCachedToolConfig } from "./tools.js";
 export { defineMemoryRecallTool, defineMemorySaveTool } from "./memory.js";
 export type { MemoryNamespace, MemoryToolConfig } from "./memory.js";
 
+// Schema-driven Redis Search tools (search / aggregate / count) as eve tools
+export { defineSearchTools } from "./search-tools.js";
+export type { DefineSearchToolsConfig, SearchToolSet } from "./search-tools.js";
+
 // Rate limiting — `createRateLimitAuth` is a ready eve route-auth `AuthFn` (drop into
 // `agent/channels/eve.ts`'s `auth` walk). `createRateLimit` is the underlying core factory for
 // custom use. Keys are `agentkit:rateLimit:<identifier>`.

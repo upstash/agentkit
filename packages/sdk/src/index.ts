@@ -27,3 +27,7 @@ export type {
   ChatSummary,
   ExtractedText,
 } from "./chat-history.js";
+
+// Framework-agnostic search-tool definitions (search / aggregate / count over a Redis Search index)
+export { createSearchToolDefs } from "./search-tools.js";
+export type { SearchToolDef, SearchToolDefs, SearchToolDefsConfig } from "./search-tools.js";
