@@ -1,0 +1,37 @@
+/**
+ * Test-only helpers (not part of the published surface — never imported by `index.ts`/`testing`).
+ *
+ * Per the project's testing policy, the SDK is tested against a real Upstash Redis instance rather
+ * than a mock. Credentials are read from the repo-root `.env` (or the environment). When they are
+ * absent, `hasRedisCreds` is false and the suites skip themselves so CI without secrets stays green.
+ */
+import { randomUUID } from "node:crypto";
+import { config } from "dotenv";
+import { Redis } from "@upstash/redis";
+
+// Load repo-root .env (no-op if already loaded or absent).
+config();
+
+export const hasRedisCreds = Boolean(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
+);
+
+/** A real Upstash Redis client from env. Only call when `hasRedisCreds` is true. */
+export function testRedis(): Redis {
+  return Redis.fromEnv();
+}
+
+/** A collision-proof namespace so parallel test runs never share keys or indexes. */
+export function uniqueNamespace(label: string): string {
+  return `test:${label}:${randomUUID().slice(0, 8)}`;
+}
+
+/** Delete every key under a namespace (best-effort cleanup in afterAll hooks). */
+export async function cleanupKeys(redis: Redis, namespace: string): Promise<void> {
+  let cursor = "0";
+  do {
+    const [next, keys] = await redis.scan(cursor, { match: `${namespace}*`, count: 200 });
+    cursor = next;
+    if (keys.length) await redis.del(...keys);
+  } while (cursor !== "0");
+}

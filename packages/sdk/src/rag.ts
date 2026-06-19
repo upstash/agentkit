@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { FilterValue, SearchStore } from "./types.js";
+import type { Redis } from "@upstash/redis";
+import { RedisSearchIndex, type SearchIndexHandle } from "./search-index.js";
 
 export interface RagDocument {
   /** Stable document id; generated when omitted. */
@@ -28,7 +29,10 @@ export interface ChunkOptions {
 }
 
 export interface RagConfig extends ChunkOptions {
-  search: SearchStore;
+  /** The Upstash Redis client. The search index is created and managed internally. */
+  redis: Redis;
+  /** Key prefix + index name base; defaults to `agentkit:rag`. */
+  namespace?: string;
 }
 
 /**
@@ -64,18 +68,27 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
 
 /**
  * Minimal Retrieval-Augmented Generation toolkit over Upstash Redis Search: chunk documents, index
- * the chunks as searchable documents, then fuzzily retrieve the most relevant chunks for a query via
- * the `$smart` operator.
+ * the chunks, then fuzzily retrieve the most relevant chunks for a query via the `$smart` operator.
+ *
+ * Pass only the `redis` client; the toolkit owns its index internally (exposed via {@link searchIndex}).
  */
 export class Rag {
-  private search: SearchStore;
+  private store: RedisSearchIndex;
   private chunkSize: number;
   private chunkOverlap: number;
 
   constructor(config: RagConfig) {
-    this.search = config.search;
+    this.store = new RedisSearchIndex(config.redis, {
+      namespace: config.namespace ?? "agentkit:rag",
+      filterFields: ["docId"],
+    });
     this.chunkSize = config.chunkSize ?? 1000;
     this.chunkOverlap = config.chunkOverlap ?? 200;
+  }
+
+  /** The underlying Upstash Redis Search index handle. */
+  get searchIndex(): SearchIndexHandle {
+    return this.store.index;
   }
 
   /** Chunk and index documents. Returns the chunks that were created. */
@@ -84,22 +97,23 @@ export class Rag {
     const chunkSize = opts.chunkSize ?? this.chunkSize;
     const chunkOverlap = opts.chunkOverlap ?? this.chunkOverlap;
     const created: Chunk[] = [];
+    const records: Parameters<RedisSearchIndex["upsert"]>[0] = [];
 
     for (const doc of docs) {
       const docId = doc.id ?? randomUUID();
       const pieces = chunkText(doc.text, { chunkSize, chunkOverlap });
-      const records = pieces.map((text, index) => {
+      pieces.forEach((text, index) => {
         const id = `${docId}:${index}`;
         created.push({ id, docId, index, text, metadata: doc.metadata });
-        return {
+        records.push({
           id,
           content: text,
-          metadata: { docId, index, text, ...doc.metadata },
-          filters: { docId } as Record<string, FilterValue>,
-        };
+          filters: { docId },
+          metadata: { index, ...doc.metadata },
+        });
       });
-      if (records.length) await this.search.upsert(records);
     }
+    if (records.length) await this.store.upsert(records);
     return created;
   }
 
@@ -108,8 +122,7 @@ export class Rag {
     query: string,
     opts: { topK?: number; minScore?: number; docId?: string } = {},
   ): Promise<RetrievedChunk[]> {
-    const hits = await this.search.search({
-      query,
+    const hits = await this.store.search(query, {
       topK: opts.topK ?? 5,
       ...(opts.docId !== undefined ? { filters: { docId: opts.docId } } : {}),
     });
@@ -117,18 +130,13 @@ export class Rag {
     return hits
       .filter((h) => h.score >= minScore)
       .map((h) => {
-        const md = (h.metadata ?? {}) as {
-          docId?: string;
-          index?: number;
-          text?: string;
-          [k: string]: unknown;
-        };
-        const { docId, index, text, ...rest } = md;
+        const md = (h.metadata ?? {}) as { index?: number; [k: string]: unknown };
+        const { index, ...rest } = md;
         return {
           id: h.id,
-          docId: docId ?? "",
+          docId: h.id.includes(":") ? h.id.slice(0, h.id.lastIndexOf(":")) : h.id,
           index: index ?? 0,
-          text: text ?? h.content,
+          text: h.content,
           metadata: Object.keys(rest).length ? rest : undefined,
           score: h.score,
         };
@@ -138,6 +146,6 @@ export class Rag {
   /** Remove all chunks belonging to a document (chunk ids are `${docId}:${n}`). */
   async remove(docId: string, opts: { chunkCount: number }): Promise<void> {
     const ids = Array.from({ length: opts.chunkCount }, (_, i) => `${docId}:${i}`);
-    await this.search.delete(ids);
+    await this.store.delete(ids);
   }
 }

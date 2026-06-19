@@ -1,8 +1,8 @@
-import type { RedisLike } from "./types.js";
+import type { Redis } from "@upstash/redis";
 import { key, stableHash } from "./utils.js";
 
 export interface ToolCacheConfig {
-  redis: RedisLike;
+  redis: Redis;
   /** Key prefix; defaults to `agentkit:tool`. */
   namespace?: string;
   /** Default TTL (seconds) for cached results. Omit for no expiry. */
@@ -20,7 +20,7 @@ export interface ToolCacheHit<T> {
  * arguments — common with retries, parallel branches, and multi-step reasoning loops.
  */
 export class ToolCache {
-  private redis: RedisLike;
+  private redis: Redis;
   private namespace: string;
   private ttlSeconds?: number;
 

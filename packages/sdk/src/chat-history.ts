@@ -1,8 +1,9 @@
-import type { ChatMessage, RedisLike } from "./types.js";
+import type { Redis } from "@upstash/redis";
+import type { ChatMessage } from "./types.js";
 import { key, now } from "./utils.js";
 
 export interface ChatHistoryConfig {
-  redis: RedisLike;
+  redis: Redis;
   /** Key prefix; defaults to `agentkit:chat`. */
   namespace?: string;
   /** Keep at most this many messages per session (older ones are trimmed). */
@@ -17,7 +18,7 @@ export interface ChatHistoryConfig {
  * TTL so abandoned sessions expire on their own.
  */
 export class ChatHistory {
-  private redis: RedisLike;
+  private redis: Redis;
   private namespace: string;
   private maxMessages?: number;
   private ttlSeconds?: number;

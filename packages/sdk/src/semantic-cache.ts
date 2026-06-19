@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { RedisLike, SearchStore } from "./types.js";
+import type { Redis } from "@upstash/redis";
+import { RedisSearchIndex, type SearchIndexHandle } from "./search-index.js";
 import { key, now } from "./utils.js";
 
 export interface SemanticCacheConfig {
-  search: SearchStore;
-  /** Optional Redis client used to enforce per-entry TTL. */
-  redis?: RedisLike;
-  /** Minimum relevance score to count as a hit. Defaults to 0.9. */
+  /** The Upstash Redis client. The search index is created and managed internally. */
+  redis: Redis;
+  /** Minimum relevance (BM25) score to count as a hit. Defaults to 1. */
   minScore?: number;
-  /** Optional TTL (seconds) per entry; only enforced when `redis` is set. */
+  /** Optional TTL (seconds) per entry. */
   ttlSeconds?: number;
-  /** Redis key prefix for TTL markers; defaults to `agentkit:semcache`. */
+  /** Key prefix + index name base; defaults to `agentkit:semcache`. */
   namespace?: string;
 }
 
@@ -28,22 +28,27 @@ export interface SemanticCacheHit {
  * prompts, it reuses a cached response when a new prompt fuzzily matches (`$smart`, score >=
  * `minScore`) a previously seen one — collapsing close paraphrases and typos onto one model call.
  *
- * Note: fuzzy text matching is weaker than embedding similarity — it catches typos and shared
- * wording, not deep paraphrases with disjoint vocabulary. Tune `minScore` to your data.
+ * Pass only the `redis` client; the cache owns its index internally (exposed via {@link searchIndex}).
+ * Scores are BM25 (unbounded), so tune `minScore` to your prompts.
  */
 export class SemanticCache {
-  private search: SearchStore;
-  private redis?: RedisLike;
+  private store: RedisSearchIndex;
+  private redis: Redis;
   private minScore: number;
   private ttlSeconds?: number;
   private namespace: string;
 
   constructor(config: SemanticCacheConfig) {
-    this.search = config.search;
-    this.redis = config.redis;
-    this.minScore = config.minScore ?? 0.9;
-    this.ttlSeconds = config.ttlSeconds;
     this.namespace = config.namespace ?? "agentkit:semcache";
+    this.store = new RedisSearchIndex(config.redis, { namespace: this.namespace });
+    this.redis = config.redis;
+    this.minScore = config.minScore ?? 1;
+    this.ttlSeconds = config.ttlSeconds;
+  }
+
+  /** The underlying Upstash Redis Search index handle. */
+  get searchIndex(): SearchIndexHandle {
+    return this.store.index;
   }
 
   private ttlKey(id: string): string {
@@ -53,14 +58,14 @@ export class SemanticCache {
   /** Look up a fuzzily-similar cached response, or `null` on a miss. */
   async get(prompt: string, opts: { minScore?: number } = {}): Promise<SemanticCacheHit | null> {
     const minScore = opts.minScore ?? this.minScore;
-    const [hit] = await this.search.search({ query: prompt, topK: 1 });
+    const [hit] = await this.store.search(prompt, { topK: 1 });
     if (!hit || hit.score < minScore) return null;
 
     // Enforce TTL: if the marker key has expired, treat as a miss and evict.
-    if (this.redis && this.ttlSeconds !== undefined) {
+    if (this.ttlSeconds !== undefined) {
       const alive = await this.redis.exists(this.ttlKey(hit.id));
       if (!alive) {
-        await this.search.delete([hit.id]);
+        await this.store.delete([hit.id]);
         return null;
       }
     }
@@ -76,10 +81,10 @@ export class SemanticCache {
   /** Cache `response` under `prompt`. */
   async set(prompt: string, response: string): Promise<void> {
     const id = randomUUID();
-    await this.search.upsert([
+    await this.store.upsert([
       { id, content: prompt, metadata: { prompt, response, createdAt: now() } },
     ]);
-    if (this.redis && this.ttlSeconds !== undefined) {
+    if (this.ttlSeconds !== undefined) {
       await this.redis.set(this.ttlKey(id), "1", { ex: this.ttlSeconds });
     }
   }

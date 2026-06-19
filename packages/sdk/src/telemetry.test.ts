@@ -1,16 +1,21 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Telemetry } from "./telemetry.js";
-import { MemoryRedis } from "./testing/memory-redis.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
-describe("Telemetry", () => {
-  let redis: MemoryRedis;
-  let t: number;
+describe.skipIf(!hasRedisCreds)("Telemetry (live Redis)", () => {
+  const redis = testRedis();
+  const namespace = uniqueNamespace("telemetry");
+  let t = 1000;
   let telemetry: Telemetry;
 
   beforeEach(() => {
-    redis = new MemoryRedis();
     t = 1000;
-    telemetry = new Telemetry({ redis, clock: () => t });
+    // Real Redis for storage; an injected clock keeps durations deterministic.
+    telemetry = new Telemetry({ redis, namespace, clock: () => t });
+  });
+
+  afterAll(async () => {
+    await cleanupKeys(redis, namespace);
   });
 
   it("records a span with computed duration", async () => {
@@ -27,13 +32,13 @@ describe("Telemetry", () => {
   });
 
   it("orders spans within a trace chronologically", async () => {
-    const a = telemetry.startSpan("a", { traceId: "tr" });
+    const a = telemetry.startSpan("a", { traceId: "tr-order" });
     await a.end();
     t = 2000;
-    const b = telemetry.startSpan("b", { traceId: "tr" });
+    const b = telemetry.startSpan("b", { traceId: "tr-order" });
     await b.end();
 
-    const trace = await telemetry.getTrace("tr");
+    const trace = await telemetry.getTrace("tr-order");
     expect(trace.map((s) => s.name)).toEqual(["a", "b"]);
   });
 
@@ -44,10 +49,10 @@ describe("Telemetry", () => {
         span.setAttribute("ok", true);
         return 123;
       },
-      { traceId: "tr2", type: "run" },
+      { traceId: "tr-ok", type: "run" },
     );
     expect(result).toBe(123);
-    const [span] = await telemetry.getTrace("tr2");
+    const [span] = await telemetry.getTrace("tr-ok");
     expect(span!.status).toBe("ok");
     expect(span!.attributes.ok).toBe(true);
   });
@@ -59,20 +64,19 @@ describe("Telemetry", () => {
         async () => {
           throw new Error("kaboom");
         },
-        { traceId: "tr3" },
+        { traceId: "tr-err" },
       ),
     ).rejects.toThrow("kaboom");
 
-    const [span] = await telemetry.getTrace("tr3");
+    const [span] = await telemetry.getTrace("tr-err");
     expect(span!.status).toBe("error");
     expect(span!.error).toBe("kaboom");
   });
 
   it("end() is idempotent", async () => {
-    const span = telemetry.startSpan("once", { traceId: "tr4" });
+    const span = telemetry.startSpan("once", { traceId: "tr-idem" });
     await span.end();
     await span.end();
-    const trace = await telemetry.getTrace("tr4");
-    expect(trace).toHaveLength(1);
+    expect(await telemetry.getTrace("tr-idem")).toHaveLength(1);
   });
 });

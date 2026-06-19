@@ -11,46 +11,36 @@ pnpm add @upstash/agentkit-sdk @upstash/redis
 
 ## Wiring up
 
-Create a search index once (it backs memory, the semantic cache, and RAG), then build a
-`SearchStore` from it:
+Every feature takes the `@upstash/redis` client and nothing else — the search-backed features create
+and own their Redis Search index internally:
 
 ```ts
-import { Redis, s } from "@upstash/redis";
-import {
-  AgentMemory,
-  ChatHistory,
-  SemanticCache,
-  ToolCache,
-  Telemetry,
-  Sandbox,
-  Rag,
-  upstashSearchStore,
-} from "@upstash/agentkit-sdk";
+import { Redis } from "@upstash/redis";
+import { AgentMemory, ChatHistory, SemanticCache, ToolCache, Telemetry, Rag } from "@upstash/agentkit-sdk";
 
 const redis = Redis.fromEnv();
 
-await redis.search.createIndex({
-  name: "agentkit",
-  dataType: "json",
-  prefix: "agentkit:",
-  schema: s.object({
-    text: s.string(),
-    scope: s.string().noTokenize(),
-    docId: s.string().noTokenize(),
-  }),
-});
-
-const search = upstashSearchStore(redis.search.index({ name: "agentkit" }));
+const memory = new AgentMemory({ redis });
+const history = new ChatHistory({ redis });
+const cache = new SemanticCache({ redis });
+const tools = new ToolCache({ redis });
+const telemetry = new Telemetry({ redis });
+const rag = new Rag({ redis });
 ```
 
-Everything else takes `redis` and/or `search`.
+The raw search index handle is exposed for advanced use (`describe`, `count`, `waitIndexing`, `drop`):
+
+```ts
+await memory.searchIndex.waitIndexing();
+const info = await rag.searchIndex.describe();
+```
 
 ## Features
 
 ### Agent memory
 
 ```ts
-const memory = new AgentMemory({ search, redis });
+const memory = new AgentMemory({ redis });
 await memory.add("The user prefers TypeScript", { scope: "user-123" });
 const hits = await memory.recall("typescript preference", { scope: "user-123" });
 ```
@@ -66,14 +56,14 @@ const messages = await history.list("session-1");
 ### Semantic cache
 
 ```ts
-const cache = new SemanticCache({ search, minScore: 0.85 });
+const cache = new SemanticCache({ redis, minScore: 1 });
 const generate = cache.wrap((prompt) => callYourLLM(prompt));
 await generate("What is the capital of France?"); // model call
 await generate("capital of France?"); // fuzzy cache hit — no model call
 ```
 
-> Fuzzy text matching catches typos and shared wording, not deep paraphrases with disjoint
-> vocabulary. Tune `minScore` to your data.
+> Matching is fuzzy text (`$smart`), not embedding similarity — it catches typos and shared wording.
+> Scores are BM25 (unbounded), so tune `minScore` to your prompts.
 
 ### Tool-call cache
 
@@ -92,34 +82,25 @@ await telemetry.trace("agent-run", async (span) => {
 }, { type: "run" });
 ```
 
-### Sandbox (tool harness)
-
-```ts
-const sandbox = new Sandbox({ timeoutMs: 10_000, maxRetries: 2, telemetry, toolCache: tools });
-sandbox.register({ name: "search", execute: async (args, ctx) => doSearch(args, ctx.signal) });
-const result = await sandbox.run("search", { query: "redis" });
-```
-
 ### RAG
 
 ```ts
-const rag = new Rag({ search });
+const rag = new Rag({ redis });
 await rag.ingest({ id: "doc-1", text: longDocument });
 const chunks = await rag.retrieve("how does redis search work?", { topK: 4 });
 ```
 
 ## Testing
 
-Import deterministic, offline test doubles from the `/testing` entry point — no network, no real LLM,
-no real index. `MemorySearchStore` approximates `$smart` (term + fuzzy + prefix matching with a
-phrase boost) and scores hits in `[0, 1]`:
+The SDK is tested against a **real Upstash Redis** instance (no Redis mock) — only LLM calls are
+mocked, via `MockModel`:
 
 ```ts
-import { MemoryRedis, MemorySearchStore, MockModel } from "@upstash/agentkit-sdk/testing";
-
-const search = new MemorySearchStore();
-const redis = new MemoryRedis();
+import { MockModel } from "@upstash/agentkit-sdk/testing";
 ```
+
+Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (the suites skip themselves when these
+are absent). Each suite uses a unique namespace and cleans up its index/keys afterwards.
 
 ## License
 

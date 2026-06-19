@@ -1,16 +1,19 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { ChatHistory } from "./chat-history.js";
-import { MemoryRedis } from "./testing/memory-redis.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
-describe("ChatHistory", () => {
-  let redis: MemoryRedis;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  beforeEach(() => {
-    redis = new MemoryRedis();
+describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis)", () => {
+  const redis = testRedis();
+  const namespace = uniqueNamespace("chat");
+
+  afterAll(async () => {
+    await cleanupKeys(redis, namespace);
   });
 
   it("appends and lists messages oldest-first", async () => {
-    const history = new ChatHistory({ redis });
+    const history = new ChatHistory({ redis, namespace });
     await history.append("s1", { role: "user", content: "hello" });
     await history.append("s1", { role: "assistant", content: "hi there" });
 
@@ -20,49 +23,46 @@ describe("ChatHistory", () => {
   });
 
   it("accepts a batch of messages", async () => {
-    const history = new ChatHistory({ redis });
-    await history.append("s1", [
+    const history = new ChatHistory({ redis, namespace });
+    await history.append("batch", [
       { role: "user", content: "a" },
       { role: "assistant", content: "b" },
     ]);
-    expect(await history.count("s1")).toBe(2);
+    expect(await history.count("batch")).toBe(2);
   });
 
   it("trims to maxMessages", async () => {
-    const history = new ChatHistory({ redis, maxMessages: 2 });
+    const history = new ChatHistory({ redis, namespace, maxMessages: 2 });
     for (const c of ["1", "2", "3", "4"]) {
-      await history.append("s1", { role: "user", content: c });
+      await history.append("trim", { role: "user", content: c });
     }
-    const messages = await history.list("s1");
+    const messages = await history.list("trim");
     expect(messages.map((m) => m.content)).toEqual(["3", "4"]);
   });
 
   it("returns only the most recent N with limit", async () => {
-    const history = new ChatHistory({ redis });
+    const history = new ChatHistory({ redis, namespace });
     for (const c of ["1", "2", "3"]) {
-      await history.append("s1", { role: "user", content: c });
+      await history.append("limit", { role: "user", content: c });
     }
-    const recent = await history.list("s1", { limit: 2 });
+    const recent = await history.list("limit", { limit: 2 });
     expect(recent.map((m) => m.content)).toEqual(["2", "3"]);
   });
 
   it("isolates sessions and clears", async () => {
-    const history = new ChatHistory({ redis });
-    await history.append("s1", { role: "user", content: "x" });
-    await history.append("s2", { role: "user", content: "y" });
-    await history.clear("s1");
-    expect(await history.count("s1")).toBe(0);
-    expect(await history.count("s2")).toBe(1);
+    const history = new ChatHistory({ redis, namespace });
+    await history.append("clearA", { role: "user", content: "x" });
+    await history.append("clearB", { role: "user", content: "y" });
+    await history.clear("clearA");
+    expect(await history.count("clearA")).toBe(0);
+    expect(await history.count("clearB")).toBe(1);
   });
 
   it("applies a sliding TTL when configured", async () => {
-    let t = 0;
-    const clocked = new MemoryRedis({ clock: () => t });
-    const history = new ChatHistory({ redis: clocked, ttlSeconds: 10 });
-    await history.append("s1", { role: "user", content: "x" });
-    t = 5_000;
-    expect(await history.count("s1")).toBe(1);
-    t = 11_000;
-    expect(await history.count("s1")).toBe(0);
+    const history = new ChatHistory({ redis, namespace, ttlSeconds: 1 });
+    await history.append("ttl", { role: "user", content: "x" });
+    expect(await history.count("ttl")).toBe(1);
+    await sleep(1300);
+    expect(await history.count("ttl")).toBe(0);
   });
 });

@@ -110,7 +110,7 @@ importers:
         version: link:../sdk
       eve:
         specifier: '>=0.0.1'
-        version: 0.11.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        version: 0.11.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   packages/langchain:
     dependencies:
@@ -124,8 +124,11 @@ importers:
   packages/sdk:
     devDependencies:
       '@upstash/redis':
-        specifier: ^1.34.0
+        specifier: ^1.38.0
         version: 1.38.0
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
 
   packages/tanstack-ai:
     dependencies:
@@ -1955,6 +1958,10 @@ packages:
   doctrine@3.0.0:
     resolution: {integrity: sha512-yS+Q5i3hBf7GBkd4KG8a7eBNNWNGLTaEwwYWUijIYM7zrlYDM0BFXHjjPWlWZ1Rg7UaddZeIDmi9jF3HmqiQ2w==}
     engines: {node: '>=6.0.0'}
+
+  dotenv@16.6.1:
+    resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
+    engines: {node: '>=12'}
 
   dunder-proto@1.0.1:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
@@ -5369,6 +5376,8 @@ snapshots:
     dependencies:
       esutils: 2.0.3
 
+  dotenv@16.6.1: {}
+
   dunder-proto@1.0.1:
     dependencies:
       call-bind-apply-helpers: 1.0.2
@@ -5836,10 +5845,10 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  eve@0.11.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+  eve@0.11.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
       ai: 7.0.0-beta.178(zod@4.4.3)
-      nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+      nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
       next: 16.2.9(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -6508,7 +6517,7 @@ snapshots:
 
   nf3@0.3.17: {}
 
-  nitro@3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+  nitro@3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
       consola: 3.4.2
       crossws: 0.4.6(srvx@0.11.16)
@@ -6525,6 +6534,7 @@ snapshots:
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.7(@upstash/redis@1.38.0)(chokidar@4.0.3)(db0@0.3.4)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
+      dotenv: 16.6.1
       jiti: 2.7.0
       rollup: 4.62.0
       vite: 5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)

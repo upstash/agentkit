@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RedisLike } from "./types.js";
+import type { Redis } from "@upstash/redis";
 import { key } from "./utils.js";
 
 export type SpanType = "run" | "model" | "tool" | "retrieval" | "custom";
@@ -19,7 +19,7 @@ export interface SpanData {
 }
 
 export interface TelemetryConfig {
-  redis: RedisLike;
+  redis: Redis;
   /** Key prefix; defaults to `agentkit:telemetry`. */
   namespace?: string;
   /** Expire trace data this many seconds after the last span is recorded. */
@@ -75,7 +75,7 @@ export class Span {
  * and cache effectiveness.
  */
 export class Telemetry {
-  private redis: RedisLike;
+  private redis: Redis;
   private namespace: string;
   private ttlSeconds?: number;
   /** @internal exposed for {@link Span}. */
@@ -124,7 +124,7 @@ export class Telemetry {
 
   /** Read every span for a trace, in chronological order. */
   async getTrace(traceId: string): Promise<SpanData[]> {
-    const raw = await this.redis.zrange<string | SpanData>(this.traceKey(traceId), 0, -1);
+    const raw = await this.redis.zrange<(string | SpanData)[]>(this.traceKey(traceId), 0, -1);
     return raw.map((r) => (typeof r === "string" ? (JSON.parse(r) as SpanData) : r));
   }
 
