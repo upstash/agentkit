@@ -8,7 +8,7 @@ history, semantic & tool caching, telemetry, sandbox, agent memory, and RAG — 
 ```bash
 pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk
 # plus, in your app, the Eve framework and Upstash clients:
-pnpm add eve @upstash/redis @upstash/vector
+pnpm add eve @upstash/redis
 ```
 
 > **A note on the Eve types.** Eve is new and its API is still stabilizing. This adapter never
@@ -26,18 +26,17 @@ persistent history and traced runs. Nothing is mutated; everything is opt-in by 
 
 ```ts
 import { Redis } from "@upstash/redis";
-import { Index } from "@upstash/vector";
-import { upstashVectorStore } from "@upstash/agentkit-sdk";
+import { upstashSearchStore } from "@upstash/agentkit-sdk";
 import { withAgentKit } from "@upstash/agentkit-eve";
 
 const redis = Redis.fromEnv();
-const vector = upstashVectorStore(new Index());
+const search = upstashSearchStore(redis.search.index({ name: "agentkit", schema }));
 
 const { agent, history, trace } = await withAgentKit(
   { instructions: "You are a helpful assistant.", tools, model },
   {
     redis,
-    vector,
+    search,
     sessionId: "session-1",
     scope: "user-123",
     useMemory: true,
@@ -73,7 +72,7 @@ const safeTools = sandboxTools(tools, {
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { createMemoryHooks } from "@upstash/agentkit-eve";
 
-const hooks = createMemoryHooks({ memory: new AgentMemory({ vector }), scope: "user-123" });
+const hooks = createMemoryHooks({ memory: new AgentMemory({ search }), scope: "user-123" });
 await hooks.remember("The user prefers TypeScript");
 const context = await hooks.recall("language preference"); // -> formatted memory block
 ```
@@ -100,7 +99,7 @@ import { withSemanticCache } from "@upstash/agentkit-eve";
 
 const cachedGenerate = withSemanticCache(
   (args) => eveModel.generate({ prompt: args.prompt }),
-  { cache: new SemanticCache({ vector }) },
+  { cache: new SemanticCache({ search }) },
 );
 const { text } = await cachedGenerate({ prompt: "What is the capital of France?" });
 ```
@@ -123,7 +122,7 @@ const text = await traceRun({ telemetry }, "eve-agent-run", async (span) => {
 All helpers are unit-testable offline with the core SDK's test doubles — no network, no real LLM:
 
 ```ts
-import { MemoryRedis, MemoryVectorStore, MockEmbedder, MockModel } from "@upstash/agentkit-sdk/testing";
+import { MemoryRedis, MemorySearchStore, MockModel } from "@upstash/agentkit-sdk/testing";
 ```
 
 ## License

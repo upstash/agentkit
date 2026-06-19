@@ -1,5 +1,5 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
-import { MemoryVectorStore, MockEmbedder } from "@upstash/agentkit-sdk/testing";
+import { MemorySearchStore } from "@upstash/agentkit-sdk/testing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { withMemory } from "./memory.js";
 
@@ -7,16 +7,15 @@ describe("withMemory", () => {
   let memory: AgentMemory;
 
   beforeEach(async () => {
-    const embedder = new MockEmbedder();
-    const vector = new MemoryVectorStore({ embed: embedder.embedOne });
-    memory = new AgentMemory({ vector, embedder });
+    const search = new MemorySearchStore();
+    memory = new AgentMemory({ search });
     await memory.add("The user prefers dark mode", { scope: "u1" });
     await memory.add("The user lives in Berlin", { scope: "u1" });
   });
 
   it("formats recalled memories as a system message", async () => {
     const injector = withMemory({ memory, scope: "u1", topK: 5 });
-    const sys = await injector.toSystemMessage("what theme does the user like");
+    const sys = await injector.toSystemMessage("dark mode");
     expect(sys).not.toBeNull();
     expect(sys?.role).toBe("system");
     expect(String(sys?.content)).toContain("Relevant memories about the user:");

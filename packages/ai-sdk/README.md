@@ -56,13 +56,15 @@ await store.saveResult(sessionId, result);
 Serve semantically similar prompts from an AgentKit `SemanticCache` instead of re-calling the model.
 
 ```ts
-import { SemanticCache } from "@upstash/agentkit-sdk";
+import { SemanticCache, upstashSearchStore } from "@upstash/agentkit-sdk";
 import { withSemanticCache } from "@upstash/agentkit-ai-sdk";
 import { generateText } from "ai";
 
+const search = upstashSearchStore(redis.search.index({ name: "agentkit", schema }));
+
 const cachedGenerate = withSemanticCache(
   (args) => generateText({ model, prompt: args.prompt }),
-  { cache: new SemanticCache({ vector }) },
+  { cache: new SemanticCache({ search }) },
 );
 
 const { text } = await cachedGenerate({ prompt: "What is the capital of France?" });
@@ -111,11 +113,12 @@ tool error.
 Recall relevant long-term memories for a user input and prepend them as a system message.
 
 ```ts
-import { AgentMemory } from "@upstash/agentkit-sdk";
+import { AgentMemory, upstashSearchStore } from "@upstash/agentkit-sdk";
 import { withMemory } from "@upstash/agentkit-ai-sdk";
 import { generateText } from "ai";
 
-const injector = withMemory({ memory: new AgentMemory({ vector }), scope: userId });
+const search = upstashSearchStore(redis.search.index({ name: "agentkit", schema }));
+const injector = withMemory({ memory: new AgentMemory({ search }), scope: userId });
 
 const messages = await injector.inject(input, [{ role: "user", content: input }]);
 const result = await generateText({ model, messages });

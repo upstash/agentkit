@@ -1,5 +1,5 @@
 import { SemanticCache } from "@upstash/agentkit-sdk";
-import { MemoryVectorStore, MockEmbedder, MockModel } from "@upstash/agentkit-sdk/testing";
+import { MemorySearchStore, MockModel } from "@upstash/agentkit-sdk/testing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { withSemanticCache, withSemanticCacheText } from "./semantic-cache.js";
 
@@ -8,9 +8,8 @@ describe("withSemanticCache", () => {
   let model: MockModel;
 
   beforeEach(() => {
-    const embedder = new MockEmbedder();
-    const vector = new MemoryVectorStore({ embed: embedder.embedOne });
-    cache = new SemanticCache({ vector, embedder, minScore: 0.9 });
+    const search = new MemorySearchStore();
+    cache = new SemanticCache({ search, minScore: 0.9 });
     model = new MockModel({ fallback: (p) => `answer to: ${p}` });
   });
 

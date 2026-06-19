@@ -1,20 +1,18 @@
-import { MemoryRedis, MemoryVectorStore, MockEmbedder } from "@upstash/agentkit-sdk/testing";
+import { MemoryRedis, MemorySearchStore } from "@upstash/agentkit-sdk/testing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AgentKitMemory } from "./memory.js";
 
 describe("AgentKitMemory", () => {
-  let vector: MemoryVectorStore;
-  let embedder: MockEmbedder;
+  let search: MemorySearchStore;
   let redis: MemoryRedis;
 
   beforeEach(() => {
-    embedder = new MockEmbedder();
-    vector = new MemoryVectorStore();
+    search = new MemorySearchStore();
     redis = new MemoryRedis();
   });
 
   it("remembers and recalls relevant memories", async () => {
-    const memory = new AgentKitMemory({ vector, embedder, redis, scope: "user-42" });
+    const memory = new AgentKitMemory({ search, redis, scope: "user-42" });
     await memory.remember("The user prefers metric units for measurement.");
     await memory.remember("The user lives in Berlin near the river.");
 
@@ -26,7 +24,7 @@ describe("AgentKitMemory", () => {
   });
 
   it("formats recalled memories as a context string", async () => {
-    const memory = new AgentKitMemory({ vector, embedder, scope: "u", topK: 1 });
+    const memory = new AgentKitMemory({ search, scope: "u", topK: 1 });
     await memory.remember("The user prefers metric units for measurement.");
 
     const context = await memory.asContext("what metric measurement units does the user prefer?");
@@ -35,17 +33,17 @@ describe("AgentKitMemory", () => {
   });
 
   it("returns an empty context string when nothing is relevant", async () => {
-    const memory = new AgentKitMemory({ vector, embedder, minScore: 0.99 });
+    const memory = new AgentKitMemory({ search, minScore: 0.99 });
     const context = await memory.asContext("unrelated query about nothing stored");
     expect(context).toBe("");
   });
 
   it("isolates memories by scope", async () => {
-    const memory = new AgentKitMemory({ vector, embedder });
-    await memory.remember("alpha fact", { scope: "a" });
-    await memory.remember("beta fact", { scope: "b" });
+    const memory = new AgentKitMemory({ search });
+    await memory.remember("alpha fact about apples", { scope: "a" });
+    await memory.remember("beta fact about bananas", { scope: "b" });
 
-    const fromA = await memory.recall("alpha", { scope: "a", topK: 5 });
-    expect(fromA.every((m) => m.text !== "beta fact")).toBe(true);
+    const fromA = await memory.recall("alpha fact apples", { scope: "a", topK: 5 });
+    expect(fromA.every((m) => m.text !== "beta fact about bananas")).toBe(true);
   });
 });

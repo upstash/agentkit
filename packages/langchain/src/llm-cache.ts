@@ -2,18 +2,18 @@ import { SemanticCache, type SemanticCacheConfig } from "@upstash/agentkit-sdk";
 import type { CacheLike, GenerationLike } from "./types.js";
 
 /**
- * A LangChain-style LLM cache backed by the AgentKit {@link SemanticCache} (Upstash Vector).
+ * A LangChain-style LLM cache backed by the AgentKit {@link SemanticCache} (Upstash Redis Search).
  *
  * It mirrors LangChain's `BaseCache` surface (`lookup` / `update`) so it can be passed as the `cache`
- * option to a chat model. Unlike LangChain's default exact-match cache, lookups are *semantic*:
- * a prompt that is sufficiently similar (cosine >= `minScore`) to a previously cached one returns the
- * stored generation, collapsing paraphrases onto a single model call. The `llmKey` argument LangChain
- * passes (a hash of the model config) is accepted for interface compatibility but ignored — matching
- * is purely on prompt semantics.
+ * option to a chat model. Unlike LangChain's default exact-match cache, lookups are *fuzzy*: a prompt
+ * that is sufficiently similar (`$smart` score >= `minScore`) to a previously cached one returns the
+ * stored generation, collapsing close paraphrases and typos onto a single model call. The `llmKey`
+ * argument LangChain passes (a hash of the model config) is accepted for interface compatibility but
+ * ignored — matching is purely on prompt text.
  *
  * @example
  * ```ts
- * const cache = new SemanticLLMCache({ vector, embedder, minScore: 0.9 });
+ * const cache = new SemanticLLMCache({ search, minScore: 0.9 });
  * const hit = await cache.lookup("What is the capital of France?");
  * if (!hit) await cache.update("What is the capital of France?", "llm-key", [{ text: "Paris" }]);
  * ```
@@ -26,7 +26,7 @@ export class SemanticLLMCache implements CacheLike {
   }
 
   /**
-   * Look up a cached generation for `prompt`. Returns a single-element generation array on a semantic
+   * Look up a cached generation for `prompt`. Returns a single-element generation array on a fuzzy
    * hit (LangChain expects `Generation[] | null`), or `null` on a miss.
    */
   async lookup(prompt: string, _llmKey?: string): Promise<GenerationLike[] | null> {
@@ -36,8 +36,8 @@ export class SemanticLLMCache implements CacheLike {
   }
 
   /**
-   * Cache `value` under `prompt`. Only the first generation's text is stored (semantic caches operate
-   * on a single canonical response per prompt).
+   * Cache `value` under `prompt`. Only the first generation's text is stored (the cache operates on a
+   * single canonical response per prompt).
    */
   async update(prompt: string, _llmKey: string, value: GenerationLike[]): Promise<void> {
     const first = value[0];

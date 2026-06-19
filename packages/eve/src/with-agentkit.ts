@@ -1,10 +1,9 @@
 import { AgentMemory, ChatHistory, Rag, Telemetry, ToolCache } from "@upstash/agentkit-sdk";
 import type {
-  Embedder,
   RedisLike,
   Sandbox,
   SandboxConfig,
-  VectorStore,
+  SearchStore,
 } from "@upstash/agentkit-sdk";
 import { createHistoryHooks } from "./history.js";
 import type { HistoryHooks } from "./history.js";
@@ -17,10 +16,8 @@ import type { EveAgentConfig } from "./types.js";
 export interface WithAgentKitConfig {
   /** Redis client — enables chat history, tool caching, and telemetry. */
   redis?: RedisLike;
-  /** Vector store — enables long-term memory recall and/or RAG context injection. */
-  vector?: VectorStore;
-  /** Optional embedder; otherwise the vector store's built-in embedding is used. */
-  embedder?: Embedder;
+  /** Search store (Redis Search) — provide `search` for long-term memory recall and/or RAG context injection. */
+  search?: SearchStore;
   /** Conversation session id. Required to persist chat history. */
   sessionId?: string;
   /** Memory/RAG scope (e.g. a user id). Defaults to `"default"`. */
@@ -31,13 +28,13 @@ export interface WithAgentKitConfig {
   /** Options for the auto-created {@link Sandbox} wrapping the agent's tools. */
   sandboxConfig?: SandboxConfig;
 
-  /** Pre-built memory; built from `vector`/`embedder` when omitted (and `vector` is present). */
+  /** Pre-built memory; built from `search` when omitted (and `search` is present). */
   memory?: AgentMemory;
-  /** Pre-built RAG; built from `vector`/`embedder` when omitted. Enable via `useRag`. */
+  /** Pre-built RAG; built from `search` when omitted. Enable via `useRag`. */
   rag?: Rag;
-  /** Inject retrieved RAG chunks into the instructions. Requires `vector` or a `rag` instance. */
+  /** Inject retrieved RAG chunks into the instructions. Requires `search` or a `rag` instance. */
   useRag?: boolean;
-  /** Inject recalled memories into the instructions. Requires `vector` or a `memory` instance. */
+  /** Inject recalled memories into the instructions. Requires `search` or a `memory` instance. */
   useMemory?: boolean;
   /** Seed used for memory recall / RAG retrieval when augmenting instructions. */
   context?: string;
@@ -72,13 +69,13 @@ export interface AgentKitAugmentation {
  * plus ready-to-use {@link HistoryHooks} (persist the conversation via {@link ChatHistory}) and a
  * `trace` helper that records each run via {@link Telemetry}.
  *
- * Everything is opt-in by what you pass: provide `redis` for history/cache/telemetry, `vector` for
+ * Everything is opt-in by what you pass: provide `redis` for history/cache/telemetry, `search` for
  * memory/RAG. The original `agentConfig` is never mutated.
  *
  * ```ts
  * const { agent, history, trace } = await withAgentKit(
  *   { instructions: "You are a helpful assistant.", tools, model },
- *   { redis, vector, sessionId: "s-1", scope: "user-123", useMemory: true, context: input },
+ *   { redis, search, sessionId: "s-1", scope: "user-123", useMemory: true, context: input },
  * );
  * const prior = await history?.load();
  * const text = await trace("run", () => runEveAgent(agent, [...(prior ?? []), userMessage]));
@@ -111,24 +108,16 @@ export async function withAgentKit(
   // --- Memory ---
   const memory =
     config.memory ??
-    (config.vector
+    (config.search
       ? new AgentMemory({
-          vector: config.vector,
+          search: config.search,
           ...(config.redis !== undefined ? { redis: config.redis } : {}),
-          ...(config.embedder !== undefined ? { embedder: config.embedder } : {}),
         })
       : undefined);
   const memoryHooks = memory ? createMemoryHooks({ memory, scope, topK: config.topK }) : undefined;
 
   // --- RAG ---
-  const rag =
-    config.rag ??
-    (config.vector
-      ? new Rag({
-          vector: config.vector,
-          ...(config.embedder !== undefined ? { embedder: config.embedder } : {}),
-        })
-      : undefined);
+  const rag = config.rag ?? (config.search ? new Rag({ search: config.search }) : undefined);
 
   // --- Augment instructions with recalled memory + RAG context ---
   const blocks: string[] = [];

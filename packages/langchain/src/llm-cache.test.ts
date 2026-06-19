@@ -1,29 +1,35 @@
-import { MemoryVectorStore, MockEmbedder, MockModel } from "@upstash/agentkit-sdk/testing";
+import { MemorySearchStore, MockModel } from "@upstash/agentkit-sdk/testing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SemanticLLMCache } from "./llm-cache.js";
 
 describe("SemanticLLMCache", () => {
-  let vector: MemoryVectorStore;
-  let embedder: MockEmbedder;
+  let search: MemorySearchStore;
 
   beforeEach(() => {
-    embedder = new MockEmbedder();
-    vector = new MemoryVectorStore();
+    search = new MemorySearchStore();
   });
 
-  it("misses then hits on an identical prompt", async () => {
-    const cache = new SemanticLLMCache({ vector, embedder, minScore: 0.9 });
+  it("misses then hits on a fuzzily-similar prompt", async () => {
+    const cache = new SemanticLLMCache({ search, minScore: 0.5 });
     const prompt = "What is the capital of France?";
 
     expect(await cache.lookup(prompt)).toBeNull();
     await cache.update(prompt, "llm-key", [{ text: "Paris" }]);
 
-    const hit = await cache.lookup(prompt);
+    // A close variant sharing most words still resolves to the cached generation.
+    const hit = await cache.lookup("What is the capital city of France");
     expect(hit).toEqual([{ text: "Paris" }]);
   });
 
+  it("misses on a dissimilar prompt", async () => {
+    const cache = new SemanticLLMCache({ search, minScore: 0.5 });
+    await cache.update("What is the capital of France?", "llm-key", [{ text: "Paris" }]);
+
+    expect(await cache.lookup("How do I bake sourdough bread at home?")).toBeNull();
+  });
+
   it("avoids a model call on a cached prompt", async () => {
-    const cache = new SemanticLLMCache({ vector, embedder, minScore: 0.9 });
+    const cache = new SemanticLLMCache({ search, minScore: 0.5 });
     const model = new MockModel({ responses: ["The capital of France is Paris."] });
     const prompt = "What is the capital of France?";
 
@@ -46,7 +52,7 @@ describe("SemanticLLMCache", () => {
   });
 
   it("update with an empty generation list is a no-op", async () => {
-    const cache = new SemanticLLMCache({ vector, embedder });
+    const cache = new SemanticLLMCache({ search });
     await cache.update("prompt", "llm-key", []);
     expect(await cache.lookup("prompt")).toBeNull();
   });

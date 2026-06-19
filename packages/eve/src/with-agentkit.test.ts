@@ -1,18 +1,16 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
-import { MemoryRedis, MemoryVectorStore, MockEmbedder } from "@upstash/agentkit-sdk/testing";
+import { MemoryRedis, MemorySearchStore } from "@upstash/agentkit-sdk/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EveAgentConfig, EveTool } from "./types.js";
 import { withAgentKit } from "./with-agentkit.js";
 
 describe("withAgentKit", () => {
   let redis: MemoryRedis;
-  let vector: MemoryVectorStore;
-  let embedder: MockEmbedder;
+  let search: MemorySearchStore;
 
   beforeEach(() => {
     redis = new MemoryRedis();
-    embedder = new MockEmbedder();
-    vector = new MemoryVectorStore({ embed: embedder.embedOne });
+    search = new MemorySearchStore();
   });
 
   it("wraps tools so a second identical call hits the cache", async () => {
@@ -42,18 +40,17 @@ describe("withAgentKit", () => {
   });
 
   it("augments instructions with recalled memories", async () => {
-    const memory = new AgentMemory({ vector, embedder });
+    const memory = new AgentMemory({ search });
     await memory.add("The user prefers concise answers", { scope: "user-9" });
 
     const { agent } = await withAgentKit(
       { instructions: "You are helpful." },
       {
-        vector,
-        embedder,
+        search,
         memory,
         scope: "user-9",
         useMemory: true,
-        context: "how should I answer the user",
+        context: "the user prefers concise answers",
       },
     );
 

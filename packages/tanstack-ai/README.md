@@ -86,13 +86,16 @@ import { SemanticCache, AgentMemory } from "@upstash/agentkit-sdk";
 import { withSemanticCache, withMemory } from "@upstash/agentkit-tanstack-ai";
 
 const generate = withSemanticCache(model.generate, {
-  cache: new SemanticCache({ vector }),
+  cache: new SemanticCache({ search }),
 });
 
-const injector = withMemory({ memory: new AgentMemory({ vector }), scope: "user-1" });
+const injector = withMemory({ memory: new AgentMemory({ search }), scope: "user-1" });
 const context = await injector.recall(userQuestion);
 const conversation = context ? [context, ...messages] : messages;
 ```
+
+`search` is a Redis-backed `SearchStore` from the core SDK (or `MemorySearchStore` from
+`@upstash/agentkit-sdk/testing` for offline use).
 
 ## License
 

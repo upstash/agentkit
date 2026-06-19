@@ -1,19 +1,17 @@
 import { SemanticCache } from "@upstash/agentkit-sdk";
-import { MemoryVectorStore, MockEmbedder, MockModel } from "@upstash/agentkit-sdk/testing";
+import { MemorySearchStore, MockModel } from "@upstash/agentkit-sdk/testing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { withSemanticCache, withSemanticCacheText } from "./semantic-cache.js";
 
 describe("withSemanticCache", () => {
   let cache: SemanticCache;
-  let embedder: MockEmbedder;
 
   beforeEach(() => {
-    embedder = new MockEmbedder();
-    const vector = new MemoryVectorStore({ embed: embedder.embedOne });
-    cache = new SemanticCache({ vector, embedder, minScore: 0.9 });
+    const search = new MemorySearchStore();
+    cache = new SemanticCache({ search, minScore: 0.7 });
   });
 
-  it("caches a miss then serves a semantically similar prompt without calling the model", async () => {
+  it("caches a miss then serves a fuzzily similar prompt without calling the model", async () => {
     const model = new MockModel({ fallback: () => "Paris" });
     const generate = withSemanticCache(
       async (args) => ({ text: await model.generate(args.prompt) }),
@@ -24,8 +22,8 @@ describe("withSemanticCache", () => {
     expect(first.text).toBe("Paris");
     expect(model.callCount).toBe(1);
 
-    // A paraphrase shares most tokens, so it should be a cache hit.
-    const second = await generate({ prompt: "What is the capital of France???" });
+    // A paraphrase shares the salient tokens, so it should be a cache hit.
+    const second = await generate({ prompt: "the capital of France" });
     expect(second.text).toBe("Paris");
     expect(model.callCount).toBe(1);
   });
@@ -45,7 +43,7 @@ describe("withSemanticCache", () => {
     const model = new MockModel({ fallback: () => "Paris" });
     const generate = withSemanticCacheText((prompt) => model.generate(prompt), { cache });
     expect(await generate("capital of France")).toBe("Paris");
-    expect(await generate("capital of France!")).toBe("Paris");
+    expect(await generate("the capital of France")).toBe("Paris");
     expect(model.callCount).toBe(1);
   });
 });

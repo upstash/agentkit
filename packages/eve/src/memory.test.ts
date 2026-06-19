@@ -1,5 +1,5 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
-import { MemoryVectorStore, MockEmbedder } from "@upstash/agentkit-sdk/testing";
+import { MemorySearchStore } from "@upstash/agentkit-sdk/testing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createMemoryHooks } from "./memory.js";
 
@@ -7,9 +7,8 @@ describe("createMemoryHooks", () => {
   let memory: AgentMemory;
 
   beforeEach(() => {
-    const embedder = new MockEmbedder();
-    const vector = new MemoryVectorStore({ embed: embedder.embedOne });
-    memory = new AgentMemory({ vector, embedder });
+    const search = new MemorySearchStore();
+    memory = new AgentMemory({ search });
   });
 
   it("remembers then recalls, formatting a context block", async () => {

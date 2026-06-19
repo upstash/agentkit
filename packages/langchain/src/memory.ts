@@ -14,13 +14,13 @@ export interface AgentKitMemoryConfig extends AgentMemoryConfig {
 
 /**
  * A LangChain-friendly long-term memory helper backed by the AgentKit {@link AgentMemory}
- * (Upstash Vector). It lets you persist facts and recall the most relevant ones for a query,
+ * (Upstash Redis Search). It lets you persist facts and recall the most relevant ones for a query,
  * formatting them as a context string you can splice into a prompt (e.g. as a system message or a
  * `{memory}` variable in a `PromptTemplate`).
  *
  * @example
  * ```ts
- * const memory = new AgentKitMemory({ vector, embedder, scope: "user-42" });
+ * const memory = new AgentKitMemory({ search, scope: "user-42" });
  * await memory.remember("The user prefers metric units.");
  * const context = await memory.asContext("what units should I use?");
  * // "Relevant memories:\n- The user prefers metric units."
@@ -52,7 +52,7 @@ export class AgentKitMemory {
     return { ...record, score: 1 };
   }
 
-  /** Semantically recall the memories most relevant to `query`. */
+  /** Fuzzily recall the memories most relevant to `query`. */
   async recall(
     query: string,
     opts: { topK?: number; scope?: string; minScore?: number } = {},
