@@ -22,19 +22,32 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 `langchain` and `tanstack-ai` packages were **removed** — don't reintroduce them.
 
 ### Core SDK exports (`@upstash/agentkit-sdk`)
-- `AgentMemory`, `ToolCache`, `Rag` + `chunkText`, `createRateLimit` (+ `RateLimitConfig`; thin
-  `@upstash/ratelimit` factory with AgentKit defaults — returns a plain `Ratelimit`), `s` (schema
-  builder, re-exported from `@upstash/redis`), types `FilterValue`/`SearchHit`/`SearchIndexHandle`,
+- `AgentMemory`, `ToolCache`, `Rag` + `chunkText`, `ChatHistory`, `createRateLimit` (+ `RateLimitConfig`;
+  thin `@upstash/ratelimit` factory with AgentKit defaults — returns a plain `Ratelimit`), `s` (schema
+  builder, re-exported from `@upstash/redis`), types `FilterValue`/`SearchHit`/`SearchIndexHandle`/
+  `ChatRecord`/`ChatSummary`/`ChatSearchHit`, the reactive-index helpers `withIndex`/`isMissingIndexError`,
   utils `key`/`now`/`stableHash`/`stableStringify`. (**Model cache removed** — no `ModelCache`.)
 - `@upstash/ratelimit` is a **dependency** of core (not a peer); rate limiting lives here now.
+- **`ChatHistory`** is durable chat history on **Redis Search** (the source of truth for transcripts,
+  resurrecting the old removed ChatHistory). One JSON doc per chat at `agentkit:chat:<sessionId>`
+  indexed over `userId`+`sessionId` (filters) and `userMessages`+`modelMessages` (`$smart` text); the
+  raw `messages` array + `metadata` ride along **unindexed**. `listChats(userId)` filters by user;
+  `searchChats(userId, q, {target})` fuzzy-searches user/model text; `saveChat` overwrites the **whole**
+  array (the frontend sends the full conversation — no delta). Generic over `TMessage` (ai-free core).
+- **Reactive index provisioning** (`withIndex`): a missing Upstash index surfaces differently per op —
+  `query`→`null`, `count`→`{count:-1}`, `aggregate`→**throws** a null-`.length` `TypeError` (verified
+  against live Redis). `withIndex(provision, op, isMissingResult?)` runs the op, and on a missing index
+  (sentinel return or thrown error) creates the index + `waitIndexing()` and retries once. Used by
+  `ChatHistory` reads and `ai-sdk` `createSearchTools` (replaced its old proactive ensure).
 - Testing: `@upstash/agentkit-sdk/testing` → `MockModel`.
 - **Design rule:** every feature takes only `redis` and **creates/owns its search index internally**,
   exposing the raw handle via `.searchIndex`. Callers never pass a search index in.
 
 ### ai-sdk exports
 - `createRateLimit` (re-exported from core — call `.limit(id)` before `generateText`, **no model
-  wrapper**), `cachedTool`, `cachedTools`, `createMemoryTools`, `createSearchTools`. (**No model
-  cache** — removed.)
+  wrapper**), `cachedTool`, `cachedTools`, `createMemoryTools`, `createSearchTools`,
+  `createChatHistory` (→ `ChatHistory<UIMessage>`; also re-exports `ChatHistory`/`ChatRecord`/etc.).
+  (**No model cache** — removed.)
 - `cachedTool` config = the AI SDK's `tool()` config (full input/output inference) plus `redis?` /
   `namespace` / `ttlSeconds?` — **no `toolCache`**. `cachedTools(map, { redis?, ttlSeconds? })` takes a
   map of `tool()`-built tools (so each keeps inference) and caches each under its map key.
@@ -42,9 +55,10 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   build their own `ToolCache`/`AgentMemory` internally. No `@upstash/agentkit-sdk` import required by users.
 
 ### eve exports
-- `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`, **plus** rate limiting:
-  `createRateLimitAuth` (a ready eve route-auth `AuthFn`, `packages/eve/src/auth.ts`) and the core
-  `createRateLimit` factory re-exported. **No model wrapper / no `./model` subpath.**
+- `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`, `createChatHistory`
+  (→ `ChatHistory<EveMessage>`), **plus** rate limiting: `createRateLimitAuth` (a ready eve route-auth
+  `AuthFn`, `packages/eve/src/auth.ts`) and the core `createRateLimit` factory re-exported. **No model
+  wrapper / no `./model` subpath.**
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
 - Eve is file-centric, but the tool factories now **call `defineTool` internally** and return the
   branded `ToolDefinition` — users export them directly (no outer `defineTool(...)` wrap). Because of
@@ -57,9 +71,11 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 - ai-sdk `cacheTools(map)` → `cachedTool(single)` → now **`cachedTool` + `cachedTools`**; `cachePrefix` → **`namespace`**.
 - eve `cachedExecute` → **`defineCachedTool`** (also `cachePrefix` → **`namespace`**); `recall/saveMemoryTool` → **`defineMemoryRecallTool`/`defineMemorySaveTool`**.
 - Memory/eve memory tools: `scope` → **`namespace`** (string or per-call function).
+- **ChatHistory is back** (was removed pending a frontend+backend solution) — now `ChatHistory` on Redis
+  Search; Redis is the durable source of truth (eve's Workflow store is pruned 1–30 days after a run
+  completes, per Vercel plan, so don't rely on it for long-term history).
 - **Removed entirely:** the model cache (`ModelCache`/`SemanticCache`, `cachedModel`, `modelCacheMiddleware`),
-  Telemetry, ChatHistory (needs a frontend+backend solution), the generic Sandbox (sandbox is eve-only),
-  and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
+  Telemetry, the generic Sandbox (sandbox is eve-only), and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
 
 ## API conventions
 - `redis` is **optional everywhere** → falls back to `Redis.fromEnv()`. It's the **only** client knob:
