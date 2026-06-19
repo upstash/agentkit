@@ -36,7 +36,9 @@
     "tools"
   ],
   "dependencies": {
-    "@upstash/agentkit-sdk": "workspace:*"
+    "@upstash/agentkit-sdk": "workspace:*",
+    "@upstash/redis": "^1.38.0",
+    "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
     "@upstash/redis": "^1.38.0",

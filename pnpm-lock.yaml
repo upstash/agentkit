@@ -47,13 +47,16 @@ importers:
       '@upstash/agentkit-sdk':
         specifier: workspace:*
         version: link:../sdk
-      ai:
-        specifier: '>=4.0.0'
-        version: 6.0.207(zod@4.4.3)
-    devDependencies:
       '@upstash/redis':
         specifier: ^1.38.0
         version: 1.38.0
+      ai:
+        specifier: '>=4.0.0'
+        version: 6.0.207(zod@4.4.3)
+      zod:
+        specifier: ^3.23.8 || ^4
+        version: 4.4.3
+    devDependencies:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1

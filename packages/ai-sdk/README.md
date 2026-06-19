@@ -117,6 +117,33 @@ const messages = await injector.inject(input, [{ role: "user", content: input }]
 const result = await generateText({ model, messages });
 ```
 
+### Schema-driven search tools
+
+Give the agent `search` / `aggregate` / `count` tools over an Upstash Redis Search index. Pass your
+`s.object(...)` schema and the tool descriptions are generated from it — the model learns the
+available fields, their types, and which filter operators (`$smart`, `$lt`, `$in`, `$and`, …) apply.
+
+```ts
+import { s } from "@upstash/redis";
+import { createSearchTools } from "@upstash/agentkit-ai-sdk";
+import { generateText, stepCountIs } from "ai";
+
+const schema = s.object({
+  name: s.string(),
+  age: s.number(),
+  city: s.string().noTokenize(),
+});
+
+const result = await generateText({
+  model,
+  tools: createSearchTools({ schema, name: "users" }),
+  stopWhen: stepCountIs(5),
+  prompt: "How many users named Ada live in London?",
+});
+```
+
+`redis` defaults to `Redis.fromEnv()`; the index is created from the schema on first use.
+
 ## Testing
 
 The adapter's tests run against a **real Upstash Redis** instance — only LLM calls are mocked
