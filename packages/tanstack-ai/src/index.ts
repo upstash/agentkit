@@ -9,19 +9,6 @@ export {
   toTanStackMessages,
 } from "./messages.js";
 
-// Persistent chat-history adapter
-export { createChatHistoryAdapter } from "./history-adapter.js";
-export type { ChatHistoryAdapter, ChatHistoryAdapterConfig } from "./history-adapter.js";
-
-// Server-side chat handler
-export { createChatHandler } from "./chat-handler.js";
-export type {
-  ChatGenerate,
-  ChatHandlerConfig,
-  ChatTurnInput,
-  ChatTurnResult,
-} from "./chat-handler.js";
-
 // Tool caching
 export { wrapTool, wrapTools } from "./tools.js";
 export type { WrapToolsOptions } from "./tools.js";

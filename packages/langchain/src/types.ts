@@ -81,15 +81,3 @@ export interface ToolLike<A = unknown, R = unknown> {
   /** Raw function form (LangChain `DynamicTool.func`). */
   func?: (input: A) => Promise<R> | R;
 }
-
-/**
- * Structural form of a LangChain `BaseChatMessageHistory`. Real chat-history backends implement this
- * surface; the {@link RedisChatMessageHistory} in this package does too.
- */
-export interface ChatMessageHistoryLike {
-  getMessages(): Promise<BaseMessageLike[]>;
-  addMessage(message: BaseMessageLike): Promise<void>;
-  addUserMessage(text: string): Promise<void>;
-  addAIMessage(text: string): Promise<void>;
-  clear(): Promise<void>;
-}

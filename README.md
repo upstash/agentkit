@@ -19,7 +19,6 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 ## Core features
 
 - **Agent memory** — long-term, fuzzily-recalled memories scoped per agent/user.
-- **Chat history** — windowed conversation history with sliding TTL.
 - **Semantic cache** — reuse LLM responses for fuzzily similar prompts (`$smart`).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
 - **RAG** — chunking, indexing, and retrieval helpers over Upstash Redis Search.

@@ -12,10 +12,6 @@ export type {
 // Message conversion
 export { fromCoreMessages, toCoreMessages } from "./messages.js";
 
-// Persistent chat history
-export { createHistoryStore } from "./history.js";
-export type { HistoryStore, HistoryStoreConfig } from "./history.js";
-
 // Semantic-cached generation
 export { withSemanticCache, withSemanticCacheText } from "./semantic-cache.js";
 export type { WithSemanticCacheConfig } from "./semantic-cache.js";

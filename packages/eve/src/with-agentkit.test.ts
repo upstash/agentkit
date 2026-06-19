@@ -56,17 +56,8 @@ describe.skipIf(!hasRedisCreds)("withAgentKit (live Redis)", () => {
     }
   });
 
-  it("exposes history hooks that round-trip when redis + sessionId are given", async () => {
-    const sessionId = uniqueNamespace("eve-wak-sess");
-    const { history } = await withAgentKit({}, { redis, sessionId });
-    expect(history).toBeDefined();
-    await history!.append({ role: "user", content: "hi" });
-    const loaded = await history!.load();
-    expect(loaded[0]).toMatchObject({ role: "user", content: "hi" });
-  });
-
-  it("returns no history when no redis is configured", async () => {
-    const { history } = await withAgentKit({}, {});
-    expect(history).toBeUndefined();
+  it("exposes memory hooks bound to scope", async () => {
+    const { memory } = await withAgentKit({}, { redis, scope: uniqueNamespace("eve-wak-mem") });
+    expect(memory).toBeDefined();
   });
 });

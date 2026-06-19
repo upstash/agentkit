@@ -16,12 +16,11 @@ and own their Redis Search index internally:
 
 ```ts
 import { Redis } from "@upstash/redis";
-import { AgentMemory, ChatHistory, SemanticCache, ToolCache, Rag } from "@upstash/agentkit-sdk";
+import { AgentMemory, SemanticCache, ToolCache, Rag } from "@upstash/agentkit-sdk";
 
 const redis = Redis.fromEnv();
 
 const memory = new AgentMemory({ redis });
-const history = new ChatHistory({ redis });
 const cache = new SemanticCache({ redis });
 const tools = new ToolCache({ redis });
 const rag = new Rag({ redis });
@@ -42,14 +41,6 @@ const info = await rag.searchIndex.describe();
 const memory = new AgentMemory({ redis });
 await memory.add("The user prefers TypeScript", { scope: "user-123" });
 const hits = await memory.recall("typescript preference", { scope: "user-123" });
-```
-
-### Chat history
-
-```ts
-const history = new ChatHistory({ redis, maxMessages: 50, ttlSeconds: 3600 });
-await history.append("session-1", { role: "user", content: "Hello" });
-const messages = await history.list("session-1");
 ```
 
 ### Semantic cache

@@ -2,7 +2,6 @@
 export type {
   BaseMessageLike,
   CacheLike,
-  ChatMessageHistoryLike,
   DocumentLike,
   GenerationLike,
   RetrieverLike,
@@ -18,10 +17,6 @@ export {
   toLangChainType,
 } from "./messages.js";
 export type { AgentKitRole } from "./messages.js";
-
-// Chat message history
-export { RedisChatMessageHistory } from "./chat-message-history.js";
-export type { RedisChatMessageHistoryConfig } from "./chat-message-history.js";
 
 // Retriever
 export { AgentKitRetriever } from "./retriever.js";

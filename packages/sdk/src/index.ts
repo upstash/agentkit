@@ -8,9 +8,6 @@ export { key, noopLogger, now, stableHash, stableStringify } from "./utils.js";
 export type { FilterValue, SearchHit, SearchIndexHandle } from "./search-index.js";
 
 // Features
-export { ChatHistory } from "./chat-history.js";
-export type { ChatHistoryConfig } from "./chat-history.js";
-
 export { AgentMemory } from "./memory.js";
 export type { AgentMemoryConfig, MemoryRecord, RecalledMemory } from "./memory.js";
 
