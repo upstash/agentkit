@@ -5,7 +5,8 @@ import prettier from "eslint-config-prettier";
 
 export default [
   {
-    ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "**/*.d.ts"],
+    // `examples/**` has its own (Next.js) eslint toolchain; lint it there, not here.
+    ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "**/*.d.ts", "examples/**"],
   },
   js.configs.recommended,
   {

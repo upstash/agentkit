@@ -1,10 +1,5 @@
 import { AgentMemory, ChatHistory, Rag, Telemetry, ToolCache } from "@upstash/agentkit-sdk";
-import type {
-  RedisLike,
-  Sandbox,
-  SandboxConfig,
-  SearchStore,
-} from "@upstash/agentkit-sdk";
+import type { RedisLike, Sandbox, SandboxConfig, SearchStore } from "@upstash/agentkit-sdk";
 import { createHistoryHooks } from "./history.js";
 import type { HistoryHooks } from "./history.js";
 import { createMemoryHooks } from "./memory.js";

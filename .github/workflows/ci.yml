@@ -35,8 +35,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Build
+      - name: Build packages
         run: pnpm build
 
       - name: Test
         run: pnpm test
+
+      - name: Build example app
+        run: pnpm --filter agentkit-demo build
