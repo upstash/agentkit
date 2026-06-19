@@ -18,7 +18,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 
 - **Agent memory** — long-term, fuzzily-recalled memories scoped per agent/user.
 - **Semantic cache** — reuse LLM responses for fuzzily similar prompts (`$smart`); shipped as an AI
-  SDK model middleware (`semanticCachedModel`).
+  SDK model middleware (`cachedModel`).
 - **Rate limiting** — an AI SDK model middleware backed by Upstash Ratelimit (`rateLimitedModel`).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
 - **Memory & search tools** — drop-in `recall`/`save` and schema-driven `search`/`aggregate`/`count`

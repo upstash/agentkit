@@ -7,7 +7,7 @@ import {
   createMemoryTools,
   createSearchTools,
   rateLimitedModel,
-  semanticCachedModel,
+  cachedModel,
 } from "@upstash/agentkit-ai-sdk";
 import { getRedis } from "../../lib/redis";
 
@@ -29,7 +29,7 @@ export async function POST(req: Request) {
 
     // A semantic-cached, rate-limited model.
     const model = rateLimitedModel({
-      model: semanticCachedModel({ model: openai(DEMO_MODEL), redis, namespace: "demo:aisdk:cache" }),
+      model: cachedModel({ model: openai(DEMO_MODEL), redis, namespace: "demo:aisdk:cache" }),
       redis,
       limit: 30,
       window: "1 m",

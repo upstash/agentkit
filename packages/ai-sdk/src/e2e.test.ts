@@ -3,7 +3,7 @@ import { generateText } from "ai";
 import { SemanticCache } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it } from "vitest";
 import { rateLimitedModel, RateLimitExceededError } from "./rate-limit.js";
-import { semanticCachedModel } from "./semantic-cache.js";
+import { cachedModel } from "./semantic-cache.js";
 import {
   cleanupKeys,
   hasOpenAIKey,
@@ -21,13 +21,13 @@ describe.skipIf(!hasRedisCreds || !hasOpenAIKey)("model middleware e2e (OpenAI +
     await cleanupKeys(redis, "test:aisdk-e2e");
   });
 
-  it("semanticCachedModel returns the cached result on a repeated prompt", async () => {
+  it("cachedModel returns the cached result on a repeated prompt", async () => {
     const cache = new SemanticCache({
       redis,
       namespace: uniqueNamespace("aisdk-e2e"),
       minScore: 0.5,
     });
-    const model = semanticCachedModel({ model: openai(TEST_MODEL), cache });
+    const model = cachedModel({ model: openai(TEST_MODEL), cache });
 
     const prompt = "In one short sentence, what is Upstash Redis?";
     const first = await generateText({ model, prompt });

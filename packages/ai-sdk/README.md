@@ -10,16 +10,16 @@ pnpm add @upstash/agentkit-ai-sdk @upstash/agentkit-sdk @upstash/redis ai
 
 ## Semantic model cache
 
-`semanticCachedModel` wraps any AI SDK model with an
+`cachedModel` wraps any AI SDK model with an
 [language-model middleware](https://ai-sdk.dev/docs/ai-sdk-core/middleware#caching) that serves a
 cached response when a new prompt fuzzily matches a previous one (Upstash Redis Search `$smart`).
 
 ```ts
 import { openai } from "@ai-sdk/openai";
 import { generateText } from "ai";
-import { semanticCachedModel } from "@upstash/agentkit-ai-sdk";
+import { cachedModel } from "@upstash/agentkit-ai-sdk";
 
-const model = semanticCachedModel({ model: openai("gpt-4o"), redis });
+const model = cachedModel({ model: openai("gpt-4o"), redis });
 
 await generateText({ model, prompt: "What is the capital of France?" }); // model call
 await generateText({ model, prompt: "the capital of France?" }); // fuzzy cache hit
@@ -47,7 +47,7 @@ const model = rateLimitedModel({ model: openai("gpt-4o"), redis, limit: 20, wind
 await generateText({ model, prompt }); // throws RateLimitExceededError once over the limit
 ```
 
-Compose it with the cache: `rateLimitedModel({ model: semanticCachedModel({ model, redis }), redis })`.
+Compose it with the cache: `rateLimitedModel({ model: cachedModel({ model, redis }), redis })`.
 
 ## Tool-call cache
 

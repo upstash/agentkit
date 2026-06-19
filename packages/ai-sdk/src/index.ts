@@ -1,6 +1,6 @@
 // Semantic caching as AI SDK language-model middleware
-export { semanticCacheMiddleware, semanticCachedModel } from "./semantic-cache.js";
-export type { SemanticCacheMiddlewareConfig, SemanticCachedModelConfig } from "./semantic-cache.js";
+export { semanticCacheMiddleware, cachedModel } from "./semantic-cache.js";
+export type { SemanticCacheMiddlewareConfig, CachedModelConfig } from "./semantic-cache.js";
 
 // Rate limiting as AI SDK language-model middleware
 export { rateLimitMiddleware, rateLimitedModel, RateLimitExceededError } from "./rate-limit.js";

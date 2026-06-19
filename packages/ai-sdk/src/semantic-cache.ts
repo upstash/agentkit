@@ -84,7 +84,7 @@ export function semanticCacheMiddleware(
   };
 }
 
-export interface SemanticCachedModelConfig extends SemanticCacheMiddlewareConfig {
+export interface CachedModelConfig extends SemanticCacheMiddlewareConfig {
   /** The language model to wrap. */
   model: LanguageModel;
 }
@@ -93,14 +93,14 @@ export interface SemanticCachedModelConfig extends SemanticCacheMiddlewareConfig
  * Wrap a language model so semantically-similar prompts are served from a semantic cache.
  *
  * ```ts
- * import { semanticCachedModel } from "@upstash/agentkit-ai-sdk";
+ * import { cachedModel } from "@upstash/agentkit-ai-sdk";
  * import { generateText } from "ai";
  *
- * const model = semanticCachedModel({ model: openai("gpt-4o"), redis });
+ * const model = cachedModel({ model: openai("gpt-4o"), redis });
  * await generateText({ model, prompt: "..." });
  * ```
  */
-export function semanticCachedModel(config: SemanticCachedModelConfig): LanguageModel {
+export function cachedModel(config: CachedModelConfig): LanguageModel {
   const { model, ...rest } = config;
   return wrapLanguageModel({ model, middleware: semanticCacheMiddleware(rest) });
 }

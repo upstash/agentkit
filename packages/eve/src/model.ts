@@ -6,11 +6,11 @@
  * ```ts
  * // agent/index.ts
  * import { openai } from "@ai-sdk/openai";
- * import { semanticCachedModel, rateLimitedModel } from "@upstash/agentkit-eve/model";
+ * import { cachedModel, rateLimitedModel } from "@upstash/agentkit-eve/model";
  * import { redis } from "./redis";
  *
  * export const model = rateLimitedModel({
- *   model: semanticCachedModel({ model: openai("gpt-5.4-mini"), redis }),
+ *   model: cachedModel({ model: openai("gpt-5.4-mini"), redis }),
  *   redis,
  *   limit: 20,
  *   window: "1 m",
@@ -19,14 +19,14 @@
  */
 export {
   semanticCacheMiddleware,
-  semanticCachedModel,
+  cachedModel,
   rateLimitMiddleware,
   rateLimitedModel,
   RateLimitExceededError,
 } from "@upstash/agentkit-ai-sdk";
 export type {
   SemanticCacheMiddlewareConfig,
-  SemanticCachedModelConfig,
+  CachedModelConfig,
   RateLimitMiddlewareConfig,
   RateLimitedModelConfig,
 } from "@upstash/agentkit-ai-sdk";

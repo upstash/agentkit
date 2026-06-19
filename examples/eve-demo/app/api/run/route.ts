@@ -3,7 +3,7 @@ import { openai } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { AgentMemory, ToolCache } from "@upstash/agentkit-sdk";
 import { cachedExecute, recallMemoryTool, saveMemoryTool } from "@upstash/agentkit-eve";
-import { semanticCachedModel } from "@upstash/agentkit-eve/model";
+import { cachedModel } from "@upstash/agentkit-eve/model";
 import { upstash } from "@upstash/agentkit-eve/sandbox";
 import { getRedis } from "../../lib/redis";
 
@@ -48,7 +48,7 @@ export async function POST(req: Request) {
       { toolCache: new ToolCache({ redis, namespace: "demo:eve:tool" }) },
     );
     const length = await charCount({ text: input });
-    const model = semanticCachedModel({ model: openai(DEMO_MODEL), redis, namespace: "demo:eve:cache" });
+    const model = cachedModel({ model: openai(DEMO_MODEL), redis, namespace: "demo:eve:cache" });
     const result = await generateText({ model, prompt: input });
 
     return NextResponse.json({ recalled, length, text: result.text });
