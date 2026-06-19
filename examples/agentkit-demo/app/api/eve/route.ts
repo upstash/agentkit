@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
-import { SemanticCache } from "@upstash/agentkit-sdk";
+import { AgentMemory, SemanticCache } from "@upstash/agentkit-sdk";
 import { withAgentKit, withSemanticCacheText, type EveTool } from "@upstash/agentkit-eve";
-import { generate, modelCalls, redis, searchStore } from "../../lib/agentkit";
+import { generate, getRedis, modelCalls, singleton } from "../../lib/agentkit";
 
 export const runtime = "nodejs";
 
-const cache = new SemanticCache({ search: searchStore("eve:cache"), minScore: 0.8 });
+const mem = () =>
+  singleton("eve:mem", () => new AgentMemory({ redis: getRedis(), namespace: "demo:eve:mem" }));
+const semcache = () =>
+  singleton(
+    "eve:cache",
+    () => new SemanticCache({ redis: getRedis(), namespace: "demo:eve:cache", minScore: 0.5 }),
+  );
 
 export async function POST(req: Request) {
   try {
@@ -29,8 +35,8 @@ export async function POST(req: Request) {
     const aug = await withAgentKit(
       { instructions: "You are a concise assistant.", tools },
       {
-        redis,
-        search: searchStore("eve:mem"),
+        redis: getRedis(),
+        memory: mem(),
         sessionId,
         scope: sessionId,
         useMemory: true,
@@ -39,10 +45,10 @@ export async function POST(req: Request) {
       },
     );
 
-    // "remember ..." persists a memory through the composed hooks.
     if (/^remember\b/i.test(input.trim())) {
       const fact = input.trim().replace(/^remember\s+(that\s+)?/i, "");
       await aug.memory?.remember(fact);
+      await mem().searchIndex.waitIndexing();
       return NextResponse.json({
         ok: true,
         summary: `Stored a memory for "${sessionId}".`,
@@ -50,7 +56,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // Instructions augmented with recalled memory (when relevant).
     const augmented = aug.agent.instructions ?? "";
     steps.push({
       label: "withAgentKit (instructions)",
@@ -60,30 +65,27 @@ export async function POST(req: Request) {
           : `augmented with recalled memory:\n${augmented}`,
     });
 
-    // The agent's tools are sandboxed + cached. Call one twice to show the cache.
     const addTool = aug.agent.tools?.[0];
     if (addTool) {
       await addTool.execute({ a: 2, b: 3 });
       const sum = await addTool.execute({ a: 2, b: 3 });
       steps.push({
-        label: "withAgentKit (wrapped tool) ×2",
-        detail: `add(2, 3) = ${sum} — 2nd call served from ToolCache`,
+        label: "withAgentKit (cached tool) ×2",
+        detail: `add(2, 3) = ${sum} — 2nd call from ToolCache`,
       });
     }
 
-    // Load history, generate inside a telemetry-traced run with a semantic cache (keyed on input).
-    const prior = (await aug.history?.load({ limit: 6 })) ?? [];
-    void prior;
-    const cachedGenerate = withSemanticCacheText(generate, { cache });
-
+    const cachedGenerate = withSemanticCacheText(generate, { cache: semcache() });
     const before = modelCalls();
     const response = await aug.trace("eve.run", () => cachedGenerate(input));
     const cacheHit = modelCalls() === before;
+    // Demo: block until indexed so an immediate repeat shows a cache hit.
+    if (!cacheHit) await semcache().searchIndex.waitIndexing();
     steps.push({
       label: "aug.trace + withSemanticCacheText",
       detail: cacheHit
-        ? "cache HIT — model not called (run still traced via Telemetry)"
-        : "cache miss — model generated a response (traced via Telemetry)",
+        ? "cache HIT — model not called (run traced via Telemetry)"
+        : "cache miss — model generated (run traced via Telemetry)",
     });
 
     await aug.history?.append([

@@ -33,9 +33,9 @@ export default function RootLayout({
         <Nav />
         <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">{children}</main>
         <footer className="border-t border-zinc-200 dark:border-zinc-800 px-4 py-4 text-center text-xs text-zinc-500">
-          Backed by in-memory test doubles + a mock model — no credentials needed. Swap in
-          <code className="mx-1">Redis.fromEnv()</code>, Upstash Vector, and a real model for
-          production.
+          Backed by a real Upstash Redis (<code className="mx-1">Redis.fromEnv()</code>) with a mock
+          model. Set <code className="mx-1">UPSTASH_REDIS_REST_URL</code> /
+          <code className="mx-1">UPSTASH_REDIS_REST_TOKEN</code>; swap in a real model for production.
         </footer>
       </body>
     </html>

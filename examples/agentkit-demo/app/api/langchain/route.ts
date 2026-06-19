@@ -6,42 +6,55 @@ import {
   RedisChatMessageHistory,
   SemanticLLMCache,
 } from "@upstash/agentkit-langchain";
-import { generate, redis, searchStore } from "../../lib/agentkit";
+import { generate, getRedis, singleton } from "../../lib/agentkit";
 
 export const runtime = "nodejs";
 
-const retriever = new AgentKitRetriever({
-  search: searchStore("lc:rag"),
-  chunkSize: 200,
-  chunkOverlap: 40,
-  topK: 3,
-});
+const retriever = () =>
+  singleton(
+    "lc:rag",
+    () =>
+      new AgentKitRetriever({
+        redis: getRedis(),
+        namespace: "demo:lc:rag",
+        chunkSize: 200,
+        chunkOverlap: 40,
+        topK: 3,
+      }),
+  );
+const llmCache = () =>
+  singleton(
+    "lc:llmcache",
+    () => new SemanticLLMCache({ redis: getRedis(), namespace: "demo:lc:llmcache", minScore: 0.5 }),
+  );
+const tools = () =>
+  singleton("lc:tool", () => new ToolCache({ redis: getRedis(), namespace: "demo:lc:tool" }));
 
-const llmCache = new SemanticLLMCache({ search: searchStore("lc:llmcache"), minScore: 0.5 });
-const toolCache = new ToolCache({ redis, namespace: "demo:lc:tool" });
-
-// Seed the knowledge base exactly once per server process.
-const globalForSeed = globalThis as unknown as { __lcSeeded?: boolean };
-async function ensureSeeded() {
-  if (globalForSeed.__lcSeeded) return;
-  globalForSeed.__lcSeeded = true;
-  await retriever.addDocuments([
-    {
-      pageContent:
-        "Upstash Redis is a serverless database with per-request pricing, accessed over HTTP/REST so it works in edge and serverless runtimes.",
-      metadata: { source: "redis-docs" },
-    },
-    {
-      pageContent:
-        "Upstash Redis Search adds full-text and fuzzy search to Redis. Its $smart operator powers semantic-style retrieval and RAG without a separate vector database.",
-      metadata: { source: "search-docs" },
-    },
-    {
-      pageContent:
-        "Redis AgentKit adds agent primitives on top of Upstash Redis: long-term memory, chat history, semantic caching, tool-call caching, telemetry, a tool sandbox, and RAG.",
-      metadata: { source: "agentkit-docs" },
-    },
-  ]);
+let seeded: Promise<void> | undefined;
+function ensureSeeded(): Promise<void> {
+  if (!seeded) {
+    seeded = (async () => {
+      await retriever().addDocuments([
+        {
+          pageContent:
+            "Upstash Redis is a serverless database with per-request pricing, accessed over HTTP/REST so it works in edge and serverless runtimes.",
+          metadata: { source: "redis-docs" },
+        },
+        {
+          pageContent:
+            "Upstash Redis Search adds full-text and fuzzy search to Redis. Its $smart operator powers semantic-style retrieval and RAG without a separate vector database.",
+          metadata: { source: "search-docs" },
+        },
+        {
+          pageContent:
+            "Redis AgentKit adds agent primitives on top of Upstash Redis: long-term memory, chat history, semantic caching, tool-call caching, telemetry, and RAG.",
+          metadata: { source: "agentkit-docs" },
+        },
+      ]);
+      await retriever().searchIndex.waitIndexing();
+    })();
+  }
+  return seeded;
 }
 
 export async function POST(req: Request) {
@@ -53,11 +66,14 @@ export async function POST(req: Request) {
     };
     const steps: { label: string; detail: string }[] = [];
 
-    const history = new RedisChatMessageHistory({ redis, namespace: "demo:lc:chat", sessionId });
+    const history = new RedisChatMessageHistory({
+      redis: getRedis(),
+      namespace: "demo:lc:chat",
+      sessionId,
+    });
     await history.addUserMessage(input);
 
-    // RAG retrieval via the LangChain-style retriever.
-    const docs = await retriever.invoke(input);
+    const docs = await retriever().invoke(input);
     steps.push({
       label: "AgentKitRetriever.invoke",
       detail: docs.length
@@ -65,17 +81,17 @@ export async function POST(req: Request) {
         : "no documents retrieved",
     });
 
-    // Semantic LLM cache: reuse a response for a fuzzily similar question.
     let response: string;
     let cacheHit = false;
-    const hit = await llmCache.lookup(input);
+    const hit = await llmCache().lookup(input);
     if (hit && hit.length > 0) {
       response = hit[0]!.text;
       cacheHit = true;
     } else {
       const context = docs.map((d) => d.pageContent).join("\n");
       response = await generate(`Context:\n${context}\n\nQuestion: ${input}`);
-      await llmCache.update(input, "demo-llm", [{ text: response }]);
+      await llmCache().update(input, "demo-llm", [{ text: response }]);
+      await llmCache().searchIndex.waitIndexing();
     }
     steps.push({
       label: "SemanticLLMCache.lookup/update",
@@ -89,17 +105,13 @@ export async function POST(req: Request) {
       detail: `${messages.length} message(s) for "${sessionId}"`,
     });
 
-    // A cached LangChain-style tool.
     const charCount = cacheTool(
       { name: "charCount", func: ({ text }: { text: string }) => text.length },
-      toolCache,
+      tools(),
     );
     await charCount.invoke({ text: input });
     const len = await charCount.invoke({ text: input });
-    steps.push({
-      label: "cacheTool(charCount) ×2",
-      detail: `length = ${len} (2nd call served from ToolCache)`,
-    });
+    steps.push({ label: "cacheTool(charCount) ×2", detail: `length = ${len} (2nd from ToolCache)` });
 
     return NextResponse.json({
       ok: true,

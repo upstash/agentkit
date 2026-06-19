@@ -7,9 +7,10 @@ export default function Home() {
       <section className="flex flex-col gap-3">
         <h1 className="text-3xl font-bold tracking-tight">Redis AgentKit demos</h1>
         <p className="max-w-2xl text-zinc-600 dark:text-zinc-400">
-          Each route below exercises one package of the kit against the same in-memory backends and a
-          deterministic mock model — so the agent primitives (memory, history, semantic & tool
-          caching, telemetry, sandbox, RAG) are observable without any credentials.
+          Each route below exercises one package of the kit against a real Upstash Redis (search
+          powered by Redis Search&apos;s <code>$smart</code> operator) with a deterministic mock model
+          — so the agent primitives (memory, history, semantic &amp; tool caching, telemetry, RAG)
+          are observable end to end.
         </p>
       </section>
 

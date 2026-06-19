@@ -1,15 +1,21 @@
 import { NextResponse } from "next/server";
-import { AgentMemory, ChatHistory, Sandbox, SemanticCache, ToolCache } from "@upstash/agentkit-sdk";
-import { createHistoryStore, sandboxedTool, withMemory } from "@upstash/agentkit-ai-sdk";
-import { generate, modelCalls, redis, searchStore } from "../../lib/agentkit";
+import { AgentMemory, ChatHistory, SemanticCache, ToolCache } from "@upstash/agentkit-sdk";
+import { createHistoryStore, withMemory, wrapTool } from "@upstash/agentkit-ai-sdk";
+import { generate, getRedis, modelCalls, singleton } from "../../lib/agentkit";
 
 export const runtime = "nodejs";
 
-const history = new ChatHistory({ redis, namespace: "demo:aisdk:chat" });
-const store = createHistoryStore({ history });
-const cache = new SemanticCache({ search: searchStore("aisdk:cache"), minScore: 0.8 });
-const memory = new AgentMemory({ search: searchStore("aisdk:mem"), redis, namespace: "demo:aisdk:mem" });
-const toolCache = new ToolCache({ redis, namespace: "demo:aisdk:tool" });
+const hist = () =>
+  singleton("aisdk:chat", () => new ChatHistory({ redis: getRedis(), namespace: "demo:aisdk:chat" }));
+const semcache = () =>
+  singleton(
+    "aisdk:cache",
+    () => new SemanticCache({ redis: getRedis(), namespace: "demo:aisdk:cache", minScore: 0.5 }),
+  );
+const mem = () =>
+  singleton("aisdk:mem", () => new AgentMemory({ redis: getRedis(), namespace: "demo:aisdk:mem" }));
+const tools = () =>
+  singleton("aisdk:tool", () => new ToolCache({ redis: getRedis(), namespace: "demo:aisdk:tool" }));
 
 export async function POST(req: Request) {
   try {
@@ -21,7 +27,8 @@ export async function POST(req: Request) {
 
     if (/^remember\b/i.test(input.trim())) {
       const fact = input.trim().replace(/^remember\s+(that\s+)?/i, "");
-      await memory.add(fact, { scope: sessionId });
+      await mem().add(fact, { scope: sessionId });
+      await mem().searchIndex.waitIndexing();
       return NextResponse.json({
         ok: true,
         summary: `Stored a memory for "${sessionId}".`,
@@ -29,49 +36,45 @@ export async function POST(req: Request) {
       });
     }
 
-    // Load prior turns as AI-SDK CoreMessages.
+    const store = createHistoryStore({ history: hist() });
     const prior = await store.load(sessionId, { limit: 6 });
     steps.push({ label: "createHistoryStore().load", detail: `${prior.length} CoreMessage(s)` });
 
-    // Inject relevant long-term memories as a system message.
-    const injector = withMemory({ memory, scope: sessionId, topK: 3 });
+    const injector = withMemory({ memory: mem(), scope: sessionId, topK: 3 });
     const messages = await injector.inject(input, [...prior, { role: "user", content: input }]);
-    const injected = messages.length > prior.length + 1;
     steps.push({
       label: "withMemory().inject",
-      detail: injected ? "prepended a memory system message" : "no relevant memories to inject",
+      detail: messages.length > prior.length + 1 ? "prepended a memory system message" : "no memories",
     });
 
-    // Run a sandboxed AI-SDK tool (word counter) — hardened with timeout/retry + cache.
-    const sandbox = new Sandbox({ timeoutMs: 3000, toolCache });
-    const wordCount = sandboxedTool<{ text: string }, number>(
+    // Cache-memoized AI SDK tool (word counter).
+    const wordCount = wrapTool<{ text: string }, number>(
       "wordCount",
       {
         description: "Counts the words in a string",
         execute: async ({ text }) => text.trim().split(/\s+/).filter(Boolean).length,
       },
-      sandbox,
+      { toolCache: tools() },
     );
     const count = await wordCount.execute!({ text: input }, {});
-    steps.push({ label: "sandboxedTool(wordCount)", detail: `input has ${count} word(s)` });
+    steps.push({ label: "wrapTool(wordCount)", detail: `input has ${count} word(s)` });
 
-    // Semantic-cached generation keyed on the user's question.
     const before = modelCalls();
-    const hit = await cache.get(input);
+    const hit = await semcache().get(input);
     let response: string;
     if (hit) {
       response = hit.response;
     } else {
       response = await generate(input);
-      await cache.set(input, response);
+      await semcache().set(input, response);
+      await semcache().searchIndex.waitIndexing();
     }
     const cacheHit = modelCalls() === before;
     steps.push({
       label: "SemanticCache (keyed on question)",
-      detail: cacheHit ? "cache HIT — model not called" : "cache miss — model generated a response",
+      detail: cacheHit ? "cache HIT — model not called" : "cache miss — model generated",
     });
 
-    // Persist both sides in CoreMessage form.
     await store.save(sessionId, [{ role: "user", content: input }]);
     await store.saveResult(sessionId, { text: response });
 

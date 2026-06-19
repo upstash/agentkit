@@ -12,14 +12,14 @@ export const demos: Demo[] = [
     title: "Core SDK",
     pkg: "@upstash/agentkit-sdk",
     blurb:
-      "One agent turn wiring together memory recall, chat history, a sandboxed tool, semantic caching, and telemetry.",
+      "One agent turn wiring together memory recall, chat history, a cached tool, semantic caching, and a telemetry trace.",
   },
   {
     slug: "ai-sdk",
     title: "Vercel AI SDK",
     pkg: "@upstash/agentkit-ai-sdk",
     blurb:
-      "History store + memory injection as CoreMessages, semantic-cached generation, and a sandboxed AI SDK tool.",
+      "History store + memory injection as CoreMessages, semantic-cached generation, and a cached AI SDK tool.",
   },
   {
     slug: "tanstack-ai",
@@ -40,6 +40,6 @@ export const demos: Demo[] = [
     title: "Vercel Eve",
     pkg: "@upstash/agentkit-eve",
     blurb:
-      "withAgentKit() composes sandboxed+cached tools, memory/RAG-augmented instructions, history, and traced runs.",
+      "withAgentKit() composes cached+traced tools, memory/RAG-augmented instructions, history, and traced runs.",
   },
 ];

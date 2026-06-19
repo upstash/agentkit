@@ -39,7 +39,13 @@ jobs:
         run: pnpm build
 
       - name: Test
+        # Tests run against a real Upstash Redis. Add UPSTASH_REDIS_REST_URL /
+        # UPSTASH_REDIS_REST_TOKEN as repo secrets to enable them; without secrets the
+        # Redis-backed suites skip themselves and CI stays green.
         run: pnpm test
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
       - name: Build example app
         run: pnpm --filter agentkit-demo build
