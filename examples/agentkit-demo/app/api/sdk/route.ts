@@ -1,13 +1,21 @@
 import { NextResponse } from "next/server";
-import { AgentMemory, ChatHistory, Sandbox, SemanticCache, Telemetry } from "@upstash/agentkit-sdk";
-import { embedder, generate, modelCalls, redis, toolCache, vector } from "../../lib/agentkit";
+import {
+  AgentMemory,
+  ChatHistory,
+  Sandbox,
+  SemanticCache,
+  Telemetry,
+  ToolCache,
+} from "@upstash/agentkit-sdk";
+import { generate, modelCalls, redis, searchStore } from "../../lib/agentkit";
 
 export const runtime = "nodejs";
 
-const memory = new AgentMemory({ vector, redis, embedder, namespace: "demo:sdk:mem" });
+const memory = new AgentMemory({ search: searchStore("sdk:mem"), redis, namespace: "demo:sdk:mem" });
 const history = new ChatHistory({ redis, namespace: "demo:sdk:chat", maxMessages: 50 });
-const cache = new SemanticCache({ vector, embedder, namespace: "demo:sdk:cache", minScore: 0.8 });
+const cache = new SemanticCache({ search: searchStore("sdk:cache"), minScore: 0.8 });
 const telemetry = new Telemetry({ redis, namespace: "demo:sdk:telemetry" });
+const toolCache = new ToolCache({ redis, namespace: "demo:sdk:tool", ttlSeconds: 300 });
 
 const ARITHMETIC = /^[\d\s+\-*/%().]+$/;
 
@@ -87,17 +95,25 @@ export async function POST(req: Request) {
           response = `The result is ${toolAnswer}.`;
           steps.push({ label: "Response", detail: "answered directly from the tool result" });
         } else {
+          // Build a context-rich prompt for the model, but key the cache on the user's question so
+          // shared context (memory/history) doesn't cause false fuzzy matches across questions.
           const memContext = recalled.length
             ? `Known facts:\n${recalled.map((m) => `- ${m.text}`).join("\n")}\n`
             : "";
           const histContext = prior.map((m) => `${m.role}: ${m.content}`).join("\n");
-          const prompt = `${memContext}${histContext ? histContext + "\n" : ""}user: ${input}`;
 
           const before = modelCalls();
-          response = await cache.wrap(generate)(prompt);
-          cacheHit = modelCalls() === before;
+          const hit = await cache.get(input);
+          if (hit) {
+            response = hit.response;
+            cacheHit = true;
+          } else {
+            response = await generate(`${memContext}${histContext}\nuser: ${input}`);
+            await cache.set(input, response);
+          }
+          void before;
           steps.push({
-            label: "SemanticCache.wrap(model)",
+            label: "SemanticCache (keyed on question)",
             detail: cacheHit
               ? "cache HIT — model was not called"
               : "cache miss — model generated a fresh response",

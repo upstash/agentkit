@@ -1,22 +1,18 @@
 import { NextResponse } from "next/server";
-import { ChatHistory, SemanticCache } from "@upstash/agentkit-sdk";
+import { ChatHistory, SemanticCache, ToolCache } from "@upstash/agentkit-sdk";
 import {
   createChatHandler,
   withSemanticCache,
   wrapTool,
   type ChatGenerate,
 } from "@upstash/agentkit-tanstack-ai";
-import { embedder, generate, modelCalls, redis, toolCache, vector } from "../../lib/agentkit";
+import { generate, modelCalls, redis, searchStore } from "../../lib/agentkit";
 
 export const runtime = "nodejs";
 
 const history = new ChatHistory({ redis, namespace: "demo:tanstack:chat" });
-const cache = new SemanticCache({
-  vector,
-  embedder,
-  namespace: "demo:tanstack:cache",
-  minScore: 0.8,
-});
+const cache = new SemanticCache({ search: searchStore("tanstack:cache"), minScore: 0.8 });
+const toolCache = new ToolCache({ redis, namespace: "demo:tanstack:tool" });
 
 // A cached tool: identical inputs are memoized via ToolCache.
 const reverse = wrapTool(
@@ -28,6 +24,9 @@ const reverse = wrapTool(
   { toolCache },
 );
 
+// Cache the model call, keyed on the latest user message so unrelated turns don't collide.
+const cachedGenerate = withSemanticCache(generate, { cache });
+
 export async function POST(req: Request) {
   try {
     const { input, sessionId = "default" } = (await req.json()) as {
@@ -36,11 +35,9 @@ export async function POST(req: Request) {
     };
     const steps: { label: string; detail: string }[] = [];
 
-    // The model call is wrapped with a semantic cache.
-    const cachedGenerate = withSemanticCache(generate, { cache });
     const chatGenerate: ChatGenerate = async (messages) => {
-      const prompt = messages.map((m) => `${m.role}: ${m.content}`).join("\n");
-      return cachedGenerate(prompt);
+      const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+      return cachedGenerate(lastUser);
     };
 
     const handler = createChatHandler({ history, generate: chatGenerate, limit: 6 });

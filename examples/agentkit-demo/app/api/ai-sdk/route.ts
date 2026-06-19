@@ -1,19 +1,15 @@
 import { NextResponse } from "next/server";
-import { AgentMemory, ChatHistory, Sandbox, SemanticCache } from "@upstash/agentkit-sdk";
-import {
-  createHistoryStore,
-  sandboxedTool,
-  withMemory,
-  withSemanticCacheText,
-} from "@upstash/agentkit-ai-sdk";
-import { embedder, generate, modelCalls, redis, toolCache, vector } from "../../lib/agentkit";
+import { AgentMemory, ChatHistory, Sandbox, SemanticCache, ToolCache } from "@upstash/agentkit-sdk";
+import { createHistoryStore, sandboxedTool, withMemory } from "@upstash/agentkit-ai-sdk";
+import { generate, modelCalls, redis, searchStore } from "../../lib/agentkit";
 
 export const runtime = "nodejs";
 
 const history = new ChatHistory({ redis, namespace: "demo:aisdk:chat" });
 const store = createHistoryStore({ history });
-const cache = new SemanticCache({ vector, embedder, namespace: "demo:aisdk:cache", minScore: 0.8 });
-const memory = new AgentMemory({ vector, redis, embedder, namespace: "demo:aisdk:mem" });
+const cache = new SemanticCache({ search: searchStore("aisdk:cache"), minScore: 0.8 });
+const memory = new AgentMemory({ search: searchStore("aisdk:mem"), redis, namespace: "demo:aisdk:mem" });
+const toolCache = new ToolCache({ redis, namespace: "demo:aisdk:tool" });
 
 export async function POST(req: Request) {
   try {
@@ -59,16 +55,19 @@ export async function POST(req: Request) {
     const count = await wordCount.execute!({ text: input }, {});
     steps.push({ label: "sandboxedTool(wordCount)", detail: `input has ${count} word(s)` });
 
-    // Semantic-cached generation over the flattened messages.
-    const prompt = messages
-      .map((m) => `${m.role}: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
-      .join("\n");
-    const cachedGenerate = withSemanticCacheText(generate, { cache });
+    // Semantic-cached generation keyed on the user's question.
     const before = modelCalls();
-    const response = await cachedGenerate(prompt);
+    const hit = await cache.get(input);
+    let response: string;
+    if (hit) {
+      response = hit.response;
+    } else {
+      response = await generate(input);
+      await cache.set(input, response);
+    }
     const cacheHit = modelCalls() === before;
     steps.push({
-      label: "withSemanticCacheText(model)",
+      label: "SemanticCache (keyed on question)",
       detail: cacheHit ? "cache HIT — model not called" : "cache miss — model generated a response",
     });
 

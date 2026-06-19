@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { SemanticCache } from "@upstash/agentkit-sdk";
 import { withAgentKit, withSemanticCacheText, type EveTool } from "@upstash/agentkit-eve";
-import { embedder, generate, modelCalls, redis, vector } from "../../lib/agentkit";
+import { generate, modelCalls, redis, searchStore } from "../../lib/agentkit";
 
 export const runtime = "nodejs";
 
-const cache = new SemanticCache({ vector, embedder, namespace: "demo:eve:cache", minScore: 0.8 });
+const cache = new SemanticCache({ search: searchStore("eve:cache"), minScore: 0.8 });
 
 export async function POST(req: Request) {
   try {
@@ -30,8 +30,7 @@ export async function POST(req: Request) {
       { instructions: "You are a concise assistant.", tools },
       {
         redis,
-        vector,
-        embedder,
+        search: searchStore("eve:mem"),
         sessionId,
         scope: sessionId,
         useMemory: true,
@@ -72,13 +71,13 @@ export async function POST(req: Request) {
       });
     }
 
-    // Load history, generate inside a telemetry-traced run with a semantic cache.
+    // Load history, generate inside a telemetry-traced run with a semantic cache (keyed on input).
     const prior = (await aug.history?.load({ limit: 6 })) ?? [];
-    const prompt = `${augmented}\n${prior.map((m) => `${m.role}: ${m.content}`).join("\n")}\nuser: ${input}`;
+    void prior;
     const cachedGenerate = withSemanticCacheText(generate, { cache });
 
     const before = modelCalls();
-    const response = await aug.trace("eve.run", () => cachedGenerate(prompt));
+    const response = await aug.trace("eve.run", () => cachedGenerate(input));
     const cacheHit = modelCalls() === before;
     steps.push({
       label: "aug.trace + withSemanticCacheText",
