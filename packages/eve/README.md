@@ -1,9 +1,10 @@
 # @upstash/agentkit-eve
 
 Adapter that brings [Upstash AgentKit](https://upstash.com/) to **Eve, the Vercel agent framework**.
-Eve is file-centric, so this package ships small pieces you drop into your `agent/` tree: long-term
-memory tools, a real code-execution **sandbox backend** powered by [Upstash Box](https://github.com/upstash/box),
-cached tools, and a rate limiter you drive from an eve `AuthFn`.
+Eve is file-centric, so this package ships small pieces you drop into your `agent/` tree: durable
+chat history, long-term memory tools, schema-driven Redis-Search tools, a rate limiter you drive from
+an eve `AuthFn`, a real code-execution **sandbox backend** powered by
+[Upstash Box](https://github.com/upstash/box), and cached tools.
 
 ```bash
 pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
@@ -18,6 +19,51 @@ A small shared Redis client is handy:
 import { Redis } from "@upstash/redis";
 export const redis = Redis.fromEnv();
 ```
+
+## Chat history
+
+`createChatHistory` returns a Redis-backed `ChatHistory<EveMessage>` — the **durable source of truth**
+for a conversation's transcript. eve keeps live sessions in its Workflow store, but that's pruned
+1–30 days after a run completes (per your Vercel plan), so persist the transcript in Redis for durable
+history, listing, and resume. Each chat is one JSON doc at `agentkit:chat:<sessionId>`, indexed over
+`userId` + `sessionId` (filters) and `userMessages` + `modelMessages` (`$smart` fuzzy text); the raw
+`messages` and `metadata` are stored **unindexed**.
+
+```ts
+import { createChatHistory } from "@upstash/agentkit-eve";
+
+const history = createChatHistory({
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  namespace: "agentkit:chat", // optional: key prefix + index name base (defaults to "agentkit:chat")
+  ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL in seconds (default: no expiry)
+});
+```
+
+Persist on finish (from an eve hook): `saveChat` overwrites the **whole** message array, and you stash
+eve's live `session` cursor in `metadata.session` so you can resume within eve's retention window.
+
+```ts
+// when a turn settles (e.g. an eve hook, or a route the client posts the snapshot to):
+await history.saveChat(userId, chatId, snapshot.data.messages, {
+  title, // optional: human-readable title
+  metadata: { session: snapshot.session }, // optional: the live-resume cursor (kept unindexed)
+});
+```
+
+Resume by handing the stored cursor to `useEveAgent({ initialSession })`, and render the transcript
+from `getChat`. Use `listChats` / `searchChats` for a sidebar:
+
+```ts
+const chat = await history.getChat(userId, chatId); // chat.messages + chat.metadata.session
+const chats = await history.listChats(userId, { limit: 50 }); // sidebar: summaries, no messages
+const hits = await history.searchChats(userId, "headphones", { target: "both", limit: 20, minScore: 0 });
+
+// client — resume the live session from the stored cursor
+// const agent = useEveAgent({ initialSession: chat?.metadata?.session });
+```
+
+Other methods: `createChat(userId, { sessionId?, title?, messages?, metadata? })`,
+`setTitle(userId, sessionId, title)`, `deleteChat(userId, sessionId)`.
 
 ## Memory tools (`agent/tools/*.ts`)
 
@@ -45,6 +91,71 @@ import { defineMemorySaveTool } from "@upstash/agentkit-eve";
 export default defineMemorySaveTool({
   namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+});
+```
+
+## Search tools (`agent/lib/` + `agent/tools/*.ts`)
+
+`defineSearchTools` builds `search` / `aggregate` / `count` eve tools over an Upstash Redis Search
+index — the eve counterpart to the ai-sdk adapter's `createSearchTools`. The tool descriptions are
+generated from your `s.object(...)` schema (fields, types, applicable filter operators), and the index
+is created **reactively** on first use. Each returned tool is already `defineTool`-branded.
+
+eve is file-centric (filename = tool name), so build the set **once** in `agent/lib/` and re-export
+each tool from its own `agent/tools/<name>.ts` file:
+
+```ts
+// agent/lib/book-search.ts
+import { s } from "@upstash/redis";
+import { defineSearchTools } from "@upstash/agentkit-eve";
+import { redis } from "../redis";
+
+export const bookSearch = defineSearchTools({
+  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }), // the Upstash Redis Search schema (built with `s`)
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  name: "books", // optional: index name (defaults to "agentkit:search")
+  prefix: "books:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
+  defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
+});
+```
+
+```ts
+// agent/tools/search_books.ts
+import { bookSearch } from "../lib/book-search";
+export default bookSearch.search; // and: aggregate_books.ts → bookSearch.aggregate, count_books.ts → bookSearch.count
+```
+
+## Rate limiting (`agent/channels/eve.ts`)
+
+Eve gates inbound HTTP routes with an ordered [auth walk](https://eve.dev/docs/guides/auth-and-route-protection):
+each `AuthFn` accepts (returns a `SessionAuthContext`), skips (returns `null`/`undefined`), or rejects
+(throws). `createRateLimitAuth` returns a ready `AuthFn` — drop it into the walk ahead of your real
+authenticators. It's a _gate_: it throttles, then returns `null` to fall through (over the limit it
+throws a 403). Backed by [Upstash Ratelimit](https://github.com/upstash/ratelimit-js); keys are
+`agentkit:rateLimit:<identifier>`.
+
+```ts
+// agent/channels/eve.ts
+import { Ratelimit } from "@upstash/ratelimit";
+import { createRateLimitAuth } from "@upstash/agentkit-eve";
+import { localDev, vercelOidc } from "eve/channels/auth";
+import { eveChannel } from "eve/channels/eve";
+import { redis } from "../redis";
+
+export default eveChannel({
+  auth: [
+    createRateLimitAuth({
+      redis, // the Upstash Redis client backing the limiter
+      limit: 20, // optional: requests allowed per window (default: 10)
+      window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
+      namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
+      identifier: "global", // optional: who to limit — a string, or (request) => string (default: "global")
+      message: "Rate limit exceeded.", // optional: message in the 403 body when over the limit
+      limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
+    }),
+    localDev(), // throttle first, then authenticate
+    vercelOidc(),
+  ],
 });
 ```
 
@@ -96,39 +207,6 @@ export default defineCachedTool({
   namespace: "get_weather", // the cache key — a string, or (input, ctx) => string
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
-});
-```
-
-## Rate limiting (`agent/channels/eve.ts`)
-
-Eve gates inbound HTTP routes with an ordered [auth walk](https://eve.dev/docs/guides/auth-and-route-protection):
-each `AuthFn` accepts (returns a `SessionAuthContext`), skips (returns `null`/`undefined`), or rejects
-(throws). `createRateLimitAuth` returns a ready `AuthFn` — drop it into the walk ahead of your real
-authenticators. It's a _gate_: it throttles, then returns `null` to fall through (over the limit it
-throws a 403). Backed by [Upstash Ratelimit](https://github.com/upstash/ratelimit-js); keys are
-`agentkit:rateLimit:<identifier>`.
-
-```ts
-// agent/channels/eve.ts
-import { createRateLimitAuth } from "@upstash/agentkit-eve";
-import { localDev, vercelOidc } from "eve/channels/auth";
-import { eveChannel } from "eve/channels/eve";
-import { redis } from "../redis";
-
-export default eveChannel({
-  auth: [
-    createRateLimitAuth({
-      redis, // the Upstash Redis client backing the limiter
-      limit: 20, // optional: requests allowed per window (default: 10)
-      window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
-      identifier: "global", // optional: who to limit — a string, or (request) => string (default: "global")
-      namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
-      message: "Rate limit exceeded.", // optional: message in the 403 body when over the limit
-      // limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
-    }),
-    localDev(), // throttle first, then authenticate
-    vercelOidc(),
-  ],
 });
 ```
 

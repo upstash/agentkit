@@ -1,13 +1,59 @@
 # @upstash/agentkit-ai-sdk
 
 [Vercel AI SDK](https://ai-sdk.dev) adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk).
-Everything is a drop-in for `generateText` / `streamText`: ready-made memory + Redis-Search tools, a
-self-contained cached tool, and a rate limiter you call before the model. `redis` defaults to
-`Redis.fromEnv()` everywhere, so you import only from this package.
+Everything is a drop-in for `generateText` / `streamText`: durable chat history, ready-made memory +
+Redis-Search tools, a rate limiter you call before the model, and self-contained cached tools.
+`redis` defaults to `Redis.fromEnv()` everywhere, so you import only from this package.
 
 ```bash
 pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
 ```
+
+## Chat history
+
+`createChatHistory` returns a Redis-backed `ChatHistory<UIMessage>` — the durable source of truth for
+your conversations. Each chat is one JSON doc at `agentkit:chat:<sessionId>`, indexed over `userId` +
+`sessionId` (filters) and `userMessages` + `modelMessages` (`$smart` fuzzy text); the raw `messages`
+array and `metadata` ride along **unindexed**.
+
+```ts
+import { createChatHistory } from "@upstash/agentkit-ai-sdk";
+
+const history = createChatHistory({
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  namespace: "agentkit:chat", // optional: key prefix + index name base (defaults to "agentkit:chat")
+  ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL in seconds (default: no expiry)
+});
+```
+
+`saveChat` overwrites the **whole** message array — `useChat` sends the full conversation, so there's
+no transport trimming and no delta to merge. Persist from your route's `onFinish`:
+
+```ts
+// app/api/chat/route.ts
+const result = streamText({ model, messages: convertToModelMessages(messages) });
+
+return result.toUIMessageStreamResponse({
+  originalMessages: messages, // so onFinish receives the full UIMessage[] (request + reply)
+  onFinish: ({ messages }) => history.saveChat(userId, chatId, messages, { title }), // overwrite the whole array
+});
+```
+
+Seed `useChat` with the stored transcript when loading a chat, and use `listChats` / `searchChats`
+for a sidebar:
+
+```ts
+// page loader (server)
+const chat = await history.getChat(userId, chatId); // full transcript, or null
+const chats = await history.listChats(userId, { limit: 50 }); // sidebar: summaries, no messages
+const hits = await history.searchChats(userId, "headphones", { target: "both", limit: 20, minScore: 0 });
+
+// client — hand the stored messages straight to useChat
+// const { messages } = useChat({ id: chatId, messages: chat?.messages ?? [] });
+```
+
+Other methods: `createChat(userId, { sessionId?, title?, messages?, metadata? })`,
+`setTitle(userId, sessionId, title)`, `deleteChat(userId, sessionId)`.
 
 ## Agent memory
 
@@ -35,7 +81,7 @@ await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do yo
 `createSearchTools` returns `search` / `aggregate` / `count` tools over an Upstash Redis Search index.
 The tool descriptions are generated from your `s.object(...)` schema, so the model learns the fields,
 their types, and which filter operators (`$smart`, `$lt`, `$in`, `$and`, …) apply. The index is
-created (and `waitIndexing`-ed) automatically on first use.
+created (and `waitIndexing`-ed) **reactively** on first use — no setup step.
 
 ```ts
 import { s } from "@upstash/redis";
@@ -49,7 +95,6 @@ const tools = createSearchTools({
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   name: "users", // optional: index name (defaults to "agentkit:search")
   prefix: "users:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
-  ensureIndex: true, // optional: create the index + waitIndexing before the tools run (defaults to true)
   defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
 });
 
@@ -59,6 +104,33 @@ await generateText({
   stopWhen: stepCountIs(5),
   prompt: "How many users named Ada live in London?",
 });
+```
+
+## Rate limiting
+
+`createRateLimit` returns a configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js)
+`Ratelimit` with AgentKit defaults. There is no model wrapper — call `.limit(identifier)` yourself
+before `generateText` and short-circuit when you're over the limit. Keys are
+`agentkit:rateLimit:<identifier>`.
+
+```ts
+import { Ratelimit } from "@upstash/ratelimit";
+import { openai } from "@ai-sdk/openai";
+import { generateText } from "ai";
+import { createRateLimit } from "@upstash/agentkit-ai-sdk";
+
+const ratelimit = createRateLimit({
+  redis, // the Upstash Redis client backing the limiter
+  limit: 20, // optional: requests allowed per window (default: 10)
+  window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
+  namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
+  limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
+});
+
+const { success } = await ratelimit.limit(userId); // pass a per-user identifier to limit by user
+if (!success) throw new Error("rate limited"); // or return a 429 from your route
+
+await generateText({ model: openai("gpt-5.4-mini"), prompt: "..." });
 ```
 
 ## Tool cache
@@ -107,32 +179,6 @@ const tools = cachedTools(
 );
 
 await generateText({ model, tools, prompt: "What's the weather in Paris?" });
-```
-
-## Rate limiting
-
-`createRateLimit` returns a configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js)
-`Ratelimit` with AgentKit defaults. There is no model wrapper — call `.limit(identifier)` yourself
-before `generateText` and short-circuit when you're over the limit. Keys are
-`agentkit:rateLimit:<identifier>`.
-
-```ts
-import { openai } from "@ai-sdk/openai";
-import { generateText } from "ai";
-import { createRateLimit } from "@upstash/agentkit-ai-sdk";
-
-const ratelimit = createRateLimit({
-  redis, // the Upstash Redis client backing the limiter
-  limit: 20, // optional: requests allowed per window (default: 10)
-  window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
-  namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
-  // limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
-});
-
-const { success } = await ratelimit.limit(userId); // pass a per-user identifier to limit by user
-if (!success) throw new Error("rate limited"); // or return a 429 from your route
-
-await generateText({ model: openai("gpt-5.4-mini"), prompt: "..." });
 ```
 
 ## Testing

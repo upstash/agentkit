@@ -16,14 +16,18 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 
 ## Core features
 
+- **Chat history** — durable, Redis-Search-backed conversation transcripts (`ChatHistory`): save the
+  whole message array per chat, list a user's chats for a sidebar, and fuzzily `$smart`-search what the
+  user or model said.
 - **Agent memory** — long-term, fuzzily-recalled memories scoped per agent/user, plus drop-in
   `recall`/`save` tools for `generateText`.
-- **Search tools** — schema-driven `search`/`aggregate`/`count` tools over Upstash Redis Search, and
-  RAG (chunking, indexing, retrieval) helpers.
+- **Search tools** — schema-driven `search`/`aggregate`/`count` tools over Upstash Redis Search; the
+  index is created reactively on first use.
+- **RAG** — chunk, index, and fuzzily retrieve document chunks (`Rag` + `chunkText`).
+- **Rate limiting** — a configured Upstash Ratelimit factory (`createRateLimit`) you call before the model.
 - **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
   Eve's `defineSandbox`.
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
-- **Rate limiting** — a configured Upstash Ratelimit factory (`createRateLimit`) you call before the model.
 
 ## Examples
 
