@@ -1,9 +1,10 @@
 # Redis AgentKit
 
-A toolkit for building production AI agents on top of [Upstash Redis](https://upstash.com/) and
-[Upstash Vector](https://upstash.com/vector). It gives you the stateful primitives agents need —
-memory, conversation history, caching, telemetry, a tool sandbox, and RAG — plus thin adapters for
-the popular agent frameworks.
+A toolkit for building production AI agents entirely on [Upstash Redis](https://upstash.com/). It
+gives you the stateful primitives agents need — memory, conversation history, caching, telemetry, a
+tool sandbox, and RAG — plus thin adapters for the popular agent frameworks. The "semantic" features
+are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction) and its
+`$smart` fuzzy operator, so no separate vector database is required.
 
 ## Packages
 
@@ -17,13 +18,13 @@ the popular agent frameworks.
 
 ## Core features
 
-- **Agent memory** — long-term, semantically-recalled memories scoped per agent/user.
-- **Chat history** — windowed conversation history with token-aware trimming.
-- **Semantic cache** — reuse LLM responses for semantically similar prompts.
+- **Agent memory** — long-term, fuzzily-recalled memories scoped per agent/user.
+- **Chat history** — windowed conversation history with sliding TTL.
+- **Semantic cache** — reuse LLM responses for fuzzily similar prompts (`$smart`).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
 - **Telemetry** — structured spans for runs, model calls, and tool invocations.
 - **Sandbox** — an execution harness (AI SDK v7 style) wrapping tools with timeouts, retries, and error capture.
-- **RAG** — chunking, embedding, indexing, and retrieval helpers.
+- **RAG** — chunking, indexing, and retrieval helpers over Redis Search.
 
 ## Development
 

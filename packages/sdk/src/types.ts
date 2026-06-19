@@ -1,10 +1,14 @@
 /**
  * Shared types and structural interfaces for Redis AgentKit.
  *
- * The SDK never imports `@upstash/redis` or `@upstash/vector` at runtime. Instead it relies on the
- * structural interfaces below, so any compatible client (including the in-memory test doubles in
+ * The SDK never imports `@upstash/redis` at runtime. Instead it relies on the structural interfaces
+ * below, so any compatible client (including the in-memory test doubles in
  * `@upstash/agentkit-sdk/testing`) can be injected. This keeps the core logic fully unit-testable
  * without a network connection.
+ *
+ * Everything is backed by Upstash Redis. The "semantic" features (memory recall, semantic cache,
+ * RAG retrieval) are powered by {@link SearchStore} — Upstash Redis Search with its `$smart` fuzzy
+ * operator (layered phrase / term / fuzzy / prefix matching, BM25-scored) — rather than embeddings.
  */
 
 /** A chat message in a conversation. */
@@ -21,49 +25,49 @@ export interface ChatMessage {
   createdAt?: number;
 }
 
-/**
- * Turns text into embedding vectors. Inject your own (OpenAI, Cohere, a local model, …) or rely on
- * the vector store's built-in embedding by leaving it unset.
- */
-export interface Embedder {
-  embed(texts: string[]): Promise<number[][]>;
-  /** Optional identifier used for telemetry/cache keys. */
-  readonly model?: string;
-}
+/** Scalar values usable as exact-match filter constraints in a {@link SearchQuery}. */
+export type FilterValue = string | number | boolean;
 
-/** A record stored in a {@link VectorStore}. */
-export interface VectorRecord {
+/** A document stored in a {@link SearchStore}. */
+export interface SearchDocument {
   id: string;
-  /** Pre-computed embedding. Provide this OR `data` (for built-in embedding). */
-  vector?: number[];
-  /** Raw text, embedded by the store itself when no `vector` is given. */
-  data?: string;
+  /** The free text that fuzzy `$smart` queries match against. */
+  content: string;
+  /** Non-searchable fields stored alongside and returned with hits. */
   metadata?: Record<string, unknown>;
+  /** Exact-match fields (e.g. a scope/user id) ANDed with the text match at query time. */
+  filters?: Record<string, FilterValue>;
 }
 
-export interface VectorQuery {
-  vector?: number[];
-  data?: string;
-  topK: number;
-  namespace?: string;
-  /** Provider-specific metadata filter expression. */
-  filter?: string;
-  includeMetadata?: boolean;
-  includeData?: boolean;
+export interface SearchQuery {
+  /** The natural-language query, matched against document `content` via `$smart`. */
+  query: string;
+  /** Maximum number of hits to return. */
+  topK?: number;
+  /** Exact-match constraints ANDed with the fuzzy text match. */
+  filters?: Record<string, FilterValue>;
 }
 
-export interface VectorMatch {
+export interface SearchHit {
   id: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  /**
+   * Relevance score. With the in-memory store this is normalized to `[0, 1]`; with real Upstash
+   * Redis Search it is the BM25 score, so tune any `minScore` thresholds to your data.
+   */
   score: number;
-  metadata?: Record<string, unknown>;
-  data?: string;
 }
 
-/** Minimal structural interface over a vector index (e.g. `@upstash/vector`). */
-export interface VectorStore {
-  upsert(records: VectorRecord[], opts?: { namespace?: string }): Promise<void>;
-  query(query: VectorQuery): Promise<VectorMatch[]>;
-  delete(ids: string[], opts?: { namespace?: string }): Promise<void>;
+/**
+ * Minimal structural interface over a fuzzy text index (Upstash Redis Search). The in-memory
+ * `MemorySearchStore` test double implements it too, so the SDK's search-backed features can run
+ * fully offline.
+ */
+export interface SearchStore {
+  upsert(documents: SearchDocument[]): Promise<void>;
+  search(query: SearchQuery): Promise<SearchHit[]>;
+  delete(ids: string[]): Promise<void>;
 }
 
 /** Options accepted by Redis string writes. */

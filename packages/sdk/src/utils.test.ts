@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cosineSimilarity, key, stableHash, stableStringify } from "./utils.js";
+import { key, stableHash, stableStringify } from "./utils.js";
 
 describe("stableStringify / stableHash", () => {
   it("produces identical output regardless of key order", () => {
@@ -13,24 +13,6 @@ describe("stableStringify / stableHash", () => {
 
   it("handles nested structures and primitives", () => {
     expect(stableStringify({ x: { y: [1, "two", null] } })).toBe('{"x":{"y":[1,"two",null]}}');
-  });
-});
-
-describe("cosineSimilarity", () => {
-  it("is 1 for identical vectors", () => {
-    expect(cosineSimilarity([1, 2, 3], [1, 2, 3])).toBeCloseTo(1);
-  });
-
-  it("is 0 for orthogonal vectors", () => {
-    expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0);
-  });
-
-  it("returns 0 for a zero vector", () => {
-    expect(cosineSimilarity([0, 0], [1, 1])).toBe(0);
-  });
-
-  it("throws on length mismatch", () => {
-    expect(() => cosineSimilarity([1], [1, 2])).toThrow(/mismatch/);
   });
 });
 

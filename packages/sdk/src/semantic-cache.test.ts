@@ -1,42 +1,39 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { SemanticCache } from "./semantic-cache.js";
 import { MemoryRedis } from "./testing/memory-redis.js";
-import { MemoryVectorStore } from "./testing/memory-vector-store.js";
-import { MockEmbedder } from "./testing/mock-embedder.js";
+import { MemorySearchStore } from "./testing/memory-search-store.js";
 import { MockModel } from "./testing/mock-model.js";
 
 describe("SemanticCache", () => {
-  let vector: MemoryVectorStore;
-  let embedder: MockEmbedder;
+  let search: MemorySearchStore;
 
   beforeEach(() => {
-    embedder = new MockEmbedder();
-    vector = new MemoryVectorStore();
+    search = new MemorySearchStore();
   });
 
   it("misses on an empty cache", async () => {
-    const cache = new SemanticCache({ vector, embedder });
+    const cache = new SemanticCache({ search });
     expect(await cache.get("anything")).toBeNull();
   });
 
-  it("returns a hit for a semantically similar prompt", async () => {
-    const cache = new SemanticCache({ vector, embedder, minScore: 0.5 });
+  it("returns a hit for a fuzzily similar prompt", async () => {
+    const cache = new SemanticCache({ search, minScore: 0.5 });
     await cache.set("What is the capital of France?", "Paris");
 
-    const hit = await cache.get("the capital of France is what");
+    const hit = await cache.get("capital of France");
     expect(hit).not.toBeNull();
     expect(hit!.response).toBe("Paris");
     expect(hit!.score).toBeGreaterThanOrEqual(0.5);
   });
 
   it("does not return a hit below the threshold", async () => {
-    const cache = new SemanticCache({ vector, embedder, minScore: 0.95 });
+    const cache = new SemanticCache({ search, minScore: 0.95 });
     await cache.set("How do I bake bread?", "Mix flour and water");
     expect(await cache.get("quantum chromodynamics explained")).toBeNull();
   });
 
   it("wrap() avoids calling the model on a cache hit", async () => {
-    const cache = new SemanticCache({ vector, embedder, minScore: 0.5 });
+    const cache = new SemanticCache({ search, minScore: 0.5 });
     const model = new MockModel({ fallback: () => "Paris" });
     const generate = cache.wrap(model.generate);
 
@@ -51,7 +48,7 @@ describe("SemanticCache", () => {
   it("evicts expired entries when TTL elapses", async () => {
     let t = 0;
     const redis = new MemoryRedis({ clock: () => t });
-    const cache = new SemanticCache({ vector, embedder, redis, ttlSeconds: 10, minScore: 0.5 });
+    const cache = new SemanticCache({ search, redis, ttlSeconds: 10, minScore: 0.5 });
     await cache.set("hello world", "hi");
 
     t = 5_000;

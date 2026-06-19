@@ -1,17 +1,21 @@
 # @upstash/agentkit-sdk
 
-Core, framework-agnostic primitives for building AI agents on [Upstash Redis](https://upstash.com/)
-and [Upstash Vector](https://upstash.com/vector).
+Core, framework-agnostic primitives for building AI agents — entirely on
+[Upstash Redis](https://upstash.com/). No vector database required: the "semantic" features (memory
+recall, semantic cache, RAG) are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
+and its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM25-scored).
 
 ```bash
-pnpm add @upstash/agentkit-sdk @upstash/redis @upstash/vector
+pnpm add @upstash/agentkit-sdk @upstash/redis
 ```
 
 ## Wiring up
 
+Create a search index once (it backs memory, the semantic cache, and RAG), then build a
+`SearchStore` from it:
+
 ```ts
-import { Redis } from "@upstash/redis";
-import { Index } from "@upstash/vector";
+import { Redis, s } from "@upstash/redis";
 import {
   AgentMemory,
   ChatHistory,
@@ -20,21 +24,35 @@ import {
   Telemetry,
   Sandbox,
   Rag,
-  upstashVectorStore,
+  upstashSearchStore,
 } from "@upstash/agentkit-sdk";
 
 const redis = Redis.fromEnv();
-const vector = upstashVectorStore(new Index());
+
+await redis.search.createIndex({
+  name: "agentkit",
+  dataType: "json",
+  prefix: "agentkit:",
+  schema: s.object({
+    text: s.string(),
+    scope: s.string().noTokenize(),
+    docId: s.string().noTokenize(),
+  }),
+});
+
+const search = upstashSearchStore(redis.search.index({ name: "agentkit" }));
 ```
+
+Everything else takes `redis` and/or `search`.
 
 ## Features
 
 ### Agent memory
 
 ```ts
-const memory = new AgentMemory({ vector, redis });
+const memory = new AgentMemory({ search, redis });
 await memory.add("The user prefers TypeScript", { scope: "user-123" });
-const hits = await memory.recall("language preference", { scope: "user-123" });
+const hits = await memory.recall("typescript preference", { scope: "user-123" });
 ```
 
 ### Chat history
@@ -48,11 +66,14 @@ const messages = await history.list("session-1");
 ### Semantic cache
 
 ```ts
-const cache = new SemanticCache({ vector, minScore: 0.92 });
+const cache = new SemanticCache({ search, minScore: 0.85 });
 const generate = cache.wrap((prompt) => callYourLLM(prompt));
 await generate("What is the capital of France?"); // model call
-await generate("France's capital?"); // cache hit
+await generate("capital of France?"); // fuzzy cache hit — no model call
 ```
+
+> Fuzzy text matching catches typos and shared wording, not deep paraphrases with disjoint
+> vocabulary. Tune `minScore` to your data.
 
 ### Tool-call cache
 
@@ -82,17 +103,22 @@ const result = await sandbox.run("search", { query: "redis" });
 ### RAG
 
 ```ts
-const rag = new Rag({ vector });
+const rag = new Rag({ search });
 await rag.ingest({ id: "doc-1", text: longDocument });
-const chunks = await rag.retrieve("how does vector search work?", { topK: 4 });
+const chunks = await rag.retrieve("how does redis search work?", { topK: 4 });
 ```
 
 ## Testing
 
-Import deterministic, offline test doubles from the `/testing` entry point — no network, no real LLM:
+Import deterministic, offline test doubles from the `/testing` entry point — no network, no real LLM,
+no real index. `MemorySearchStore` approximates `$smart` (term + fuzzy + prefix matching with a
+phrase boost) and scores hits in `[0, 1]`:
 
 ```ts
-import { MemoryRedis, MemoryVectorStore, MockEmbedder, MockModel } from "@upstash/agentkit-sdk/testing";
+import { MemoryRedis, MemorySearchStore, MockModel } from "@upstash/agentkit-sdk/testing";
+
+const search = new MemorySearchStore();
+const redis = new MemoryRedis();
 ```
 
 ## License

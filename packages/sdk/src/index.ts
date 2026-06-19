@@ -1,31 +1,26 @@
 // Core types & interfaces
 export type {
   ChatMessage,
-  Embedder,
+  FilterValue,
   Logger,
   RedisLike,
   RedisSetOptions,
-  VectorMatch,
-  VectorQuery,
-  VectorRecord,
-  VectorStore,
+  SearchDocument,
+  SearchHit,
+  SearchQuery,
+  SearchStore,
 } from "./types.js";
 
 // Utilities
-export {
-  cosineSimilarity,
-  key,
-  noopLogger,
-  now,
-  stableHash,
-  stableStringify,
-  toQueryPayload,
-  toVectorPayload,
-} from "./utils.js";
+export { key, noopLogger, now, stableHash, stableStringify } from "./utils.js";
 
 // Adapters
-export { upstashVectorStore } from "./adapters.js";
-export type { UpstashVectorIndex } from "./adapters.js";
+export { upstashSearchStore } from "./adapters.js";
+export type {
+  UpstashSearchIndexLike,
+  UpstashSearchResult,
+  UpstashSearchStoreOptions,
+} from "./adapters.js";
 
 // Features
 export { ChatHistory } from "./chat-history.js";

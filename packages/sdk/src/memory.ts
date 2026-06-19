@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Embedder, RedisLike, VectorStore } from "./types.js";
-import { key, now, toQueryPayload, toVectorPayload } from "./utils.js";
+import type { RedisLike, SearchStore } from "./types.js";
+import { key, now } from "./utils.js";
 
 export interface MemoryRecord {
   id: string;
@@ -14,33 +14,30 @@ export interface RecalledMemory extends MemoryRecord {
 }
 
 export interface AgentMemoryConfig {
-  vector: VectorStore;
-  /** Optional Redis client; required only for {@link AgentMemory.list}. */
+  search: SearchStore;
+  /** Optional Redis client; required only for {@link AgentMemory.listIds}. */
   redis?: RedisLike;
-  /** Inject to embed text yourself; omit to use the vector store's built-in embedding. */
-  embedder?: Embedder;
   /** Redis key prefix for the id registry; defaults to `agentkit:memory`. */
   namespace?: string;
-  /** Default similarity floor for {@link AgentMemory.recall}. */
+  /** Default relevance floor for {@link AgentMemory.recall}. */
   minScore?: number;
 }
 
 /**
- * Long-term agent memory with semantic recall. Each memory is embedded and stored in a vector index,
- * namespaced by `scope` (e.g. a user id or agent id) so memories stay isolated per subject. When a
- * Redis client is supplied an id registry is maintained too, enabling exhaustive `list()`.
+ * Long-term agent memory with fuzzy recall over Upstash Redis Search. Each memory is stored as a
+ * searchable document scoped by `scope` (e.g. a user id or agent id) via an exact-match filter, so
+ * memories stay isolated per subject. Recall uses the `$smart` operator under the hood. When a Redis
+ * client is supplied an id registry is maintained too, enabling exhaustive `listIds`.
  */
 export class AgentMemory {
-  private vector: VectorStore;
+  private search: SearchStore;
   private redis?: RedisLike;
-  private embedder?: Embedder;
   private namespace: string;
   private minScore: number;
 
   constructor(config: AgentMemoryConfig) {
-    this.vector = config.vector;
+    this.search = config.search;
     this.redis = config.redis;
-    this.embedder = config.embedder;
     this.namespace = config.namespace ?? "agentkit:memory";
     this.minScore = config.minScore ?? 0;
   }
@@ -61,53 +58,47 @@ export class AgentMemory {
       metadata: opts.metadata,
       createdAt: now(),
     };
-    const payload = await toVectorPayload(text, this.embedder);
-    await this.vector.upsert(
-      [
-        {
-          id: record.id,
-          ...payload,
-          metadata: { text, createdAt: record.createdAt, ...opts.metadata },
-        },
-      ],
-      { namespace: scope },
-    );
+    await this.search.upsert([
+      {
+        id: record.id,
+        content: text,
+        metadata: { text, createdAt: record.createdAt, ...opts.metadata },
+        filters: { scope },
+      },
+    ]);
     if (this.redis) {
       await this.redis.rpush(this.registryKey(scope), record.id);
     }
     return record;
   }
 
-  /** Semantically recall the memories most relevant to `query` within `scope`. */
+  /** Fuzzily recall the memories most relevant to `query` within `scope`. */
   async recall(
     query: string,
-    opts: { topK?: number; scope?: string; minScore?: number; filter?: string } = {},
+    opts: { topK?: number; scope?: string; minScore?: number } = {},
   ): Promise<RecalledMemory[]> {
     const scope = opts.scope ?? "default";
     const minScore = opts.minScore ?? this.minScore;
-    const payload = await toQueryPayload(query, this.embedder);
-    const matches = await this.vector.query({
-      ...payload,
+    const hits = await this.search.search({
+      query,
       topK: opts.topK ?? 5,
-      namespace: scope,
-      filter: opts.filter,
-      includeMetadata: true,
+      filters: { scope },
     });
-    return matches
-      .filter((m) => m.score >= minScore)
-      .map((m) => {
-        const md = m.metadata ?? {};
-        const { text, createdAt, ...rest } = md as {
+    return hits
+      .filter((h) => h.score >= minScore)
+      .map((h) => {
+        const md = (h.metadata ?? {}) as {
           text?: string;
           createdAt?: number;
           [k: string]: unknown;
         };
+        const { text, createdAt, ...rest } = md;
         return {
-          id: m.id,
-          text: text ?? "",
+          id: h.id,
+          text: text ?? h.content,
           createdAt: createdAt ?? 0,
           metadata: Object.keys(rest).length ? rest : undefined,
-          score: m.score,
+          score: h.score,
         };
       });
   }
@@ -115,7 +106,7 @@ export class AgentMemory {
   /** Delete a memory by id from `scope`. */
   async forget(id: string, opts: { scope?: string } = {}): Promise<void> {
     const scope = opts.scope ?? "default";
-    await this.vector.delete([id], { namespace: scope });
+    await this.search.delete([id]);
     if (this.redis) {
       // Rebuild the registry without the removed id.
       const ids = await this.redis.lrange<string>(this.registryKey(scope), 0, -1);
@@ -126,7 +117,7 @@ export class AgentMemory {
   }
 
   /**
-   * List the ids of all memories in `scope`. Requires a Redis client (the vector index alone cannot
+   * List the ids of all memories in `scope`. Requires a Redis client (the search index alone cannot
    * enumerate). Throws if no Redis client was configured.
    */
   async listIds(scope = "default"): Promise<string[]> {

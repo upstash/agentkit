@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { chunkText, Rag } from "./rag.js";
-import { MemoryVectorStore } from "./testing/memory-vector-store.js";
-import { MockEmbedder } from "./testing/mock-embedder.js";
+import { MemorySearchStore } from "./testing/memory-search-store.js";
 
 describe("chunkText", () => {
   it("returns a single chunk for short text", () => {
@@ -28,16 +27,14 @@ describe("chunkText", () => {
 });
 
 describe("Rag", () => {
-  let vector: MemoryVectorStore;
-  let embedder: MockEmbedder;
+  let search: MemorySearchStore;
 
   beforeEach(() => {
-    embedder = new MockEmbedder();
-    vector = new MemoryVectorStore();
+    search = new MemorySearchStore();
   });
 
   it("ingests documents into chunks and retrieves relevant ones", async () => {
-    const rag = new Rag({ vector, embedder, chunkSize: 60, chunkOverlap: 10 });
+    const rag = new Rag({ search, chunkSize: 60, chunkOverlap: 10 });
     const chunks = await rag.ingest({
       id: "doc1",
       text: "Upstash Redis is a serverless database. It supports REST access over HTTP. Vector search enables semantic retrieval for RAG pipelines.",
@@ -46,17 +43,24 @@ describe("Rag", () => {
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks[0]!.id).toBe("doc1:0");
 
-    const results = await rag.retrieve("semantic vector search retrieval", { topK: 2 });
+    const results = await rag.retrieve("serverless database REST", { topK: 2 });
     expect(results.length).toBeGreaterThan(0);
-    // The most relevant chunk is about semantic retrieval / vector search.
-    expect(results[0]!.text.toLowerCase()).toMatch(/semantic|vector|retrieval/);
+    expect(results[0]!.text.toLowerCase()).toMatch(/serverless|database|rest/);
     expect(results[0]!.docId).toBe("doc1");
     expect(results[0]!.metadata).toEqual({ source: "docs" });
-    expect(results[0]!.score).toBeGreaterThan(results[1]?.score ?? -1);
+  });
+
+  it("scopes retrieval to a single document with docId", async () => {
+    const rag = new Rag({ search, chunkSize: 1000 });
+    await rag.ingest({ id: "a", text: "alpha content about kangaroos" });
+    await rag.ingest({ id: "b", text: "beta content about kangaroos" });
+    const results = await rag.retrieve("kangaroos", { topK: 5, docId: "a" });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r.docId === "a")).toBe(true);
   });
 
   it("removes a document's chunks", async () => {
-    const rag = new Rag({ vector, embedder, chunkSize: 1000 });
+    const rag = new Rag({ search, chunkSize: 1000 });
     const chunks = await rag.ingest({ id: "doc2", text: "deletable content here" });
     await rag.remove("doc2", { chunkCount: chunks.length });
     const results = await rag.retrieve("deletable content", { topK: 5 });
