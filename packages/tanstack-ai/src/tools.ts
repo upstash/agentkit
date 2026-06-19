@@ -1,11 +1,9 @@
-import type { Sandbox, ToolCache } from "@upstash/agentkit-sdk";
+import type { ToolCache } from "@upstash/agentkit-sdk";
 import type { TanStackTool } from "./types.js";
 
 export interface WrapToolsOptions {
   /** Memoize deterministic tool results via AgentKit's {@link ToolCache}. */
   toolCache?: ToolCache;
-  /** Run each tool through AgentKit's {@link Sandbox} (timeout, retries, telemetry). */
-  sandbox?: Sandbox;
   /** Per-result TTL (seconds) applied when caching. */
   ttlSeconds?: number;
 }
@@ -13,10 +11,9 @@ export interface WrapToolsOptions {
 /**
  * Wrap a single TanStack-AI-style tool so its execution is hardened with AgentKit primitives:
  *
- * - With a {@link Sandbox}, the tool is registered and run through it, gaining timeout/retry handling
- *   (and the sandbox's own caching/telemetry if configured).
- * - With a {@link ToolCache} (and no sandbox), the `execute` function is memoized directly, so two
- *   identical calls only run the underlying tool once.
+ * - With a {@link ToolCache}, the `execute` function is memoized directly, so two identical calls
+ *   only run the underlying tool once.
+ * - Without one, the tool's `execute` is passed through unchanged.
  *
  * The returned tool preserves the original `name`, `description`, and `parameters`.
  */
@@ -24,19 +21,11 @@ export function wrapTool<TInput, TOutput>(
   tool: TanStackTool<TInput, TOutput>,
   options: WrapToolsOptions = {},
 ): TanStackTool<TInput, TOutput> {
-  const { toolCache, sandbox, ttlSeconds } = options;
+  const { toolCache, ttlSeconds } = options;
 
   let execute: (input: TInput) => Promise<TOutput>;
 
-  if (sandbox) {
-    // The sandbox owns timeout/retry/caching; register the raw tool and delegate to it.
-    sandbox.register<TInput, TOutput>({
-      name: tool.name,
-      description: tool.description,
-      execute: async (input) => (await tool.execute(input)) as TOutput,
-    });
-    execute = (input: TInput) => sandbox.execute<TOutput>(tool.name, input);
-  } else if (toolCache) {
+  if (toolCache) {
     execute = toolCache.wrap<TInput, TOutput>(
       tool.name,
       async (input) => (await tool.execute(input)) as TOutput,

@@ -102,6 +102,13 @@ importers:
       ai:
         specifier: '>=4.0.0'
         version: 6.0.207(zod@4.4.3)
+    devDependencies:
+      '@upstash/redis':
+        specifier: ^1.38.0
+        version: 1.38.0
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
 
   packages/eve:
     dependencies:
@@ -111,6 +118,13 @@ importers:
       eve:
         specifier: '>=0.0.1'
         version: 0.11.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+    devDependencies:
+      '@upstash/redis':
+        specifier: ^1.38.0
+        version: 1.38.0
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
 
   packages/langchain:
     dependencies:
@@ -120,6 +134,13 @@ importers:
       '@upstash/agentkit-sdk':
         specifier: workspace:*
         version: link:../sdk
+    devDependencies:
+      '@upstash/redis':
+        specifier: ^1.38.0
+        version: 1.38.0
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
 
   packages/sdk:
     devDependencies:
@@ -138,6 +159,13 @@ importers:
       '@upstash/agentkit-sdk':
         specifier: workspace:*
         version: link:../sdk
+    devDependencies:
+      '@upstash/redis':
+        specifier: ^1.38.0
+        version: 1.38.0
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
 
 packages:
 

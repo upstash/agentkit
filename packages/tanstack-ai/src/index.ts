@@ -22,7 +22,7 @@ export type {
   ChatTurnResult,
 } from "./chat-handler.js";
 
-// Tool caching / sandboxing
+// Tool caching
 export { wrapTool, wrapTools } from "./tools.js";
 export type { WrapToolsOptions } from "./tools.js";
 

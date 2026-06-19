@@ -1,7 +1,7 @@
 {
   "name": "@upstash/agentkit-langchain",
   "version": "0.1.0",
-  "description": "LangChain.js adapter for @upstash/agentkit-sdk: chat message history, retriever, semantic LLM cache, tool caching/sandbox, and memory backed by Upstash Redis.",
+  "description": "LangChain.js adapter for @upstash/agentkit-sdk: chat message history, retriever, semantic LLM cache, tool caching, and memory backed by Upstash Redis.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -37,6 +37,10 @@
   ],
   "dependencies": {
     "@upstash/agentkit-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@upstash/redis": "^1.38.0",
+    "dotenv": "^16.4.5"
   },
   "peerDependencies": {
     "@langchain/core": ">=0.3.0"

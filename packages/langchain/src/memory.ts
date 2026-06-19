@@ -1,4 +1,9 @@
-import { AgentMemory, type AgentMemoryConfig, type RecalledMemory } from "@upstash/agentkit-sdk";
+import {
+  AgentMemory,
+  type AgentMemoryConfig,
+  type RecalledMemory,
+  type SearchIndexHandle,
+} from "@upstash/agentkit-sdk";
 
 export interface AgentKitMemoryConfig extends AgentMemoryConfig {
   /** Default recall scope (e.g. a user id). Defaults to `"default"`. */
@@ -20,7 +25,7 @@ export interface AgentKitMemoryConfig extends AgentMemoryConfig {
  *
  * @example
  * ```ts
- * const memory = new AgentKitMemory({ search, scope: "user-42" });
+ * const memory = new AgentKitMemory({ redis, scope: "user-42" });
  * await memory.remember("The user prefers metric units.");
  * const context = await memory.asContext("what units should I use?");
  * // "Relevant memories:\n- The user prefers metric units."
@@ -38,6 +43,11 @@ export class AgentKitMemory {
     this.scope = scope ?? "default";
     this.topK = topK ?? 5;
     this.header = header ?? "Relevant memories:";
+  }
+
+  /** The underlying Upstash Redis Search index handle (e.g. to `waitIndexing` in tests). */
+  get searchIndex(): SearchIndexHandle {
+    return this.memory.searchIndex;
   }
 
   /** Persist a memory. Returns the stored record. */

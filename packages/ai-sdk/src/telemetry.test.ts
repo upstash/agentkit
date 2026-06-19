@@ -1,19 +1,24 @@
 import { Telemetry } from "@upstash/agentkit-sdk";
-import { MemoryRedis } from "@upstash/agentkit-sdk/testing";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tracedGeneration } from "./telemetry.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
-describe("tracedGeneration", () => {
+describe.skipIf(!hasRedisCreds)("tracedGeneration", () => {
+  const redis = testRedis();
+  const namespace = uniqueNamespace("telemetry");
   let telemetry: Telemetry;
-  let clock: number;
+  let clock = 0;
 
-  beforeEach(() => {
-    clock = 0;
-    telemetry = new Telemetry({ redis: new MemoryRedis(), clock: () => (clock += 10) });
+  beforeAll(() => {
+    telemetry = new Telemetry({ redis, namespace, clock: () => (clock += 10) });
+  });
+
+  afterAll(async () => {
+    await cleanupKeys(redis, namespace);
   });
 
   it("records a model span with model id and token usage", async () => {
-    const traceId = "trace-1";
+    const traceId = `${namespace}:trace-1`;
     const result = await tracedGeneration(
       async () => ({
         text: "hi",
@@ -35,7 +40,7 @@ describe("tracedGeneration", () => {
   });
 
   it("normalizes v5 input/output token field names", async () => {
-    const traceId = "trace-2";
+    const traceId = `${namespace}:trace-2`;
     await tracedGeneration(
       async () => ({ text: "x", usage: { inputTokens: 4, outputTokens: 2 } }),
       {
@@ -49,7 +54,7 @@ describe("tracedGeneration", () => {
   });
 
   it("records an error span and rethrows", async () => {
-    const traceId = "trace-3";
+    const traceId = `${namespace}:trace-3`;
     await expect(
       tracedGeneration(
         async () => {

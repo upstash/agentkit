@@ -1,4 +1,9 @@
-import { Rag, type RagConfig, type RetrievedChunk } from "@upstash/agentkit-sdk";
+import {
+  Rag,
+  type RagConfig,
+  type RetrievedChunk,
+  type SearchIndexHandle,
+} from "@upstash/agentkit-sdk";
 import type { DocumentLike, RetrieverLike } from "./types.js";
 
 export interface AgentKitRetrieverConfig extends RagConfig {
@@ -26,7 +31,7 @@ export interface IngestDocument {
  *
  * @example
  * ```ts
- * const retriever = new AgentKitRetriever({ search, topK: 3 });
+ * const retriever = new AgentKitRetriever({ redis, topK: 3 });
  * await retriever.addDocuments([{ pageContent: "Upstash is serverless." }]);
  * const docs = await retriever.invoke("what is upstash?");
  * // docs: [{ pageContent, metadata }, ...]
@@ -44,6 +49,11 @@ export class AgentKitRetriever implements RetrieverLike {
     this.topK = topK ?? 4;
     this.minScore = minScore;
     this.docId = docId;
+  }
+
+  /** The underlying Upstash Redis Search index handle (e.g. to `waitIndexing` in tests). */
+  get searchIndex(): SearchIndexHandle {
+    return this.rag.searchIndex;
   }
 
   /** Retrieve the documents most relevant to `query`, as LangChain-style documents. */

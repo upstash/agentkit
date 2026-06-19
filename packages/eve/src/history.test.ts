@@ -1,13 +1,15 @@
 import { ChatHistory } from "@upstash/agentkit-sdk";
-import { MemoryRedis } from "@upstash/agentkit-sdk/testing";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createHistoryHooks } from "./history.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
-describe("createHistoryHooks", () => {
-  let history: ChatHistory;
+describe.skipIf(!hasRedisCreds)("createHistoryHooks (live Redis)", () => {
+  const redis = testRedis();
+  const namespace = uniqueNamespace("eve-hist");
+  const history = new ChatHistory({ redis, namespace });
 
-  beforeEach(() => {
-    history = new ChatHistory({ redis: new MemoryRedis() });
+  afterAll(async () => {
+    await cleanupKeys(redis, namespace);
   });
 
   it("round-trips append -> load preserving order and roles", async () => {
@@ -27,8 +29,7 @@ describe("createHistoryHooks", () => {
       { role: "user", content: "one" },
       { role: "assistant", content: "two" },
     ]);
-    const loaded = await hooks.load();
-    expect(loaded.map((m) => m.content)).toEqual(["one", "two"]);
+    expect((await hooks.load()).map((m) => m.content)).toEqual(["one", "two"]);
   });
 
   it("respects the load limit (most recent, oldest-first)", async () => {
@@ -38,15 +39,13 @@ describe("createHistoryHooks", () => {
       { role: "assistant", content: "b" },
       { role: "user", content: "c" },
     ]);
-    const loaded = await hooks.load({ limit: 2 });
-    expect(loaded.map((m) => m.content)).toEqual(["b", "c"]);
+    expect((await hooks.load({ limit: 2 })).map((m) => m.content)).toEqual(["b", "c"]);
   });
 
   it("normalizes unknown Eve roles to user", async () => {
     const hooks = createHistoryHooks({ history, sessionId: "s-4" });
     await hooks.append({ role: "weird-role", content: "x" });
-    const loaded = await hooks.load();
-    expect(loaded[0]!.role).toBe("user");
+    expect((await hooks.load())[0]!.role).toBe("user");
   });
 
   it("ignores empty append calls", async () => {

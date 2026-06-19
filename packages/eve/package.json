@@ -38,7 +38,12 @@
   "dependencies": {
     "@upstash/agentkit-sdk": "workspace:*"
   },
+  "devDependencies": {
+    "@upstash/redis": "^1.38.0",
+    "dotenv": "^16.4.5"
+  },
   "peerDependencies": {
+    "@upstash/redis": ">=1.38.0",
     "eve": ">=0.0.1"
   },
   "peerDependenciesMeta": {

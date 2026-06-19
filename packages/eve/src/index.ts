@@ -12,9 +12,19 @@ export type {
 // Message conversion
 export { fromEveMessages, toEveMessages } from "./messages.js";
 
-// Tool sandboxing + caching
-export { sandboxTools } from "./tools.js";
-export type { SandboxToolsConfig } from "./tools.js";
+// Tool caching + tracing
+export { cacheTools } from "./tools.js";
+export type { CacheToolsConfig } from "./tools.js";
+
+// Code-execution sandbox integration (Eve's `eve/sandbox`)
+export { instrumentSandboxSession, withSandboxInstrumentation } from "./sandbox.js";
+export type {
+  DefineSandboxConfig,
+  EveSandboxRunResult,
+  EveSandboxSession,
+  EveSandboxUse,
+  SandboxInstrumentation,
+} from "./sandbox.js";
 
 // Memory hooks
 export { createMemoryHooks } from "./memory.js";

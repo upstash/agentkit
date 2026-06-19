@@ -31,7 +31,7 @@ export type { AgentKitRetrieverConfig, IngestDocument } from "./retriever.js";
 export { SemanticLLMCache } from "./llm-cache.js";
 
 // Tool wrapping helpers
-export { cacheTool, sandboxTool } from "./tools.js";
+export { cacheTool } from "./tools.js";
 
 // Long-term memory
 export { AgentKitMemory } from "./memory.js";

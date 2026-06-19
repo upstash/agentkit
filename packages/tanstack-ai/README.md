@@ -1,7 +1,7 @@
 # @upstash/agentkit-tanstack-ai
 
 TanStack AI adapter for [Upstash AgentKit](../sdk). It plugs the core AgentKit primitives —
-persistent chat history, semantic caching, tool caching/sandboxing, and long-term memory — into the
+persistent chat history, semantic caching, tool caching, and long-term memory — into the
 TanStack ecosystem's AI/chat primitives.
 
 Like the core SDK, this package never imports a real TanStack package at runtime. It codes against
@@ -61,18 +61,18 @@ const handler = createChatHandler({
 const { message, messages } = await handler({ sessionId: "s1", message: "Hello" });
 ```
 
-## Tool caching & sandboxing
+## Tool caching
 
-Wrap TanStack-style tools so execution is memoized via `ToolCache` and/or hardened by `Sandbox`
-(timeout, retries, telemetry). Two identical calls only run the underlying tool once.
+Wrap TanStack-style tools so execution is memoized via `ToolCache`. Two identical calls only run the
+underlying tool once.
 
 ```ts
-import { ToolCache, Sandbox } from "@upstash/agentkit-sdk";
+import { ToolCache } from "@upstash/agentkit-sdk";
 import { wrapTools } from "@upstash/agentkit-tanstack-ai";
 
 const tools = wrapTools(myTools, {
   toolCache: new ToolCache({ redis }),
-  sandbox: new Sandbox({ timeoutMs: 10_000, maxRetries: 2 }),
+  ttlSeconds: 300, // optional per-result TTL
 });
 ```
 
@@ -86,16 +86,22 @@ import { SemanticCache, AgentMemory } from "@upstash/agentkit-sdk";
 import { withSemanticCache, withMemory } from "@upstash/agentkit-tanstack-ai";
 
 const generate = withSemanticCache(model.generate, {
-  cache: new SemanticCache({ search }),
+  cache: new SemanticCache({ redis }),
 });
 
-const injector = withMemory({ memory: new AgentMemory({ search }), scope: "user-1" });
+const injector = withMemory({ memory: new AgentMemory({ redis }), scope: "user-1" });
 const context = await injector.recall(userQuestion);
 const conversation = context ? [context, ...messages] : messages;
 ```
 
-`search` is a Redis-backed `SearchStore` from the core SDK (or `MemorySearchStore` from
-`@upstash/agentkit-sdk/testing` for offline use).
+`redis` is an `@upstash/redis` client; each feature owns its search index internally.
+
+## Testing
+
+The test suite runs against a **real Upstash Redis** instance — only the LLM is mocked (via
+`MockModel` from `@upstash/agentkit-sdk/testing`). Set `UPSTASH_REDIS_REST_URL` and
+`UPSTASH_REDIS_REST_TOKEN` (e.g. in the repo-root `.env`); when they're absent the Redis-backed
+suites skip themselves automatically.
 
 ## License
 

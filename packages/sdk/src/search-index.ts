@@ -73,7 +73,12 @@ export class RedisSearchIndex {
   async ensure(): Promise<void> {
     if (!this.created) {
       this.created = this.redis.search
-        .createIndex({ name: this.name, dataType: "json", prefix: this.prefix, schema: this.schema })
+        .createIndex({
+          name: this.name,
+          dataType: "json",
+          prefix: this.prefix,
+          schema: this.schema,
+        })
         .then(() => undefined)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);

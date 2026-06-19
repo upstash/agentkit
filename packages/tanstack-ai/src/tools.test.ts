@@ -1,12 +1,25 @@
-import { Sandbox, ToolCache } from "@upstash/agentkit-sdk";
-import { MemoryRedis } from "@upstash/agentkit-sdk/testing";
-import { describe, expect, it, vi } from "vitest";
+import { ToolCache } from "@upstash/agentkit-sdk";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 import { wrapTool, wrapTools } from "./tools.js";
 import type { TanStackTool } from "./types.js";
 
-describe("wrapTools", () => {
+describe.skipIf(!hasRedisCreds)("wrapTools", () => {
+  const redis = testRedis();
+  const namespaces: string[] = [];
+
+  function newToolCache(): ToolCache {
+    const namespace = uniqueNamespace("tools");
+    namespaces.push(namespace);
+    return new ToolCache({ redis, namespace });
+  }
+
+  afterAll(async () => {
+    for (const ns of namespaces) await cleanupKeys(redis, ns);
+  });
+
   it("memoizes execution across identical calls via ToolCache", async () => {
-    const toolCache = new ToolCache({ redis: new MemoryRedis() });
+    const toolCache = newToolCache();
     const underlying = vi.fn(async (input: { q: string }) => `result:${input.q}`);
     const tool: TanStackTool<{ q: string }, string> = { name: "search", execute: underlying };
 
@@ -21,7 +34,7 @@ describe("wrapTools", () => {
   });
 
   it("re-runs for different arguments", async () => {
-    const toolCache = new ToolCache({ redis: new MemoryRedis() });
+    const toolCache = newToolCache();
     const underlying = vi.fn(async (input: { q: string }) => `result:${input.q}`);
     const wrapped = wrapTool({ name: "search", execute: underlying }, { toolCache });
 
@@ -29,17 +42,6 @@ describe("wrapTools", () => {
     await wrapped.execute({ q: "y" });
 
     expect(underlying).toHaveBeenCalledTimes(2);
-  });
-
-  it("runs through the sandbox and caches when given both", async () => {
-    const toolCache = new ToolCache({ redis: new MemoryRedis() });
-    const sandbox = new Sandbox({ toolCache });
-    const underlying = vi.fn(async (input: { q: string }) => `r:${input.q}`);
-    const wrapped = wrapTool({ name: "fetch", execute: underlying }, { sandbox });
-
-    expect(await wrapped.execute({ q: "1" })).toBe("r:1");
-    expect(await wrapped.execute({ q: "1" })).toBe("r:1");
-    expect(underlying).toHaveBeenCalledTimes(1);
   });
 
   it("preserves name/description/parameters and handles a tool map", () => {

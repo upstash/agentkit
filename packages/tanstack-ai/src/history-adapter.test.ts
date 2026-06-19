@@ -1,13 +1,21 @@
 import { ChatHistory } from "@upstash/agentkit-sdk";
-import { MemoryRedis } from "@upstash/agentkit-sdk/testing";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createChatHistoryAdapter } from "./history-adapter.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
-describe("createChatHistoryAdapter", () => {
+describe.skipIf(!hasRedisCreds)("createChatHistoryAdapter", () => {
+  const redis = testRedis();
+  const namespaces: string[] = [];
   let history: ChatHistory;
 
   beforeEach(() => {
-    history = new ChatHistory({ redis: new MemoryRedis() });
+    const namespace = uniqueNamespace("history");
+    namespaces.push(namespace);
+    history = new ChatHistory({ redis, namespace });
+  });
+
+  afterAll(async () => {
+    for (const ns of namespaces) await cleanupKeys(redis, ns);
   });
 
   it("persists and loads messages for a session", async () => {

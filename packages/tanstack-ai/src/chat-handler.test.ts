@@ -1,14 +1,22 @@
 import { ChatHistory } from "@upstash/agentkit-sdk";
-import { MemoryRedis } from "@upstash/agentkit-sdk/testing";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChatHandler } from "./chat-handler.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 import type { TanStackMessage } from "./types.js";
 
-describe("createChatHandler", () => {
+describe.skipIf(!hasRedisCreds)("createChatHandler", () => {
+  const redis = testRedis();
+  const namespaces: string[] = [];
   let history: ChatHistory;
 
   beforeEach(() => {
-    history = new ChatHistory({ redis: new MemoryRedis() });
+    const namespace = uniqueNamespace("chat");
+    namespaces.push(namespace);
+    history = new ChatHistory({ redis, namespace });
+  });
+
+  afterAll(async () => {
+    for (const ns of namespaces) await cleanupKeys(redis, ns);
   });
 
   it("persists both the user and assistant messages", async () => {

@@ -20,8 +20,8 @@ export type { HistoryStore, HistoryStoreConfig } from "./history.js";
 export { withSemanticCache, withSemanticCacheText } from "./semantic-cache.js";
 export type { WithSemanticCacheConfig } from "./semantic-cache.js";
 
-// Tool wrapping (sandbox + tool cache)
-export { sandboxedTool, wrapTool } from "./tools.js";
+// Tool wrapping (tool cache memoization)
+export { wrapTool } from "./tools.js";
 export type { WrapToolConfig } from "./tools.js";
 
 // Memory injection

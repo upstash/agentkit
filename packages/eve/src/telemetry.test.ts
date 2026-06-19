@@ -1,15 +1,21 @@
 import { Telemetry } from "@upstash/agentkit-sdk";
-import { MemoryRedis } from "@upstash/agentkit-sdk/testing";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { traceRun } from "./telemetry.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
-describe("traceRun", () => {
-  let telemetry: Telemetry;
+describe.skipIf(!hasRedisCreds)("traceRun (live Redis)", () => {
+  const redis = testRedis();
+  const namespace = uniqueNamespace("eve-tel");
   let clock: number;
+  let telemetry: Telemetry;
 
   beforeEach(() => {
     clock = 0;
-    telemetry = new Telemetry({ redis: new MemoryRedis(), clock: () => (clock += 10) });
+    telemetry = new Telemetry({ redis, namespace, clock: () => (clock += 10) });
+  });
+
+  afterAll(async () => {
+    await cleanupKeys(redis, namespace);
   });
 
   it("records a run span and returns the function's value", async () => {
@@ -20,9 +26,7 @@ describe("traceRun", () => {
     });
     expect(result).toBe("done");
 
-    const spans = await telemetry.getTrace(traceId);
-    expect(spans).toHaveLength(1);
-    const span = spans[0];
+    const [span] = await telemetry.getTrace(traceId);
     expect(span?.name).toBe("eve-run");
     expect(span?.type).toBe("run");
     expect(span?.status).toBe("ok");

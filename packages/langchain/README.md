@@ -2,7 +2,7 @@
 
 [LangChain.js](https://js.langchain.com/) adapter for
 [`@upstash/agentkit-sdk`](https://www.npmjs.com/package/@upstash/agentkit-sdk). It wires the SDK's
-Redis primitives — chat history, RAG retrieval, semantic LLM caching, tool caching/sandboxing,
+Redis primitives — chat history, RAG retrieval, semantic LLM caching, tool caching,
 and long-term memory — into LangChain's extension points, all backed by
 [Upstash Redis](https://upstash.com/) and its built-in
 [Redis Search](https://upstash.com/docs/redis/features/search) (the `$smart` fuzzy operator).
@@ -19,29 +19,20 @@ types, and the objects produced here can be handed back to LangChain.
 
 ## Wiring up
 
+Every adapter takes the `@upstash/redis` client directly — just pass `{ redis }` (plus an optional
+`namespace`). The search-backed features (retriever, semantic cache, memory) create and own their
+Upstash Redis Search index internally; there is no index to create or wire up by hand.
+
 ```ts
-import { Redis, s } from "@upstash/redis";
-import { upstashSearchStore } from "@upstash/agentkit-sdk";
+import { Redis } from "@upstash/redis";
 
 const redis = Redis.fromEnv();
-
-await redis.search.createIndex({
-  name: "agentkit",
-  dataType: "json",
-  prefix: "agentkit:",
-  schema: s.object({
-    text: s.string(),
-    scope: s.string().noTokenize(),
-    docId: s.string().noTokenize(),
-  }),
-});
-
-const search = upstashSearchStore(redis.search.index({ name: "agentkit" }));
 ```
 
 Retrieval, semantic caching, and memory all match with Upstash Redis Search's `$smart` fuzzy
 operator (exact terms, typos, prefixes, and shared wording) — there are no embeddings or vector
-index to manage.
+index to manage. Each search-backed adapter exposes the raw index handle via a `.searchIndex` getter
+(useful in tests to `await adapter.searchIndex.waitIndexing()` after writes before querying).
 
 ## Chat message history
 
@@ -83,7 +74,7 @@ and the runnable `invoke(query)`, and an `addDocuments` for ingestion.
 ```ts
 import { AgentKitRetriever } from "@upstash/agentkit-langchain";
 
-const retriever = new AgentKitRetriever({ search, topK: 4 });
+const retriever = new AgentKitRetriever({ redis, topK: 4 });
 await retriever.addDocuments([{ pageContent: "Upstash is serverless.", metadata: { src: "docs" } }]);
 
 const docs = await retriever.invoke("what is upstash?");
@@ -99,26 +90,23 @@ model call.
 ```ts
 import { SemanticLLMCache } from "@upstash/agentkit-langchain";
 
-const cache = new SemanticLLMCache({ search, minScore: 0.9 });
+const cache = new SemanticLLMCache({ redis, minScore: 0.9 });
 // Pass directly to a chat model:
 const model = new ChatOpenAI({ cache });
 ```
 
-## Tool caching & sandboxing
+## Tool caching
 
-Wrap LangChain tools so calls memoize via `ToolCache` and/or run through the `Sandbox` (timeout,
-retries, telemetry).
+Wrap LangChain tools so identical calls memoize via the SDK's `ToolCache` (Upstash Redis), skipping
+the wrapped tool's work on repeat inputs.
 
 ```ts
-import { ToolCache, Sandbox } from "@upstash/agentkit-sdk";
-import { cacheTool, sandboxTool } from "@upstash/agentkit-langchain";
+import { ToolCache } from "@upstash/agentkit-sdk";
+import { cacheTool } from "@upstash/agentkit-langchain";
 
 const cached = cacheTool(searchTool, new ToolCache({ redis }), { ttlSeconds: 300 });
 await cached.invoke({ query: "upstash" }); // runs once
 await cached.invoke({ query: "upstash" }); // served from cache
-
-const safe = sandboxTool(flakyTool, new Sandbox({ timeoutMs: 5000, maxRetries: 2 }));
-await safe.invoke({ url: "https://example.com" });
 ```
 
 ## Long-term memory
@@ -128,11 +116,22 @@ Recall relevant facts and format them as prompt context, backed by the SDK's `Ag
 ```ts
 import { AgentKitMemory } from "@upstash/agentkit-langchain";
 
-const memory = new AgentKitMemory({ search, redis, scope: "user-42" });
+const memory = new AgentKitMemory({ redis, scope: "user-42" });
 await memory.remember("The user prefers metric units.");
 
 const context = await memory.asContext("what units should I use?");
 // "Relevant memories:\n- The user prefers metric units."
+```
+
+## Testing
+
+The test suite runs against a **real Upstash Redis** instance — only the LLM is mocked (via the
+SDK's `MockModel`). Provide `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (e.g. in the
+repo-root `.env`); when they are absent the suites skip themselves automatically. Each test uses a
+unique `namespace` and tears down its index and keys afterwards, so runs stay isolated.
+
+```bash
+npx vitest run packages/langchain
 ```
 
 ## License

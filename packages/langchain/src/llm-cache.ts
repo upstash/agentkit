@@ -1,4 +1,8 @@
-import { SemanticCache, type SemanticCacheConfig } from "@upstash/agentkit-sdk";
+import {
+  SemanticCache,
+  type SemanticCacheConfig,
+  type SearchIndexHandle,
+} from "@upstash/agentkit-sdk";
 import type { CacheLike, GenerationLike } from "./types.js";
 
 /**
@@ -13,7 +17,7 @@ import type { CacheLike, GenerationLike } from "./types.js";
  *
  * @example
  * ```ts
- * const cache = new SemanticLLMCache({ search, minScore: 0.9 });
+ * const cache = new SemanticLLMCache({ redis, minScore: 0.9 });
  * const hit = await cache.lookup("What is the capital of France?");
  * if (!hit) await cache.update("What is the capital of France?", "llm-key", [{ text: "Paris" }]);
  * ```
@@ -23,6 +27,11 @@ export class SemanticLLMCache implements CacheLike {
 
   constructor(config: SemanticCacheConfig) {
     this.cache = new SemanticCache(config);
+  }
+
+  /** The underlying Upstash Redis Search index handle (e.g. to `waitIndexing` in tests). */
+  get searchIndex(): SearchIndexHandle {
+    return this.cache.searchIndex;
   }
 
   /**

@@ -1,7 +1,7 @@
 {
   "name": "@upstash/agentkit-tanstack-ai",
   "version": "0.1.0",
-  "description": "TanStack AI adapter for Upstash AgentKit: persistent chat history, semantic-cached generation, sandboxed/cached tools, and memory injection.",
+  "description": "TanStack AI adapter for Upstash AgentKit: persistent chat history, semantic-cached generation, cached tools, and memory injection.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -37,6 +37,10 @@
   ],
   "dependencies": {
     "@upstash/agentkit-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@upstash/redis": "^1.38.0",
+    "dotenv": "^16.4.5"
   },
   "peerDependencies": {
     "@tanstack/ai": ">=0.1.0"
