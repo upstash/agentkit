@@ -30,6 +30,8 @@ export default [
         TextEncoder: "readonly",
         TextDecoder: "readonly",
         crypto: "readonly",
+        Buffer: "readonly",
+        ReadableStream: "readonly",
       },
     },
     plugins: {

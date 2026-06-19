@@ -156,15 +156,19 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
 - [x] Unit/e2e tests use `gpt-4o` (`TEST_MODEL`).
 - [x] eve: dropped the `./model` subpath — model wrappers are exported from the package root.
 - [x] ai-sdk example app fleshed out (memory + search + cached tool + rate limit).
-- [ ] READMEs (root + 3 packages): feature order = agent memory, search tools, sandbox (eve only), tool cache, rate limiting; never show `wrapLanguageModel`; show all method options with inline comments (`optional: ` prefix); cached-tool snippet imports `generateText` + a prompt; remove model cache; use `gpt-5.4-mini`; reflect `namespace`/`cachedTools`/no-`./model`.
-- [ ] Flesh out the eve and ai sdk example apps with all features.
+- [x] READMEs (root + 3 packages): feature order = agent memory, search tools, sandbox (eve only), tool cache, rate limiting; never show `wrapLanguageModel`; all method options with inline `optional:` comments; cached-tool snippet imports `generateText` + a prompt; model cache removed; `gpt-5.4-mini`; reflect `namespace`/`cachedTools`/no-`./model`.
+- [x] Flesh out the eve + ai-sdk example apps with all features.
+- [x] eve `./sandbox` rewritten as a class implementing eve's real two-phase `SandboxBackend` (types imported from `eve/sandbox`); typechecks against eve and the live-Box test passes.
 
 ## Known issues / TODO
-- **eve `./sandbox` is incomplete.** `packages/eve/src/sandbox.ts` still implements an OLD hand-rolled
-  interface (`{ providerId, createSession }`) that does **not** match eve's real two-phase `SandboxBackend`
-  (`name`/`create`/`prewarm` + full streaming `SandboxSession`). It must be rewritten against eve's real
-  types (mapping `prewarm`→Box snapshot, `create`→`Box.fromSnapshot`, and building the full `SandboxSession`
-  over Box). Decision on record: implement the **full real backend**. It can be typechecked against eve but
-  **not runtime-verified** here (no eve runtime). `eve-demo` does not currently use it.
+- **eve `./sandbox` — now the real backend.** `packages/eve/src/sandbox.ts` exports `UpstashSandboxBackend`
+  (via the `upstash()` factory), a class implementing eve's real two-phase `SandboxBackend<BO, SO>`
+  (`name`/`prewarm`/`create`). All sandbox types are imported from `eve/sandbox` (not hand-rolled).
+  Mapping: `prewarm`→ seed files + `bootstrap` then `box.snapshot()` (cached in an in-memory
+  `templateKey`→snapshotId map on the instance — use the factory form of `backend` to keep it warm);
+  `create`→`Box.fromSnapshot` (or fresh `Box.create`), returning a `SandboxBackendHandle` whose
+  `session` is a full `SandboxSession` built over Box (run/spawn/read*/write*/setNetworkPolicy/removePath).
+  Typechecks against eve and the offline + live-Box `sandbox.test.ts` pass. `spawn` runs to completion
+  then replays output as streams (Box has no detached-process primitive). Not exercised by `eve-demo`.
 - `gpt-5.4-mini` (demo model) may not exist → demos build fine but can 404 at runtime. Swap if needed.
 - The `19.2.17` `@types/react` may linger as an unpruned orphan in `.pnpm`; harmless (nothing links it).

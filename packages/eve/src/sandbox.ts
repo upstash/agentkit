@@ -2,8 +2,9 @@
  * Sandbox backend for **Eve** (`eve/sandbox`, https://eve.dev/docs/sandbox), powered by
  * **Upstash Box** (`@upstash/box`) — a serverless cloud sandbox for AI agents.
  *
- * `upstash()` is a drop-in replacement for Eve's `vercel()` backend. Take any Eve sandbox file and
- * swap the backend import:
+ * `upstash()` is a drop-in replacement for Eve's `vercel()` backend: it returns a value implementing
+ * Eve's real two-phase {@link SandboxBackend} (`name` / `prewarm` / `create`). Take any Eve sandbox
+ * file and swap the backend import:
  *
  * ```ts
  * // agent/sandbox.ts
@@ -23,50 +24,37 @@
  * });
  * ```
  *
- * `@upstash/box` is an optional peer dependency — only needed when you import this entry point.
+ * The lifecycle maps onto Box like this: `prewarm` builds a template box (seed files + your
+ * `bootstrap` hook) and captures a Box **snapshot**; `create` opens a live session from that snapshot
+ * with `Box.fromSnapshot` (or a fresh `Box.create` when there's no template). The prewarmed snapshots
+ * are cached on the backend instance, so use the factory form of `backend` to keep that cache warm.
+ *
+ * `@upstash/box` is an optional peer dependency — only needed when you import this entry point. This
+ * backend is type-checked against Eve's real types but cannot be runtime-verified in this repo.
  */
 import { Box } from "@upstash/box";
-import type { BoxSize, NetworkPolicy, Runtime } from "@upstash/box";
+import type { BoxSize, NetworkPolicy as BoxNetworkPolicy, Runtime } from "@upstash/box";
+import type {
+  SandboxBackend,
+  SandboxBackendCreateInput,
+  SandboxBackendHandle,
+  SandboxBackendPrewarmInput,
+  SandboxBackendSessionState,
+  SandboxBootstrapUseFn,
+  SandboxNetworkPolicy,
+  SandboxSession,
+  SandboxSessionUseFn,
+} from "eve/sandbox";
 
-/** Result of running a command in a sandbox session. */
-export interface EveSandboxRunResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-  [key: string]: unknown;
-}
-
-/** A network policy: an Eve-style shorthand string or a full Box {@link NetworkPolicy}. */
-export type SandboxNetworkPolicy = "allow-all" | "deny-all" | NetworkPolicy;
-
-/** A live sandbox session, backed by an Upstash Box. */
-export interface EveSandboxSession {
-  run(opts: { command: string; [key: string]: unknown }): Promise<EveSandboxRunResult>;
-  readTextFile(opts: { path: string }): Promise<string>;
-  writeTextFile(opts: { path: string; content: string }): Promise<void>;
-  setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void>;
-  /** A public URL for a port exposed inside the sandbox. */
-  getPublicURL(port: number): Promise<string>;
-  /** Pause the sandbox (keep-alive boxes can resume later). */
-  stop(): Promise<void>;
-  /** Destroy the sandbox and free its resources. */
-  destroy(): Promise<void>;
-  readonly id: string;
-  readonly cwd: string;
-  /** Escape hatch to the underlying Box for advanced operations (git, agents, files, …). */
-  readonly box: Box;
-}
-
-/** A sandbox backend Eve's `defineSandbox` can drive (the slot `vercel()` / `upstash()` fill). */
-export interface SandboxBackend {
-  readonly providerId: string;
-  createSession(options?: {
-    sessionId?: string;
-    networkPolicy?: SandboxNetworkPolicy;
-  }): Promise<EveSandboxSession>;
+/** Per-session (and per-bootstrap) options a caller can apply via `use(options)`. */
+export interface UpstashSandboxOptions {
+  /** Network policy to apply to the session when it's opened. */
+  networkPolicy?: SandboxNetworkPolicy;
 }
 
 export interface UpstashBackendConfig {
+  /** Backend name (participates in Eve's cache-key derivation). Defaults to `"upstash"`. */
+  name?: string;
   /** Upstash Box API key. Falls back to `UPSTASH_BOX_API_KEY`. */
   apiKey?: string;
   /** Box runtime. Accepts Eve-style strings like `"node24"` (mapped to Box's `"node"`). */
@@ -85,6 +73,8 @@ export interface UpstashBackendConfig {
   networkPolicy?: SandboxNetworkPolicy;
 }
 
+/** The directory Eve anchors relative sandbox paths to. */
+const WORKSPACE = "/workspace";
 const RUNTIMES = new Set<Runtime>(["node", "python", "golang", "ruby", "rust"]);
 
 function toBoxRuntime(runtime?: Runtime | string): Runtime {
@@ -101,71 +91,265 @@ function toBoxSize(config: UpstashBackendConfig): BoxSize {
   return "small";
 }
 
-function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): NetworkPolicy {
-  return typeof policy === "string" ? { mode: policy } : policy;
+/** Map Eve's (Vercel-shaped) network policy onto Box's network policy. */
+function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPolicy {
+  if (policy === "allow-all") return { mode: "allow-all" };
+  if (policy === "deny-all") return { mode: "deny-all" };
+  const allow = policy.allow;
+  const allowedDomains = Array.isArray(allow) ? allow : allow ? Object.keys(allow) : undefined;
+  return {
+    mode: "custom",
+    ...(allowedDomains ? { allowedDomains } : {}),
+    ...(policy.subnets?.allow ? { allowedCidrs: policy.subnets.allow } : {}),
+    ...(policy.subnets?.deny ? { deniedCidrs: policy.subnets.deny } : {}),
+  };
 }
 
-function resolvePath(box: Box, path: string): string {
-  return path.startsWith("/") ? path : `${box.cwd.replace(/\/$/, "")}/${path}`;
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Wrap a live Box as an {@link EveSandboxSession}. */
-function boxSession(box: Box): EveSandboxSession {
+/** Build a shell command from the AI SDK run/spawn options (env + working directory + command). */
+function buildCommand(options: {
+  command: string;
+  workingDirectory?: string;
+  env?: Record<string, string>;
+}): string {
+  let cmd = options.command;
+  if (options.env && Object.keys(options.env).length) {
+    const env = Object.entries(options.env)
+      .map(([k, v]) => `${k}=${shellQuote(v)}`)
+      .join(" ");
+    cmd = `${env} ${cmd}`;
+  }
+  if (options.workingDirectory) cmd = `cd ${shellQuote(options.workingDirectory)} && ${cmd}`;
+  return cmd;
+}
+
+const toBase64 = (data: string | Uint8Array): string =>
+  Buffer.from(data as Uint8Array).toString("base64");
+const fromBase64 = (b64: string): Uint8Array => new Uint8Array(Buffer.from(b64, "base64"));
+
+function bytesToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+async function streamToBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) chunks.push(value);
+  }
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out;
+}
+
+/** Build Eve's public {@link SandboxSession} over a live Box. */
+function buildSession(box: Box): SandboxSession {
+  const resolvePath = (path: string): string =>
+    path.startsWith("/") ? path : `${WORKSPACE}/${path}`;
+
   return {
     get id() {
       return box.id;
     },
-    get cwd() {
-      return box.cwd;
-    },
-    box,
-    async run({ command }) {
-      const run = await box.exec.command(command);
+    resolvePath,
+    async run(options) {
+      const run = await box.exec.command(buildCommand(options));
       const exitCode = run.exitCode ?? 0;
       const output = run.result ?? "";
-      return { stdout: output, stderr: exitCode === 0 ? "" : output, exitCode };
+      return { exitCode, stdout: output, stderr: exitCode === 0 ? "" : output };
     },
-    async readTextFile({ path }) {
-      return box.files.read(resolvePath(box, path));
+    async spawn(options) {
+      // Box has no detached-process primitive, so run to completion and replay the output as streams.
+      const run = await box.exec.command(buildCommand(options));
+      const exitCode = run.exitCode ?? 0;
+      const output = run.result ?? "";
+      return {
+        stdout: bytesToStream(new TextEncoder().encode(output)),
+        stderr: bytesToStream(new TextEncoder().encode(exitCode === 0 ? "" : output)),
+        wait: () => Promise.resolve({ exitCode }),
+        kill: () => Promise.resolve(),
+      };
+    },
+    async readFile({ path }) {
+      try {
+        return bytesToStream(
+          fromBase64(await box.files.read(resolvePath(path), { encoding: "base64" })),
+        );
+      } catch {
+        return null;
+      }
+    },
+    async readBinaryFile({ path }) {
+      try {
+        return fromBase64(await box.files.read(resolvePath(path), { encoding: "base64" }));
+      } catch {
+        return null;
+      }
+    },
+    async readTextFile({ path, startLine, endLine }) {
+      try {
+        const text = await box.files.read(resolvePath(path));
+        if (startLine === undefined && endLine === undefined) return text;
+        const lines = text.split("\n");
+        return lines.slice((startLine ?? 1) - 1, endLine ?? lines.length).join("\n");
+      } catch {
+        return null;
+      }
+    },
+    async writeFile({ path, content }) {
+      const bytes = await streamToBytes(content);
+      await box.files.write({
+        path: resolvePath(path),
+        content: toBase64(bytes),
+        encoding: "base64",
+      });
+    },
+    async writeBinaryFile({ path, content }) {
+      await box.files.write({
+        path: resolvePath(path),
+        content: toBase64(content),
+        encoding: "base64",
+      });
     },
     async writeTextFile({ path, content }) {
-      await box.files.write({ path: resolvePath(box, path), content });
+      await box.files.write({ path: resolvePath(path), content });
     },
     async setNetworkPolicy(policy) {
       await box.updateNetworkPolicy(toBoxNetworkPolicy(policy));
     },
-    async getPublicURL(port) {
-      const { url } = await box.getPublicURL(port);
-      return url;
-    },
-    async stop() {
-      await box.pause();
-    },
-    async destroy() {
-      await box.delete();
+    async removePath({ path, force, recursive }) {
+      const flags = `${recursive ? "r" : ""}${force ? "f" : ""}`;
+      await box.exec.command(
+        `rm ${flags ? `-${flags}` : ""} ${shellQuote(resolvePath(path))}`.trim(),
+      );
     },
   };
 }
 
 /**
- * An Upstash Box backend for Eve's `defineSandbox`. Drop-in replacement for `vercel()` / `docker()`.
+ * An Upstash Box implementation of Eve's two-phase {@link SandboxBackend}. Construct it via the
+ * {@link upstash} factory and hand it to `defineSandbox({ backend })`.
  */
-export function upstash(config: UpstashBackendConfig = {}): SandboxBackend {
-  return {
-    providerId: "upstash-box",
-    async createSession(options = {}) {
-      const box = await Box.create({
-        ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}),
-        runtime: toBoxRuntime(config.runtime),
-        size: toBoxSize(config),
-        keepAlive: config.keepAlive ?? true,
-        ...(config.initCommand !== undefined ? { initCommand: config.initCommand } : {}),
-        ...(config.env !== undefined ? { env: config.env } : {}),
-        ...(options.sessionId !== undefined ? { name: options.sessionId } : {}),
-      });
-      const policy = options.networkPolicy ?? config.networkPolicy;
-      if (policy) await box.updateNetworkPolicy(toBoxNetworkPolicy(policy));
-      return boxSession(box);
-    },
-  };
+export class UpstashSandboxBackend implements SandboxBackend<
+  UpstashSandboxOptions,
+  UpstashSandboxOptions
+> {
+  readonly name: string;
+  private readonly config: UpstashBackendConfig;
+  /** templateKey → Box snapshot id, captured by `prewarm` and reused by `create`. */
+  private readonly templates = new Map<string, string>();
+
+  constructor(config: UpstashBackendConfig = {}) {
+    this.config = config;
+    this.name = config.name ?? "upstash";
+  }
+
+  private boxConfig() {
+    return {
+      ...(this.config.apiKey !== undefined ? { apiKey: this.config.apiKey } : {}),
+      runtime: toBoxRuntime(this.config.runtime),
+      size: toBoxSize(this.config),
+      keepAlive: this.config.keepAlive ?? true,
+      ...(this.config.initCommand !== undefined ? { initCommand: this.config.initCommand } : {}),
+      ...(this.config.env !== undefined ? { env: this.config.env } : {}),
+    };
+  }
+
+  async create(
+    input: SandboxBackendCreateInput,
+  ): Promise<SandboxBackendHandle<UpstashSandboxOptions>> {
+    const snapshotId = input.templateKey ? this.templates.get(input.templateKey) : undefined;
+    const box = snapshotId
+      ? await Box.fromSnapshot(snapshotId, this.boxConfig())
+      : await Box.create(this.boxConfig());
+
+    if (this.config.networkPolicy) {
+      await box.updateNetworkPolicy(toBoxNetworkPolicy(this.config.networkPolicy));
+    }
+
+    const session = buildSession(box);
+
+    const useSessionFn: SandboxSessionUseFn<UpstashSandboxOptions> = async (options) => {
+      if (options?.networkPolicy)
+        await box.updateNetworkPolicy(toBoxNetworkPolicy(options.networkPolicy));
+      return session;
+    };
+
+    const captureState = async (): Promise<SandboxBackendSessionState> => ({
+      backendName: this.name,
+      sessionKey: input.sessionKey,
+      metadata: {
+        boxId: box.id,
+        ...(input.templateKey ? { templateKey: input.templateKey } : {}),
+      },
+    });
+
+    const dispose = async (): Promise<void> => {
+      if (this.config.keepAlive ?? true) await box.pause();
+      else await box.delete();
+    };
+
+    return { session, useSessionFn, captureState, dispose };
+  }
+
+  async prewarm(
+    input: SandboxBackendPrewarmInput<UpstashSandboxOptions>,
+  ): Promise<{ reused: boolean }> {
+    if (this.templates.has(input.templateKey)) return { reused: true };
+
+    const box = await Box.create(this.boxConfig());
+    try {
+      const session = buildSession(box);
+
+      for (const file of input.seedFiles) {
+        const content = typeof file.content === "string" ? file.content : toBase64(file.content);
+        await box.files.write({
+          path: session.resolvePath(file.path),
+          content,
+          ...(typeof file.content === "string" ? {} : { encoding: "base64" as const }),
+        });
+      }
+
+      if (input.bootstrap) {
+        const use: SandboxBootstrapUseFn<UpstashSandboxOptions> = async (options) => {
+          if (options?.networkPolicy) {
+            await box.updateNetworkPolicy(toBoxNetworkPolicy(options.networkPolicy));
+          }
+          return session;
+        };
+        await input.bootstrap({ use });
+      }
+
+      const snapshot = await box.snapshot({ name: `agentkit-${input.templateKey}`.slice(0, 200) });
+      this.templates.set(input.templateKey, snapshot.id);
+      return { reused: false };
+    } finally {
+      await box.delete().catch(() => {});
+    }
+  }
+}
+
+/**
+ * An Upstash Box backend for Eve's `defineSandbox`. Drop-in replacement for `vercel()`. Returns a
+ * {@link UpstashSandboxBackend} implementing Eve's real `SandboxBackend`.
+ */
+export function upstash(
+  config: UpstashBackendConfig = {},
+): SandboxBackend<UpstashSandboxOptions, UpstashSandboxOptions> {
+  return new UpstashSandboxBackend(config);
 }
