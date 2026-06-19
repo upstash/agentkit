@@ -1,0 +1,49 @@
+{
+  "name": "@upstash/agentkit-eve",
+  "version": "0.1.0",
+  "description": "Vercel Eve framework adapter for Upstash AgentKit: persistent chat history, semantic-cached generation, sandboxed/cached tools, memory & RAG-augmented instructions, and telemetry.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "upstash",
+    "eve",
+    "vercel",
+    "ai",
+    "agent",
+    "memory",
+    "rag",
+    "llm",
+    "cache",
+    "tools"
+  ],
+  "dependencies": {
+    "@upstash/agentkit-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "eve": ">=0.0.1"
+  },
+  "peerDependenciesMeta": {
+    "eve": {
+      "optional": true
+    }
+  }
+}

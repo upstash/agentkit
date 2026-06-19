@@ -1,0 +1,49 @@
+{
+  "name": "@upstash/agentkit-ai-sdk",
+  "version": "0.1.0",
+  "description": "Vercel AI SDK adapter for Upstash AgentKit: persistent chat history, semantic-cached generation, sandboxed/cached tools, memory injection, and telemetry.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "upstash",
+    "ai-sdk",
+    "vercel",
+    "ai",
+    "agent",
+    "memory",
+    "rag",
+    "llm",
+    "cache",
+    "tools"
+  ],
+  "dependencies": {
+    "@upstash/agentkit-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "ai": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,51 @@
+import { MemoryRedis, MemoryVectorStore, MockEmbedder } from "@upstash/agentkit-sdk/testing";
+import { beforeEach, describe, expect, it } from "vitest";
+import { AgentKitMemory } from "./memory.js";
+
+describe("AgentKitMemory", () => {
+  let vector: MemoryVectorStore;
+  let embedder: MockEmbedder;
+  let redis: MemoryRedis;
+
+  beforeEach(() => {
+    embedder = new MockEmbedder();
+    vector = new MemoryVectorStore();
+    redis = new MemoryRedis();
+  });
+
+  it("remembers and recalls relevant memories", async () => {
+    const memory = new AgentKitMemory({ vector, embedder, redis, scope: "user-42" });
+    await memory.remember("The user prefers metric units for measurement.");
+    await memory.remember("The user lives in Berlin near the river.");
+
+    const recalled = await memory.recall("which metric measurement units does the user prefer?", {
+      topK: 1,
+    });
+    expect(recalled).toHaveLength(1);
+    expect(recalled[0]!.text).toMatch(/metric units/);
+  });
+
+  it("formats recalled memories as a context string", async () => {
+    const memory = new AgentKitMemory({ vector, embedder, scope: "u", topK: 1 });
+    await memory.remember("The user prefers metric units for measurement.");
+
+    const context = await memory.asContext("what metric measurement units does the user prefer?");
+    expect(context).toContain("Relevant memories:");
+    expect(context).toContain("- The user prefers metric units for measurement.");
+  });
+
+  it("returns an empty context string when nothing is relevant", async () => {
+    const memory = new AgentKitMemory({ vector, embedder, minScore: 0.99 });
+    const context = await memory.asContext("unrelated query about nothing stored");
+    expect(context).toBe("");
+  });
+
+  it("isolates memories by scope", async () => {
+    const memory = new AgentKitMemory({ vector, embedder });
+    await memory.remember("alpha fact", { scope: "a" });
+    await memory.remember("beta fact", { scope: "b" });
+
+    const fromA = await memory.recall("alpha", { scope: "a", topK: 5 });
+    expect(fromA.every((m) => m.text !== "beta fact")).toBe(true);
+  });
+});

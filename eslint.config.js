@@ -36,6 +36,9 @@ export default [
     },
     rules: {
       ...tseslint.configs.recommended.rules,
+      // Defer to the TS-aware variant so function overload signatures aren't flagged.
+      "no-redeclare": "off",
+      "@typescript-eslint/no-redeclare": "error",
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unused-vars": [
         "error",
