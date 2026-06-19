@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # pnpm 11 (pinned via packageManager) requires Node 24+.
+          # pnpm 11 (pinned via packageManager) requires Node >=22.13; use 24 LTS.
           node-version: 24
           cache: pnpm
 
