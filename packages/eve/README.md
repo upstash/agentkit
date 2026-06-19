@@ -2,7 +2,7 @@
 
 Adapter that brings [Upstash AgentKit](https://upstash.com/) to **Eve, the Vercel agent framework**.
 Eve is file-centric, so this package ships small pieces you drop into your `agent/` tree: cached
-tools, long-term memory tools, model wrappers (semantic cache + rate limit), and a real
+tools, long-term memory tools, model wrappers (response cache + rate limit), and a real
 code-execution **sandbox backend** powered by [Upstash Box](https://github.com/upstash/box).
 
 ```bash
@@ -19,10 +19,21 @@ import { Redis } from "@upstash/redis";
 export const redis = Redis.fromEnv();
 ```
 
-## Model wrappers (`agent/index.ts`)
+## Model cache (`agent/index.ts`)
 
-Wrap your agent's model with a semantic cache and/or a rate limiter (re-exported from the AI SDK
-adapter — Eve uses Vercel AI SDK models). See [agent config](https://eve.dev/docs/agent-config).
+Wrap your agent's model with a response cache (re-exported from the AI SDK adapter — Eve uses Vercel
+AI SDK models). See [agent config](https://eve.dev/docs/agent-config).
+
+```ts
+// agent/index.ts
+import { openai } from "@ai-sdk/openai";
+import { cachedModel } from "@upstash/agentkit-eve/model";
+import { redis } from "./redis";
+
+export const model = cachedModel({ model: openai("gpt-5.4-mini"), redis });
+```
+
+## Rate limiting (`agent/index.ts`)
 
 ```ts
 // agent/index.ts
@@ -30,58 +41,64 @@ import { openai } from "@ai-sdk/openai";
 import { cachedModel, rateLimitedModel } from "@upstash/agentkit-eve/model";
 import { redis } from "./redis";
 
-export const model = rateLimitedModel({
-  model: cachedModel({ model: openai("gpt-5.4-mini"), redis }),
-  redis,
-  limit: 20,
-  window: "1 m",
+export const model = rateLimitedModel({ model: openai("gpt-5.4-mini"), redis, limit: 20, window: "1 m" });
+```
+
+Use both by nesting the wrappers, or apply both middlewares in one `wrapLanguageModel`:
+
+```ts
+// agent/index.ts
+import { wrapLanguageModel } from "ai";
+import { modelCacheMiddleware, rateLimitMiddleware } from "@upstash/agentkit-eve/model";
+
+export const model = wrapLanguageModel({
+  model: openai("gpt-5.4-mini"),
+  middleware: [rateLimitMiddleware({ redis }), modelCacheMiddleware({ redis })],
 });
 ```
 
 ## Cached tools (`agent/tools/*.ts`)
 
-Wrap a tool's `execute` with `cachedExecute` so identical inputs are memoized. Eve uses the filename
-as the tool name — pass it as the cache key. See [tools](https://eve.dev/docs/tools).
+`defineCachedTool` is like Eve's `defineTool`, but its result is memoized — pass a `cachePrefix`
+(string, or a function of the input + context). `redis` defaults to env. See
+[tools](https://eve.dev/docs/tools).
 
 ```ts
 // agent/tools/get_weather.ts
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { cachedExecute } from "@upstash/agentkit-eve";
-import { ToolCache } from "@upstash/agentkit-sdk";
-import { redis } from "../redis";
+import { defineCachedTool } from "@upstash/agentkit-eve";
 
-export default defineTool({
-  description: "Get the current weather for a city.",
-  inputSchema: z.object({ city: z.string() }),
-  execute: cachedExecute("get_weather", async ({ city }) => fetchWeather(city), {
-    toolCache: new ToolCache({ redis }),
+export default defineTool(
+  defineCachedTool({
+    description: "Get the current weather for a city.",
+    inputSchema: z.object({ city: z.string() }),
+    cachePrefix: "get_weather",
+    execute: async ({ city }) => fetchWeather(city),
   }),
-});
+);
 ```
 
 ## Memory tools (`agent/tools/*.ts`)
 
-`recallMemoryTool` and `saveMemoryTool` return ready `defineTool` configs — one file each.
+`defineMemoryRecallTool` and `defineMemorySaveTool` return ready `defineTool` configs — one file
+each, one import. Pass a `scope` (a string shared across users, or a function deriving it from the
+context); `redis` defaults to env.
 
 ```ts
 // agent/tools/recall_memory.ts
 import { defineTool } from "eve/tools";
-import { AgentMemory } from "@upstash/agentkit-sdk";
-import { recallMemoryTool } from "@upstash/agentkit-eve";
-import { redis } from "../redis";
+import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
 
-export default defineTool(recallMemoryTool({ memory: new AgentMemory({ redis }), scope: "user-123" }));
+export default defineTool(defineMemoryRecallTool({ scope: (_, ctx) => ctx.session.id }));
 ```
 
 ```ts
 // agent/tools/save_memory.ts
 import { defineTool } from "eve/tools";
-import { AgentMemory } from "@upstash/agentkit-sdk";
-import { saveMemoryTool } from "@upstash/agentkit-eve";
-import { redis } from "../redis";
+import { defineMemorySaveTool } from "@upstash/agentkit-eve";
 
-export default defineTool(saveMemoryTool({ memory: new AgentMemory({ redis }), scope: "user-123" }));
+export default defineTool(defineMemorySaveTool({ scope: (_, ctx) => ctx.session.id }));
 ```
 
 ## Code-execution sandbox (`agent/sandbox.ts`)

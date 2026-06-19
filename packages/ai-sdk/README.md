@@ -1,16 +1,17 @@
 # @upstash/agentkit-ai-sdk
 
 [Vercel AI SDK](https://ai-sdk.dev) adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk).
-Everything is a drop-in for `generateText` / `streamText`: a semantic-caching model wrapper, a
-tool-cache for tool maps, and ready-made memory + Redis-Search tools.
+Everything is a drop-in for `generateText` / `streamText`: model wrappers (response cache + rate
+limit), a self-contained cached tool, and ready-made memory + Redis-Search tools. `redis` defaults to
+`Redis.fromEnv()` everywhere, so you import only from this package.
 
 ```bash
-pnpm add @upstash/agentkit-ai-sdk @upstash/agentkit-sdk @upstash/redis ai
+pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
 ```
 
-## Semantic model cache
+## Model cache
 
-`cachedModel` wraps any AI SDK model with an
+`cachedModel` wraps any AI SDK model with a
 [language-model middleware](https://ai-sdk.dev/docs/ai-sdk-core/middleware#caching) that serves a
 cached response when a new prompt fuzzily matches a previous one (Upstash Redis Search `$smart`).
 
@@ -29,9 +30,9 @@ Or use the middleware directly with `wrapLanguageModel`:
 
 ```ts
 import { wrapLanguageModel } from "ai";
-import { semanticCacheMiddleware } from "@upstash/agentkit-ai-sdk";
+import { modelCacheMiddleware } from "@upstash/agentkit-ai-sdk";
 
-const model = wrapLanguageModel({ model: base, middleware: semanticCacheMiddleware({ redis }) });
+const model = wrapLanguageModel({ model: base, middleware: modelCacheMiddleware({ redis }) });
 ```
 
 ## Rate limiting
@@ -47,32 +48,51 @@ const model = rateLimitedModel({ model: openai("gpt-4o"), redis, limit: 20, wind
 await generateText({ model, prompt }); // throws RateLimitExceededError once over the limit
 ```
 
-Compose it with the cache: `rateLimitedModel({ model: cachedModel({ model, redis }), redis })`.
-
-## Tool-call cache
-
-`cacheTools` takes a map of tools and returns a map with the **same keys** whose `execute` is
-memoized (keyed by tool name + arguments).
+Use both at once by nesting the wrappers, or apply both middlewares in one `wrapLanguageModel`:
 
 ```ts
-import { cacheTools } from "@upstash/agentkit-ai-sdk";
-import { ToolCache } from "@upstash/agentkit-sdk";
+// nest the wrappers
+const model = rateLimitedModel({ model: cachedModel({ model: openai("gpt-4o"), redis }), redis });
 
-const tools = cacheTools({ getWeather, search }, { toolCache: new ToolCache({ redis }) });
-await generateText({ model, tools, prompt });
+// or one wrapLanguageModel with multiple middlewares (applied in array order)
+import { wrapLanguageModel } from "ai";
+import { modelCacheMiddleware, rateLimitMiddleware } from "@upstash/agentkit-ai-sdk";
+
+const model = wrapLanguageModel({
+  model: openai("gpt-4o"),
+  middleware: [rateLimitMiddleware({ redis }), modelCacheMiddleware({ redis })],
+});
+```
+
+## Cached tool
+
+`cachedTool` is like the AI SDK's `tool()`, but its `execute` is memoized in Redis — self-contained,
+no core import.
+
+```ts
+import { z } from "zod";
+import { cachedTool } from "@upstash/agentkit-ai-sdk";
+
+const getWeather = cachedTool({
+  description: "Get the weather for a city",
+  inputSchema: z.object({ city: z.string() }),
+  cachePrefix: "getWeather", // or (input, options) => `weather:${input.city}`
+  execute: async ({ city }) => fetchWeather(city),
+});
+await generateText({ model, tools: { getWeather }, prompt });
 ```
 
 ## Memory tools
 
 `createMemoryTools` returns `recall_memory` and `save_memory` tools so the model can read and write
-long-term memory itself. Spread them into your tool map.
+long-term memory itself. Pass a `scope` (a string shared across users, or a function deriving it per
+call); `redis` defaults to env.
 
 ```ts
-import { AgentMemory } from "@upstash/agentkit-sdk";
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
 import { generateText, stepCountIs } from "ai";
 
-const tools = createMemoryTools({ memory: new AgentMemory({ redis }), scope: userId });
+const tools = createMemoryTools({ scope: userId });
 await generateText({ model, tools, stopWhen: stepCountIs(5), prompt });
 ```
 
