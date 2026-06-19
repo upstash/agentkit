@@ -12,39 +12,19 @@ concurrency:
 
 jobs:
   build:
-    name: node ${{ matrix.node-version }} · lint · typecheck · test · build
+    name: lint · typecheck · test · build
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [20, 22, 24]
-    # The repo pins pnpm 11 (packageManager) for local dev, but pnpm 11 requires
-    # Node >=22.13 — so it can't run on Node 20. CI installs pnpm 10 instead, which
-    # reads the same lockfile (v9.0) and supports Node >=18.12, letting us test the
-    # full 20/22/24 range. `manage-package-manager-versions=false` stops pnpm 10 from
-    # auto-switching to the pinned pnpm 11 (which would fail on Node 20).
-    env:
-      PNPM_VERSION: "10.34.4"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node ${{ matrix.node-version }}
+      - uses: pnpm/action-setup@v4
+
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Install pnpm ${{ env.PNPM_VERSION }}
-        run: |
-          echo "manage-package-manager-versions=false" >> .npmrc
-          npm install -g pnpm@${PNPM_VERSION}
-          pnpm --version
-
-      - name: Cache pnpm store
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/share/pnpm/store
-          key: ${{ runner.os }}-node${{ matrix.node-version }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: ${{ runner.os }}-node${{ matrix.node-version }}-pnpm-
+          # pnpm 11 (pinned via packageManager) requires Node >=22.13; use 24 LTS.
+          node-version: 24
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
