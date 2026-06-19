@@ -1,106 +1,42 @@
 # @upstash/agentkit-ai-sdk
 
 [Vercel AI SDK](https://ai-sdk.dev) adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk).
-Everything is a drop-in for `generateText` / `streamText`: model wrappers (response cache + rate
-limit), a self-contained cached tool, and ready-made memory + Redis-Search tools. `redis` defaults to
-`Redis.fromEnv()` everywhere, so you import only from this package.
+Everything is a drop-in for `generateText` / `streamText`: ready-made memory + Redis-Search tools, a
+self-contained cached tool, and a rate-limited model wrapper. `redis` defaults to `Redis.fromEnv()`
+everywhere, so you import only from this package.
 
 ```bash
 pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
 ```
 
-## Model cache
-
-`cachedModel` wraps any AI SDK model with a
-[language-model middleware](https://ai-sdk.dev/docs/ai-sdk-core/middleware#caching) that serves a
-cached response when a new prompt fuzzily matches a previous one (Upstash Redis Search `$smart`).
-
-```ts
-import { openai } from "@ai-sdk/openai";
-import { generateText } from "ai";
-import { cachedModel } from "@upstash/agentkit-ai-sdk";
-
-const model = cachedModel({ model: openai("gpt-4o"), redis });
-
-await generateText({ model, prompt: "What is the capital of France?" }); // model call
-await generateText({ model, prompt: "the capital of France?" }); // fuzzy cache hit
-```
-
-Or use the middleware directly with `wrapLanguageModel`:
-
-```ts
-import { wrapLanguageModel } from "ai";
-import { modelCacheMiddleware } from "@upstash/agentkit-ai-sdk";
-
-const model = wrapLanguageModel({ model: base, middleware: modelCacheMiddleware({ redis }) });
-```
-
-## Rate limiting
-
-`rateLimitedModel` wraps a model so each call is rate-limited with
-[Upstash Ratelimit](https://github.com/upstash/ratelimit-js) — throwing (or waiting) when the limit
-is exceeded. Build the model per request with a per-user `identifier` to limit by user.
-
-```ts
-import { rateLimitedModel } from "@upstash/agentkit-ai-sdk";
-
-const model = rateLimitedModel({ model: openai("gpt-4o"), redis, limit: 20, window: "1 m", identifier: userId });
-await generateText({ model, prompt }); // throws RateLimitExceededError once over the limit
-```
-
-Use both at once by nesting the wrappers, or apply both middlewares in one `wrapLanguageModel`:
-
-```ts
-// nest the wrappers
-const model = rateLimitedModel({ model: cachedModel({ model: openai("gpt-4o"), redis }), redis });
-
-// or one wrapLanguageModel with multiple middlewares (applied in array order)
-import { wrapLanguageModel } from "ai";
-import { modelCacheMiddleware, rateLimitMiddleware } from "@upstash/agentkit-ai-sdk";
-
-const model = wrapLanguageModel({
-  model: openai("gpt-4o"),
-  middleware: [rateLimitMiddleware({ redis }), modelCacheMiddleware({ redis })],
-});
-```
-
-## Cached tool
-
-`cachedTool` is like the AI SDK's `tool()`, but its `execute` is memoized in Redis — self-contained,
-no core import.
-
-```ts
-import { z } from "zod";
-import { cachedTool } from "@upstash/agentkit-ai-sdk";
-
-const getWeather = cachedTool({
-  description: "Get the weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  cachePrefix: "getWeather", // or (input, options) => `weather:${input.city}`
-  execute: async ({ city }) => fetchWeather(city),
-});
-await generateText({ model, tools: { getWeather }, prompt });
-```
-
-## Memory tools
+## Agent memory
 
 `createMemoryTools` returns `recall_memory` and `save_memory` tools so the model can read and write
-long-term memory itself. Pass a `scope` (a string shared across users, or a function deriving it per
-call); `redis` defaults to env.
+long-term memory itself. Memories are stored at `agentkit:memory:<namespace>:<id>`.
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
 import { generateText, stepCountIs } from "ai";
 
-const tools = createMemoryTools({ scope: userId });
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt });
+const tools = createMemoryTools({
+  namespace: userId, // the memory scope — a string, or (input, options) => string (e.g. a user id)
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  topK: 5, // optional: max memories the recall tool returns
+  minScore: 0, // optional: BM25 relevance floor for recall
+  recallToolName: "recall_memory", // optional: override the recall tool's name
+  saveToolName: "save_memory", // optional: override the save tool's name
+  // memory, // optional: a pre-built AgentMemory (overrides `redis`)
+});
+
+await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
 ```
 
 ## Search tools
 
-`createSearchTools` returns `search` / `aggregate` / `count` tools over an Upstash Redis Search
-index. Pass your `s.object(...)` schema and the tool descriptions are generated from it — the model
-learns the fields, types, and which filter operators (`$smart`, `$lt`, `$in`, `$and`, …) apply.
+`createSearchTools` returns `search` / `aggregate` / `count` tools over an Upstash Redis Search index.
+The tool descriptions are generated from your `s.object(...)` schema, so the model learns the fields,
+their types, and which filter operators (`$smart`, `$lt`, `$in`, `$and`, …) apply. The index is
+created (and `waitIndexing`-ed) automatically on first use.
 
 ```ts
 import { s } from "@upstash/redis";
@@ -109,15 +45,97 @@ import { generateText, stepCountIs } from "ai";
 
 const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
 
+const tools = createSearchTools({
+  schema, // the Upstash Redis Search schema (built with `s` from @upstash/redis)
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  name: "users", // optional: index name (defaults to "agentkit:search")
+  prefix: "users:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
+  ensureIndex: true, // optional: create the index + waitIndexing before the tools run (defaults to true)
+  defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
+});
+
 await generateText({
   model,
-  tools: createSearchTools({ schema, name: "users" }),
+  tools,
   stopWhen: stepCountIs(5),
   prompt: "How many users named Ada live in London?",
 });
 ```
 
-`redis` defaults to `Redis.fromEnv()` everywhere; the index is created from the schema on first use.
+## Tool cache
+
+`cachedTool` is the AI SDK's `tool()` with its `execute` memoized in Redis — same config (so
+`inputSchema` still infers `execute`'s input), plus the cache options. Cache keys are
+`agentkit:toolCache:<namespace>:<hash-of-input>`.
+
+```ts
+import { z } from "zod";
+import { generateText } from "ai";
+import { cachedTool } from "@upstash/agentkit-ai-sdk";
+
+const getWeather = cachedTool({
+  description: "Get the weather for a city", // (AI SDK tool field) shown to the model
+  inputSchema: z.object({ city: z.string() }), // (AI SDK tool field) zod/Standard Schema — types `execute`
+  execute: async ({ city }) => fetchWeather(city), // (AI SDK tool field) memoized; `city` is inferred
+  namespace: "getWeather", // the cache key — a string, or (input, options) => string
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
+});
+
+await generateText({ model, tools: { getWeather }, prompt: "What's the weather in Paris?" });
+```
+
+Cache a whole map at once with `cachedTools` — pass tools built with the AI SDK's `tool()` (so each
+keeps full type inference); each is cached under its map key, so there's no per-tool namespace.
+
+```ts
+import { z } from "zod";
+import { generateText, tool } from "ai";
+import { cachedTools } from "@upstash/agentkit-ai-sdk";
+
+const tools = cachedTools(
+  {
+    getWeather: tool({
+      description: "Get the weather for a city",
+      inputSchema: z.object({ city: z.string() }),
+      execute: async ({ city }) => fetchWeather(city), // cached under "getWeather"
+    }),
+  },
+  {
+    redis, // optional: Upstash Redis client shared by every tool (defaults to Redis.fromEnv())
+    ttlSeconds: 600, // optional: default per-result TTL in seconds for every tool
+  },
+);
+
+await generateText({ model, tools, prompt: "What's the weather in Paris?" });
+```
+
+## Rate limiting
+
+`rateLimitedModel` wraps a model so each call is rate-limited with
+[Upstash Ratelimit](https://github.com/upstash/ratelimit-js) — throwing (or waiting) when the limit
+is exceeded. Build the model per request with a per-user `identifier` to limit by user. Keys are
+`agentkit:rateLimit:<identifier>`.
+
+```ts
+import { openai } from "@ai-sdk/openai";
+import { generateText } from "ai";
+import { rateLimitedModel } from "@upstash/agentkit-ai-sdk";
+
+const model = rateLimitedModel({
+  model: openai("gpt-5.4-mini"), // the language model to wrap
+  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
+  limit: 20, // optional: requests allowed per window (default: 10)
+  window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
+  namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
+  identifier: userId, // optional: per-user id — string or () => string | Promise<string> (default: "global")
+  onLimit: "throw", // optional: "throw" a RateLimitExceededError (default) or "wait" for a free token
+  waitTimeoutMs: 10000, // optional: max wait when onLimit is "wait" (default: 10000)
+  // ratelimit, // optional: a pre-built @upstash/ratelimit Ratelimit (overrides limit/window)
+});
+
+await generateText({ model, prompt: "..." }); // throws RateLimitExceededError once over the limit
+```
 
 ## Testing
 

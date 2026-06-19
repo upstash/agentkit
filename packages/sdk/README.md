@@ -2,7 +2,7 @@
 
 Core, framework-agnostic primitives for building AI agents — entirely on
 [Upstash Redis](https://upstash.com/). No vector database required: the "semantic" features (memory
-recall, semantic cache, RAG) are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
+recall, RAG) are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
 and its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM25-scored).
 
 ```bash
@@ -16,14 +16,13 @@ and own their Redis Search index internally:
 
 ```ts
 import { Redis } from "@upstash/redis";
-import { AgentMemory, SemanticCache, ToolCache, Rag } from "@upstash/agentkit-sdk";
+import { AgentMemory, Rag, ToolCache } from "@upstash/agentkit-sdk";
 
 const redis = Redis.fromEnv();
 
 const memory = new AgentMemory({ redis });
-const cache = new SemanticCache({ redis });
-const tools = new ToolCache({ redis });
 const rag = new Rag({ redis });
+const tools = new ToolCache({ redis });
 ```
 
 The raw search index handle is exposed for advanced use (`describe`, `count`, `waitIndexing`, `drop`):
@@ -37,37 +36,75 @@ const info = await rag.searchIndex.describe();
 
 ### Agent memory
 
-```ts
-const memory = new AgentMemory({ redis });
-await memory.add("The user prefers TypeScript", { scope: "user-123" });
-const hits = await memory.recall("typescript preference", { scope: "user-123" });
-```
-
-### Semantic cache
+Long-term, fuzzily-recalled memory scoped per agent/user. Stored at `agentkit:memory:<namespace>:<id>`.
 
 ```ts
-const cache = new SemanticCache({ redis, minScore: 1 });
-const generate = cache.wrap((prompt) => callYourLLM(prompt));
-await generate("What is the capital of France?"); // model call
-await generate("capital of France?"); // fuzzy cache hit — no model call
-```
+const memory = new AgentMemory({
+  redis, // the Upstash Redis client (the search index is created/managed internally)
+  namespace: "agentkit:memory", // optional: key prefix + index name base (defaults to "agentkit:memory")
+  minScore: 0, // optional: default BM25 relevance floor for recall
+});
 
-> Matching is fuzzy text (`$smart`), not embedding similarity — it catches typos and shared wording.
-> Scores are BM25 (unbounded), so tune `minScore` to your prompts.
+await memory.add("The user prefers TypeScript", {
+  namespace: "user-123", // optional: the memory scope (defaults to "default")
+  id: "pref-lang", // optional: stable id (generated when omitted)
+  metadata: { source: "chat" }, // optional: extra data stored with the memory
+});
 
-### Tool-call cache
+const hits = await memory.recall("typescript preference", {
+  namespace: "user-123", // optional: the memory scope to search (defaults to "default")
+  topK: 5, // optional: max memories to return (defaults to 5)
+  minScore: 0, // optional: BM25 relevance floor (defaults to the constructor's minScore)
+});
 
-```ts
-const tools = new ToolCache({ redis, ttlSeconds: 600 });
-const getWeather = tools.wrap("getWeather", (args) => fetchWeather(args));
+await memory.forget("pref-lang", { namespace: "user-123" }); // optional namespace (defaults to "default")
 ```
 
 ### RAG
 
+Chunk documents, index the chunks, then fuzzily retrieve the most relevant ones. Stored at
+`agentkit:rag:<docId>:<chunk>`.
+
 ```ts
-const rag = new Rag({ redis });
-await rag.ingest({ id: "doc-1", text: longDocument });
-const chunks = await rag.retrieve("how does redis search work?", { topK: 4 });
+const rag = new Rag({
+  redis, // the Upstash Redis client (the search index is created/managed internally)
+  namespace: "agentkit:rag", // optional: key prefix + index name base (defaults to "agentkit:rag")
+  chunkSize: 1000, // optional: target chunk size in characters (defaults to 1000)
+  chunkOverlap: 200, // optional: overlap between consecutive chunks in characters (defaults to 200)
+});
+
+await rag.ingest(
+  { id: "doc-1", text: longDocument, metadata: { source: "docs" } }, // `id`/`metadata` optional
+  { chunkSize: 1000, chunkOverlap: 200 }, // optional: per-call overrides of the constructor's chunking
+);
+
+const chunks = await rag.retrieve("how does redis search work?", {
+  topK: 4, // optional: max chunks to return (defaults to 5)
+  minScore: 0, // optional: BM25 relevance floor (defaults to 0)
+  docId: "doc-1", // optional: restrict retrieval to a single document
+});
+
+await rag.remove("doc-1", { chunkCount: chunks.length }); // remove a document's chunks
+```
+
+### Tool cache
+
+Memoize deterministic tool results in Redis, keyed by namespace + a stable hash of the arguments.
+Keys are `agentkit:toolCache:<namespace>:<hash>`.
+
+```ts
+const tools = new ToolCache({
+  redis, // the Upstash Redis client
+  namespace: "agentkit:toolCache", // optional: base key prefix (defaults to "agentkit:toolCache")
+  ttlSeconds: 600, // optional: default TTL in seconds for cached results (default: no expiry)
+});
+
+// `wrap` returns a memoized version of your execute, keyed by "getWeather" + the args hash.
+const getWeather = tools.wrap(
+  "getWeather", // the per-call cache namespace (e.g. the tool name)
+  (args) => fetchWeather(args), // the function to memoize
+  { ttlSeconds: 600 }, // optional: per-result TTL (overrides the constructor default)
+);
 ```
 
 ## Testing

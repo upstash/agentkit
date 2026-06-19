@@ -16,16 +16,14 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 
 ## Core features
 
-- **Agent memory** — long-term, fuzzily-recalled memories scoped per agent/user.
-- **Semantic cache** — reuse LLM responses for fuzzily similar prompts (`$smart`); shipped as an AI
-  SDK model middleware (`cachedModel`).
-- **Rate limiting** — an AI SDK model middleware backed by Upstash Ratelimit (`rateLimitedModel`).
+- **Agent memory** — long-term, fuzzily-recalled memories scoped per agent/user, plus drop-in
+  `recall`/`save` tools for `generateText`.
+- **Search tools** — schema-driven `search`/`aggregate`/`count` tools over Upstash Redis Search, and
+  RAG (chunking, indexing, retrieval) helpers.
+- **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
+  Eve's `defineSandbox`.
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
-- **Memory & search tools** — drop-in `recall`/`save` and schema-driven `search`/`aggregate`/`count`
-  tools for `generateText`.
-- **RAG** — chunking, indexing, and retrieval helpers over Upstash Redis Search.
-- **Code sandbox** — a drop-in [Upstash Box](https://github.com/upstash/box) backend for Eve's
-  `defineSandbox`.
+- **Rate limiting** — a rate-limited model wrapper backed by Upstash Ratelimit (`rateLimitedModel`).
 
 ## Examples
 
