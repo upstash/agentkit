@@ -34,6 +34,21 @@ import { semanticCacheMiddleware } from "@upstash/agentkit-ai-sdk";
 const model = wrapLanguageModel({ model: base, middleware: semanticCacheMiddleware({ redis }) });
 ```
 
+## Rate limiting
+
+`rateLimitedModel` wraps a model so each call is rate-limited with
+[Upstash Ratelimit](https://github.com/upstash/ratelimit-js) — throwing (or waiting) when the limit
+is exceeded. Build the model per request with a per-user `identifier` to limit by user.
+
+```ts
+import { rateLimitedModel } from "@upstash/agentkit-ai-sdk";
+
+const model = rateLimitedModel({ model: openai("gpt-4o"), redis, limit: 20, window: "1 m", identifier: userId });
+await generateText({ model, prompt }); // throws RateLimitExceededError once over the limit
+```
+
+Compose it with the cache: `rateLimitedModel({ model: semanticCachedModel({ model, redis }), redis })`.
+
 ## Tool-call cache
 
 `cacheTools` takes a map of tools and returns a map with the **same keys** whose `execute` is

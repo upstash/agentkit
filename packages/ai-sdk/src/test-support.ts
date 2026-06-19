@@ -13,6 +13,12 @@ export const hasRedisCreds = Boolean(
   process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
 );
 
+/** Whether a real OpenAI key is available for end-to-end model tests. */
+export const hasOpenAIKey = Boolean(process.env.OPENAI_API_KEY);
+
+/** The model used by tests (always gpt-4o-mini). */
+export const TEST_MODEL = "gpt-4o-mini";
+
 /** A real Upstash Redis client from env. Only call when `hasRedisCreds` is true. */
 export function testRedis(): Redis {
   return Redis.fromEnv();

@@ -1,58 +1,75 @@
+import { z } from "zod";
 import type { AgentMemory } from "@upstash/agentkit-sdk";
+import type { EveToolDefinition } from "./types.js";
 
-export interface MemoryHooksConfig {
-  /** The AgentKit {@link AgentMemory} backing long-term recall. */
+export interface MemoryToolConfig {
+  /** The {@link AgentMemory} the tool reads from / writes to. */
   memory: AgentMemory;
-  /** Memory scope (e.g. a user id or agent id). Defaults to `"default"`. */
+  /** Scope (e.g. a user id) the tool operates under. Defaults to `"default"`. */
   scope?: string;
-  /** How many memories to recall per call. Defaults to 5. */
+  /** Max memories returned by the recall tool. */
   topK?: number;
-  /** Similarity floor for recall. */
+  /** Minimum relevance score for recall. */
   minScore?: number;
-  /** Heading prepended to the formatted recall block. */
-  header?: string;
-}
-
-export interface MemoryHooks {
-  /**
-   * Recall memories relevant to `input` and format them as a context string suitable for injecting
-   * into an Eve agent's instructions. Returns an empty string when nothing is recalled.
-   */
-  recall(input: string): Promise<string>;
-  /** Persist a piece of text as a long-term memory under the configured scope. */
-  remember(text: string, opts?: { metadata?: Record<string, unknown> }): Promise<void>;
 }
 
 /**
- * Build recall/remember hooks over an AgentKit {@link AgentMemory}, scoped to a subject. `recall`
- * produces a ready-to-inject context block; `remember` persists new memories.
+ * A `defineTool` config that lets the agent recall long-term memories. Drop it into an Eve tools file:
  *
  * ```ts
- * const hooks = createMemoryHooks({ memory, scope: "user-123" });
- * const context = await hooks.recall("what language do I prefer?");
- * // -> "Relevant memories:\n- The user prefers TypeScript"
- * await hooks.remember("The user prefers TypeScript");
+ * // agent/tools/recall_memory.ts
+ * import { defineTool } from "eve/tools";
+ * import { AgentMemory } from "@upstash/agentkit-sdk";
+ * import { recallMemoryTool } from "@upstash/agentkit-eve";
+ * import { redis } from "../redis";
+ *
+ * export default defineTool(recallMemoryTool({ memory: new AgentMemory({ redis }), scope: userId }));
  * ```
  */
-export function createMemoryHooks(config: MemoryHooksConfig): MemoryHooks {
-  const scope = config.scope ?? "default";
-  const header = config.header ?? "Relevant memories:";
+export function recallMemoryTool(
+  config: MemoryToolConfig,
+): EveToolDefinition<{ query: string }, { text: string; score: number }[]> {
+  const { memory, scope, topK, minScore } = config;
   return {
-    async recall(input: string): Promise<string> {
-      const recalled = await config.memory.recall(input, {
-        scope,
-        topK: config.topK ?? 5,
-        ...(config.minScore !== undefined ? { minScore: config.minScore } : {}),
+    description:
+      "Recall relevant long-term memories about the user before answering. Call this when prior " +
+      "context about the user would help.",
+    inputSchema: z.object({
+      query: z.string().describe("What to recall — the user's question, topic, or keywords."),
+    }),
+    execute: async ({ query }) => {
+      const hits = await memory.recall(query, {
+        ...(scope !== undefined ? { scope } : {}),
+        ...(topK !== undefined ? { topK } : {}),
+        ...(minScore !== undefined ? { minScore } : {}),
       });
-      if (recalled.length === 0) return "";
-      const lines = recalled.map((m) => `- ${m.text}`);
-      return `${header}\n${lines.join("\n")}`;
+      return hits.map((h) => ({ text: h.text, score: h.score }));
     },
-    async remember(text: string, opts = {}): Promise<void> {
-      await config.memory.add(text, {
-        scope,
-        ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
-      });
+  };
+}
+
+/**
+ * A `defineTool` config that lets the agent save a durable fact to long-term memory.
+ *
+ * ```ts
+ * // agent/tools/save_memory.ts
+ * export default defineTool(saveMemoryTool({ memory: new AgentMemory({ redis }), scope: userId }));
+ * ```
+ */
+export function saveMemoryTool(
+  config: MemoryToolConfig,
+): EveToolDefinition<{ text: string }, { id: string; saved: boolean }> {
+  const { memory, scope } = config;
+  return {
+    description:
+      "Save a durable fact about the user to long-term memory so it can be recalled in future " +
+      "conversations (preferences, identity, goals, …).",
+    inputSchema: z.object({
+      text: z.string().describe("A concise, durable fact about the user to remember for later."),
+    }),
+    execute: async ({ text }) => {
+      const record = await memory.add(text, scope !== undefined ? { scope } : {});
+      return { id: record.id, saved: true };
     },
   };
 }

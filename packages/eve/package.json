@@ -1,7 +1,7 @@
 {
   "name": "@upstash/agentkit-eve",
   "version": "0.1.0",
-  "description": "Vercel Eve framework adapter for Upstash AgentKit: persistent chat history, semantic-cached generation, sandboxed/cached tools, memory & RAG-augmented instructions, and telemetry.",
+  "description": "Vercel Eve framework adapter for Upstash AgentKit: cached tools, long-term memory tools, and an Upstash Box code-execution sandbox backend.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,6 +15,10 @@
     "./sandbox": {
       "types": "./dist/sandbox.d.ts",
       "import": "./dist/sandbox.js"
+    },
+    "./model": {
+      "types": "./dist/model.d.ts",
+      "import": "./dist/model.js"
     }
   },
   "files": [
@@ -34,24 +38,30 @@
     "ai",
     "agent",
     "memory",
-    "rag",
-    "llm",
+    "sandbox",
+    "box",
     "cache",
     "tools"
   ],
   "dependencies": {
+    "@upstash/agentkit-ai-sdk": "workspace:*",
     "@upstash/agentkit-sdk": "workspace:*",
-    "@upstash/box": "^0.5.1"
+    "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
+    "@upstash/box": "^0.5.1",
     "@upstash/redis": "^1.38.0",
     "dotenv": "^16.4.5"
   },
   "peerDependencies": {
+    "@upstash/box": ">=0.5.0",
     "@upstash/redis": ">=1.38.0",
     "eve": ">=0.0.1"
   },
   "peerDependenciesMeta": {
+    "@upstash/box": {
+      "optional": true
+    },
     "eve": {
       "optional": true
     }

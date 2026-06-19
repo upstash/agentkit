@@ -1,13 +1,14 @@
 /**
- * Sandbox integration for **Eve** (`eve/sandbox`, https://eve.dev/docs/sandbox), backed by
+ * Sandbox backend for **Eve** (`eve/sandbox`, https://eve.dev/docs/sandbox), powered by
  * **Upstash Box** (`@upstash/box`) — a serverless cloud sandbox for AI agents.
  *
- * The headline export is {@link upstash}: a drop-in replacement for Eve's `vercel()` backend. Take
- * any Eve sandbox file and swap the backend import:
+ * `upstash()` is a drop-in replacement for Eve's `vercel()` backend. Take any Eve sandbox file and
+ * swap the backend import:
  *
  * ```ts
+ * // agent/sandbox.ts
  * import { defineSandbox } from "eve/sandbox";
- * import { upstash } from "@upstash/agentkit-eve/sandbox";
+ * import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: import { vercel } from "eve/sandbox/vercel"
  *
  * export default defineSandbox({
  *   backend: upstash({ runtime: "node24", resources: { vcpus: 2 } }),
@@ -22,12 +23,10 @@
  * });
  * ```
  *
- * It also provides {@link instrumentSandboxSession} / {@link withSandboxInstrumentation} to memoize
- * (via {@link ToolCache}) each `session.run`.
+ * `@upstash/box` is an optional peer dependency — only needed when you import this entry point.
  */
 import { Box } from "@upstash/box";
 import type { BoxSize, NetworkPolicy, Runtime } from "@upstash/box";
-import type { ToolCache } from "@upstash/agentkit-sdk";
 
 /** Result of running a command in a sandbox session. */
 export interface EveSandboxRunResult {
@@ -40,7 +39,7 @@ export interface EveSandboxRunResult {
 /** A network policy: an Eve-style shorthand string or a full Box {@link NetworkPolicy}. */
 export type SandboxNetworkPolicy = "allow-all" | "deny-all" | NetworkPolicy;
 
-/** A live sandbox session. Backed by an Upstash Box when created via {@link upstash}. */
+/** A live sandbox session, backed by an Upstash Box. */
 export interface EveSandboxSession {
   run(opts: { command: string; [key: string]: unknown }): Promise<EveSandboxRunResult>;
   readTextFile(opts: { path: string }): Promise<string>;
@@ -54,22 +53,8 @@ export interface EveSandboxSession {
   destroy(): Promise<void>;
   readonly id: string;
   readonly cwd: string;
-  [key: string]: unknown;
-}
-
-/** The `use()` callback Eve hands to `bootstrap` / `onSession`. */
-export type EveSandboxUse = (opts?: {
-  networkPolicy?: SandboxNetworkPolicy;
-  [key: string]: unknown;
-}) => Promise<EveSandboxSession>;
-
-/** Structural shape of the config object accepted by Eve's `defineSandbox`. */
-export interface DefineSandboxConfig {
-  backend?: unknown;
-  revalidationKey?: () => string;
-  bootstrap?: (args: { use: EveSandboxUse }) => Promise<void> | void;
-  onSession?: (args: { use: EveSandboxUse; ctx?: unknown }) => Promise<void> | void;
-  [key: string]: unknown;
+  /** Escape hatch to the underlying Box for advanced operations (git, agents, files, …). */
+  readonly box: Box;
 }
 
 /** A sandbox backend Eve's `defineSandbox` can drive (the slot `vercel()` / `upstash()` fill). */
@@ -133,6 +118,7 @@ function boxSession(box: Box): EveSandboxSession {
     get cwd() {
       return box.cwd;
     },
+    box,
     async run({ command }) {
       const run = await box.exec.command(command);
       const exitCode = run.exitCode ?? 0;
@@ -158,8 +144,6 @@ function boxSession(box: Box): EveSandboxSession {
     async destroy() {
       await box.delete();
     },
-    /** Escape hatch to the underlying Box for advanced operations (git, agents, files, …). */
-    box,
   };
 }
 
@@ -183,48 +167,5 @@ export function upstash(config: UpstashBackendConfig = {}): SandboxBackend {
       if (policy) await box.updateNetworkPolicy(toBoxNetworkPolicy(policy));
       return boxSession(box);
     },
-  };
-}
-
-export interface SandboxInstrumentation {
-  /** Memoize deterministic command results (keyed by command + options). */
-  toolCache: ToolCache;
-}
-
-/**
- * Wrap a sandbox {@link EveSandboxSession} so each `run` is memoized in a {@link ToolCache} —
- * re-running an identical command returns the cached result. Other operations are delegated unchanged.
- */
-export function instrumentSandboxSession<T extends Pick<EveSandboxSession, "run">>(
-  session: T,
-  instrumentation: SandboxInstrumentation,
-): T {
-  const cachedRun = instrumentation.toolCache.wrap("eve.sandbox.run", (key: unknown) =>
-    session.run(key as { command: string }),
-  );
-  return { ...session, run: (opts) => cachedRun(opts) } as T;
-}
-
-/**
- * Wrap an Eve `defineSandbox` config so every session obtained via `use()` is automatically
- * memoized via AgentKit's {@link ToolCache}. Pass the result to Eve's real `defineSandbox`.
- */
-export function withSandboxInstrumentation(
-  config: DefineSandboxConfig,
-  instrumentation: SandboxInstrumentation,
-): DefineSandboxConfig {
-  const wrapUse =
-    (use: EveSandboxUse): EveSandboxUse =>
-    async (opts) =>
-      instrumentSandboxSession(await use(opts), instrumentation);
-
-  return {
-    ...config,
-    ...(config.bootstrap
-      ? { bootstrap: (args) => config.bootstrap!({ ...args, use: wrapUse(args.use) }) }
-      : {}),
-    ...(config.onSession
-      ? { onSession: (args) => config.onSession!({ ...args, use: wrapUse(args.use) }) }
-      : {}),
   };
 }

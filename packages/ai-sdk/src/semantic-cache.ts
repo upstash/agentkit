@@ -46,6 +46,15 @@ function resolveCache(config: SemanticCacheMiddlewareConfig): SemanticCache {
   });
 }
 
+/** Revive non-JSON fields lost by the cache round-trip (the AI SDK expects `response.timestamp` to be a Date). */
+function reviveResult(parsed: unknown): unknown {
+  const result = parsed as { response?: { timestamp?: unknown } };
+  if (result?.response?.timestamp && typeof result.response.timestamp === "string") {
+    result.response.timestamp = new Date(result.response.timestamp);
+  }
+  return result;
+}
+
 /**
  * An [AI SDK language-model middleware](https://ai-sdk.dev/docs/ai-sdk-core/middleware#caching) that
  * serves generations from a semantic cache: when a prompt fuzzily matches a previously-seen one
@@ -65,7 +74,8 @@ export function semanticCacheMiddleware(
       const key = promptToText(params.prompt);
       if (key) {
         const hit = await cache.get(key);
-        if (hit) return JSON.parse(hit.response) as Awaited<ReturnType<typeof doGenerate>>;
+        if (hit)
+          return reviveResult(JSON.parse(hit.response)) as Awaited<ReturnType<typeof doGenerate>>;
       }
       const result = await doGenerate();
       if (key) await cache.set(key, JSON.stringify(result));

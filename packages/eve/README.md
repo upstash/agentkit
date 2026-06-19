@@ -1,59 +1,98 @@
 # @upstash/agentkit-eve
 
-Adapter that wires [Upstash AgentKit](https://upstash.com/) into **Eve, the Vercel agent
-framework**. It brings the core [`@upstash/agentkit-sdk`](https://www.npmjs.com/package/@upstash/agentkit-sdk)
-primitives — chat history, semantic & tool caching, agent memory, and RAG — to an Eve agent, plus a
-real code-execution sandbox backend (Upstash Box).
+Adapter that brings [Upstash AgentKit](https://upstash.com/) to **Eve, the Vercel agent framework**.
+Eve is file-centric, so this package ships small pieces you drop into your `agent/` tree: cached
+tools, long-term memory tools, model wrappers (semantic cache + rate limit), and a real
+code-execution **sandbox backend** powered by [Upstash Box](https://github.com/upstash/box).
 
 ```bash
 pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
-# in your app:
-pnpm add eve
+# in your app (Eve + the OpenAI provider, plus Box only if you use /sandbox):
+pnpm add eve @ai-sdk/openai @upstash/box
 ```
 
-> The adapter never imports `eve` — it codes against structural shapes, so it builds and tests fully
-> offline. `eve` is an _optional_ peer dependency; `@upstash/redis` is required. Everything is backed
-> by Upstash Redis (search uses Redis Search's `$smart` fuzzy operator — no vector database).
-
-## `withAgentKit`
-
-Returns an augmented copy of your Eve agent config whose tools are cached + traced and whose
-instructions are augmented with recalled memories / RAG context. Pass only the `redis` client:
+A small shared Redis client is handy:
 
 ```ts
+// agent/redis.ts
 import { Redis } from "@upstash/redis";
-import { withAgentKit } from "@upstash/agentkit-eve";
-
-const redis = Redis.fromEnv();
-
-const { agent, history, memory, trace } = await withAgentKit(
-  { instructions: "You are a helpful assistant.", tools, model },
-  { redis, sessionId: "session-1", scope: "user-123", useMemory: true, context: userInput },
-);
-
-const prior = await history?.load();
-const text = await trace("run", () => runEveAgent(agent, [...(prior ?? []), userMessage]));
+export const redis = Redis.fromEnv();
 ```
 
-## Pieces
+## Model wrappers (`agent/index.ts`)
 
-### Cached tools
+Wrap your agent's model with a semantic cache and/or a rate limiter (re-exported from the AI SDK
+adapter — Eve uses Vercel AI SDK models). See [agent config](https://eve.dev/docs/agent-config).
 
 ```ts
-import { cacheTools } from "@upstash/agentkit-eve";
+// agent/index.ts
+import { openai } from "@ai-sdk/openai";
+import { semanticCachedModel, rateLimitedModel } from "@upstash/agentkit-eve/model";
+import { redis } from "./redis";
+
+export const model = rateLimitedModel({
+  model: semanticCachedModel({ model: openai("gpt-5.4-mini"), redis }),
+  redis,
+  limit: 20,
+  window: "1 m",
+});
+```
+
+## Cached tools (`agent/tools/*.ts`)
+
+Wrap a tool's `execute` with `cachedExecute` so identical inputs are memoized. Eve uses the filename
+as the tool name — pass it as the cache key. See [tools](https://eve.dev/docs/tools).
+
+```ts
+// agent/tools/get_weather.ts
+import { defineTool } from "eve/tools";
+import { z } from "zod";
+import { cachedExecute } from "@upstash/agentkit-eve";
 import { ToolCache } from "@upstash/agentkit-sdk";
+import { redis } from "../redis";
 
-const tools = cacheTools(agent.tools, { toolCache: new ToolCache({ redis }) });
+export default defineTool({
+  description: "Get the current weather for a city.",
+  inputSchema: z.object({ city: z.string() }),
+  execute: cachedExecute("get_weather", async ({ city }) => fetchWeather(city), {
+    toolCache: new ToolCache({ redis }),
+  }),
+});
 ```
 
-### Code-execution sandbox — `upstash()` backend
+## Memory tools (`agent/tools/*.ts`)
 
-A drop-in replacement for Eve's `vercel()` backend, powered by [Upstash Box](https://github.com/upstash/box).
-Take any Eve sandbox file and swap the backend import — everything else stays the same:
+`recallMemoryTool` and `saveMemoryTool` return ready `defineTool` configs — one file each.
 
 ```ts
+// agent/tools/recall_memory.ts
+import { defineTool } from "eve/tools";
+import { AgentMemory } from "@upstash/agentkit-sdk";
+import { recallMemoryTool } from "@upstash/agentkit-eve";
+import { redis } from "../redis";
+
+export default defineTool(recallMemoryTool({ memory: new AgentMemory({ redis }), scope: "user-123" }));
+```
+
+```ts
+// agent/tools/save_memory.ts
+import { defineTool } from "eve/tools";
+import { AgentMemory } from "@upstash/agentkit-sdk";
+import { saveMemoryTool } from "@upstash/agentkit-eve";
+import { redis } from "../redis";
+
+export default defineTool(saveMemoryTool({ memory: new AgentMemory({ redis }), scope: "user-123" }));
+```
+
+## Code-execution sandbox (`agent/sandbox.ts`)
+
+`upstash()` is a drop-in replacement for Eve's `vercel()` backend, powered by Upstash Box. Swap the
+backend import and keep the rest of your [sandbox file](https://eve.dev/docs/sandbox) the same.
+
+```ts
+// agent/sandbox.ts
 import { defineSandbox } from "eve/sandbox";
-import { upstash } from "@upstash/agentkit-eve/sandbox";
+import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: import { vercel } from "eve/sandbox/vercel"
 
 export default defineSandbox({
   backend: upstash({ runtime: "node24", resources: { vcpus: 2 } }),
@@ -68,44 +107,14 @@ export default defineSandbox({
 });
 ```
 
-Set `UPSTASH_BOX_API_KEY` (or pass `apiKey`). Each session is a real Box: `run`, `readTextFile` /
-`writeTextFile`, `setNetworkPolicy`, `getPublicURL`, `stop`/`destroy`, and `.box` for the full SDK.
-
-Optionally memoize every `session.run` via a ToolCache:
-
-```ts
-import { withSandboxInstrumentation } from "@upstash/agentkit-eve/sandbox";
-import { ToolCache } from "@upstash/agentkit-sdk";
-
-export default defineSandbox(
-  withSandboxInstrumentation(
-    { backend: upstash(), async onSession({ use }) { await (await use()).run({ command: "npm test" }); } },
-    { toolCache: new ToolCache({ redis }) },
-  ),
-);
-```
-
-### Memory, history, semantic cache
-
-```ts
-import { AgentMemory, ChatHistory, SemanticCache } from "@upstash/agentkit-sdk";
-import { createMemoryHooks, createHistoryHooks, withSemanticCache } from "@upstash/agentkit-eve";
-
-const memory = createMemoryHooks({ memory: new AgentMemory({ redis }), scope: "user-123" });
-const history = createHistoryHooks({ history: new ChatHistory({ redis }), sessionId: "s-1" });
-const cachedGenerate = withSemanticCache(generate, { cache: new SemanticCache({ redis }) });
-```
+Set `UPSTASH_BOX_API_KEY` (or pass `apiKey`). `@upstash/box` is an optional peer dependency — only
+needed when you import `@upstash/agentkit-eve/sandbox`.
 
 ## Testing
 
-Tests run against a **real Upstash Redis** (no Redis mock); only the LLM is mocked via `MockModel`.
-Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (suites skip when absent).
-
-```ts
-import { MockModel } from "@upstash/agentkit-sdk/testing";
-```
-
-> The structural Eve types may need adjusting as Eve stabilizes.
+Tests run against a **real Upstash Redis** (and a real Box when `UPSTASH_BOX_API_KEY` is set); only
+LLM calls are mocked. Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (suites skip when
+absent).
 
 ## License
 

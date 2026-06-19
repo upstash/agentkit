@@ -1,55 +1,33 @@
 import { ToolCache } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { cacheTools } from "./tools.js";
+import { cachedExecute } from "./tools.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
-import type { EveTool } from "./types.js";
 
-describe.skipIf(!hasRedisCreds)("cacheTools (live Redis)", () => {
+describe.skipIf(!hasRedisCreds)("cachedExecute (live Redis)", () => {
   const redis = testRedis();
+  const namespace = uniqueNamespace("eve-tool");
 
   afterAll(async () => {
-    await cleanupKeys(redis, "test:eve-tool");
+    await cleanupKeys(redis, namespace);
   });
 
-  it("caches results so execute runs once across two identical calls", async () => {
-    const execute = vi.fn(async (args: unknown) => (args as { x: number }).x * 2);
-    const toolCache = new ToolCache({ redis, namespace: uniqueNamespace("eve-tool") });
-    const [wrapped] = cacheTools([{ name: "double", execute } as EveTool], { toolCache });
+  it("memoizes identical inputs so the underlying execute runs once", async () => {
+    const toolCache = new ToolCache({ redis, namespace });
+    const fn = vi.fn(async ({ x }: { x: number }) => x * 2);
+    const execute = cachedExecute("double", fn, { toolCache });
 
-    expect(await wrapped!.execute({ x: 21 })).toBe(42);
-    expect(await wrapped!.execute({ x: 21 })).toBe(42);
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(await execute({ x: 21 })).toBe(42);
+    expect(await execute({ x: 21 })).toBe(42);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it("does not share cache entries across different args", async () => {
-    const execute = vi.fn(async (args: unknown) => (args as { x: number }).x + 1);
-    const toolCache = new ToolCache({ redis, namespace: uniqueNamespace("eve-tool") });
-    const [wrapped] = cacheTools([{ name: "inc", execute } as EveTool], { toolCache });
+  it("does not share cache across different inputs", async () => {
+    const toolCache = new ToolCache({ redis, namespace });
+    const fn = vi.fn(async ({ x }: { x: number }) => x + 1);
+    const execute = cachedExecute("inc", fn, { toolCache });
 
-    await wrapped!.execute({ x: 1 });
-    await wrapped!.execute({ x: 2 });
-    expect(execute).toHaveBeenCalledTimes(2);
-  });
-
-  it("runs without a cache (passthrough)", async () => {
-    const execute = vi.fn(async () => "ok");
-    const [wrapped] = cacheTools([{ name: "t", execute } as EveTool]);
-    expect(await wrapped!.execute({})).toBe("ok");
-    expect(await wrapped!.execute({})).toBe("ok");
-    expect(execute).toHaveBeenCalledTimes(2);
-  });
-
-  it("preserves name/description/parameters on wrapped tools", () => {
-    const [wrapped] = cacheTools([
-      {
-        name: "search",
-        description: "search the web",
-        parameters: { type: "object" },
-        execute: async () => "x",
-      } as EveTool,
-    ]);
-    expect(wrapped!.name).toBe("search");
-    expect(wrapped!.description).toBe("search the web");
-    expect(wrapped!.parameters).toEqual({ type: "object" });
+    await execute({ x: 1 });
+    await execute({ x: 2 });
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 });
