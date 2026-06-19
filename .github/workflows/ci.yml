@@ -16,7 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        # pnpm 11 (pinned via packageManager) requires Node 24+, so the toolchain
+        # runs on 24. The published packages still target Node >=18 (see engines).
+        node-version: [24]
     steps:
       - uses: actions/checkout@v4
 

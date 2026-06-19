@@ -1,4 +1,7 @@
 packages:
   - "packages/*"
+  - "examples/*"
 allowBuilds:
   esbuild: true
+  sharp: true
+  unrs-resolver: true
