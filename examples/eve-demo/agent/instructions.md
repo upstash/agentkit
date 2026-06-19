@@ -14,3 +14,10 @@ conversations, built on Upstash AgentKit.
 
 - Use `get_weather` for current weather questions. Its results are cached, so
   asking again for the same city is cheap.
+
+# Sandbox
+
+- You have an isolated `/workspace` sandbox (backed by Upstash Box). Use the
+  built-in `bash`, `read_file`, `write_file`, `glob`, and `grep` tools to run
+  shell commands and execute code there when a task calls for it. The sandbox is
+  separate from the app, so it is safe to install packages and run scripts.
