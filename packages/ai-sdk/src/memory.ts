@@ -1,4 +1,4 @@
-import { tool, type ToolCallOptions, type ToolSet } from "ai";
+import { tool, type ToolExecutionOptions, type ToolSet } from "ai";
 import { z } from "zod";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
@@ -8,7 +8,9 @@ import { Redis } from "@upstash/redis";
  * single-user agent, avoid in multi-tenant prod) — or a function deriving the scope per call from the
  * tool input and call options (e.g. a user id).
  */
-export type MemoryScope = string | ((input: unknown, options: ToolCallOptions) => string);
+export type MemoryScope =
+  | string
+  | ((input: unknown, options: ToolExecutionOptions<never>) => string);
 
 export interface CreateMemoryToolsConfig {
   /** Scope (e.g. a user id) the tools operate under — a string or a per-call function. */
@@ -43,7 +45,7 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
   const recallName = config.recallToolName ?? "recall_memory";
   const saveName = config.saveToolName ?? "save_memory";
 
-  const resolveScope = (input: unknown, options: ToolCallOptions): string =>
+  const resolveScope = (input: unknown, options: ToolExecutionOptions<never>): string =>
     typeof scope === "function" ? scope(input, options) : scope;
 
   return {
@@ -56,7 +58,7 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
       }),
       execute: async (input, options) => {
         const hits = await memory.recall(input.query, {
-          scope: resolveScope(input, options),
+          scope: resolveScope(input, options as ToolExecutionOptions<never>),
           ...(topK !== undefined ? { topK } : {}),
           ...(minScore !== undefined ? { minScore } : {}),
         });
@@ -71,7 +73,9 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
         text: z.string().describe("A concise, durable fact about the user to remember for later."),
       }),
       execute: async (input, options) => {
-        const record = await memory.add(input.text, { scope: resolveScope(input, options) });
+        const record = await memory.add(input.text, {
+          scope: resolveScope(input, options as ToolExecutionOptions<never>),
+        });
         return { id: record.id, saved: true };
       },
     }),

@@ -5,5 +5,5 @@ allowBuilds:
   esbuild: true
   sharp: true
   unrs-resolver: true
-minimumReleaseAgeExclude:
-  - eve@0.11.7
+# The whole repo is on AI SDK v7-beta; don't gate beta installs by release age.
+minimumReleaseAge: 0

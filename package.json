@@ -2,7 +2,7 @@
   "name": "redis-agentkit",
   "version": "0.0.0",
   "private": true,
-  "description": "Redis AgentKit — agent memory, chat history, semantic & tool caching, telemetry, sandbox, and RAG primitives for building AI agents on Upstash Redis.",
+  "description": "Redis AgentKit — agent memory, model & tool caching, rate limiting, search tools, sandbox, and RAG primitives for building AI agents on Upstash Redis.",
   "license": "MIT",
   "type": "module",
   "scripts": {

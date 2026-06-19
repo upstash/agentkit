@@ -1,9 +1,11 @@
-import { tool, type Tool, type ToolCallOptions } from "ai";
+import { tool, type Tool, type ToolExecutionOptions } from "ai";
 import { ToolCache } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 
 /** The cache key for a tool call: a fixed string, or a function of the tool input + call options. */
-export type CachePrefix = string | ((input: unknown, options: ToolCallOptions) => string);
+export type CachePrefix =
+  | string
+  | ((input: unknown, options: ToolExecutionOptions<never>) => string);
 
 export interface CachedToolConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -19,7 +21,7 @@ export interface CachedToolConfig {
   /** The tool's input schema (zod or any Standard Schema). */
   inputSchema: unknown;
   /** The tool implementation. Memoized by `cachePrefix` + a stable hash of the input. */
-  execute: (input: never, options: ToolCallOptions) => unknown;
+  execute: (input: never, options: ToolExecutionOptions<never>) => unknown;
   /** Any other AI SDK `tool()` fields (e.g. `outputSchema`, `toModelOutput`). */
   [key: string]: unknown;
 }
@@ -45,12 +47,14 @@ export function cachedTool(config: CachedToolConfig): Tool {
   const { redis, toolCache, ttlSeconds, cachePrefix, execute, ...toolConfig } = config;
   const cache = toolCache ?? new ToolCache({ redis: redis ?? Redis.fromEnv() });
 
-  const wrapped = (input: unknown, options: ToolCallOptions): unknown => {
+  const wrapped = (input: unknown, options: ToolExecutionOptions<never>): unknown => {
     const name = typeof cachePrefix === "function" ? cachePrefix(input, options) : cachePrefix;
     const run = cache.wrap(
       name,
       (i: unknown) =>
-        Promise.resolve((execute as (i: unknown, o: ToolCallOptions) => unknown)(i, options)),
+        Promise.resolve(
+          (execute as (i: unknown, o: ToolExecutionOptions<never>) => unknown)(i, options),
+        ),
       ttlSeconds !== undefined ? { ttlSeconds } : {},
     );
     return run(input);

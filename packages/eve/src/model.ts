@@ -1,7 +1,7 @@
 /**
  * Model wrappers for an Eve agent's `model` (see https://eve.dev/docs/agent-config), re-exported from
  * the AI SDK adapter — Eve uses Vercel AI SDK language models, so the same middleware applies. Wrap
- * your model with these in your agent config to add semantic caching and rate limiting.
+ * your model with these in your agent config to add response caching and rate limiting.
  *
  * ```ts
  * // agent/index.ts

@@ -1,7 +1,7 @@
 {
   "name": "@upstash/agentkit-ai-sdk",
   "version": "0.1.0",
-  "description": "Vercel AI SDK adapter for Upstash AgentKit: persistent chat history, semantic-cached generation, cached tools, memory injection, and telemetry.",
+  "description": "Vercel AI SDK adapter for Upstash AgentKit: model response cache, rate limiting, cached tools, and memory + Redis-Search tools.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -44,12 +44,12 @@
   "devDependencies": {
     "@upstash/redis": "^1.38.0",
     "dotenv": "^16.4.5",
-    "ai": "^5",
-    "@ai-sdk/provider": "^2",
-    "@ai-sdk/openai": "^2"
+    "ai": "7.0.0-beta.178",
+    "@ai-sdk/provider": "^4.0.0-beta",
+    "@ai-sdk/openai": "^4.0.0-beta"
   },
   "peerDependencies": {
-    "ai": ">=5"
+    "ai": ">=7.0.0-beta"
   },
   "peerDependenciesMeta": {}
 }

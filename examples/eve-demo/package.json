@@ -48,12 +48,6 @@
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3"
   },
-  "overrides": {
-    "ai": "7.0.0-beta.178"
-  },
-  "resolutions": {
-    "ai": "7.0.0-beta.178"
-  },
   "engines": {
     "node": "24.x"
   }
