@@ -11,9 +11,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | Package | Description |
 | --- | --- |
 | [`@upstash/agentkit-sdk`](./packages/sdk) | Core, framework-agnostic primitives. |
-| [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://sdk.vercel.ai). |
-| [`@upstash/agentkit-tanstack-ai`](./packages/tanstack-ai) | Adapter for TanStack AI. |
-| [`@upstash/agentkit-langchain`](./packages/langchain) | Adapter for [LangChain.js](https://js.langchain.com). |
+| [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
 
 ## Core features

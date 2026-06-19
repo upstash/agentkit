@@ -1,15 +1,11 @@
 ---
 "@upstash/agentkit-sdk": minor
 "@upstash/agentkit-ai-sdk": minor
-"@upstash/agentkit-tanstack-ai": minor
-"@upstash/agentkit-langchain": minor
 "@upstash/agentkit-eve": minor
 ---
 
 Initial release of Redis AgentKit.
 
-- **@upstash/agentkit-sdk** — core primitives: agent memory, chat history, semantic cache, tool-call cache, telemetry, sandbox (AI SDK v7-style tool harness), and RAG, all on Upstash Redis (search powered by Redis Search's `$smart` fuzzy operator — no vector database required), with structural interfaces and offline test doubles.
-- **@upstash/agentkit-ai-sdk** — Vercel AI SDK adapter.
-- **@upstash/agentkit-tanstack-ai** — TanStack AI adapter.
-- **@upstash/agentkit-langchain** — LangChain.js adapter.
-- **@upstash/agentkit-eve** — Vercel Eve framework adapter.
+- **@upstash/agentkit-sdk** — core primitives on Upstash Redis: agent memory, semantic cache, tool-call cache, and RAG, with search powered by Upstash Redis Search's `$smart` fuzzy operator (no vector database required).
+- **@upstash/agentkit-ai-sdk** — Vercel AI SDK adapter: semantic-cache + rate-limit model middleware, tool-call caching, and memory / Redis-Search tools.
+- **@upstash/agentkit-eve** — Vercel Eve adapter: cached tools, memory tools, model wrappers, and an Upstash Box code-execution sandbox backend.
