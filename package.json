@@ -12,7 +12,7 @@
     "test:watch": "vitest",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
-    "typecheck": "pnpm -r --filter \"./packages/*\" typecheck",
+    "typecheck": "pnpm --filter @upstash/agentkit-sdk build && pnpm -r --filter \"./packages/*\" typecheck",
     "clean": "pnpm -r --filter \"./packages/*\" clean",
     "changeset": "changeset",
     "version": "changeset version",
