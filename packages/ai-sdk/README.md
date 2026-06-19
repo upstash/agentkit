@@ -25,7 +25,6 @@ const tools = createMemoryTools({
   minScore: 0, // optional: BM25 relevance floor for recall
   recallToolName: "recall_memory", // optional: override the recall tool's name
   saveToolName: "save_memory", // optional: override the save tool's name
-  // memory, // optional: a pre-built AgentMemory (overrides `redis`)
 });
 
 await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });

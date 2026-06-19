@@ -35,7 +35,6 @@ export default defineMemoryRecallTool({
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   topK: 5, // optional: max memories to return
   minScore: 0, // optional: BM25 relevance floor for recall
-  // memory, // optional: a pre-built AgentMemory (overrides `redis`)
 });
 ```
 
@@ -97,7 +96,6 @@ export default defineCachedTool({
   namespace: "get_weather", // the cache key — a string, or (input, ctx) => string
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
-  // toolCache, // optional: a pre-built ToolCache (overrides `redis`)
 });
 ```
 

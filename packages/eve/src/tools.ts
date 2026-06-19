@@ -9,8 +9,6 @@ export type CacheNamespace<TInput> = string | ((input: TInput, ctx: ToolContext)
 export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOutput> & {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /** Pre-built tool cache (overrides `redis`). */
-  toolCache?: ToolCache;
   /** Cache key — a string, or a function of the tool input + context (e.g. to scope by user). */
   namespace: CacheNamespace<TInput>;
   /** Per-result TTL (seconds). */
@@ -38,8 +36,8 @@ export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOu
 export function defineCachedTool<TInput, TOutput>(
   config: DefineCachedToolConfig<TInput, TOutput>,
 ): ToolDefinition<TInput, TOutput> {
-  const { redis, toolCache, namespace, ttlSeconds, execute, ...rest } = config;
-  const cache = toolCache ?? new ToolCache({ redis: redis ?? Redis.fromEnv() });
+  const { redis, namespace, ttlSeconds, execute, ...rest } = config;
+  const cache = new ToolCache({ redis: redis ?? Redis.fromEnv() });
 
   return defineTool({
     ...rest,

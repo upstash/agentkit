@@ -1,7 +1,7 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it } from "vitest";
 import { createMemoryTools } from "./memory.js";
-import { hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
 const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
 function call<R>(execute: unknown, input: unknown): Promise<R> {
@@ -9,11 +9,15 @@ function call<R>(execute: unknown, input: unknown): Promise<R> {
 }
 
 describe.skipIf(!hasRedisCreds)("createMemoryTools (live Redis)", () => {
-  const memory = new AgentMemory({ redis: testRedis(), namespace: uniqueNamespace("aisdk-mem") });
-  const tools = createMemoryTools({ memory, namespace: "user-1" });
+  const redis = testRedis();
+  // The tools own their AgentMemory (default `agentkit:memory` index); isolate this run by scope.
+  const ns = uniqueNamespace("aisdk-mem");
+  const tools = createMemoryTools({ redis, namespace: ns });
+  // A throwaway handle on the same default index, just to wait for indexing before recall.
+  const index = new AgentMemory({ redis }).searchIndex;
 
   afterAll(async () => {
-    await memory.searchIndex.drop().catch(() => {});
+    await cleanupKeys(redis, `agentkit:memory:${ns}`);
   });
 
   it("exposes recall_memory and save_memory tools", () => {
@@ -26,7 +30,7 @@ describe.skipIf(!hasRedisCreds)("createMemoryTools (live Redis)", () => {
       text: "The user prefers dark mode",
     });
     expect(saved.saved).toBe(true);
-    await memory.searchIndex.waitIndexing();
+    await index.waitIndexing();
 
     const recalled = await call<{ text: string }[]>(tools.recall_memory!.execute, {
       query: "ui theme preference",

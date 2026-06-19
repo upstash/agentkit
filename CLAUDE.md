@@ -62,7 +62,8 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
 
 ## API conventions
-- `redis` is **optional everywhere** → falls back to `Redis.fromEnv()`.
+- `redis` is **optional everywhere** → falls back to `Redis.fromEnv()`. It's the **only** client knob:
+  there are **no** pre-built `memory`/`toolCache`/`cache` instance options — nothing replaces `redis`.
 - Memory tools: `namespace` is **required** — either a string (memory shared across all users; avoid in
   multi-tenant prod) or `(input, ctx/options) => string` to derive per-call (e.g. a user id).
 - Cached tools: `namespace` is the cache key — a string or `(input, ctx/options) => string` (ai-sdk

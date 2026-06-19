@@ -18,8 +18,6 @@ export interface MemoryToolConfig {
   namespace: MemoryNamespace;
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /** Pre-built memory (overrides `redis`). */
-  memory?: AgentMemory;
   /** Max memories returned by the recall tool. */
   topK?: number;
   /** Minimum relevance score for recall. */
@@ -27,7 +25,7 @@ export interface MemoryToolConfig {
 }
 
 function resolveMemory(config: MemoryToolConfig): AgentMemory {
-  return config.memory ?? new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
+  return new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
 }
 
 function resolveNamespace(

@@ -1,4 +1,3 @@
-import { ToolCache } from "@upstash/agentkit-sdk";
 import { z } from "zod";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { defineCachedTool } from "./tools.js";
@@ -8,21 +7,21 @@ const CTX = {} as never;
 
 describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
   const redis = testRedis();
-  const namespace = uniqueNamespace("eve-tool");
+  // The tool owns its ToolCache (default `agentkit:toolCache` base); isolate this run by cache namespace.
+  const ns = uniqueNamespace("eve-tool").replace("test:", "");
 
   afterAll(async () => {
-    await cleanupKeys(redis, namespace);
+    await cleanupKeys(redis, `agentkit:toolCache:${ns}`);
   });
 
   it("memoizes by namespace + input so execute runs once", async () => {
-    const toolCache = new ToolCache({ redis, namespace });
     const fn = vi.fn(async ({ x }: { x: number }) => x * 2);
     const t = defineCachedTool({
       description: "double",
       inputSchema: z.object({ x: z.number() }),
-      namespace: "double",
+      namespace: `${ns}:double`,
       execute: fn,
-      toolCache,
+      redis,
     });
 
     expect(await t.execute({ x: 21 }, CTX)).toBe(42);
@@ -31,14 +30,13 @@ describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
   });
 
   it("supports a function namespace", async () => {
-    const toolCache = new ToolCache({ redis, namespace });
     const fn = vi.fn(async ({ id }: { id: string }) => id.toUpperCase());
     const t = defineCachedTool({
       description: "upper",
       inputSchema: z.object({ id: z.string() }),
-      namespace: ({ id }) => `upper:${id}`,
+      namespace: ({ id }) => `${ns}:upper:${id}`,
       execute: fn,
-      toolCache,
+      redis,
     });
 
     await t.execute({ id: "a" }, CTX);
