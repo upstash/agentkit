@@ -1,12 +1,22 @@
-import { tool, type ToolSet } from "ai";
+import { tool, type ToolCallOptions, type ToolSet } from "ai";
 import { z } from "zod";
-import type { AgentMemory } from "@upstash/agentkit-sdk";
+import { AgentMemory } from "@upstash/agentkit-sdk";
+import { Redis } from "@upstash/redis";
+
+/**
+ * Scope the memory is read/written under. A string shares all memory across users (fine for a
+ * single-user agent, avoid in multi-tenant prod) — or a function deriving the scope per call from the
+ * tool input and call options (e.g. a user id).
+ */
+export type MemoryScope = string | ((input: unknown, options: ToolCallOptions) => string);
 
 export interface CreateMemoryToolsConfig {
-  /** The {@link AgentMemory} the tools read from / write to. */
-  memory: AgentMemory;
-  /** Scope (e.g. a user id) the tools operate under. Defaults to `"default"`. */
-  scope?: string;
+  /** Scope (e.g. a user id) the tools operate under — a string or a per-call function. */
+  scope: MemoryScope;
+  /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
+  redis?: Redis;
+  /** Pre-built memory (overrides `redis`). */
+  memory?: AgentMemory;
   /** Max memories returned by the recall tool. */
   topK?: number;
   /** Minimum relevance score for recall. */
@@ -18,18 +28,23 @@ export interface CreateMemoryToolsConfig {
 }
 
 /**
- * Build two AI SDK tools — `recall_memory` and `save_memory` — that let the model read and write the
- * agent's long-term memory. Spread the returned map into `generateText({ tools })`.
+ * Build `recall_memory` and `save_memory` AI SDK tools backed by long-term {@link AgentMemory}. Spread
+ * the returned map into `generateText({ tools })`. Pass only a `scope`; `redis` defaults to
+ * `Redis.fromEnv()`.
  *
  * ```ts
- * const tools = createMemoryTools({ memory: new AgentMemory({ redis }), scope: userId });
+ * const tools = createMemoryTools({ scope: userId });
  * await generateText({ model, tools, stopWhen: stepCountIs(5), prompt });
  * ```
  */
 export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
-  const { memory, scope, topK, minScore } = config;
+  const { scope, topK, minScore } = config;
+  const memory = config.memory ?? new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
   const recallName = config.recallToolName ?? "recall_memory";
   const saveName = config.saveToolName ?? "save_memory";
+
+  const resolveScope = (input: unknown, options: ToolCallOptions): string =>
+    typeof scope === "function" ? scope(input, options) : scope;
 
   return {
     [recallName]: tool({
@@ -39,9 +54,9 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
       inputSchema: z.object({
         query: z.string().describe("What to recall — the user's question, topic, or keywords."),
       }),
-      execute: async ({ query }) => {
-        const hits = await memory.recall(query, {
-          ...(scope !== undefined ? { scope } : {}),
+      execute: async (input, options) => {
+        const hits = await memory.recall(input.query, {
+          scope: resolveScope(input, options),
           ...(topK !== undefined ? { topK } : {}),
           ...(minScore !== undefined ? { minScore } : {}),
         });
@@ -55,8 +70,8 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
       inputSchema: z.object({
         text: z.string().describe("A concise, durable fact about the user to remember for later."),
       }),
-      execute: async ({ text }) => {
-        const record = await memory.add(text, scope !== undefined ? { scope } : {});
+      execute: async (input, options) => {
+        const record = await memory.add(input.text, { scope: resolveScope(input, options) });
         return { id: record.id, saved: true };
       },
     }),

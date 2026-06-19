@@ -1,9 +1,9 @@
 import { openai } from "@ai-sdk/openai";
 import { generateText } from "ai";
-import { SemanticCache } from "@upstash/agentkit-sdk";
+import { ModelCache } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it } from "vitest";
 import { rateLimitedModel, RateLimitExceededError } from "./rate-limit.js";
-import { cachedModel } from "./semantic-cache.js";
+import { cachedModel } from "./model-cache.js";
 import {
   cleanupKeys,
   hasOpenAIKey,
@@ -22,7 +22,7 @@ describe.skipIf(!hasRedisCreds || !hasOpenAIKey)("model middleware e2e (OpenAI +
   });
 
   it("cachedModel returns the cached result on a repeated prompt", async () => {
-    const cache = new SemanticCache({
+    const cache = new ModelCache({
       redis,
       namespace: uniqueNamespace("aisdk-e2e"),
       minScore: 0.5,
@@ -49,7 +49,7 @@ describe.skipIf(!hasRedisCreds || !hasOpenAIKey)("model middleware e2e (OpenAI +
       redis,
       limit: 1,
       window: "60 s",
-      prefix: uniqueNamespace("aisdk-e2e-rl"),
+      namespace: uniqueNamespace("aisdk-e2e-rl"),
       identifier: "e2e-user",
     });
 

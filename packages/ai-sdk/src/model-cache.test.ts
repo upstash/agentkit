@@ -1,11 +1,11 @@
-import { SemanticCache } from "@upstash/agentkit-sdk";
+import { ModelCache } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { semanticCacheMiddleware } from "./semantic-cache.js";
+import { modelCacheMiddleware } from "./model-cache.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
 const userPrompt = (text: string) => [{ role: "user", content: [{ type: "text", text }] }];
 
-describe.skipIf(!hasRedisCreds)("semanticCacheMiddleware (live Redis)", () => {
+describe.skipIf(!hasRedisCreds)("modelCacheMiddleware (live Redis)", () => {
   const redis = testRedis();
 
   afterAll(async () => {
@@ -13,12 +13,12 @@ describe.skipIf(!hasRedisCreds)("semanticCacheMiddleware (live Redis)", () => {
   });
 
   it("serves a fuzzily similar prompt from cache, skipping the model", async () => {
-    const cache = new SemanticCache({
+    const cache = new ModelCache({
       redis,
       namespace: uniqueNamespace("aisdk-mw"),
       minScore: 0.5,
     });
-    const mw = semanticCacheMiddleware({ cache });
+    const mw = modelCacheMiddleware({ cache });
 
     const doGenerate = vi.fn(async () => ({
       content: [{ type: "text", text: "Paris" }],
@@ -46,12 +46,12 @@ describe.skipIf(!hasRedisCreds)("semanticCacheMiddleware (live Redis)", () => {
   });
 
   it("calls the model for an unrelated prompt", async () => {
-    const cache = new SemanticCache({
+    const cache = new ModelCache({
       redis,
       namespace: uniqueNamespace("aisdk-mw"),
       minScore: 0.5,
     });
-    const mw = semanticCacheMiddleware({ cache });
+    const mw = modelCacheMiddleware({ cache });
     const doGenerate = vi.fn(async () => ({ content: [{ type: "text", text: "x" }] }));
 
     await mw.wrapGenerate!({ doGenerate, params: { prompt: userPrompt("bake bread") } } as never);

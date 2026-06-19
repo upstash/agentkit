@@ -1,47 +1,60 @@
-import type { ToolSet } from "ai";
-import type { ToolCache } from "@upstash/agentkit-sdk";
+import { tool, type Tool, type ToolCallOptions } from "ai";
+import { ToolCache } from "@upstash/agentkit-sdk";
+import { Redis } from "@upstash/redis";
 
-export interface CacheToolsConfig {
-  /** The {@link ToolCache} memoizing tool results. */
-  toolCache: ToolCache;
+/** The cache key for a tool call: a fixed string, or a function of the tool input + call options. */
+export type CachePrefix = string | ((input: unknown, options: ToolCallOptions) => string);
+
+export interface CachedToolConfig {
+  /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
+  redis?: Redis;
+  /** Pre-built tool cache (overrides `redis`). */
+  toolCache?: ToolCache;
+  /** Cache key — a string, or a function of the tool input + options (e.g. to scope by user). */
+  cachePrefix: CachePrefix;
   /** Per-result TTL (seconds). */
   ttlSeconds?: number;
+  /** Tool description shown to the model. */
+  description?: string;
+  /** The tool's input schema (zod or any Standard Schema). */
+  inputSchema: unknown;
+  /** The tool implementation. Memoized by `cachePrefix` + a stable hash of the input. */
+  execute: (input: never, options: ToolCallOptions) => unknown;
+  /** Any other AI SDK `tool()` fields (e.g. `outputSchema`, `toModelOutput`). */
+  [key: string]: unknown;
 }
 
 /**
- * Memoize a map of AI SDK tools. Returns a new map with the **same keys**, where each tool's
- * `execute` is wrapped so identical arguments run the underlying tool at most once (cached in Redis,
- * keyed by the tool's map key + a stable hash of its arguments). Tools without an `execute`
- * (client-/provider-executed) are passed through unchanged.
+ * Like the AI SDK's `tool()`, but the tool's `execute` is memoized in an Upstash {@link ToolCache} —
+ * self-contained, so you don't import anything from the core SDK. `redis` defaults to
+ * `Redis.fromEnv()`.
  *
  * ```ts
- * const tools = cacheTools({ getWeather, search }, { toolCache: new ToolCache({ redis }) });
- * await generateText({ model, tools, prompt });
+ * import { cachedTool } from "@upstash/agentkit-ai-sdk";
+ *
+ * const getWeather = cachedTool({
+ *   description: "Get the weather for a city",
+ *   inputSchema: z.object({ city: z.string() }),
+ *   cachePrefix: "getWeather",
+ *   execute: async ({ city }) => fetchWeather(city),
+ * });
+ * await generateText({ model, tools: { getWeather }, prompt });
  * ```
  */
-export function cacheTools<T extends ToolSet>(tools: T, config: CacheToolsConfig): T {
-  const { toolCache, ttlSeconds } = config;
-  const out: ToolSet = {};
+export function cachedTool(config: CachedToolConfig): Tool {
+  const { redis, toolCache, ttlSeconds, cachePrefix, execute, ...toolConfig } = config;
+  const cache = toolCache ?? new ToolCache({ redis: redis ?? Redis.fromEnv() });
 
-  for (const [name, t] of Object.entries(tools)) {
-    const original = t.execute;
-    if (typeof original !== "function") {
-      out[name] = t;
-      continue;
-    }
-    out[name] = {
-      ...t,
-      execute: (args: unknown, options: unknown) => {
-        const run = toolCache.wrap(
-          name,
-          (a: unknown) =>
-            Promise.resolve((original as (i: unknown, o: unknown) => unknown)(a, options)),
-          ttlSeconds !== undefined ? { ttlSeconds } : {},
-        );
-        return run(args);
-      },
-    } as T[string];
-  }
+  const wrapped = (input: unknown, options: ToolCallOptions): unknown => {
+    const name = typeof cachePrefix === "function" ? cachePrefix(input, options) : cachePrefix;
+    const run = cache.wrap(
+      name,
+      (i: unknown) =>
+        Promise.resolve((execute as (i: unknown, o: ToolCallOptions) => unknown)(i, options)),
+      ttlSeconds !== undefined ? { ttlSeconds } : {},
+    );
+    return run(input);
+  };
 
-  return out as T;
+  return tool({ ...toolConfig, execute: wrapped } as never) as Tool;
 }

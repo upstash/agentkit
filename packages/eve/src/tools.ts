@@ -1,47 +1,58 @@
-import type { ToolCache } from "@upstash/agentkit-sdk";
-import type { EveExecute } from "./types.js";
+import { ToolCache } from "@upstash/agentkit-sdk";
+import { Redis } from "@upstash/redis";
+import type { ToolContext, ToolDefinition } from "eve/tools";
 
-export interface CachedExecuteConfig {
-  /** The {@link ToolCache} memoizing results. */
-  toolCache: ToolCache;
+/** The cache key for a tool call: a fixed string, or a function of the tool input + context. */
+export type CachePrefix<TInput> = string | ((input: TInput, ctx: ToolContext) => string);
+
+export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOutput> & {
+  /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
+  redis?: Redis;
+  /** Pre-built tool cache (overrides `redis`). */
+  toolCache?: ToolCache;
+  /** Cache key — a string, or a function of the tool input + context (e.g. to scope by user). */
+  cachePrefix: CachePrefix<TInput>;
   /** Per-result TTL (seconds). */
   ttlSeconds?: number;
-}
+};
 
 /**
- * Wrap an Eve tool's `execute` so identical inputs are memoized in a {@link ToolCache}. Eve tools are
- * defined per file with `defineTool`, where the filename is the tool name — so the cache `name` is
- * passed explicitly here (use the tool's filename, or any stable key).
+ * Like Eve's `defineTool`, but the tool's `execute` is memoized in an Upstash {@link ToolCache}.
+ * Takes the same fields as `defineTool` plus `cachePrefix` (and an optional `redis`); returns a
+ * `ToolDefinition` you hand to `defineTool`.
  *
  * ```ts
  * // agent/tools/get_weather.ts
  * import { defineTool } from "eve/tools";
  * import { z } from "zod";
- * import { cachedExecute } from "@upstash/agentkit-eve";
- * import { ToolCache } from "@upstash/agentkit-sdk";
- * import { redis } from "../redis";
+ * import { defineCachedTool } from "@upstash/agentkit-eve";
  *
- * export default defineTool({
- *   description: "Get the current weather for a city.",
- *   inputSchema: z.object({ city: z.string() }),
- *   execute: cachedExecute("get_weather", async ({ city }) => fetchWeather(city), {
- *     toolCache: new ToolCache({ redis }),
+ * export default defineTool(
+ *   defineCachedTool({
+ *     description: "Get the current weather for a city.",
+ *     inputSchema: z.object({ city: z.string() }),
+ *     cachePrefix: "get_weather",
+ *     execute: async ({ city }) => fetchWeather(city),
  *   }),
- * });
+ * );
  * ```
  */
-export function cachedExecute<A, R>(
-  name: string,
-  execute: EveExecute<A, R>,
-  config: CachedExecuteConfig,
-): EveExecute<A, R> {
-  const { toolCache, ttlSeconds } = config;
-  return (input: A, ctx) => {
-    const run = toolCache.wrap<A, R>(
-      name,
-      (a) => Promise.resolve(execute(a, ctx)),
-      ttlSeconds !== undefined ? { ttlSeconds } : {},
-    );
-    return run(input);
-  };
+export function defineCachedTool<TInput, TOutput>(
+  config: DefineCachedToolConfig<TInput, TOutput>,
+): ToolDefinition<TInput, TOutput> {
+  const { redis, toolCache, cachePrefix, ttlSeconds, execute, ...rest } = config;
+  const cache = toolCache ?? new ToolCache({ redis: redis ?? Redis.fromEnv() });
+
+  return {
+    ...rest,
+    execute: (input: TInput, ctx: ToolContext) => {
+      const name = typeof cachePrefix === "function" ? cachePrefix(input, ctx) : cachePrefix;
+      const run = cache.wrap<TInput, TOutput>(
+        name,
+        (i) => Promise.resolve(execute(i, ctx)),
+        ttlSeconds !== undefined ? { ttlSeconds } : {},
+      );
+      return run(input);
+    },
+  } as ToolDefinition<TInput, TOutput>;
 }

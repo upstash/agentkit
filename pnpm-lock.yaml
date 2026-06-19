@@ -96,9 +96,6 @@ importers:
       '@upstash/agentkit-sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
-      '@upstash/box':
-        specifier: ^0.5.1
-        version: 0.5.1(zod@4.4.3)
       '@upstash/redis':
         specifier: ^1.38.0
         version: 1.38.0
@@ -117,6 +114,9 @@ importers:
       react-dom:
         specifier: 19.2.4
         version: 19.2.4(react@19.2.4)
+      zod:
+        specifier: ^3.23.8 || ^4
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: ^20
@@ -167,9 +167,6 @@ importers:
       '@upstash/agentkit-sdk':
         specifier: workspace:*
         version: link:../sdk
-      eve:
-        specifier: '>=0.0.1'
-        version: 0.11.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       zod:
         specifier: ^3.23.8 || ^4
         version: 4.4.3
@@ -183,6 +180,9 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
+      eve:
+        specifier: ^0.11.7
+        version: 0.11.7(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   packages/sdk:
     devDependencies:
@@ -1569,8 +1569,8 @@ packages:
     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
     engines: {node: '>=0.10.0'}
 
-  eve@0.11.2:
-    resolution: {integrity: sha512-VBjbD7Y2hMB3qJIRMhTyvPPC3FsLNU4KrsEnNkAi96cb8+IAW6KNPtnvmSiT/UIBwd/5ZeGoPyz8ebki6YJOMg==}
+  eve@0.11.7:
+    resolution: {integrity: sha512-Nwc4dt0Q6vwb0B8eVHjbTvpkYAng8A/cbJwcyFra5agdwiPw2Rl7HlBoilVceSBqdkOuOPFXB+EdyJHdrgylZQ==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -3772,7 +3772,7 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  eve@0.11.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+  eve@0.11.7(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
       ai: 7.0.0-beta.178(zod@4.4.3)
       nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))

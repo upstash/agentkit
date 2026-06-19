@@ -26,8 +26,8 @@ export interface RateLimitMiddlewareConfig {
   limit?: number;
   /** Sliding window duration (e.g. `"10 s"`, `"1 m"`). Defaults to `"60 s"`. */
   window?: Duration;
-  /** Key prefix for the limiter. Defaults to `agentkit:ratelimit`. */
-  prefix?: string;
+  /** Namespace (key prefix) for the limiter. Defaults to `agentkit:ratelimit`. */
+  namespace?: string;
   /**
    * The rate-limit identifier (e.g. a user id), or a function returning one. Defaults to `"global"`.
    * Build the model per-request with a per-user identifier to rate-limit by user.
@@ -47,7 +47,7 @@ function resolveRatelimit(config: RateLimitMiddlewareConfig): Ratelimit {
   return new Ratelimit({
     redis: config.redis ?? Redis.fromEnv(),
     limiter: Ratelimit.slidingWindow(config.limit ?? 10, config.window ?? "60 s"),
-    prefix: config.prefix ?? "agentkit:ratelimit",
+    prefix: config.namespace ?? "agentkit:ratelimit",
   });
 }
 

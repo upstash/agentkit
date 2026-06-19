@@ -3,7 +3,7 @@ import type { Redis } from "@upstash/redis";
 import { RedisSearchIndex, type SearchIndexHandle } from "./search-index.js";
 import { key, now } from "./utils.js";
 
-export interface SemanticCacheConfig {
+export interface ModelCacheConfig {
   /** The Upstash Redis client. The search index is created and managed internally. */
   redis: Redis;
   /** Minimum relevance (BM25) score to count as a hit. Defaults to 1. */
@@ -14,7 +14,7 @@ export interface SemanticCacheConfig {
   namespace?: string;
 }
 
-export interface SemanticCacheHit {
+export interface ModelCacheHit {
   /** The cached response. */
   response: string;
   /** Relevance between the lookup prompt and the stored prompt. */
@@ -31,14 +31,14 @@ export interface SemanticCacheHit {
  * Pass only the `redis` client; the cache owns its index internally (exposed via {@link searchIndex}).
  * Scores are BM25 (unbounded), so tune `minScore` to your prompts.
  */
-export class SemanticCache {
+export class ModelCache {
   private store: RedisSearchIndex;
   private redis: Redis;
   private minScore: number;
   private ttlSeconds?: number;
   private namespace: string;
 
-  constructor(config: SemanticCacheConfig) {
+  constructor(config: ModelCacheConfig) {
     this.namespace = config.namespace ?? "agentkit:semcache";
     this.store = new RedisSearchIndex(config.redis, { namespace: this.namespace });
     this.redis = config.redis;
@@ -56,7 +56,7 @@ export class SemanticCache {
   }
 
   /** Look up a fuzzily-similar cached response, or `null` on a miss. */
-  async get(prompt: string, opts: { minScore?: number } = {}): Promise<SemanticCacheHit | null> {
+  async get(prompt: string, opts: { minScore?: number } = {}): Promise<ModelCacheHit | null> {
     const minScore = opts.minScore ?? this.minScore;
     const [hit] = await this.store.search(prompt, { topK: 1 });
     if (!hit || hit.score < minScore) return null;

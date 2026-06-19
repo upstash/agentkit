@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Logger } from "./types.js";
 
 /** Deterministic, order-insensitive hash of an arbitrary JSON value. */
 export function stableHash(value: unknown): string {
@@ -28,11 +27,3 @@ export function key(...parts: (string | number | undefined | null)[]): string {
 export function now(): number {
   return Date.now();
 }
-
-/** A logger that swallows everything. */
-export const noopLogger: Logger = {
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-};

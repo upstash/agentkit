@@ -1,14 +1,14 @@
-// Semantic caching as AI SDK language-model middleware
-export { semanticCacheMiddleware, cachedModel } from "./semantic-cache.js";
-export type { SemanticCacheMiddlewareConfig, CachedModelConfig } from "./semantic-cache.js";
+// Model response cache as AI SDK language-model middleware
+export { modelCacheMiddleware, cachedModel } from "./model-cache.js";
+export type { ModelCacheMiddlewareConfig, CachedModelConfig } from "./model-cache.js";
 
 // Rate limiting as AI SDK language-model middleware
 export { rateLimitMiddleware, rateLimitedModel, RateLimitExceededError } from "./rate-limit.js";
 export type { RateLimitMiddlewareConfig, RateLimitedModelConfig } from "./rate-limit.js";
 
-// Tool-call caching (map in -> map out, keys preserved)
-export { cacheTools } from "./tools.js";
-export type { CacheToolsConfig } from "./tools.js";
+// Tool-call caching (self-contained cached tool)
+export { cachedTool } from "./tools.js";
+export type { CachePrefix, CachedToolConfig } from "./tools.js";
 
 // Long-term memory as tools (recall + save)
 export { createMemoryTools } from "./memory.js";

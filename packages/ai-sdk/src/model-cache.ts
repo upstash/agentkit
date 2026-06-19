@@ -1,6 +1,6 @@
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
 import { Redis } from "@upstash/redis";
-import { SemanticCache } from "@upstash/agentkit-sdk";
+import { ModelCache } from "@upstash/agentkit-sdk";
 
 type WrapArgs = Parameters<typeof wrapLanguageModel>[0];
 type LanguageModel = WrapArgs["model"];
@@ -8,14 +8,14 @@ type Prompt = Parameters<
   NonNullable<LanguageModelMiddleware["wrapGenerate"]>
 >[0]["params"]["prompt"];
 
-export interface SemanticCacheMiddlewareConfig {
-  /** A pre-built {@link SemanticCache}. Built from `redis` when omitted. */
-  cache?: SemanticCache;
+export interface ModelCacheMiddlewareConfig {
+  /** A pre-built {@link ModelCache}. Built from `redis` when omitted. */
+  cache?: ModelCache;
   /** Upstash Redis client used to build a cache when `cache` is omitted. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** Minimum relevance (BM25) score to count as a hit. */
   minScore?: number;
-  /** Cache key namespace / index. Defaults to `agentkit:semcache`. */
+  /** Cache namespace / index name. Defaults to `agentkit:semcache`. */
   namespace?: string;
 }
 
@@ -37,9 +37,9 @@ function promptToText(prompt: Prompt): string {
   return parts.join("\n").trim();
 }
 
-function resolveCache(config: SemanticCacheMiddlewareConfig): SemanticCache {
+function resolveCache(config: ModelCacheMiddlewareConfig): ModelCache {
   if (config.cache) return config.cache;
-  return new SemanticCache({
+  return new ModelCache({
     redis: config.redis ?? Redis.fromEnv(),
     ...(config.minScore !== undefined ? { minScore: config.minScore } : {}),
     ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
@@ -62,11 +62,11 @@ function reviveResult(parsed: unknown): unknown {
  *
  * ```ts
  * import { wrapLanguageModel } from "ai";
- * const model = wrapLanguageModel({ model: baseModel, middleware: semanticCacheMiddleware({ redis }) });
+ * const model = wrapLanguageModel({ model: baseModel, middleware: modelCacheMiddleware({ redis }) });
  * ```
  */
-export function semanticCacheMiddleware(
-  config: SemanticCacheMiddlewareConfig = {},
+export function modelCacheMiddleware(
+  config: ModelCacheMiddlewareConfig = {},
 ): LanguageModelMiddleware {
   const cache = resolveCache(config);
   return {
@@ -84,7 +84,7 @@ export function semanticCacheMiddleware(
   };
 }
 
-export interface CachedModelConfig extends SemanticCacheMiddlewareConfig {
+export interface CachedModelConfig extends ModelCacheMiddlewareConfig {
   /** The language model to wrap. */
   model: LanguageModel;
 }
@@ -102,5 +102,5 @@ export interface CachedModelConfig extends SemanticCacheMiddlewareConfig {
  */
 export function cachedModel(config: CachedModelConfig): LanguageModel {
   const { model, ...rest } = config;
-  return wrapLanguageModel({ model, middleware: semanticCacheMiddleware(rest) });
+  return wrapLanguageModel({ model, middleware: modelCacheMiddleware(rest) });
 }

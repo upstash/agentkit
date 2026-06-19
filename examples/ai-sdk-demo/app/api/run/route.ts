@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { openai } from "@ai-sdk/openai";
 import { generateText, stepCountIs } from "ai";
 import { s } from "@upstash/redis";
-import { AgentMemory } from "@upstash/agentkit-sdk";
 import {
   createMemoryTools,
   createSearchTools,
@@ -27,7 +26,7 @@ export async function POST(req: Request) {
     const { input } = (await req.json()) as { input: string };
     const redis = getRedis();
 
-    // A semantic-cached, rate-limited model.
+    // A cached, rate-limited model.
     const model = rateLimitedModel({
       model: cachedModel({ model: openai(DEMO_MODEL), redis, namespace: "demo:aisdk:cache" }),
       redis,
@@ -36,9 +35,8 @@ export async function POST(req: Request) {
     });
 
     // Memory tools + schema-driven search tools, all available to the agent.
-    const memory = new AgentMemory({ redis, namespace: "demo:aisdk:mem" });
     const tools = {
-      ...createMemoryTools({ memory, scope: "demo" }),
+      ...createMemoryTools({ redis, scope: "demo" }),
       ...createSearchTools({ schema: bookSchema, redis, name: "demo:aisdk:books" }),
     };
 

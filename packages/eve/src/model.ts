@@ -18,14 +18,14 @@
  * ```
  */
 export {
-  semanticCacheMiddleware,
+  modelCacheMiddleware,
   cachedModel,
   rateLimitMiddleware,
   rateLimitedModel,
   RateLimitExceededError,
 } from "@upstash/agentkit-ai-sdk";
 export type {
-  SemanticCacheMiddlewareConfig,
+  ModelCacheMiddlewareConfig,
   CachedModelConfig,
   RateLimitMiddlewareConfig,
   RateLimitedModelConfig,
