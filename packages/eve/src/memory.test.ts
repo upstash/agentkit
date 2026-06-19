@@ -7,8 +7,8 @@ const CTX = {} as never;
 
 describe.skipIf(!hasRedisCreds)("memory tools (live Redis)", () => {
   const memory = new AgentMemory({ redis: testRedis(), namespace: uniqueNamespace("eve-mem") });
-  const recall = defineMemoryRecallTool({ memory, scope: "user-1" });
-  const save = defineMemorySaveTool({ memory, scope: "user-1" });
+  const recall = defineMemoryRecallTool({ memory, namespace: "user-1" });
+  const save = defineMemorySaveTool({ memory, namespace: "user-1" });
 
   afterAll(async () => {
     await memory.searchIndex.drop().catch(() => {});

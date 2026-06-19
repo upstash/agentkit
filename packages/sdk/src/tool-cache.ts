@@ -3,7 +3,7 @@ import { key, stableHash } from "./utils.js";
 
 export interface ToolCacheConfig {
   redis: Redis;
-  /** Key prefix; defaults to `agentkit:tool`. */
+  /** Base key prefix; defaults to `agentkit:toolCache`. */
   namespace?: string;
   /** Default TTL (seconds) for cached results. Omit for no expiry. */
   ttlSeconds?: number;
@@ -26,17 +26,18 @@ export class ToolCache {
 
   constructor(config: ToolCacheConfig) {
     this.redis = config.redis;
-    this.namespace = config.namespace ?? "agentkit:tool";
+    this.namespace = config.namespace ?? "agentkit:toolCache";
     this.ttlSeconds = config.ttlSeconds;
   }
 
-  private entryKey(toolName: string, args: unknown): string {
-    return key(this.namespace, toolName, stableHash(args));
+  /** Key shape: `agentkit:toolCache:<namespace>:<hash>` (namespace is the per-call cache key). */
+  private entryKey(namespace: string, args: unknown): string {
+    return key(this.namespace, namespace, stableHash(args));
   }
 
   /** Fetch a cached result, or `null` if absent. The hit is wrapped so a cached `null` is distinct. */
-  async get<T>(toolName: string, args: unknown): Promise<ToolCacheHit<T> | null> {
-    const raw = await this.redis.get<string>(this.entryKey(toolName, args));
+  async get<T>(namespace: string, args: unknown): Promise<ToolCacheHit<T> | null> {
+    const raw = await this.redis.get<string>(this.entryKey(namespace, args));
     if (raw === null || raw === undefined) return null;
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     return { value: (parsed as { v: T }).v };
@@ -44,38 +45,39 @@ export class ToolCache {
 
   /** Cache a tool result. */
   async set<T>(
-    toolName: string,
+    namespace: string,
     args: unknown,
     value: T,
     opts: { ttlSeconds?: number } = {},
   ): Promise<void> {
     const ttl = opts.ttlSeconds ?? this.ttlSeconds;
     await this.redis.set(
-      this.entryKey(toolName, args),
+      this.entryKey(namespace, args),
       JSON.stringify({ v: value }),
       ttl !== undefined ? { ex: ttl } : undefined,
     );
   }
 
   /** Invalidate a single cached result. */
-  async invalidate(toolName: string, args: unknown): Promise<void> {
-    await this.redis.del(this.entryKey(toolName, args));
+  async invalidate(namespace: string, args: unknown): Promise<void> {
+    await this.redis.del(this.entryKey(namespace, args));
   }
 
   /**
    * Wrap a tool's execute function so results are cached automatically. The returned function checks
-   * the cache first, runs the original on a miss, and stores the result.
+   * the cache first, runs the original on a miss, and stores the result. `namespace` is the per-call
+   * cache key (e.g. the tool name).
    */
   wrap<A, R>(
-    toolName: string,
+    namespace: string,
     execute: (args: A) => Promise<R>,
     opts: { ttlSeconds?: number } = {},
   ): (args: A) => Promise<R> {
     return async (args: A) => {
-      const hit = await this.get<R>(toolName, args);
+      const hit = await this.get<R>(namespace, args);
       if (hit) return hit.value;
       const result = await execute(args);
-      await this.set(toolName, args, result, opts);
+      await this.set(namespace, args, result, opts);
       return result;
     };
   }

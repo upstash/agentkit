@@ -22,38 +22,45 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 `langchain` and `tanstack-ai` packages were **removed** — don't reintroduce them.
 
 ### Core SDK exports (`@upstash/agentkit-sdk`)
-- `AgentMemory`, `ModelCache`, `ToolCache`, `Rag` + `chunkText`, `s` (schema builder, re-exported from
+- `AgentMemory`, `ToolCache`, `Rag` + `chunkText`, `s` (schema builder, re-exported from
   `@upstash/redis`), types `FilterValue`/`SearchHit`/`SearchIndexHandle`, utils `key`/`now`/`stableHash`/`stableStringify`.
+  (**Model cache removed** — no `ModelCache`.)
 - Testing: `@upstash/agentkit-sdk/testing` → `MockModel`.
 - **Design rule:** every feature takes only `redis` and **creates/owns its search index internally**,
   exposing the raw handle via `.searchIndex`. Callers never pass a search index in.
 
 ### ai-sdk exports
-- `cachedModel` / `modelCacheMiddleware` (response cache), `rateLimitedModel` / `rateLimitMiddleware` /
-  `RateLimitExceededError`, `cachedTool`, `createMemoryTools`, `createSearchTools`.
+- `rateLimitedModel` / `rateLimitMiddleware` / `RateLimitExceededError`, `cachedTool`, `cachedTools`,
+  `createMemoryTools`, `createSearchTools`. (**No model cache** — removed.)
+- `cachedTool` config = the AI SDK's `tool()` config (full input/output inference) plus `redis?` /
+  `namespace` / `ttlSeconds?` — **no `toolCache`**. `cachedTools(map, { redis?, ttlSeconds? })` takes a
+  map of `tool()`-built tools (so each keeps inference) and caches each under its map key.
 - **Self-contained:** users import only from this package. `redis` defaults to `Redis.fromEnv()`; tools
   build their own `ToolCache`/`AgentMemory` internally. No `@upstash/agentkit-sdk` import required by users.
 
 ### eve exports
-- `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`.
-- `./model` → re-exports the ai-sdk model wrappers (`cachedModel`, `rateLimitedModel`, middlewares).
+- `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`, **plus** the ai-sdk model
+  wrappers (`rateLimitedModel` + rate-limit middleware) re-exported here (no `./model` subpath anymore).
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
 - Eve is file-centric: factories return `defineTool`-compatible configs the user wraps with `defineTool`.
 
 ## Naming history (so you don't resurrect old names)
-- `SemanticCache` → **`ModelCache`** (file `model-cache.ts`); `ModelCacheConfig`/`ModelCacheHit`.
-- `semanticCachedModel` → **`cachedModel`**; `semanticCacheMiddleware` → **`modelCacheMiddleware`**.
-- ai-sdk `cacheTools(map)` → **`cachedTool(single)`** (self-contained, takes `cachePrefix`).
-- eve `cachedExecute` → **`defineCachedTool`**; `recall/saveMemoryTool` → **`defineMemoryRecallTool`/`defineMemorySaveTool`**.
-- **Removed entirely:** Telemetry, ChatHistory (needs a frontend+backend solution), the generic Sandbox
-  (sandbox is eve-only), and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
+- ai-sdk `cacheTools(map)` → `cachedTool(single)` → now **`cachedTool` + `cachedTools`**; `cachePrefix` → **`namespace`**.
+- eve `cachedExecute` → **`defineCachedTool`** (also `cachePrefix` → **`namespace`**); `recall/saveMemoryTool` → **`defineMemoryRecallTool`/`defineMemorySaveTool`**.
+- Memory/eve memory tools: `scope` → **`namespace`** (string or per-call function).
+- **Removed entirely:** the model cache (`ModelCache`/`SemanticCache`, `cachedModel`, `modelCacheMiddleware`),
+  Telemetry, ChatHistory (needs a frontend+backend solution), the generic Sandbox (sandbox is eve-only),
+  and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
 
 ## API conventions
 - `redis` is **optional everywhere** → falls back to `Redis.fromEnv()`.
-- Memory tools: `scope` is **required** — either a string (memory shared across all users; avoid in
-  multi-tenant prod) or `(input, ctx) => string` to derive per-call (e.g. a user id).
-- Cached tools: `cachePrefix` is the cache key — a string or `(input, ctx/options) => string`.
-- Cache key prefixes are called `namespace` (both `ModelCache`/`cachedModel` and the rate limiter).
+- Memory tools: `namespace` is **required** — either a string (memory shared across all users; avoid in
+  multi-tenant prod) or `(input, ctx/options) => string` to derive per-call (e.g. a user id).
+- Cached tools: `namespace` is the cache key — a string or `(input, ctx/options) => string` (ai-sdk
+  `cachedTools` defaults each tool's namespace to its map key).
+- Rate limiting: `namespace` is a plain **string** (the key prefix) only; the per-user value is `identifier`.
+- Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`,
+  `agentkit:memory:<namespace>:<id>`, `agentkit:rag:<docId>:<chunk>`.
 
 ## AI SDK version strategy — IMPORTANT
 - **AI SDK v7-beta everywhere.** Every package + demo pins `ai` to exactly **`7.0.0-beta.178`** (the
@@ -72,7 +79,7 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 ## Testing — IMPORTANT
 - **Tests run against a REAL (production) Upstash Redis. Do NOT mock Redis.** Only LLM calls are mocked,
   except the `e2e.test.ts` files which hit **real OpenAI**.
-- **Models:** tests use `gpt-4o-mini` (`TEST_MODEL`); demos use `gpt-5.4-mini`.
+- **Models:** unit/e2e tests use `gpt-4o` (`TEST_MODEL`); READMEs + demos use `gpt-5.4-mini`.
 - Each package has `src/test-support.ts`: `hasRedisCreds`, `testRedis()` (`Redis.fromEnv`),
   `uniqueNamespace(label)`, `cleanupKeys(redis, ns)` — loads repo-root `.env` via dotenv. ai-sdk also has
   `hasOpenAIKey`, `TEST_MODEL`. Suites `describe.skipIf(!hasRedisCreds)` so they skip without creds.
@@ -137,6 +144,20 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
 - Releases use **Changesets**: `pnpm changeset`, `pnpm ci:version`, `pnpm ci:publish`. Do **not** use
   `pnpm version`/`pnpm release` (they collide with built-in pnpm commands).
 - Conventional commits; use `!` for breaking changes. Commit at meaningful checkpoints.
+
+## TODO (current task)
+- [x] Remove model cache (code + examples done; READMEs pending below).
+- [x] ai-sdk: add `cachedTools` (map of `tool()`-built tools, namespace defaults to map key) alongside `cachedTool`; `cachePrefix` → `namespace`; dropped `toolCache` from the config.
+- [x] `cachedTool`/`cachedTools` are fully type-safe (config extends the AI SDK `tool()` type — input/output inference, no `any`).
+- [x] Search tools: ensure the index (create + `waitIndexing`, memoized) before running each tool — a missing Upstash index returns `null`/`-1` rather than throwing, so we ensure up front.
+- [x] `createMemoryTools` (ai-sdk) + eve memory tools: `scope` → `namespace` (string or per-call function). Core `AgentMemory` add/recall/forget use `namespace`.
+- [x] Rate limiting: `namespace` is a plain string; prefix `agentkit:rateLimit`.
+- [x] Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`, `agentkit:memory:<namespace>:<id>`, `agentkit:rag:<docId>:<chunk>`.
+- [x] Unit/e2e tests use `gpt-4o` (`TEST_MODEL`).
+- [x] eve: dropped the `./model` subpath — model wrappers are exported from the package root.
+- [x] ai-sdk example app fleshed out (memory + search + cached tool + rate limit).
+- [ ] READMEs (root + 3 packages): feature order = agent memory, search tools, sandbox (eve only), tool cache, rate limiting; never show `wrapLanguageModel`; show all method options with inline comments (`optional: ` prefix); cached-tool snippet imports `generateText` + a prompt; remove model cache; use `gpt-5.4-mini`; reflect `namespace`/`cachedTools`/no-`./model`.
+- [ ] Flesh out the eve and ai sdk example apps with all features.
 
 ## Known issues / TODO
 - **eve `./sandbox` is incomplete.** `packages/eve/src/sandbox.ts` still implements an OLD hand-rolled

@@ -10,7 +10,7 @@ function call<R>(execute: unknown, input: unknown): Promise<R> {
 
 describe.skipIf(!hasRedisCreds)("createMemoryTools (live Redis)", () => {
   const memory = new AgentMemory({ redis: testRedis(), namespace: uniqueNamespace("aisdk-mem") });
-  const tools = createMemoryTools({ memory, scope: "user-1" });
+  const tools = createMemoryTools({ memory, namespace: "user-1" });
 
   afterAll(async () => {
     await memory.searchIndex.drop().catch(() => {});

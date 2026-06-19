@@ -38,7 +38,7 @@ export class AgentMemory {
   constructor(config: AgentMemoryConfig) {
     this.store = new RedisSearchIndex(config.redis, {
       namespace: config.namespace ?? "agentkit:memory",
-      filterFields: ["scope"],
+      filterFields: ["namespace"],
     });
     this.minScore = config.minScore ?? 0;
   }
@@ -48,11 +48,12 @@ export class AgentMemory {
     return this.store.index;
   }
 
-  /** Store a memory under `scope`. Returns the persisted record. */
+  /** Store a memory under `namespace`. Returns the persisted record. Key: `agentkit:memory:<namespace>:<id>`. */
   async add(
     text: string,
-    opts: { id?: string; metadata?: Record<string, unknown>; scope?: string } = {},
+    opts: { id?: string; metadata?: Record<string, unknown>; namespace?: string } = {},
   ): Promise<MemoryRecord> {
+    const namespace = opts.namespace ?? "default";
     const record: MemoryRecord = {
       id: opts.id ?? randomUUID(),
       text,
@@ -61,32 +62,34 @@ export class AgentMemory {
     };
     await this.store.upsert([
       {
-        id: record.id,
+        id: `${namespace}:${record.id}`,
         content: text,
-        filters: { scope: opts.scope ?? "default" },
+        filters: { namespace },
         metadata: { createdAt: record.createdAt, ...opts.metadata },
       },
     ]);
     return record;
   }
 
-  /** Fuzzily recall the memories most relevant to `query` within `scope`. */
+  /** Fuzzily recall the memories most relevant to `query` within `namespace`. */
   async recall(
     query: string,
-    opts: { topK?: number; scope?: string; minScore?: number } = {},
+    opts: { topK?: number; namespace?: string; minScore?: number } = {},
   ): Promise<RecalledMemory[]> {
+    const namespace = opts.namespace ?? "default";
     const minScore = opts.minScore ?? this.minScore;
     const hits = await this.store.search(query, {
       topK: opts.topK ?? 5,
-      filters: { scope: opts.scope ?? "default" },
+      filters: { namespace },
     });
+    const idPrefix = `${namespace}:`;
     return hits
       .filter((h) => h.score >= minScore)
       .map((h) => {
         const md = (h.metadata ?? {}) as { createdAt?: number; [k: string]: unknown };
         const { createdAt, ...rest } = md;
         return {
-          id: h.id,
+          id: h.id.startsWith(idPrefix) ? h.id.slice(idPrefix.length) : h.id,
           text: h.content,
           createdAt: createdAt ?? 0,
           metadata: Object.keys(rest).length ? rest : undefined,
@@ -95,8 +98,8 @@ export class AgentMemory {
       });
   }
 
-  /** Delete a memory by id. */
-  async forget(id: string): Promise<void> {
-    await this.store.delete([id]);
+  /** Delete a memory by id within its `namespace`. */
+  async forget(id: string, opts: { namespace?: string } = {}): Promise<void> {
+    await this.store.delete([`${opts.namespace ?? "default"}:${id}`]);
   }
 }

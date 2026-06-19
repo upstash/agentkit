@@ -4,17 +4,17 @@ import { AgentMemory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 
 /**
- * Scope the memory is read/written under. A string shares all memory across users (fine for a
- * single-user agent, avoid in multi-tenant prod) — or a function deriving the scope per call from the
- * tool input and call options (e.g. a user id).
+ * Namespace the memory is read/written under. A string shares all memory across users (fine for a
+ * single-user agent, avoid in multi-tenant prod) — or a function deriving the namespace per call from
+ * the tool input and call options (e.g. a user id). Keys are `agentkit:memory:<namespace>:<id>`.
  */
-export type MemoryScope =
+export type MemoryNamespace =
   | string
   | ((input: unknown, options: ToolExecutionOptions<never>) => string);
 
 export interface CreateMemoryToolsConfig {
-  /** Scope (e.g. a user id) the tools operate under — a string or a per-call function. */
-  scope: MemoryScope;
+  /** Namespace (e.g. a user id) the tools operate under — a string or a per-call function. */
+  namespace: MemoryNamespace;
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** Pre-built memory (overrides `redis`). */
@@ -35,18 +35,18 @@ export interface CreateMemoryToolsConfig {
  * `Redis.fromEnv()`.
  *
  * ```ts
- * const tools = createMemoryTools({ scope: userId });
+ * const tools = createMemoryTools({ namespace: userId });
  * await generateText({ model, tools, stopWhen: stepCountIs(5), prompt });
  * ```
  */
 export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
-  const { scope, topK, minScore } = config;
+  const { namespace, topK, minScore } = config;
   const memory = config.memory ?? new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
   const recallName = config.recallToolName ?? "recall_memory";
   const saveName = config.saveToolName ?? "save_memory";
 
-  const resolveScope = (input: unknown, options: ToolExecutionOptions<never>): string =>
-    typeof scope === "function" ? scope(input, options) : scope;
+  const resolveNamespace = (input: unknown, options: ToolExecutionOptions<never>): string =>
+    typeof namespace === "function" ? namespace(input, options) : namespace;
 
   return {
     [recallName]: tool({
@@ -58,7 +58,7 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
       }),
       execute: async (input, options) => {
         const hits = await memory.recall(input.query, {
-          scope: resolveScope(input, options as ToolExecutionOptions<never>),
+          namespace: resolveNamespace(input, options as ToolExecutionOptions<never>),
           ...(topK !== undefined ? { topK } : {}),
           ...(minScore !== undefined ? { minScore } : {}),
         });
@@ -74,7 +74,7 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
       }),
       execute: async (input, options) => {
         const record = await memory.add(input.text, {
-          scope: resolveScope(input, options as ToolExecutionOptions<never>),
+          namespace: resolveNamespace(input, options as ToolExecutionOptions<never>),
         });
         return { id: record.id, saved: true };
       },

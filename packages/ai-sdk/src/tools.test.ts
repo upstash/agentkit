@@ -1,6 +1,7 @@
+import { tool } from "ai";
 import { z } from "zod";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { cachedTool } from "./tools.js";
+import { cachedTool, cachedTools } from "./tools.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
 const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
@@ -12,16 +13,16 @@ describe.skipIf(!hasRedisCreds)("cachedTool (live Redis)", () => {
   const redis = testRedis();
 
   afterAll(async () => {
-    // cachedTool uses the default ToolCache namespace; our cachePrefixes are unique per test.
-    await cleanupKeys(redis, "agentkit:tool:aisdk-tool");
+    // cachedTool uses the default ToolCache namespace; our per-tool namespaces are unique per test.
+    await cleanupKeys(redis, "agentkit:toolCache:aisdk-tool");
   });
 
-  it("memoizes execute by cachePrefix + input", async () => {
+  it("memoizes execute by namespace + input", async () => {
     const getWeather = vi.fn(async ({ city }: { city: string }) => ({ city, tempF: 70 }));
     const weather = cachedTool({
       description: "weather",
       inputSchema: z.object({ city: z.string() }),
-      cachePrefix: uniqueNamespace("aisdk-tool").replace("test:", ""),
+      namespace: uniqueNamespace("aisdk-tool").replace("test:", ""),
       execute: getWeather,
       redis,
     });
@@ -38,12 +39,31 @@ describe.skipIf(!hasRedisCreds)("cachedTool (live Redis)", () => {
     const tool = cachedTool({
       description: "inc",
       inputSchema: z.object({ n: z.number() }),
-      cachePrefix: uniqueNamespace("aisdk-tool").replace("test:", ""),
+      namespace: uniqueNamespace("aisdk-tool").replace("test:", ""),
       execute: inc,
       redis,
     });
     await call(tool.execute, { n: 1 });
     await call(tool.execute, { n: 2 });
     expect(inc).toHaveBeenCalledTimes(2);
+  });
+
+  it("cachedTools caches a map, defaulting the namespace to the map key", async () => {
+    const fn = vi.fn(async ({ city }: { city: string }) => ({ city, tempF: 70 }));
+    const ns = uniqueNamespace("aisdk-tool").replace("test:", "");
+    const tools = cachedTools(
+      {
+        [ns]: tool({
+          description: "weather",
+          inputSchema: z.object({ city: z.string() }),
+          execute: fn,
+        }),
+      },
+      { redis },
+    );
+
+    await call(tools[ns]!.execute, { city: "LA" });
+    await call(tools[ns]!.execute, { city: "LA" });
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 });

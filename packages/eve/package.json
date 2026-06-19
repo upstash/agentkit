@@ -15,10 +15,6 @@
     "./sandbox": {
       "types": "./dist/sandbox.d.ts",
       "import": "./dist/sandbox.js"
-    },
-    "./model": {
-      "types": "./dist/model.d.ts",
-      "import": "./dist/model.js"
     }
   },
   "files": [

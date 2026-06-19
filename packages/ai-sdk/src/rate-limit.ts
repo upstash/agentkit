@@ -26,7 +26,7 @@ export interface RateLimitMiddlewareConfig {
   limit?: number;
   /** Sliding window duration (e.g. `"10 s"`, `"1 m"`). Defaults to `"60 s"`. */
   window?: Duration;
-  /** Namespace (key prefix) for the limiter. Defaults to `agentkit:ratelimit`. */
+  /** Namespace (key prefix) for the limiter. Defaults to `agentkit:rateLimit`. Keys are `agentkit:rateLimit:<identifier>`. */
   namespace?: string;
   /**
    * The rate-limit identifier (e.g. a user id), or a function returning one. Defaults to `"global"`.
@@ -47,21 +47,14 @@ function resolveRatelimit(config: RateLimitMiddlewareConfig): Ratelimit {
   return new Ratelimit({
     redis: config.redis ?? Redis.fromEnv(),
     limiter: Ratelimit.slidingWindow(config.limit ?? 10, config.window ?? "60 s"),
-    prefix: config.namespace ?? "agentkit:ratelimit",
+    prefix: config.namespace ?? "agentkit:rateLimit",
   });
 }
 
 /**
  * An AI SDK language-model middleware that enforces an [Upstash Ratelimit](https://github.com/upstash/ratelimit-js)
  * before each model call. On exceeding the limit it throws (default) or waits for a free token.
- *
- * ```ts
- * import { wrapLanguageModel } from "ai";
- * const model = wrapLanguageModel({
- *   model: base,
- *   middleware: rateLimitMiddleware({ redis, limit: 20, window: "1 m", identifier: userId }),
- * });
- * ```
+ * Most users want {@link rateLimitedModel} instead, which applies this middleware for you.
  */
 export function rateLimitMiddleware(
   config: RateLimitMiddlewareConfig = {},
@@ -105,7 +98,7 @@ export interface RateLimitedModelConfig extends RateLimitMiddlewareConfig {
  * Wrap a language model so every call is rate-limited via Upstash Ratelimit.
  *
  * ```ts
- * const model = rateLimitedModel({ model: openai("gpt-4o"), redis, limit: 20, window: "1 m" });
+ * const model = rateLimitedModel({ model: openai("gpt-5.4-mini"), redis, limit: 20, window: "1 m" });
  * ```
  */
 export function rateLimitedModel(config: RateLimitedModelConfig): LanguageModel {

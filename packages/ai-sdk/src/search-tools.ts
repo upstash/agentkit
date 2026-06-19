@@ -99,19 +99,33 @@ export function createSearchTools(config: CreateSearchToolsConfig): ToolSet {
   const index = redis.search.index({ name, schema: config.schema });
   const fields = describeSchema(config.schema as Record<string, unknown>);
 
-  let ensured: Promise<void> | undefined;
-  const ensure = (): Promise<void> => {
+  /**
+   * Make sure the index exists and is queryable before any tool runs. A missing Upstash search index
+   * doesn't throw — `query` returns `null` and `count` returns `-1` — so we can't reliably detect it
+   * after the fact. Instead we create the index (idempotent) and `waitIndexing()` up front, memoized
+   * so only the first tool call pays for it. Disabled when `ensureIndex` is `false`.
+   */
+  let ready: Promise<void> | undefined;
+  const ensureReady = (): Promise<void> => {
     if (!ensureIndex) return Promise.resolve();
-    if (!ensured) {
-      ensured = redis.search
-        .createIndex({ name, dataType: "json", prefix, schema: config.schema })
-        .then(() => undefined)
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!/already exists/i.test(msg)) throw err;
-        });
+    if (!ready) {
+      ready = (async () => {
+        await redis.search
+          .createIndex({ name, dataType: "json", prefix, schema: config.schema })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!/already exists/i.test(msg)) throw err;
+          });
+        await index.waitIndexing();
+      })();
     }
-    return ensured;
+    return ready;
+  };
+
+  /** Create the index + `waitIndexing` (if needed), then run the tool's main logic. */
+  const withIndex = async <T>(op: () => Promise<T>): Promise<T> => {
+    await ensureReady();
+    return op();
   };
 
   const schemaGuide = `\n\nFields:\n${fieldGuide(fields)}\n\n${FILTER_GUIDE}`;
@@ -143,31 +157,28 @@ export function createSearchTools(config: CreateSearchToolsConfig): ToolSet {
   const search = tool({
     description: `Search the "${name}" index and return matching documents, ranked by relevance.${schemaGuide}`,
     inputSchema: searchInput,
-    execute: async ({ filter, limit }) => {
-      await ensure();
-      return index.query({ filter: filter as never, limit: limit ?? defaultLimit } as never);
-    },
+    execute: ({ filter, limit }) =>
+      withIndex(() =>
+        index.query({ filter: filter as never, limit: limit ?? defaultLimit } as never),
+      ),
   });
 
   const aggregate = tool({
     description: `Run aggregations over the "${name}" index (group, stats, histograms, …).${schemaGuide}`,
     inputSchema: aggregateInput,
-    execute: async ({ aggregations, filter }) => {
-      await ensure();
-      return index.aggregate({
-        aggregations,
-        ...(filter !== undefined ? { filter } : {}),
-      } as never);
-    },
+    execute: ({ aggregations, filter }) =>
+      withIndex(() =>
+        index.aggregate({
+          aggregations,
+          ...(filter !== undefined ? { filter } : {}),
+        } as never),
+      ),
   });
 
   const count = tool({
     description: `Count documents in the "${name}" index, optionally matching a filter.${schemaGuide}`,
     inputSchema: countInput,
-    execute: async ({ filter }) => {
-      await ensure();
-      return index.count({ filter: (filter ?? {}) as never });
-    },
+    execute: ({ filter }) => withIndex(() => index.count({ filter: (filter ?? {}) as never })),
   });
 
   return { search, aggregate, count };

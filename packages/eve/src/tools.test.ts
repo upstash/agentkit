@@ -14,13 +14,13 @@ describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
     await cleanupKeys(redis, namespace);
   });
 
-  it("memoizes by cachePrefix + input so execute runs once", async () => {
+  it("memoizes by namespace + input so execute runs once", async () => {
     const toolCache = new ToolCache({ redis, namespace });
     const fn = vi.fn(async ({ x }: { x: number }) => x * 2);
     const t = defineCachedTool({
       description: "double",
       inputSchema: z.object({ x: z.number() }),
-      cachePrefix: "double",
+      namespace: "double",
       execute: fn,
       toolCache,
     });
@@ -30,13 +30,13 @@ describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it("supports a function cachePrefix", async () => {
+  it("supports a function namespace", async () => {
     const toolCache = new ToolCache({ redis, namespace });
     const fn = vi.fn(async ({ id }: { id: string }) => id.toUpperCase());
     const t = defineCachedTool({
       description: "upper",
       inputSchema: z.object({ id: z.string() }),
-      cachePrefix: ({ id }) => `upper:${id}`,
+      namespace: ({ id }) => `upper:${id}`,
       execute: fn,
       toolCache,
     });

@@ -3,7 +3,7 @@ import { Redis } from "@upstash/redis";
 import type { ToolContext, ToolDefinition } from "eve/tools";
 
 /** The cache key for a tool call: a fixed string, or a function of the tool input + context. */
-export type CachePrefix<TInput> = string | ((input: TInput, ctx: ToolContext) => string);
+export type CacheNamespace<TInput> = string | ((input: TInput, ctx: ToolContext) => string);
 
 export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOutput> & {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -11,7 +11,7 @@ export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOu
   /** Pre-built tool cache (overrides `redis`). */
   toolCache?: ToolCache;
   /** Cache key — a string, or a function of the tool input + context (e.g. to scope by user). */
-  cachePrefix: CachePrefix<TInput>;
+  namespace: CacheNamespace<TInput>;
   /** Per-result TTL (seconds). */
   ttlSeconds?: number;
 };
@@ -31,7 +31,7 @@ export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOu
  *   defineCachedTool({
  *     description: "Get the current weather for a city.",
  *     inputSchema: z.object({ city: z.string() }),
- *     cachePrefix: "get_weather",
+ *     namespace: "get_weather",
  *     execute: async ({ city }) => fetchWeather(city),
  *   }),
  * );
@@ -40,13 +40,13 @@ export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOu
 export function defineCachedTool<TInput, TOutput>(
   config: DefineCachedToolConfig<TInput, TOutput>,
 ): ToolDefinition<TInput, TOutput> {
-  const { redis, toolCache, cachePrefix, ttlSeconds, execute, ...rest } = config;
+  const { redis, toolCache, namespace, ttlSeconds, execute, ...rest } = config;
   const cache = toolCache ?? new ToolCache({ redis: redis ?? Redis.fromEnv() });
 
   return {
     ...rest,
     execute: (input: TInput, ctx: ToolContext) => {
-      const name = typeof cachePrefix === "function" ? cachePrefix(input, ctx) : cachePrefix;
+      const name = typeof namespace === "function" ? namespace(input, ctx) : namespace;
       const run = cache.wrap<TInput, TOutput>(
         name,
         (i) => Promise.resolve(execute(i, ctx)),
