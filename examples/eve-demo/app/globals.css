@@ -96,3 +96,24 @@ input,
 textarea {
   font: inherit;
 }
+
+/* Plain chat UI — mirrors the ai-sdk-demo look (light, card-based). */
+body { background: #fafafa; color: #18181b; font-family: ui-sans-serif, system-ui, sans-serif; }
+.app { max-width: 760px; margin: 0 auto; padding: 1.5rem 1rem; }
+.app h1 { font-size: 1.4rem; }
+.app code { background: #f4f4f5; padding: 0 .25rem; border-radius: 4px; font-size: .9em; }
+.app input { width: 100%; padding: .5rem .6rem; border: 1px solid #d4d4d8; border-radius: 8px; background: #fff; color: inherit; }
+.app button { padding: .5rem .9rem; border: 0; border-radius: 8px; background: #059669; color: #fff; font-weight: 600; cursor: pointer; }
+.app button:disabled { opacity: .5; cursor: default; }
+.chat { display: flex; flex-direction: column; }
+.card { border: 1px solid #e4e4e7; background: #fff; border-radius: 12px; padding: 1rem; margin-top: 1rem; white-space: pre-wrap; }
+.muted { color: #71717a; font-size: .85rem; }
+.presets { display: flex; gap: .5rem; flex-wrap: wrap; margin: .75rem 0; }
+.app .preset { background: #e4e4e7; color: #18181b; font-weight: 400; font-size: .8rem; }
+.messages { display: flex; flex-direction: column; }
+.composer { display: flex; gap: .5rem; margin-top: 1rem; }
+.composer button { flex: 0 0 auto; }
+.tool-call { margin: .4rem 0; padding: .4rem .6rem; border: 1px solid #e4e4e7; border-left: 3px solid #6366f1; border-radius: 6px; background: #fafafa; font-size: .8rem; }
+.tool-tag { font-weight: 600; color: #4f46e5; }
+.tool-io { margin: .35rem 0 0; padding: .4rem .5rem; background: #f4f4f5; border-radius: 5px; font-size: .72rem; white-space: pre-wrap; word-break: break-word; max-height: 14rem; overflow: auto; }
+.tool-err { color: #b91c1c; background: #fef2f2; }
