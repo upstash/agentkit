@@ -73,34 +73,41 @@ export class AgentMemory {
 
   /**
    * Fuzzily recall the memories most relevant to `query` within `namespace`. Omit `query` (or pass an
-   * empty string) to return any memories in the namespace, unfiltered by relevance (the `minScore`
-   * floor only applies when there's a `query`).
+   * empty string) to return any memories in the namespace, unfiltered by relevance. When a `query` is
+   * given but the text matches **nothing at all**, it falls back to that same "everything in the
+   * namespace" fetch — so recall isn't empty just because the fuzzy text didn't match (e.g. a model
+   * passing "everything"). `minScore` still filters genuine-but-weak matches (no fallback then).
    */
   async recall(
     query?: string,
     opts: { topK?: number; namespace?: string; minScore?: number } = {},
   ): Promise<RecalledMemory[]> {
     const namespace = opts.namespace ?? "default";
+    const topK = opts.topK ?? 5;
+    const hasQuery = Boolean(query && query.trim());
     // BM25 relevance only exists when there's a text query; a filter-only fetch scores 0 for all.
-    const minScore = query && query.trim() ? (opts.minScore ?? this.minScore) : 0;
-    const hits = await this.store.search(query, {
-      topK: opts.topK ?? 5,
-      filters: { namespace },
-    });
+    const minScore = hasQuery ? (opts.minScore ?? this.minScore) : 0;
+
+    const matched = await this.store.search(query, { topK, filters: { namespace } });
+    // Fall back to "everything in the namespace" only when the text matched nothing — not when a
+    // genuine match was filtered out by `minScore`.
+    const hits =
+      hasQuery && matched.length === 0
+        ? await this.store.search(undefined, { topK, filters: { namespace } })
+        : matched.filter((h) => h.score >= minScore);
+
     const idPrefix = `${namespace}:`;
-    return hits
-      .filter((h) => h.score >= minScore)
-      .map((h) => {
-        const md = (h.metadata ?? {}) as { createdAt?: number; [k: string]: unknown };
-        const { createdAt, ...rest } = md;
-        return {
-          id: h.id.startsWith(idPrefix) ? h.id.slice(idPrefix.length) : h.id,
-          text: h.content,
-          createdAt: createdAt ?? 0,
-          metadata: Object.keys(rest).length ? rest : undefined,
-          score: h.score,
-        };
-      });
+    return hits.map((h) => {
+      const md = (h.metadata ?? {}) as { createdAt?: number; [k: string]: unknown };
+      const { createdAt, ...rest } = md;
+      return {
+        id: h.id.startsWith(idPrefix) ? h.id.slice(idPrefix.length) : h.id,
+        text: h.content,
+        createdAt: createdAt ?? 0,
+        metadata: Object.keys(rest).length ? rest : undefined,
+        score: h.score,
+      };
+    });
   }
 
   /** Delete a memory by id within its `namespace`. */

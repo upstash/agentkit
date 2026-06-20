@@ -53,18 +53,21 @@ export function defineMemoryRecallTool(
   const memory = resolveMemory(config);
   return defineTool({
     description:
-      "Recall relevant long-term memories about the user before answering. Call this when prior " +
-      "context about the user would help.",
+      "Recall the user's long-term memories. Pass `query` to find memories about a specific topic. " +
+      "To list ALL of the user's memories, call this with NO `query` at all — do not pass a " +
+      'placeholder like "everything" or "all".',
     inputSchema: z.object({
       query: z
         .string()
         .optional()
         .describe(
-          "What to recall — the user's question, topic, or keywords. Omit to fetch any stored " +
-            "memories for the user, regardless of topic.",
+          "Topic or keywords to search memories for. Leave this out entirely to return every " +
+            "stored memory for the user.",
         ),
     }),
     execute: async ({ query }, ctx) => {
+      // recall() falls back to "everything in the namespace" when a query matches nothing, so a
+      // model that passes a placeholder like "everything" still gets results.
       const hits = await memory.recall(query, {
         namespace: resolveNamespace(config, { query }, ctx),
         ...(config.topK !== undefined ? { topK: config.topK } : {}),

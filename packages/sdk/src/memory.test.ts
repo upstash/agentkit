@@ -61,6 +61,14 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     expect(await memory.recall(undefined, { namespace: "all-other", topK: 10 })).toHaveLength(0);
   });
 
+  it("falls back to everything when a query matches nothing", async () => {
+    await memory.add("the user lives in Berlin", { namespace: "fb" });
+    await memory.searchIndex.waitIndexing();
+    // A query that won't fuzzily match still returns the namespace's memories (no empty result).
+    const hits = await memory.recall("zzqqxx nonexistent topic", { namespace: "fb", topK: 10 });
+    expect(hits.some((h) => h.text.includes("Berlin"))).toBe(true);
+  });
+
   it("forgets a memory", async () => {
     const rec = await memory.add("ephemeral note to forget", { namespace: "forget" });
     await memory.searchIndex.waitIndexing();
