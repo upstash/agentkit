@@ -49,14 +49,20 @@ function resolveNamespace(
  */
 export function defineMemoryRecallTool(
   config: MemoryToolConfig,
-): ToolDefinition<{ query: string }, { text: string; score: number }[]> {
+): ToolDefinition<{ query?: string }, { text: string; score: number }[]> {
   const memory = resolveMemory(config);
   return defineTool({
     description:
       "Recall relevant long-term memories about the user before answering. Call this when prior " +
       "context about the user would help.",
     inputSchema: z.object({
-      query: z.string().describe("What to recall — the user's question, topic, or keywords."),
+      query: z
+        .string()
+        .optional()
+        .describe(
+          "What to recall — the user's question, topic, or keywords. Omit to fetch any stored " +
+            "memories for the user, regardless of topic.",
+        ),
     }),
     execute: async ({ query }, ctx) => {
       const hits = await memory.recall(query, {
@@ -67,7 +73,7 @@ export function defineMemoryRecallTool(
       return hits.map((h) => ({ text: h.text, score: h.score }));
     },
   } as Parameters<typeof defineTool>[0]) as ToolDefinition<
-    { query: string },
+    { query?: string },
     { text: string; score: number }[]
   >;
 }

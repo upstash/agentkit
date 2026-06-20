@@ -102,13 +102,17 @@ export class RedisSearchIndex {
     );
   }
 
-  /** Fuzzily search via `$smart`, optionally constrained by exact-match filters. */
+  /**
+   * Fuzzily search via `$smart`, optionally constrained by exact-match filters. When `query` is empty
+   * or omitted, the `$smart` text match is dropped and only the filters apply (a filter-only fetch).
+   */
   async search(
-    query: string,
+    query: string | undefined,
     opts: { topK?: number; filters?: Record<string, FilterValue> } = {},
   ): Promise<SearchHit[]> {
     await this.ensure();
-    const filter: Record<string, unknown> = { [TEXT_FIELD]: { $smart: query }, ...opts.filters };
+    const filter: Record<string, unknown> = { ...opts.filters };
+    if (query && query.trim()) filter[TEXT_FIELD] = { $smart: query };
     const results = (await this.index.query({
       filter,
       ...(opts.topK !== undefined ? { limit: opts.topK } : {}),

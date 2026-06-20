@@ -52,7 +52,13 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
         "Recall relevant long-term memories about the user before answering. Call this when prior " +
         "context about the user would help.",
       inputSchema: z.object({
-        query: z.string().describe("What to recall — the user's question, topic, or keywords."),
+        query: z
+          .string()
+          .optional()
+          .describe(
+            "What to recall — the user's question, topic, or keywords. Omit to fetch any stored " +
+              "memories for the user, regardless of topic.",
+          ),
       }),
       execute: async (input, options) => {
         const hits = await memory.recall(input.query, {

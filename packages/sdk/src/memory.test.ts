@@ -48,6 +48,19 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     expect(hits).toHaveLength(0);
   });
 
+  it("recalls everything in a namespace when no query is given", async () => {
+    await memory.add("first noteless memory", { namespace: "all" });
+    await memory.add("second noteless memory", { namespace: "all" });
+    await memory.searchIndex.waitIndexing();
+
+    // No query → filter-only fetch; minScore is ignored, so a high floor still returns them.
+    const hits = await memory.recall(undefined, { namespace: "all", topK: 10, minScore: 1e9 });
+    expect(hits.length).toBeGreaterThanOrEqual(2);
+    expect(hits.every((h) => h.text.includes("noteless"))).toBe(true);
+    // Scoped: another namespace sees none of them.
+    expect(await memory.recall(undefined, { namespace: "all-other", topK: 10 })).toHaveLength(0);
+  });
+
   it("forgets a memory", async () => {
     const rec = await memory.add("ephemeral note to forget", { namespace: "forget" });
     await memory.searchIndex.waitIndexing();

@@ -71,13 +71,18 @@ export class AgentMemory {
     return record;
   }
 
-  /** Fuzzily recall the memories most relevant to `query` within `namespace`. */
+  /**
+   * Fuzzily recall the memories most relevant to `query` within `namespace`. Omit `query` (or pass an
+   * empty string) to return any memories in the namespace, unfiltered by relevance (the `minScore`
+   * floor only applies when there's a `query`).
+   */
   async recall(
-    query: string,
+    query?: string,
     opts: { topK?: number; namespace?: string; minScore?: number } = {},
   ): Promise<RecalledMemory[]> {
     const namespace = opts.namespace ?? "default";
-    const minScore = opts.minScore ?? this.minScore;
+    // BM25 relevance only exists when there's a text query; a filter-only fetch scores 0 for all.
+    const minScore = query && query.trim() ? (opts.minScore ?? this.minScore) : 0;
     const hits = await this.store.search(query, {
       topK: opts.topK ?? 5,
       filters: { namespace },
