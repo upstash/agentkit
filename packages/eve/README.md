@@ -1,10 +1,10 @@
 # @upstash/agentkit-eve
 
 Adapter that brings [Upstash AgentKit](https://upstash.com/) to **Eve, the Vercel agent framework**.
-Eve is file-centric, so this package ships small pieces you drop into your `agent/` tree: durable
-chat history, long-term memory tools, schema-driven Redis-Search tools, a rate limiter you drive from
-an eve `AuthFn`, a real code-execution **sandbox backend** powered by
-[Upstash Box](https://github.com/upstash/box), and cached tools.
+Eve is file-centric, so this package ships small pieces you drop into your `agent/` tree: long-term
+memory tools, schema-driven Redis-Search tools, a rate limiter you drive from an eve `AuthFn`, a real
+code-execution **sandbox backend** powered by [Upstash Box](https://github.com/upstash/box), and
+cached tools.
 
 ```bash
 pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
@@ -19,51 +19,6 @@ A small shared Redis client is handy:
 import { Redis } from "@upstash/redis";
 export const redis = Redis.fromEnv();
 ```
-
-## Chat history
-
-`createChatHistory` returns a Redis-backed `ChatHistory<EveMessage>` — the **durable source of truth**
-for a conversation's transcript. eve keeps live sessions in its Workflow store, but that's pruned
-1–30 days after a run completes (per your Vercel plan), so persist the transcript in Redis for durable
-history, listing, and resume. Each chat is one JSON doc at `agentkit:chat:<sessionId>`, indexed over
-`userId` + `sessionId` (filters) and `userMessages` + `modelMessages` (`$smart` fuzzy text); the raw
-`messages` and `metadata` are stored **unindexed**.
-
-```ts
-import { createChatHistory } from "@upstash/agentkit-eve";
-
-const history = createChatHistory({
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  namespace: "agentkit:chat", // optional: key prefix + index name base (defaults to "agentkit:chat")
-  ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL in seconds (default: no expiry)
-});
-```
-
-Persist on finish (from an eve hook): `saveChat` overwrites the **whole** message array, and you stash
-eve's live `session` cursor in `metadata.session` so you can resume within eve's retention window.
-
-```ts
-// when a turn settles (e.g. an eve hook, or a route the client posts the snapshot to):
-await history.saveChat(userId, chatId, snapshot.data.messages, {
-  title, // optional: human-readable title
-  metadata: { session: snapshot.session }, // optional: the live-resume cursor (kept unindexed)
-});
-```
-
-Resume by handing the stored cursor to `useEveAgent({ initialSession })`, and render the transcript
-from `getChat`. Use `listChats` / `searchChats` for a sidebar:
-
-```ts
-const chat = await history.getChat(userId, chatId); // chat.messages + chat.metadata.session
-const chats = await history.listChats(userId, { limit: 50 }); // sidebar: summaries, no messages
-const hits = await history.searchChats(userId, "headphones", { target: "both", limit: 20, minScore: 0 });
-
-// client — resume the live session from the stored cursor
-// const agent = useEveAgent({ initialSession: chat?.metadata?.session });
-```
-
-Other methods: `createChat(userId, { sessionId?, title?, messages?, metadata? })`,
-`setTitle(userId, sessionId, title)`, `deleteChat(userId, sessionId)`.
 
 ## Memory tools (`agent/tools/*.ts`)
 

@@ -58,10 +58,11 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 - `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`, `defineSearchTools`
   (eve counterpart to ai-sdk `createSearchTools` — returns a `{search,aggregate,count}` record of
   `defineTool`-branded tools; build once in `agent/lib/`, re-export each from its own `agent/tools/*.ts`),
-  `createChatHistory` (→ `ChatHistory<EveMessage>`; persist the client's `useEveAgent`
-  `onFinish(snapshot).data.messages` via a server route — the **full** transcript incl. tool calls;
-  hooks were rejected since no stream event carries the assembled transcript), **plus** rate limiting: `createRateLimitAuth` (a ready eve route-auth `AuthFn`, `packages/eve/src/auth.ts`) and the
-  core `createRateLimit` factory re-exported. **No model wrapper / no `./model` subpath.**
+  **plus** rate limiting: `createRateLimitAuth` (a ready eve route-auth `AuthFn`, `packages/eve/src/auth.ts`)
+  and the core `createRateLimit` factory re-exported. **No model wrapper / no `./model` subpath.**
+- **No chat history in eve** — `ChatHistory` is core/ai-sdk only. eve sessions are durable server-side
+  (Vercel Workflow) and `useEveAgent` has no `initialMessages` prop, so a stored transcript doesn't
+  round-trip cleanly; resume is via eve's `session` cursor, not us.
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
 - Eve is file-centric, but the tool factories now **call `defineTool` internally** and return the
   branded `ToolDefinition` — users export them directly (no outer `defineTool(...)` wrap). Because of

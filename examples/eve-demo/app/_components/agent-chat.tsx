@@ -22,25 +22,7 @@ const BETA_TERMS_HREF = "https://vercel.com/docs/release-phases/public-beta-agre
 type AgentStatus = ReturnType<typeof useEveAgent>["status"];
 
 export function AgentChat() {
-  // Persist the full transcript to Redis when each turn settles. `snapshot.data.messages` is the
-  // assembled EveMessage[] (tool-call parts included) and `snapshot.session` is the resume cursor —
-  // we post both to /api/persist-chat, which owns the Redis creds. (Redis is the durable source of
-  // truth; eve's Workflow session store is pruned 1–30 days after a run completes.)
-  const agent = useEveAgent({
-    onFinish: (snapshot) => {
-      const sessionId = snapshot.session?.sessionId;
-      if (!sessionId) return;
-      void fetch("/api/persist-chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          messages: snapshot.data.messages,
-          session: snapshot.session,
-        }),
-      });
-    },
-  });
+  const agent = useEveAgent();
   const isBusy = agent.status === "submitted" || agent.status === "streaming";
   const isEmpty = agent.data.messages.length === 0;
 
