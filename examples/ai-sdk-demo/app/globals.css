@@ -13,7 +13,7 @@ button:disabled { opacity: .5; }
 .layout { display: grid; grid-template-columns: 260px 1fr; gap: 1.5rem; align-items: start; }
 
 .sidebar { display: flex; flex-direction: column; gap: .6rem; position: sticky; top: 1.5rem; }
-.new-chat { display: block; text-align: center; padding: .5rem .9rem; border-radius: 8px; background: #059669; color: #fff; font-weight: 600; text-decoration: none; }
+.new-chat { display: block; width: 100%; text-align: center; padding: .5rem .9rem; border-radius: 8px; background: #059669; color: #fff; font-weight: 600; text-decoration: none; cursor: pointer; }
 .search { font-size: .9rem; }
 .chat-list { display: flex; flex-direction: column; gap: .35rem; margin-top: .25rem; }
 .chat-link { display: flex; flex-direction: column; gap: .15rem; padding: .5rem .6rem; border: 1px solid #e4e4e7; border-radius: 8px; background: #fff; text-decoration: none; color: #18181b; }

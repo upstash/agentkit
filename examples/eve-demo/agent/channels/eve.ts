@@ -2,8 +2,6 @@ import { createRateLimitAuth } from "@upstash/agentkit-eve";
 import { localDev, placeholderAuth, vercelOidc } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
 
-import { redis } from "../redis.js";
-
 export default eveChannel({
   // eve walks `auth` in order: each entry accepts (returns a SessionAuthContext),
   // skips (returns null), or rejects (throws). createRateLimitAuth is a gate — it
@@ -12,7 +10,8 @@ export default eveChannel({
   auth: [
     // Throttle first, before any identity check or model work.
     createRateLimitAuth({
-      redis, // the Upstash Redis client backing the limiter
+      // `redis` omitted → defaults to Redis.fromEnv() inside the package (keeps this channel file
+      // free of any agent-source import, which eve's per-channel bundle doesn't include).
       limit: 20, // optional: requests allowed per window (default 10)
       window: "1 m", // optional: sliding-window duration (default "60 s")
       identifier: "eve-demo", // optional: who to limit — a string, or (request) => string (default "global")

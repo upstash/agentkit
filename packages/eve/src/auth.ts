@@ -1,8 +1,11 @@
 import { createRateLimit, type RateLimitConfig } from "@upstash/agentkit-sdk";
+import { Redis } from "@upstash/redis";
 import { ForbiddenError, type AuthFn } from "eve/channels/auth";
 
 /** Configuration for {@link createRateLimitAuth}. */
-export interface RateLimitAuthConfig extends RateLimitConfig {
+export interface RateLimitAuthConfig extends Omit<RateLimitConfig, "redis"> {
+  /** Upstash Redis client backing the limiter. Defaults to `Redis.fromEnv()`. */
+  redis?: Redis;
   /**
    * The rate-limit identifier (e.g. a user/tenant id, an API key, an IP), or a function deriving one
    * from the inbound `Request`. Defaults to `"global"` (one shared bucket for every caller).
@@ -24,16 +27,15 @@ export interface RateLimitAuthConfig extends RateLimitConfig {
  * import { createRateLimitAuth } from "@upstash/agentkit-eve";
  * import { localDev, vercelOidc } from "eve/channels/auth";
  * import { eveChannel } from "eve/channels/eve";
- * import { redis } from "../redis.js";
  *
  * export default eveChannel({
- *   auth: [createRateLimitAuth({ redis, limit: 20, window: "1 m" }), localDev(), vercelOidc()],
+ *   auth: [createRateLimitAuth({ limit: 20, window: "1 m" }), localDev(), vercelOidc()],
  * });
  * ```
  */
-export function createRateLimitAuth(config: RateLimitAuthConfig): AuthFn<Request> {
-  const { identifier, message, ...rateLimitConfig } = config;
-  const ratelimit = createRateLimit(rateLimitConfig);
+export function createRateLimitAuth(config: RateLimitAuthConfig = {}): AuthFn<Request> {
+  const { identifier, message, redis, ...rest } = config;
+  const ratelimit = createRateLimit({ ...rest, redis: redis ?? Redis.fromEnv() });
 
   return async (request) => {
     const id =

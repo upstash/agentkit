@@ -1,6 +1,8 @@
 import { Redis, s } from "@upstash/redis";
 
-// The index name and schema for the demo books, shared by the search tools and the seeder.
+// The demo books index name + schema. NOTE: eve's dev-runtime snapshot does not include shared
+// agent-source modules, so the search tools under agent/tools/*.ts can't import this file — they
+// repeat the same schema + name inline. Keep them in sync with the values here.
 export const BOOKS_INDEX = "eve-demo-books";
 export const bookSchema = s.object({
   title: s.string(),
@@ -21,9 +23,8 @@ const BOOKS = [
 
 /**
  * Seed the books index once. A boolean flag key in Redis gates it: unset/false → write the docs,
- * build the index, set the flag; true → no-op. Call it before rendering the chat so the agent's first
- * `search_books`/`count_books` returns data. `Redis.fromEnv()` is created lazily here (inside the
- * function) so importing this module never touches env at build time.
+ * build the index, set the flag; true → no-op. Called from the page (Next.js server), so `Redis`
+ * is created lazily here — importing this module never touches env at build time.
  */
 export async function seedBooks(): Promise<void> {
   const redis = Redis.fromEnv();

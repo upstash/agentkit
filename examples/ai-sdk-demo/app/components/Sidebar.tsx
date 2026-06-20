@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 
 type ChatSummary = {
   sessionId: string;
@@ -9,7 +11,12 @@ type ChatSummary = {
   score?: number;
 };
 
-export default function Sidebar({ activeId }: { activeId: string }) {
+export default function Sidebar() {
+  const router = useRouter();
+  const pathname = usePathname();
+  // Active chat id derived from the URL — no prop, so the sidebar never remounts on navigation.
+  const activeId = pathname?.startsWith("/chat/") ? pathname.slice("/chat/".length) : "";
+
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [query, setQuery] = useState("");
 
@@ -20,9 +27,9 @@ export default function Sidebar({ activeId }: { activeId: string }) {
     setChats(json.chats ?? []);
   }
 
-  // Load the list on mount and whenever the active chat changes (so new chats show up).
+  // Refresh the list after navigating (so a newly-created chat shows up), keeping the current query.
   useEffect(() => {
-    load();
+    load(query.trim() || undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
@@ -35,9 +42,10 @@ export default function Sidebar({ activeId }: { activeId: string }) {
 
   return (
     <aside className="sidebar">
-      <a className="new-chat" href={`/`}>
+      {/* Soft-navigate to a fresh chat id so the sidebar (and this search box) stays mounted. */}
+      <button className="new-chat" onClick={() => router.push(`/chat/${crypto.randomUUID()}`)}>
         + New chat
-      </a>
+      </button>
 
       <input
         className="search"
@@ -49,7 +57,7 @@ export default function Sidebar({ activeId }: { activeId: string }) {
       <nav className="chat-list">
         {chats.length === 0 && <p className="muted">No chats yet.</p>}
         {chats.map((c) => (
-          <a
+          <Link
             key={c.sessionId}
             href={`/chat/${c.sessionId}`}
             className={"chat-link" + (c.sessionId === activeId ? " active" : "")}
@@ -58,7 +66,7 @@ export default function Sidebar({ activeId }: { activeId: string }) {
             <span className="muted chat-meta">
               {c.messageCount} msg{c.score !== undefined ? ` · ${c.score.toFixed(1)}` : ""}
             </span>
-          </a>
+          </Link>
         ))}
       </nav>
     </aside>

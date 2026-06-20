@@ -12,13 +12,12 @@ pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
 pnpm add eve @ai-sdk/openai @upstash/box
 ```
 
-A small shared Redis client is handy:
-
-```ts
-// agent/redis.ts
-import { Redis } from "@upstash/redis";
-export const redis = Redis.fromEnv();
-```
+> **Keep each `agent/` file self-contained.** eve's runtime snapshots each tool/channel/hook file and
+> resolves only **package** imports from it — it does **not** include shared `agent/`-source modules
+> (e.g. a `agent/lib/redis.ts` or a shared tool-set module). So import only from packages inside
+> `agent/`, and lean on the defaults: **`redis` defaults to `Redis.fromEnv()`** in every helper, so you
+> almost never pass it. (Shared app code — e.g. a seeder you call from a page — lives in your project
+> `lib/`, imported by the app, not by `agent/` files.)
 
 ## Memory tools (`agent/tools/*.ts`)
 
@@ -33,9 +32,9 @@ import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
 
 export default defineMemoryRecallTool({
   namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   topK: 5, // optional: max memories to return
   minScore: 0, // optional: BM25 relevance floor for recall
+  // redis, // optional: Upstash Redis client — omit to default to Redis.fromEnv()
 });
 ```
 
@@ -45,39 +44,32 @@ import { defineMemorySaveTool } from "@upstash/agentkit-eve";
 
 export default defineMemorySaveTool({
   namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
 });
 ```
 
-## Search tools (`agent/lib/` + `agent/tools/*.ts`)
+## Search tools (`agent/tools/*.ts`)
 
 `defineSearchTools` builds `search` / `aggregate` / `count` eve tools over an Upstash Redis Search
 index — the eve counterpart to the ai-sdk adapter's `createSearchTools`. The tool descriptions are
 generated from your `s.object(...)` schema (fields, types, applicable filter operators), and the index
 is created **reactively** on first use. Each returned tool is already `defineTool`-branded.
 
-eve is file-centric (filename = tool name), so build the set **once** in `agent/lib/` and re-export
-each tool from its own `agent/tools/<name>.ts` file:
-
-```ts
-// agent/lib/book-search.ts
-import { s } from "@upstash/redis";
-import { defineSearchTools } from "@upstash/agentkit-eve";
-import { redis } from "../redis";
-
-export const bookSearch = defineSearchTools({
-  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }), // the Upstash Redis Search schema (built with `s`)
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  name: "books", // optional: index name (defaults to "agentkit:search")
-  prefix: "books:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
-  defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
-});
-```
+eve is file-centric (filename = tool name) and each file must be self-contained, so call
+`defineSearchTools` in each tool file and export the member you want (the same `name` ties them to one
+index). Keep the `schema` + `name` identical across the files:
 
 ```ts
 // agent/tools/search_books.ts
-import { bookSearch } from "../lib/book-search";
-export default bookSearch.search; // and: aggregate_books.ts → bookSearch.aggregate, count_books.ts → bookSearch.count
+import { s } from "@upstash/redis";
+import { defineSearchTools } from "@upstash/agentkit-eve";
+
+export default defineSearchTools({
+  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }), // the schema (built with `s`)
+  name: "books", // optional: index name (defaults to "agentkit:search"); ties all three tools to one index
+  // prefix: "books:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
+  // defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
+  // redis, // optional: omit to default to Redis.fromEnv()
+}).search; // and: aggregate_books.ts → .aggregate, count_books.ts → .count (repeat schema + name)
 ```
 
 ## Rate limiting (`agent/channels/eve.ts`)
@@ -90,17 +82,17 @@ throws a 403). Backed by [Upstash Ratelimit](https://github.com/upstash/ratelimi
 `agentkit:rateLimit:<identifier>`.
 
 ```ts
-// agent/channels/eve.ts
+// agent/channels/eve.ts — import only packages here; eve's per-channel bundle does NOT include
+// other agent-source files, so don't import a shared `../lib/redis` into a channel.
 import { Ratelimit } from "@upstash/ratelimit";
 import { createRateLimitAuth } from "@upstash/agentkit-eve";
 import { localDev, vercelOidc } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
-import { redis } from "../redis";
 
 export default eveChannel({
   auth: [
     createRateLimitAuth({
-      redis, // the Upstash Redis client backing the limiter
+      // redis, // optional: omit to default to Redis.fromEnv() (don't import a shared client here)
       limit: 20, // optional: requests allowed per window (default: 10)
       window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
       namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
@@ -160,8 +152,8 @@ export default defineCachedTool({
   inputSchema: z.object({ city: z.string() }), // (defineTool field) zod schema for the input
   execute: async ({ city }) => fetchWeather(city), // (defineTool field) memoized
   namespace: "get_weather", // the cache key — a string, or (input, ctx) => string
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
+  // redis, // optional: omit to default to Redis.fromEnv()
 });
 ```
 

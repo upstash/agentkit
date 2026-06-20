@@ -57,7 +57,8 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 ### eve exports
 - `.` → `defineCachedTool`, `defineMemoryRecallTool`, `defineMemorySaveTool`, `defineSearchTools`
   (eve counterpart to ai-sdk `createSearchTools` — returns a `{search,aggregate,count}` record of
-  `defineTool`-branded tools; build once in `agent/lib/`, re-export each from its own `agent/tools/*.ts`),
+  `defineTool`-branded tools; call it in each `agent/tools/*.ts` and export one member, repeating
+  `schema`+`name` — agent files must be self-contained, see eve-demo specifics),
   **plus** rate limiting: `createRateLimitAuth` (a ready eve route-auth `AuthFn`, `packages/eve/src/auth.ts`)
   and the core `createRateLimit` factory re-exported. **No model wrapper / no `./model` subpath.**
 - **No chat history in eve** — `ChatHistory` is core/ai-sdk only. eve sessions are durable server-side
@@ -158,6 +159,13 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 - It's a **real `eve` CLI scaffold**, a workspace member — not a hand-written demo. Treat its generated
   `agent/`, `app/`, `components/` as scaffold code.
 - Its `AGENTS.md` says: **read `node_modules/eve/docs/` before writing eve agent code.**
+- **Every `agent/` file must be self-contained.** eve's dev-runtime snapshot resolves only **package**
+  imports from each tool/channel/hook file — it does **not** include shared `agent/`-source modules
+  (a shared `agent/redis.ts` *or* `agent/lib/*` both fail with `Cannot find module …` at the turn step).
+  So: no relative imports of other agent files; rely on `redis` defaulting to `Redis.fromEnv()` (every
+  helper, incl. `createRateLimitAuth`, defaults it — omit it). Search tools repeat their `schema`+`name`
+  per file. App-only shared code (e.g. the books seeder a page calls) lives in the project `lib/`, not
+  `agent/`. (This is why the README's old "build once in `agent/lib/`" search-tools pattern was changed.)
 - `engines.node: 24.x` → CI (Node 24) is clean; local Node 20 only warns. It still builds on 20.
 - Keep `ai-sdk-demo`'s `@types/react` pinned to `19.2.15` (and `react` 19.2.6) to match eve-demo and avoid
   a duplicate `@types/react` (causes a JSX `key` "unique symbol" type clash in eve-demo's build).
