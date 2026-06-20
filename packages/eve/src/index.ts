@@ -19,8 +19,8 @@ export { createRateLimit } from "@upstash/agentkit-sdk";
 export type { RateLimitConfig } from "@upstash/agentkit-sdk";
 
 // Durable chat history (Redis-backed source of truth for EveMessage transcripts + session cursor)
-export { createChatHistory, defineChatHistoryHook } from "./chat-history.js";
-export type { CreateChatHistoryConfig, ChatHistoryHookConfig } from "./chat-history.js";
+export { createChatHistory } from "./chat-history.js";
+export type { CreateChatHistoryConfig } from "./chat-history.js";
 export { ChatHistory } from "@upstash/agentkit-sdk";
 export type { ChatRecord, ChatSearchHit, ChatSummary } from "@upstash/agentkit-sdk";
 
