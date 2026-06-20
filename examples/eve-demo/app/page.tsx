@@ -1,5 +1,11 @@
 import { AgentChat } from "@/app/_components/agent-chat";
+import { seedBooks } from "@/agent/lib/books";
 
-export default function Page() {
+// Render per-request so the one-time (flag-gated) book seeding runs at request
+// time, not during the build — the agent's first book search then returns data.
+export const dynamic = "force-dynamic";
+
+export default async function Page() {
+  await seedBooks();
   return <AgentChat />;
 }

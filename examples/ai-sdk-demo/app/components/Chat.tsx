@@ -54,16 +54,38 @@ export default function Chat({
             before the model call.
           </p>
         )}
-        {messages.map((m) => (
-          <div className="card" key={m.id}>
-            <div className="muted">{m.role === "user" ? "You" : "Assistant"}</div>
-            <div>
-              {m.parts
-                .map((part) => (part.type === "text" ? part.text : ""))
-                .join("") || <span className="muted">…</span>}
+        {messages.map((m) => {
+          const text = m.parts
+            .map((part) => (part.type === "text" ? part.text : ""))
+            .join("");
+          return (
+            <div className="card" key={m.id}>
+              <div className="muted">{m.role === "user" ? "You" : "Assistant"}</div>
+              {/* Show every tool the model called, with its state + result. */}
+              {m.parts.map((part, i) => {
+                if (part.type !== "dynamic-tool" && !part.type.startsWith("tool-")) return null;
+                const p = part as {
+                  state?: string;
+                  toolName?: string;
+                  output?: unknown;
+                  errorText?: string;
+                };
+                const name = part.type === "dynamic-tool" ? (p.toolName ?? "tool") : part.type.slice(5);
+                return (
+                  <div className="tool-call" key={i}>
+                    <span className="tool-tag">🔧 {name}</span>
+                    {p.state ? <span className="muted"> · {p.state}</span> : null}
+                    {p.output != null ? (
+                      <pre className="tool-io">{JSON.stringify(p.output, null, 2)}</pre>
+                    ) : null}
+                    {p.errorText ? <pre className="tool-io tool-err">{p.errorText}</pre> : null}
+                  </div>
+                );
+              })}
+              {text ? <div>{text}</div> : <span className="muted">…</span>}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <form

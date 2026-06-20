@@ -1,33 +1,13 @@
-import { s } from "@upstash/redis";
-import { createChatHistory } from "@upstash/agentkit-ai-sdk";
-import { getRedis } from "./redis";
+import { Redis, s } from "@upstash/redis";
 
-// A single hardcoded demo user — every chat is scoped to this owner.
-export const USER = "demo-user";
-
-// READMEs/demos use gpt-5.4-mini (unit tests use gpt-4o).
-export const DEMO_MODEL = "gpt-5.4-mini";
-
-// A schema-driven Redis Search index the agent can query with the `search`/`aggregate`/`count` tools.
+// The index name and schema for the demo books, shared by the search tools and the seeder.
+export const BOOKS_INDEX = "eve-demo-books";
 export const bookSchema = s.object({
   title: s.string(),
   author: s.string().noTokenize(),
   year: s.number(),
 });
 
-export const BOOKS_INDEX = "demo:aisdk:books";
-
-// Durable chat history backed by Upstash Redis Search — the source of truth for every conversation.
-let history: ReturnType<typeof createChatHistory> | undefined;
-export function getHistory() {
-  return (history ??= createChatHistory({
-    redis: getRedis(), // optional: defaults to Redis.fromEnv()
-    namespace: "demo:aisdk:chat", // optional: key prefix + index name base (default "agentkit:chat")
-    // ttlSeconds: 60 * 60 * 24, // optional: per-chat expiry; omitted here so chats persist
-  }));
-}
-
-// Demo books for the search tools to query (so `search`/`aggregate`/`count` return real results).
 const BOOKS = [
   { id: "1", title: "The Left Hand of Darkness", author: "Ursula K. Le Guin", year: 1969 },
   { id: "2", title: "The Dispossessed", author: "Ursula K. Le Guin", year: 1974 },
@@ -41,11 +21,12 @@ const BOOKS = [
 
 /**
  * Seed the books index once. A boolean flag key in Redis gates it: unset/false → write the docs,
- * build the index, and set the flag; true → no-op. Call this before rendering so the agent's first
- * `search`/`count` returns data.
+ * build the index, set the flag; true → no-op. Call it before rendering the chat so the agent's first
+ * `search_books`/`count_books` returns data. `Redis.fromEnv()` is created lazily here (inside the
+ * function) so importing this module never touches env at build time.
  */
 export async function seedBooks(): Promise<void> {
-  const redis = getRedis();
+  const redis = Redis.fromEnv();
   const flagKey = `${BOOKS_INDEX}:seeded`;
   if (await redis.get(flagKey)) return; // already seeded — no-op
 
@@ -55,7 +36,6 @@ export async function seedBooks(): Promise<void> {
       redis.json.set(prefix + b.id, "$", { title: b.title, author: b.author, year: b.year }),
     ),
   );
-  // Create the index + wait so the very first query returns the seeded rows.
   await redis.search
     .createIndex({ name: BOOKS_INDEX, dataType: "json", prefix, schema: bookSchema })
     .catch((err: unknown) => {
