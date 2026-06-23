@@ -24,7 +24,8 @@ jobs:
         with:
           # pnpm 11 (pinned via packageManager) requires Node >=22.13; use 24 LTS.
           node-version: 24
-          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false # never use caching in release builds
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -39,7 +40,6 @@ jobs:
           # Dedicated scripts — `version`/`release` would collide with pnpm's built-in commands.
           version: pnpm ci:version
           publish: pnpm ci:publish
+          createGithubReleases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
