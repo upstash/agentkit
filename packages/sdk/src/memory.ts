@@ -27,8 +27,8 @@ export interface RecalledMemory extends MemoryRecord {
 export interface AgentMemoryConfig {
   /** The Upstash Redis client. The search index is created and managed internally. */
   redis: Redis;
-  /** Key prefix + index name base; defaults to `agentkit:memory`. */
-  namespace?: string;
+  /** Base key prefix + index name base; defaults to `agentkit:memory`. */
+  prefix?: string;
   /** Default relevance floor for {@link AgentMemory.recall} (BM25 score). */
   minScore?: number;
 }
@@ -56,19 +56,19 @@ type StoredMeta = { createdAt?: number; [k: string]: unknown };
  */
 export class AgentMemory {
   private redis: Redis;
-  private name: string;
-  private prefix: string;
+  private indexName: string;
+  private keyPrefix: string;
   private index: SearchIndex<typeof MemorySchema>;
   private minScore: number;
   private created?: Promise<void>;
 
   constructor(config: AgentMemoryConfig) {
     this.redis = config.redis;
-    const namespace = config.namespace ?? "agentkit:memory";
-    // Index names must be identifier-safe; the key prefix keeps the human-readable namespace.
-    this.name = namespace.replace(/[^a-zA-Z0-9_]/g, "_");
-    this.prefix = `${namespace}:`;
-    this.index = this.redis.search.index({ name: this.name, schema: MemorySchema });
+    const prefix = config.prefix ?? "agentkit:memory";
+    // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
+    this.indexName = prefix.replace(/[^a-zA-Z0-9_]/g, "_");
+    this.keyPrefix = `${prefix}:`;
+    this.index = this.redis.search.index({ name: this.indexName, schema: MemorySchema });
     this.minScore = config.minScore ?? 0;
   }
 
@@ -78,7 +78,7 @@ export class AgentMemory {
   }
 
   private keyFor(namespace: string, id: string): string {
-    return `${this.prefix}${namespace}:${id}`;
+    return `${this.keyPrefix}${namespace}:${id}`;
   }
 
   /** Create the index once (idempotent — "already exists" is treated as success). */
@@ -86,9 +86,9 @@ export class AgentMemory {
     if (!this.created) {
       this.created = this.redis.search
         .createIndex({
-          name: this.name,
+          name: this.indexName,
           dataType: "json",
-          prefix: this.prefix,
+          prefix: this.keyPrefix,
           schema: MemorySchema,
         })
         .then(() => undefined)

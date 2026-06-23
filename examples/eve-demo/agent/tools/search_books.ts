@@ -7,5 +7,5 @@ import { s } from "@upstash/redis";
 // created reactively on first use; `redis` defaults to Redis.fromEnv() inside the package.
 export default defineSearchTools({
   schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
-  name: "eve-demo-books",
+  indexName: "eve-demo-books",
 }).search;

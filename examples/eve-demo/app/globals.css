@@ -106,6 +106,9 @@ body { background: #fafafa; color: #18181b; font-family: ui-sans-serif, system-u
 .app button { padding: .5rem .9rem; border: 0; border-radius: 8px; background: #059669; color: #fff; font-weight: 600; cursor: pointer; }
 .app button:disabled { opacity: .5; cursor: default; }
 .chat { display: flex; flex-direction: column; }
+.chat-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.user-switcher { display: flex; align-items: center; gap: .4rem; font-size: .85rem; }
+.user-switcher select { padding: .35rem .5rem; border: 1px solid #d4d4d8; border-radius: 8px; background: #fff; color: #18181b; font-weight: 600; cursor: pointer; }
 .card { border: 1px solid #e4e4e7; background: #fff; border-radius: 12px; padding: 1rem; margin-top: 1rem; white-space: pre-wrap; }
 .muted { color: #71717a; font-size: .85rem; }
 .presets { display: flex; gap: .5rem; flex-wrap: wrap; margin: .75rem 0; }

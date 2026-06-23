@@ -18,8 +18,8 @@ export interface RateLimitConfig {
   limit?: number;
   /** Sliding-window duration for the default limiter (e.g. `"10 s"`, `"1 m"`). Defaults to `"60 s"`. */
   window?: Duration;
-  /** Key prefix for the limiter. Defaults to `agentkit:rateLimit`; keys are `agentkit:rateLimit:<identifier>`. */
-  namespace?: string;
+  /** Key prefix for the limiter. Defaults to `agentkit:rateLimit`; keys are `<prefix>:<identifier>`. */
+  prefix?: string;
   /** A fully custom limiter (e.g. `Ratelimit.fixedWindow(...)`) overriding the `limit`/`window` default. */
   limiter?: Limiter;
 }
@@ -39,6 +39,6 @@ export function createRateLimit(config: RateLimitConfig): Ratelimit {
   return new Ratelimit({
     redis: config.redis,
     limiter: config.limiter ?? Ratelimit.slidingWindow(config.limit ?? 10, config.window ?? "60 s"),
-    prefix: config.namespace ?? "agentkit:rateLimit",
+    prefix: config.prefix ?? "agentkit:rateLimit",
   });
 }

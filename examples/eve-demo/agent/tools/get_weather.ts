@@ -13,7 +13,9 @@ async function fetchWeather(city: string) {
 export default defineCachedTool({
   description: "Get the current weather for a city.", // shown to the model
   inputSchema: z.object({ city: z.string().min(1) }), // zod schema, infers `execute` input
-  namespace: "get_weather", // cache key — a string, or (input, ctx) => string
+  // cache key — scoped to the selected user (auth principal from the `x-user-id` header) so one
+  // user's cached results don't serve another's.
+  namespace: (_, ctx) => `${ctx.session.auth.current?.principalId ?? ctx.session.id}:get_weather`,
   ttlSeconds: 600, // optional: per-result TTL (omit to cache indefinitely)
   async execute({ city }) {
     return fetchWeather(city);

@@ -18,7 +18,7 @@ describe.skipIf(!hasRedisCreds)("defineSearchTools (live Redis)", () => {
   const redis = testRedis();
   const name = uniqueNamespace("eve-search").replace(/[^a-zA-Z0-9_]/g, "_");
   const prefix = `${name}:`;
-  const tools = defineSearchTools({ schema, redis, name, prefix });
+  const tools = defineSearchTools({ schema, redis, indexName: name, prefix });
 
   afterAll(async () => {
     await redis.search

@@ -2,9 +2,6 @@ import { s } from "@upstash/redis";
 import { createChatHistory } from "@upstash/agentkit-ai-sdk";
 import { getRedis } from "./redis";
 
-// A single hardcoded demo user — every chat is scoped to this owner.
-export const USER = "demo-user";
-
 // READMEs/demos use gpt-5.4-mini (unit tests use gpt-4o).
 export const DEMO_MODEL = "gpt-5.4-mini";
 
@@ -22,7 +19,7 @@ let history: ReturnType<typeof createChatHistory> | undefined;
 export function getHistory() {
   return (history ??= createChatHistory({
     redis: getRedis(), // optional: defaults to Redis.fromEnv()
-    namespace: "demo:aisdk:chat", // optional: key prefix + index name base (default "agentkit:chat")
+    prefix: "demo:aisdk:chat", // optional: base key prefix + index name base (default "agentkit:chat")
     // ttlSeconds: 60 * 60 * 24, // optional: per-chat expiry; omitted here so chats persist
   }));
 }

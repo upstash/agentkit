@@ -5,8 +5,8 @@ import { Redis } from "@upstash/redis";
 export interface CreateChatHistoryConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /** Key prefix. Defaults to `agentkit:chat`. */
-  namespace?: string;
+  /** Base key prefix. Defaults to `agentkit:chat`. */
+  prefix?: string;
   /** Optional TTL (seconds) per chat. Omit for no expiry. */
   ttlSeconds?: number;
 }

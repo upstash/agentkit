@@ -3,8 +3,8 @@ import { AgentMemory } from "./memory.js";
 import { hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
 
 describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
-  const namespace = uniqueNamespace("memory");
-  const memory = new AgentMemory({ redis: testRedis(), namespace });
+  const prefix = uniqueNamespace("memory");
+  const memory = new AgentMemory({ redis: testRedis(), prefix });
 
   afterAll(async () => {
     try {

@@ -22,7 +22,7 @@ import { createChatHistory } from "@upstash/agentkit-ai-sdk";
 
 const history = createChatHistory({
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  namespace: "agentkit:chat", // optional: key prefix + index name base (defaults to "agentkit:chat")
+  prefix: "agentkit:chat", // optional: base key prefix + index name base (defaults to "agentkit:chat")
   ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL in seconds (default: no expiry)
 });
 ```
@@ -106,7 +106,7 @@ const schema = s.object({ name: s.string(), age: s.number(), city: s.string().no
 const tools = createSearchTools({
   schema, // the Upstash Redis Search schema (built with `s` from @upstash/redis)
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  name: "users", // optional: index name (defaults to "agentkit:search")
+  indexName: "users", // optional: index name (defaults to "agentkit:search")
   prefix: "users:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
   defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
 });
@@ -135,7 +135,7 @@ const ratelimit = createRateLimit({
   redis, // the Upstash Redis client backing the limiter
   limit: 20, // optional: requests allowed per window (default: 10)
   window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
-  namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
+  prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
   limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
 });
 

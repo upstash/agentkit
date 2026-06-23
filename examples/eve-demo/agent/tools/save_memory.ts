@@ -6,5 +6,7 @@ import { defineMemorySaveTool } from "@upstash/agentkit-eve";
 // `defineMemorySaveTool` calls eve's `defineTool` internally, so export it directly.
 // `redis` is omitted, so the helper defaults to Redis.fromEnv() on its own.
 export default defineMemorySaveTool({
-  namespace: (_, ctx) => ctx.session.id, // required: per-session memory; derived from the eve context
+  // required: scope memory to the selected user (the auth principal set from the `x-user-id` header in
+  // agent/channels/eve.ts); falls back to the session id when there's no authenticated user.
+  namespace: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
 });

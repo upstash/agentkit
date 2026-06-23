@@ -2,6 +2,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { USER_HEADER } from "../lib/users";
+import { useUser } from "./UserProvider";
+import UserSwitcher from "./UserSwitcher";
 
 type ChatSummary = {
   sessionId: string;
@@ -14,6 +17,7 @@ type ChatSummary = {
 export default function Sidebar() {
   const router = useRouter();
   const pathname = usePathname();
+  const { userId } = useUser();
   // Active chat id derived from the URL — no prop, so the sidebar never remounts on navigation.
   const activeId = pathname?.startsWith("/chat/") ? pathname.slice("/chat/".length) : "";
 
@@ -22,18 +26,19 @@ export default function Sidebar() {
 
   async function load(q?: string) {
     const url = q ? `/api/chats?q=${encodeURIComponent(q)}` : "/api/chats";
-    const res = await fetch(url);
+    // Identify the user via a header so the API lists only this user's chats.
+    const res = await fetch(url, { headers: { [USER_HEADER]: userId } });
     const json = (await res.json()) as { chats: ChatSummary[] };
     setChats(json.chats ?? []);
   }
 
-  // Refresh the list after navigating (so a newly-created chat shows up), keeping the current query.
+  // Reload after navigating (so a new chat shows up) or after switching users, keeping the query.
   useEffect(() => {
     load(query.trim() || undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId]);
+  }, [activeId, userId]);
 
-  // Debounced fuzzy search via searchChats(USER, q).
+  // Debounced fuzzy search via searchChats({ userId, query }).
   useEffect(() => {
     const t = setTimeout(() => load(query.trim() || undefined), 250);
     return () => clearTimeout(t);
@@ -42,6 +47,8 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
+      <UserSwitcher />
+
       {/* Soft-navigate to a fresh chat id so the sidebar (and this search box) stays mounted. */}
       <button className="new-chat" onClick={() => router.push(`/chat/${crypto.randomUUID()}`)}>
         + New chat

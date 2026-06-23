@@ -4,14 +4,14 @@ import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-s
 
 describe.skipIf(!hasRedisCreds)("createRateLimit (live Redis)", () => {
   const redis = testRedis();
-  const namespace = uniqueNamespace("sdk-rl");
+  const prefix = uniqueNamespace("sdk-rl");
 
   afterAll(async () => {
-    await cleanupKeys(redis, namespace);
+    await cleanupKeys(redis, prefix);
   });
 
   it("allows the first call and blocks the next once over the limit", async () => {
-    const ratelimit = createRateLimit({ redis, limit: 1, window: "60 s", namespace });
+    const ratelimit = createRateLimit({ redis, limit: 1, window: "60 s", prefix });
     const id = "user-1";
 
     const first = await ratelimit.limit(id);

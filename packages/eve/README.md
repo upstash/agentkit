@@ -65,7 +65,7 @@ import { defineSearchTools } from "@upstash/agentkit-eve";
 
 export default defineSearchTools({
   schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }), // the schema (built with `s`)
-  name: "books", // optional: index name (defaults to "agentkit:search"); ties all three tools to one index
+  indexName: "books", // optional: index name (defaults to "agentkit:search"); ties all three tools to one index
   // prefix: "books:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
   // defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
   // redis, // optional: omit to default to Redis.fromEnv()
@@ -94,7 +94,7 @@ export default eveChannel({
       // redis, // optional: omit to default to Redis.fromEnv() (don't import a shared client here)
       limit: 20, // optional: requests allowed per window (default: 10)
       window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
-      namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
+      prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
       identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous", // required: who to limit — a string, or (request) => string
       message: "Rate limit exceeded.", // optional: message in the 403 body when over the limit
       limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window

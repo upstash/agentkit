@@ -18,7 +18,7 @@ describe.skipIf(!hasRedisCreds)("createSearchTools (live Redis)", () => {
   const redis = testRedis();
   const name = uniqueNamespace("searchtools").replace(/[^a-zA-Z0-9_]/g, "_");
   const prefix = `${name}:`;
-  const tools = createSearchTools({ schema, redis, name, prefix });
+  const tools = createSearchTools({ schema, redis, indexName: name, prefix });
 
   afterAll(async () => {
     try {

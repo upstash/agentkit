@@ -50,8 +50,8 @@ export interface ExtractedText {
 export interface ChatHistoryConfig<TMessage = unknown> {
   /** The Upstash Redis client. The search index is created and managed internally. */
   redis: Redis;
-  /** Key prefix + index name base; defaults to `agentkit:chat`. */
-  namespace?: string;
+  /** Base key prefix + index name base; defaults to `agentkit:chat`. */
+  prefix?: string;
   /** Optional TTL (seconds) per chat. The search index self-syncs when a chat key expires. Omit for no expiry. */
   ttlSeconds?: number;
   /**
@@ -123,9 +123,8 @@ const ChatHistorySchema = s.object({
  */
 export class ChatHistory<TMessage = unknown> {
   private redis: Redis;
-  private namespace: string;
-  private name: string;
-  private prefix: string;
+  private indexName: string;
+  private keyPrefix: string;
   private schema: typeof ChatHistorySchema;
   private index: SearchIndex<typeof ChatHistorySchema>;
   private ttlSeconds?: number;
@@ -134,11 +133,12 @@ export class ChatHistory<TMessage = unknown> {
 
   constructor(config: ChatHistoryConfig<TMessage>) {
     this.redis = config.redis;
-    this.namespace = config.namespace ?? "agentkit:chat";
-    this.name = this.namespace.replace(/[^a-zA-Z0-9_]/g, "_");
-    this.prefix = `${this.namespace}:`;
+    const prefix = config.prefix ?? "agentkit:chat";
+    // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
+    this.indexName = prefix.replace(/[^a-zA-Z0-9_]/g, "_");
+    this.keyPrefix = `${prefix}:`;
     this.schema = ChatHistorySchema;
-    this.index = this.redis.search.index({ name: this.name, schema: this.schema });
+    this.index = this.redis.search.index({ name: this.indexName, schema: this.schema });
     this.ttlSeconds = config.ttlSeconds;
     this.extract = config.extractText ?? (defaultExtract as (m: TMessage[]) => ExtractedText);
   }
@@ -153,12 +153,17 @@ export class ChatHistory<TMessage = unknown> {
    * one user's write can't reach another's chat. The `userId` is the tenant boundary, structurally.
    */
   private keyFor(userId: string, sessionId: string): string {
-    return `${this.prefix}${userId}:${sessionId}`;
+    return `${this.keyPrefix}${userId}:${sessionId}`;
   }
 
   private createIndex(): Promise<void> {
     return this.redis.search
-      .createIndex({ name: this.name, dataType: "json", prefix: this.prefix, schema: this.schema })
+      .createIndex({
+        name: this.indexName,
+        dataType: "json",
+        prefix: this.keyPrefix,
+        schema: this.schema,
+      })
       .then(() => undefined)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -199,11 +204,13 @@ export class ChatHistory<TMessage = unknown> {
   }
 
   /**
-   * Overwrite a chat's messages with the full array (the frontend sends the whole conversation, so
-   * there's no delta to merge). Upserts the chat if new. Re-derives the searchable text and bumps
-   * `updatedAt`. `sessionId` is the AI SDK `useChat` id (or any stable id you choose).
+   * Persist a chat by **replacing** its whole message array with the one you pass — `saveChat` is an
+   * overwrite, not an append, so hand it the complete transcript (there's no delta to merge). Upserts
+   * the chat if new, re-derives the searchable text, and bumps `updatedAt`. `sessionId` is the AI SDK
+   * `useChat` id (or any stable id you choose). Typically you call this server-side once a turn
+   * finishes (e.g. the AI SDK route's `onFinish`), with the full request + reply message list.
    *
-   * The chat lives under a per-user key (`<namespace>:<userId>:<sessionId>`), so a write only ever
+   * The chat lives under a per-user key (`<prefix>:<userId>:<sessionId>`), so a write only ever
    * touches **this** user's chat — another user reusing the same `sessionId` has a separate chat.
    */
   async saveChat(params: {

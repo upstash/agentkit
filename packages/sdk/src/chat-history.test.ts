@@ -16,7 +16,7 @@ const msg = (id: string, role: Msg["role"], text: string): Msg => ({
 
 describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis Search)", () => {
   const redis = testRedis();
-  const history = new ChatHistory<Msg>({ redis, namespace: uniqueNamespace("chat") });
+  const history = new ChatHistory<Msg>({ redis, prefix: uniqueNamespace("chat") });
   const user = "user-1";
 
   afterAll(async () => {

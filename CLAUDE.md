@@ -38,8 +38,9 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   raw `messages` array + `metadata` ride along **unindexed**. **Every method takes a single object**
   with a **required, non-empty `userId`/`sessionId`** (validated; the per-user key is the tenant
   boundary — no cross-user collision possible, so no ownership check). `listChats({userId})` filters by
-  user; `searchChats({userId, query, target})` fuzzy-searches user/model text; `saveChat` overwrites the
-  **whole** array (the frontend sends the full conversation — no delta). Generic over `TMessage`.
+  user; `searchChats({userId, query, target})` fuzzy-searches user/model text; `saveChat` **replaces**
+  the whole array (overwrite, not append — pass the full transcript; typically called server-side in
+  the route's `onFinish`). Generic over `TMessage`.
 - **Reactive index provisioning** (`withIndex`): a missing Upstash index surfaces differently per op —
   `query`→`null`, `count`→`{count:-1}`, `aggregate`→**throws** a null-`.length` `TypeError` (verified
   against live Redis). `withIndex(provision, op, isMissingResult?)` runs the op, and on a missing index
@@ -88,15 +89,22 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   Telemetry, the generic Sandbox (sandbox is eve-only), and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
 
 ## API conventions
+- **Naming of the three knobs (consistent across all features):**
+  - `prefix` — the base `agentkit:X` key prefix (constructor/config level). `ToolCache`/`AgentMemory`/
+    `ChatHistory` configs and `createRateLimit`/`createChatHistory` all use `prefix` (was `namespace`).
+  - `indexName` — the explicit Redis Search index name (was `name`): `createSearchToolDefs`/
+    `createSearchTools`/`defineSearchTools` configs, and internally in `AgentMemory`/`ChatHistory`.
+  - `namespace` — the **per-call** value that splits data **under** a prefix (one user's data from
+    another's): `AgentMemory.add/recall/forget`, the memory tools, and `ToolCache`/`cachedTool` keys.
 - `redis` is **optional everywhere** → falls back to `Redis.fromEnv()`. It's the **only** client knob:
   there are **no** pre-built `memory`/`toolCache`/`cache` instance options — nothing replaces `redis`.
 - Memory tools: `namespace` is **required** — either a string (memory shared across all users; avoid in
   multi-tenant prod) or `(input, ctx/options) => string` to derive per-call (e.g. a user id).
-- Cached tools: `namespace` is the cache key — a string or `(input, ctx/options) => string` (ai-sdk
-  `cachedTools` defaults each tool's namespace to its map key).
-- Rate limiting: `namespace` is a plain **string** (the key prefix) only; the per-user value is `identifier`.
+- Cached tools: `namespace` is the per-call cache key — a string or `(input, ctx/options) => string`
+  (ai-sdk `cachedTools` defaults each tool's namespace to its map key).
+- Rate limiting: `prefix` is the key prefix (a string); the per-user value is `identifier`.
 - Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`,
-  `agentkit:memory:<namespace>:<id>`.
+  `agentkit:memory:<namespace>:<id>`, `agentkit:chat:<userId>:<sessionId>` (default prefixes shown).
 
 ## AI SDK version strategy — IMPORTANT
 - **AI SDK v7-beta everywhere.** Every package + demo pins `ai` to exactly **`7.0.0-beta.178`** (the

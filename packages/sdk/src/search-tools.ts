@@ -16,8 +16,8 @@ export interface SearchToolDefsConfig<TSchema extends AnySearchSchema = AnySearc
   /** Upstash Redis client. */
   redis: Redis;
   /** Index name. Defaults to `"agentkit:search"`. */
-  name?: string;
-  /** Key prefix for indexed JSON documents. Defaults to `"<name>:"`. */
+  indexName?: string;
+  /** Key prefix for indexed JSON documents. Defaults to `"<indexName>:"`. */
   prefix?: string;
   /** Default page size for the `search` tool. Defaults to 10. */
   defaultLimit?: number;
@@ -100,11 +100,11 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
   config: SearchToolDefsConfig<TSchema>,
 ): SearchToolDefs {
   const { redis, schema } = config;
-  const name = config.name ?? "agentkit:search";
-  const prefix = config.prefix ?? `${name}:`;
+  const indexName = config.indexName ?? "agentkit:search";
+  const prefix = config.prefix ?? `${indexName}:`;
   const defaultLimit = config.defaultLimit ?? 10;
   // `SearchIndex<TSchema>` — concrete, inferred from the caller's schema (no loose handle).
-  const index = redis.search.index({ name, schema });
+  const index = redis.search.index({ name: indexName, schema });
   // The filter/aggregation objects come from the model (untyped at runtime), so they're cast to the
   // index's real, schema-derived parameter types at the call sites below — not to `never`.
   type Filter = InferFilterFromSchema<TSchema>;
@@ -115,7 +115,7 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
     // `createIndex`'s generic can't infer through our own `TSchema` param, so cast this one setup call
     // to its real parameter type (not `never`); `schema` already matches it structurally.
     await redis.search
-      .createIndex({ name, dataType: "json", prefix, schema } as Parameters<
+      .createIndex({ name: indexName, dataType: "json", prefix, schema } as Parameters<
         Redis["search"]["createIndex"]
       >[0])
       .catch((err: unknown) => {
@@ -131,7 +131,7 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
     .describe(`An Upstash Redis Search filter object.${schemaGuide}`);
 
   const search: SearchToolDef = {
-    description: `Search the "${name}" index and return matching documents, ranked by relevance.${schemaGuide}`,
+    description: `Search the "${indexName}" index and return matching documents, ranked by relevance.${schemaGuide}`,
     inputSchema: z.object({
       filter: filterParam,
       limit: z.number().int().positive().max(100).optional().describe("Max rows to return."),
@@ -149,7 +149,7 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
   };
 
   const aggregate: SearchToolDef = {
-    description: `Run aggregations over the "${name}" index (group, stats, histograms, …).${schemaGuide}`,
+    description: `Run aggregations over the "${indexName}" index (group, stats, histograms, …).${schemaGuide}`,
     inputSchema: z.object({
       aggregations: z
         .record(z.string(), z.unknown())
@@ -173,7 +173,7 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
   };
 
   const count: SearchToolDef = {
-    description: `Count documents in the "${name}" index, optionally matching a filter.${schemaGuide}`,
+    description: `Count documents in the "${indexName}" index, optionally matching a filter.${schemaGuide}`,
     inputSchema: z.object({
       filter: z
         .record(z.string(), z.unknown())

@@ -14,7 +14,7 @@ function assertNamespace(namespace: string | undefined): asserts namespace is st
 export interface ToolCacheConfig {
   redis: Redis;
   /** Base key prefix; defaults to `agentkit:toolCache`. */
-  namespace?: string;
+  prefix?: string;
   /** Default TTL (seconds) for cached results. Omit for no expiry. */
   ttlSeconds?: number;
 }
@@ -31,19 +31,19 @@ export interface ToolCacheHit<T> {
  */
 export class ToolCache {
   private redis: Redis;
-  private namespace: string;
+  private prefix: string;
   private ttlSeconds?: number;
 
   constructor(config: ToolCacheConfig) {
     this.redis = config.redis;
-    this.namespace = config.namespace ?? "agentkit:toolCache";
+    this.prefix = config.prefix ?? "agentkit:toolCache";
     this.ttlSeconds = config.ttlSeconds;
   }
 
-  /** Key shape: `agentkit:toolCache:<namespace>:<hash>` (namespace is the per-call cache key). */
+  /** Key shape: `<prefix>:<namespace>:<hash>` (namespace is the per-call cache key, e.g. the tool name). */
   private entryKey(namespace: string, args: unknown): string {
     assertNamespace(namespace);
-    return key(this.namespace, namespace, stableHash(args));
+    return key(this.prefix, namespace, stableHash(args));
   }
 
   /** Fetch a cached result, or `null` if absent. The hit is wrapped so a cached `null` is distinct. */

@@ -10,9 +10,19 @@ const PRESETS = [
   "What's the weather in Paris?",
 ];
 
-export function AgentChat() {
+export const USERS = ["alice", "bob"] as const;
+
+export function AgentChat({
+  userId,
+  onSwitchUser,
+}: {
+  userId: string;
+  onSwitchUser: (next: string) => void;
+}) {
   const [input, setInput] = useState("");
-  const agent = useEveAgent();
+  // Send the selected user as a header so the agent scopes memory + cached tools to this user. The
+  // parent remounts this component (via a `key`) when the user changes, so a fresh session starts.
+  const agent = useEveAgent({ headers: { "x-user-id": userId } });
   const busy = agent.status === "submitted" || agent.status === "streaming";
 
   function send(text: string) {
@@ -25,7 +35,20 @@ export function AgentChat() {
   return (
     <main className="app">
       <div className="chat">
-        <h1>@upstash/agentkit-eve</h1>
+        <div className="chat-header">
+          <h1>@upstash/agentkit-eve</h1>
+          {/* Switch users — each user's memory + cached tools are kept separate. */}
+          <label className="user-switcher">
+            <span className="muted">User</span>
+            <select value={userId} onChange={(e) => onSwitchUser(e.target.value)}>
+              {USERS.map((u) => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
         <div className="presets">
           {PRESETS.map((p) => (
