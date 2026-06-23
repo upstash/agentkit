@@ -10,7 +10,7 @@ export default async function ChatPage(props: { params: Promise<{ id: string }> 
   await seedBooks();
 
   // Server-load the stored transcript so `useChat` is seeded with the full history on first render.
-  const chat = await getHistory().getChat(USER, id);
+  const chat = await getHistory().getChat({ userId: USER, sessionId: id });
 
   // The sidebar lives in app/chat/layout.tsx (persists across chats); the page only renders the chat.
   return <Chat id={id} initialMessages={chat?.messages ?? []} title={chat?.title} />;

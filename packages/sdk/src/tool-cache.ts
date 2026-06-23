@@ -1,6 +1,16 @@
 import type { Redis } from "@upstash/redis";
 import { key, stableHash } from "./utils.js";
 
+/**
+ * Reject an empty/missing per-call namespace. The namespace is the cache key prefix; a blank one would
+ * collapse unrelated tools (and, for per-user keys, unrelated users) into one shared cache entry.
+ */
+function assertNamespace(namespace: string | undefined): asserts namespace is string {
+  if (namespace === undefined || namespace === "") {
+    throw new Error("ToolCache: `namespace` is required and must be a non-empty string.");
+  }
+}
+
 export interface ToolCacheConfig {
   redis: Redis;
   /** Base key prefix; defaults to `agentkit:toolCache`. */
@@ -32,6 +42,7 @@ export class ToolCache {
 
   /** Key shape: `agentkit:toolCache:<namespace>:<hash>` (namespace is the per-call cache key). */
   private entryKey(namespace: string, args: unknown): string {
+    assertNamespace(namespace);
     return key(this.namespace, namespace, stableHash(args));
   }
 

@@ -51,6 +51,17 @@ describe.skipIf(!hasRedisCreds)("ToolCache (live Redis)", () => {
     expect(await cache.get("inv", { x: 1 })).toBeNull();
   });
 
+  // The per-call namespace is the cache-key prefix — an empty/missing one must throw, so unrelated
+  // tools (or per-user keys) can't collapse into one shared cache entry.
+  it("requires a non-empty per-call namespace", async () => {
+    const cache = new ToolCache({ redis, namespace });
+    await expect(cache.get("", { x: 1 })).rejects.toThrow(/namespace/i);
+    await expect(cache.get(undefined as unknown as string, { x: 1 })).rejects.toThrow(/namespace/i);
+    await expect(cache.set("", { x: 1 }, "v")).rejects.toThrow(/namespace/i);
+    await expect(cache.invalidate("", { x: 1 })).rejects.toThrow(/namespace/i);
+    await expect(cache.wrap("", async () => 1)({})).rejects.toThrow(/namespace/i);
+  });
+
   it("honors TTL", async () => {
     const cache = new ToolCache({ redis, namespace, ttlSeconds: 1 });
     await cache.set("ttl", { x: 1 }, "v");

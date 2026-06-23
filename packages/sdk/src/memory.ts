@@ -3,6 +3,16 @@ import type { Redis } from "@upstash/redis";
 import { RedisSearchIndex, type SearchIndexHandle } from "./search-index.js";
 import { now } from "./utils.js";
 
+/**
+ * Reject an empty/missing namespace. The namespace is the only tenant boundary for memory, so a blank
+ * one would silently collapse every caller into one shared bucket and leak memories across users.
+ */
+function assertNamespace(namespace: string | undefined): asserts namespace is string {
+  if (namespace === undefined || namespace === "") {
+    throw new Error("AgentMemory: `namespace` is required and must be a non-empty string.");
+  }
+}
+
 export interface MemoryRecord {
   id: string;
   text: string;
@@ -48,12 +58,16 @@ export class AgentMemory {
     return this.store.index;
   }
 
-  /** Store a memory under `namespace`. Returns the persisted record. Key: `agentkit:memory:<namespace>:<id>`. */
+  /**
+   * Store a memory under `namespace` (required, non-empty — make it unique per user). Returns the
+   * persisted record. Key: `agentkit:memory:<namespace>:<id>`.
+   */
   async add(
     text: string,
-    opts: { id?: string; metadata?: Record<string, unknown>; namespace?: string } = {},
+    opts: { namespace: string; id?: string; metadata?: Record<string, unknown> },
   ): Promise<MemoryRecord> {
-    const namespace = opts.namespace ?? "default";
+    const { namespace } = opts;
+    assertNamespace(namespace);
     const record: MemoryRecord = {
       id: opts.id ?? randomUUID(),
       text,
@@ -79,10 +93,11 @@ export class AgentMemory {
    * passing "everything"). `minScore` still filters genuine-but-weak matches (no fallback then).
    */
   async recall(
-    query?: string,
-    opts: { topK?: number; namespace?: string; minScore?: number } = {},
+    query: string | undefined,
+    opts: { namespace: string; topK?: number; minScore?: number },
   ): Promise<RecalledMemory[]> {
-    const namespace = opts.namespace ?? "default";
+    const { namespace } = opts;
+    assertNamespace(namespace);
     const topK = opts.topK ?? 5;
     const hasQuery = Boolean(query && query.trim());
     // BM25 relevance only exists when there's a text query; a filter-only fetch scores 0 for all.
@@ -110,8 +125,10 @@ export class AgentMemory {
     });
   }
 
-  /** Delete a memory by id within its `namespace`. */
-  async forget(id: string, opts: { namespace?: string } = {}): Promise<void> {
-    await this.store.delete([`${opts.namespace ?? "default"}:${id}`]);
+  /** Delete a memory by id within its `namespace` (required, non-empty). */
+  async forget(id: string, opts: { namespace: string }): Promise<void> {
+    const { namespace } = opts;
+    assertNamespace(namespace);
+    await this.store.delete([`${namespace}:${id}`]);
   }
 }

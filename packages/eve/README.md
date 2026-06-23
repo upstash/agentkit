@@ -95,7 +95,7 @@ export default eveChannel({
       limit: 20, // optional: requests allowed per window (default: 10)
       window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
       namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
-      identifier: "global", // optional: who to limit — a string, or (request) => string (default: "global")
+      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous", // required: who to limit — a string, or (request) => string
       message: "Rate limit exceeded.", // optional: message in the 403 body when over the limit
       limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
     }),
@@ -104,6 +104,10 @@ export default eveChannel({
   ],
 });
 ```
+
+> **`identifier` is required** — there is no implicit `"global"` default. A single shared bucket means
+> one abusive caller can exhaust the window for everyone, so for per-user limiting derive it per
+> request (an authenticated user id, an API key, or `x-forwarded-for` for per-IP).
 
 ## Code-execution sandbox (`agent/sandbox.ts`)
 
@@ -123,14 +127,21 @@ export default defineSandbox({
   }),
   revalidationKey: () => "repo-bootstrap-v1",
   async bootstrap({ use }) {
-    const sandbox = await use();
+    // Egress is denied by default — open it here because installing a package needs the network.
+    const sandbox = await use({ networkPolicy: "allow-all" });
     await sandbox.run({ command: "apt-get install -y jq" });
   },
   async onSession({ use }) {
-    await use({ networkPolicy: "deny-all" });
+    await use(); // sessions inherit the secure default (deny-all); pass a networkPolicy to open egress
   },
 });
 ```
+
+> **Network egress is denied by default.** The sandbox runs untrusted, model-generated code, so open
+> egress would mean SSRF / data exfiltration / reaching your own infrastructure from inside the box.
+> Pass a `networkPolicy` (on the backend, in `bootstrap`'s `use(...)`, or in the session `use(...)`)
+> to allow it. Note that `env` passed to `upstash({ env })` is readable by code running in the box —
+> don't pass secrets you wouldn't want that code to see.
 
 Set `UPSTASH_BOX_API_KEY` (or pass `apiKey`). `@upstash/box` is an optional peer dependency — only
 needed when you import `@upstash/agentkit-eve/sandbox`.

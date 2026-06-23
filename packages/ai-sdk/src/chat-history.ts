@@ -18,20 +18,24 @@ export interface CreateChatHistoryConfig {
  *
  * ```ts
  * import { createChatHistory } from "@upstash/agentkit-ai-sdk";
+ * import { createUIMessageStreamResponse, toUIMessageStream } from "ai";
  * const history = createChatHistory();
  *
  * // server route — persist the whole conversation when the stream finishes
- * return result.toUIMessageStreamResponse({
- *   originalMessages: messages,
- *   onFinish: ({ messages }) => history.saveChat(userId, chatId, messages),
+ * return createUIMessageStreamResponse({
+ *   stream: toUIMessageStream({
+ *     stream: result.stream,
+ *     originalMessages: messages,
+ *     onFinish: ({ messages }) => history.saveChat({ userId, sessionId: chatId, messages }),
+ *   }),
  * });
  *
  * // page loader — seed useChat with the stored transcript
- * const chat = await history.getChat(userId, chatId);
+ * const chat = await history.getChat({ userId, sessionId: chatId });
  * // <Chat id={chatId} initialMessages={chat?.messages ?? []} />
  *
  * // sidebar — list the user's chats (summaries, no messages)
- * const chats = await history.listChats(userId);
+ * const chats = await history.listChats({ userId });
  * ```
  */
 export function createChatHistory(config: CreateChatHistoryConfig = {}): ChatHistory<UIMessage> {

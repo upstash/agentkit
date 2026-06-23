@@ -1,5 +1,13 @@
 import { openai } from "@ai-sdk/openai";
-import { convertToModelMessages, streamText, stepCountIs, tool, type UIMessage } from "ai";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  streamText,
+  stepCountIs,
+  tool,
+  toUIMessageStream,
+  type UIMessage,
+} from "ai";
 import { z } from "zod";
 import {
   cachedTools,
@@ -64,13 +72,19 @@ export async function POST(req: Request) {
     .join(" ")
     .trim();
 
-  return result.toUIMessageStreamResponse({
-    originalMessages: messages,
-    // Persist the WHOLE conversation (including the new assistant reply) when the stream finishes.
-    onFinish: async ({ messages }) => {
-      await history.saveChat(USER, id, messages, {
-        title: firstUserText ? firstUserText.slice(0, 60) : "New chat",
-      });
-    },
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      // Persist the WHOLE conversation (including the new assistant reply) when the stream finishes.
+      onFinish: async ({ messages }) => {
+        await history.saveChat({
+          userId: USER,
+          sessionId: id,
+          messages,
+          title: firstUserText ? firstUserText.slice(0, 60) : "New chat",
+        });
+      },
+    }),
   });
 }

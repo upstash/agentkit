@@ -15,14 +15,20 @@
  *   backend: upstash({ runtime: "node24", resources: { vcpus: 2 } }),
  *   revalidationKey: () => "repo-bootstrap-v1",
  *   async bootstrap({ use }) {
- *     const sandbox = await use();
+ *     // Network egress is denied by default — open it here because installing a package needs it.
+ *     const sandbox = await use({ networkPolicy: "allow-all" });
  *     await sandbox.run({ command: "apt-get install -y jq" });
  *   },
  *   async onSession({ use }) {
- *     await use({ networkPolicy: "deny-all" });
+ *     await use(); // sessions inherit the secure default (deny-all) unless you pass a networkPolicy
  *   },
  * });
  * ```
+ *
+ * **Network egress is denied by default** (see {@link DEFAULT_NETWORK_POLICY}); pass a `networkPolicy`
+ * on the backend, in `bootstrap`'s `use(...)`, or in the session `use(...)` to open it. Note also that
+ * `config.env` is injected into the box and is therefore readable by code running inside it — don't
+ * pass secrets you wouldn't want model-generated code to see.
  *
  * The lifecycle maps onto Box like this: `prewarm` builds a template box (seed files + your
  * `bootstrap` hook) and captures a Box **snapshot**; `create` opens a live session from that snapshot
@@ -76,6 +82,14 @@ export interface UpstashBackendConfig {
 /** The directory Eve anchors relative sandbox paths to. */
 const WORKSPACE = "/workspace";
 const RUNTIMES = new Set<Runtime>(["node", "python", "golang", "ruby", "rust"]);
+
+/**
+ * Secure default: deny all network egress unless the caller opts in via `networkPolicy` (on the
+ * backend, the bootstrap `use(...)`, or the session `use(...)`). An agent sandbox runs untrusted,
+ * model-generated code, so open egress would mean SSRF / data exfiltration / reaching your own
+ * infrastructure from inside the box by default.
+ */
+const DEFAULT_NETWORK_POLICY: SandboxNetworkPolicy = "deny-all";
 
 function toBoxRuntime(runtime?: Runtime | string): Runtime {
   if (!runtime) return "node";
@@ -278,9 +292,10 @@ export class UpstashSandboxBackend implements SandboxBackend<
       ? await Box.fromSnapshot(snapshotId, this.boxConfig())
       : await Box.create(this.boxConfig());
 
-    if (this.config.networkPolicy) {
-      await box.updateNetworkPolicy(toBoxNetworkPolicy(this.config.networkPolicy));
-    }
+    // Lock egress down by default; the caller opens it explicitly via `networkPolicy` / `use(...)`.
+    await box.updateNetworkPolicy(
+      toBoxNetworkPolicy(this.config.networkPolicy ?? DEFAULT_NETWORK_POLICY),
+    );
 
     const session = buildSession(box);
 
@@ -314,6 +329,11 @@ export class UpstashSandboxBackend implements SandboxBackend<
 
     const box = await Box.create(this.boxConfig());
     try {
+      // Same secure default during template build; `bootstrap`'s `use({ networkPolicy })` opens it
+      // when the build genuinely needs network (e.g. installing packages).
+      await box.updateNetworkPolicy(
+        toBoxNetworkPolicy(this.config.networkPolicy ?? DEFAULT_NETWORK_POLICY),
+      );
       const session = buildSession(box);
 
       for (const file of input.seedFiles) {

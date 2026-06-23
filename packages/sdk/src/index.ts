@@ -13,8 +13,8 @@ export type { AgentMemoryConfig, MemoryRecord, RecalledMemory } from "./memory.j
 export { ToolCache } from "./tool-cache.js";
 export type { ToolCacheConfig, ToolCacheHit } from "./tool-cache.js";
 
-export { chunkText, Rag } from "./rag.js";
-export type { Chunk, ChunkOptions, RagConfig, RagDocument, RetrievedChunk } from "./rag.js";
+export { Rag } from "./rag.js";
+export type { RagConfig, RagDocument, RetrievedDocument, StoredDocument } from "./rag.js";
 
 export { createRateLimit, Ratelimit } from "./rate-limit.js";
 export type { RateLimitConfig, Duration } from "./rate-limit.js";

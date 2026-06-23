@@ -14,7 +14,8 @@ export default eveChannel({
       // free of any agent-source import, which eve's per-channel bundle doesn't include).
       limit: 20, // optional: requests allowed per window (default 10)
       window: "1 m", // optional: sliding-window duration (default "60 s")
-      identifier: "eve-demo", // optional: who to limit — a string, or (request) => string (default "global")
+      // required: who to limit — a string, or (request) => string. Per-IP here (no global default).
+      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous",
       // namespace: "agentkit:rateLimit", // optional: key prefix; keys are `<namespace>:<identifier>`
     }),
     // Open on localhost for `eve dev` and the REPL; ignored in production.

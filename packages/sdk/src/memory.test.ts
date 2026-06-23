@@ -81,6 +81,18 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     expect(await memory.recall("ephemeral note", { namespace: "forget", topK: 5 })).toHaveLength(0);
   });
 
+  // namespace is the only tenant boundary — an empty/missing one must throw (never silently collapse
+  // into a shared "default" bucket). Validated before any Redis call.
+  it("requires a non-empty namespace on add / recall / forget", async () => {
+    await expect(memory.add("x", { namespace: "" })).rejects.toThrow(/namespace/i);
+    await expect(memory.add("x", { namespace: undefined as unknown as string })).rejects.toThrow(
+      /namespace/i,
+    );
+    await expect(memory.recall("q", { namespace: "" })).rejects.toThrow(/namespace/i);
+    await expect(memory.recall(undefined, { namespace: "" })).rejects.toThrow(/namespace/i);
+    await expect(memory.forget("some-id", { namespace: "" })).rejects.toThrow(/namespace/i);
+  });
+
   it("preserves custom metadata and createdAt round-trip", async () => {
     await memory.add("fact metadata example", {
       namespace: "meta",

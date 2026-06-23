@@ -4,6 +4,16 @@ import type { Redis } from "@upstash/redis";
 import { withIndex, type SearchIndexHandle } from "./search-index.js";
 import { now } from "./utils.js";
 
+/**
+ * Reject an empty/missing id. `userId` and `sessionId` are the only tenant boundary, so a blank one
+ * would silently mis-scope a chat (or, for `userId`, let any caller read/overwrite another user's chat).
+ */
+function assertId(value: string | undefined, name: string): asserts value is string {
+  if (value === undefined || value === "") {
+    throw new Error(`ChatHistory: \`${name}\` is required and must be a non-empty string.`);
+  }
+}
+
 /** Lightweight summary of a chat, returned by list/search (no raw messages). */
 export interface ChatSummary {
   /** The chat/session id (the AI SDK `useChat` id, or an auto-generated one). */
@@ -101,11 +111,11 @@ type SearchSchema = NonNullable<Parameters<Redis["search"]["index"]>[0]["schema"
  * transcript, framework-agnostic and generic over the message type `TMessage` (the AI SDK adapter
  * specializes it to `UIMessage`, eve to `EveMessage`).
  *
- * Each chat is one JSON doc at `agentkit:chat:<sessionId>` with an index over four fields:
- * `userId` + `sessionId` (exact-match filters) and `userMessages` + `modelMessages` (fuzzy `$smart`
- * text). The raw `messages` array (and `metadata`) ride along in the same doc but are **not** indexed.
- * So you can filter by `userId` to list a user's chats, and `$smart`-search within what the user or
- * the model said.
+ * Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` — keyed per user, so two users
+ * can never collide on a `sessionId`. The index covers four fields: `userId` + `sessionId` (exact-match
+ * filters) and `userMessages` + `modelMessages` (fuzzy `$smart` text). The raw `messages` array (and
+ * `metadata`) ride along in the same doc but are **not** indexed. So you can filter by `userId` to list
+ * a user's chats, and `$smart`-search within what the user or the model said.
  */
 export class ChatHistory<TMessage = unknown> {
   private redis: Redis;
@@ -139,8 +149,12 @@ export class ChatHistory<TMessage = unknown> {
     return this.index;
   }
 
-  private keyFor(sessionId: string): string {
-    return this.prefix + sessionId;
+  /**
+   * Per-user key: each user has its own keyspace, so two users can never collide on a `sessionId` and
+   * one user's write can't reach another's chat. The `userId` is the tenant boundary, structurally.
+   */
+  private keyFor(userId: string, sessionId: string): string {
+    return `${this.prefix}${userId}:${sessionId}`;
   }
 
   private createIndex(): Promise<void> {
@@ -189,15 +203,25 @@ export class ChatHistory<TMessage = unknown> {
    * Overwrite a chat's messages with the full array (the frontend sends the whole conversation, so
    * there's no delta to merge). Upserts the chat if new. Re-derives the searchable text and bumps
    * `updatedAt`. `sessionId` is the AI SDK `useChat` id (or any stable id you choose).
+   *
+   * The chat lives under a per-user key (`<namespace>:<userId>:<sessionId>`), so a write only ever
+   * touches **this** user's chat — another user reusing the same `sessionId` has a separate chat.
    */
-  async saveChat(
-    userId: string,
-    sessionId: string,
-    messages: TMessage[],
-    opts: { title?: string; metadata?: Record<string, unknown> } = {},
-  ): Promise<ChatRecord<TMessage>> {
+  async saveChat(params: {
+    /** The chat owner. Must be unique per user (it's the tenant boundary). Required, non-empty. */
+    userId: string;
+    /** The chat/session id (the AI SDK `useChat` id, or any stable id). Required, non-empty. */
+    sessionId: string;
+    /** The full transcript (the whole conversation — there is no delta merge). */
+    messages: TMessage[];
+    title?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<ChatRecord<TMessage>> {
+    const { userId, sessionId, messages } = params;
+    assertId(userId, "userId");
+    assertId(sessionId, "sessionId");
     await this.ensure();
-    const existing = await this.getDoc(sessionId);
+    const existing = await this.getDoc(userId, sessionId);
     const ts = now();
     const { userMessages, modelMessages } = this.extract(messages);
     const doc: ChatDoc<TMessage> = {
@@ -208,53 +232,62 @@ export class ChatHistory<TMessage = unknown> {
       messages,
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
-      ...((opts.title ?? existing?.title) ? { title: opts.title ?? existing?.title } : {}),
-      ...(opts.metadata || existing?.metadata
-        ? { metadata: { ...existing?.metadata, ...opts.metadata } }
+      ...((params.title ?? existing?.title) ? { title: params.title ?? existing?.title } : {}),
+      ...(params.metadata || existing?.metadata
+        ? { metadata: { ...existing?.metadata, ...params.metadata } }
         : {}),
     };
-    await this.redis.json.set(this.keyFor(sessionId), "$", doc as never);
+    await this.redis.json.set(this.keyFor(userId, sessionId), "$", doc as never);
     if (this.ttlSeconds !== undefined)
-      await this.redis.expire(this.keyFor(sessionId), this.ttlSeconds);
+      await this.redis.expire(this.keyFor(userId, sessionId), this.ttlSeconds);
     return this.toRecord(doc);
   }
 
   /** Create a new (optionally pre-seeded) chat. Generates a `sessionId` when omitted. */
-  async createChat(
-    userId: string,
-    opts: {
-      sessionId?: string;
-      title?: string;
-      messages?: TMessage[];
-      metadata?: Record<string, unknown>;
-    } = {},
-  ): Promise<ChatRecord<TMessage>> {
-    return this.saveChat(userId, opts.sessionId ?? randomUUID(), opts.messages ?? [], {
-      ...(opts.title !== undefined ? { title: opts.title } : {}),
-      ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
+  async createChat(params: {
+    /** The chat owner. Must be unique per user. Required, non-empty. */
+    userId: string;
+    sessionId?: string;
+    title?: string;
+    messages?: TMessage[];
+    metadata?: Record<string, unknown>;
+  }): Promise<ChatRecord<TMessage>> {
+    return this.saveChat({
+      userId: params.userId,
+      sessionId: params.sessionId ?? randomUUID(),
+      messages: params.messages ?? [],
+      ...(params.title !== undefined ? { title: params.title } : {}),
+      ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
     });
   }
 
-  private async getDoc(sessionId: string): Promise<ChatDoc<TMessage> | null> {
-    const doc = await this.redis.json.get<ChatDoc<TMessage>[]>(this.keyFor(sessionId), "$");
+  private async getDoc(userId: string, sessionId: string): Promise<ChatDoc<TMessage> | null> {
+    const doc = await this.redis.json.get<ChatDoc<TMessage>[]>(this.keyFor(userId, sessionId), "$");
     return Array.isArray(doc) ? (doc[0] ?? null) : ((doc as ChatDoc<TMessage> | null) ?? null);
   }
 
-  /** Fetch a single chat (full transcript), or `null` if it doesn't exist / isn't this user's. */
-  async getChat(userId: string, sessionId: string): Promise<ChatRecord<TMessage> | null> {
-    const doc = await this.getDoc(sessionId);
-    if (!doc || doc.userId !== userId) return null;
-    return this.toRecord(doc);
+  /** Fetch a single chat (full transcript), or `null` if this user has no chat with that `sessionId`. */
+  async getChat(params: {
+    userId: string;
+    sessionId: string;
+  }): Promise<ChatRecord<TMessage> | null> {
+    const { userId, sessionId } = params;
+    assertId(userId, "userId");
+    assertId(sessionId, "sessionId");
+    const doc = await this.getDoc(userId, sessionId);
+    return doc ? this.toRecord(doc) : null;
   }
 
   /** List a user's chats (summaries only), newest-updated first. Filters the index by `userId`. */
-  async listChats(userId: string, opts: { limit?: number } = {}): Promise<ChatSummary[]> {
+  async listChats(params: { userId: string; limit?: number }): Promise<ChatSummary[]> {
+    const { userId } = params;
+    assertId(userId, "userId");
     const results = await withIndex(
       () => this.provision(),
       () =>
         this.index.query({
           filter: { userId: { $eq: userId } } as never,
-          ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+          ...(params.limit !== undefined ? { limit: params.limit } : {}),
         }) as Promise<{ data?: ChatDoc<TMessage> }[] | null>,
       (r) => r === null,
     );
@@ -269,12 +302,16 @@ export class ChatHistory<TMessage = unknown> {
    * Fuzzily search a user's chats by what was said. `target` picks which side to match: `"user"`,
    * `"model"`, or `"both"` (default). Returns summaries with BM25 scores, most relevant first.
    */
-  async searchChats(
-    userId: string,
-    query: string,
-    opts: { limit?: number; minScore?: number; target?: "user" | "model" | "both" } = {},
-  ): Promise<ChatSearchHit[]> {
-    const target = opts.target ?? "both";
+  async searchChats(params: {
+    userId: string;
+    query: string;
+    limit?: number;
+    minScore?: number;
+    target?: "user" | "model" | "both";
+  }): Promise<ChatSearchHit[]> {
+    const { userId, query } = params;
+    assertId(userId, "userId");
+    const target = params.target ?? "both";
     const text =
       target === "user"
         ? [{ userMessages: { $smart: query } }]
@@ -286,28 +323,35 @@ export class ChatHistory<TMessage = unknown> {
       () =>
         this.index.query({
           filter: { $and: [{ userId: { $eq: userId } }, { $or: text }] } as never,
-          ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+          ...(params.limit !== undefined ? { limit: params.limit } : {}),
         }) as Promise<{ data?: ChatDoc<TMessage>; score: number }[] | null>,
       (r) => r === null,
     );
-    const minScore = opts.minScore ?? 0;
+    const minScore = params.minScore ?? 0;
     return (results ?? [])
       .filter((r) => r.data && r.score >= minScore)
       .map((r) => ({ ...this.toSummary(r.data as ChatDoc<TMessage>), score: r.score }));
   }
 
-  /** Delete a chat (also removes it from the index). */
-  async deleteChat(userId: string, sessionId: string): Promise<void> {
-    const doc = await this.getDoc(sessionId);
-    if (!doc || doc.userId !== userId) return;
-    await this.redis.del(this.keyFor(sessionId));
+  /** Delete this user's chat (also removes it from the index). No-op if it doesn't exist. */
+  async deleteChat(params: { userId: string; sessionId: string }): Promise<void> {
+    const { userId, sessionId } = params;
+    assertId(userId, "userId");
+    assertId(sessionId, "sessionId");
+    await this.redis.del(this.keyFor(userId, sessionId));
   }
 
-  /** Set/replace a chat's title. */
-  async setTitle(userId: string, sessionId: string, title: string): Promise<void> {
-    const existing = await this.getChat(userId, sessionId);
+  /** Set/replace a chat's title. No-op if the chat isn't this user's. */
+  async setTitle(params: { userId: string; sessionId: string; title: string }): Promise<void> {
+    const { userId, sessionId, title } = params;
+    assertId(userId, "userId");
+    assertId(sessionId, "sessionId");
+    const existing = await this.getChat({ userId, sessionId });
     if (!existing) return;
-    await this.saveChat(userId, sessionId, existing.messages, {
+    await this.saveChat({
+      userId,
+      sessionId,
+      messages: existing.messages,
       title,
       ...(existing.metadata !== undefined ? { metadata: existing.metadata } : {}),
     });

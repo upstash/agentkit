@@ -39,7 +39,8 @@ const info = await rag.searchIndex.describe();
 
 Durable conversation transcripts backed by Upstash Redis Search — the source of truth for a chat.
 `ChatHistory<TMessage>` is generic over the message type (the ai-sdk adapter specializes it to
-`UIMessage`, eve to `EveMessage`). Each chat is one JSON doc at `agentkit:chat:<sessionId>`, indexed
+`UIMessage`, eve to `EveMessage`). Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>`
+(keyed per user, so two users can't collide on a `sessionId`), indexed
 over `userId` + `sessionId` (exact-match filters) and `userMessages` + `modelMessages` (`$smart`
 fuzzy text); the raw `messages` array and `metadata` ride along **unindexed**. So you can filter by
 `userId` to list a user's chats and `$smart`-search within what the user or the model said.
@@ -52,33 +53,46 @@ const history = new ChatHistory<MyMessage>({
   extractText: (messages) => ({ userMessages: "...", modelMessages: "..." }), // optional: override how text is pulled into the two indexed fields (defaults to the UIMessage/EveMessage convention)
 });
 
+// Every method takes a single object. `userId` is **required** and must be **unique per user** — it's
+// the tenant boundary: reads are scoped to it, and writes refuse to touch a chat owned by someone else.
 // Overwrite the WHOLE message array — the frontend sends the full conversation, so there's no delta to merge.
-await history.saveChat("user-123", "session-abc", messages, {
+await history.saveChat({
+  userId: "user-123", // required, non-empty, unique per user (the owner of the chat)
+  sessionId: "session-abc", // required, non-empty (the chat/session id)
+  messages, // the full transcript
   title: "Trip planning", // optional: human-readable title
   metadata: { session: cursor }, // optional: arbitrary unindexed data (e.g. an eve session cursor)
 });
 
-const chat = await history.getChat("user-123", "session-abc"); // full transcript, or null
-const chats = await history.listChats("user-123", {
+const chat = await history.getChat({ userId: "user-123", sessionId: "session-abc" }); // full transcript, or null
+const chats = await history.listChats({
+  userId: "user-123", // required
   limit: 50, // optional: max chats to return (newest-updated first)
 });
 
-const hits = await history.searchChats("user-123", "wireless headphones", {
+const hits = await history.searchChats({
+  userId: "user-123", // required
+  query: "wireless headphones",
   target: "both", // optional: which side to match — "user" | "model" | "both" (defaults to "both")
   limit: 20, // optional: max hits to return
   minScore: 0, // optional: BM25 relevance floor (defaults to 0)
 });
 
-const created = await history.createChat("user-123", {
+const created = await history.createChat({
+  userId: "user-123", // required
   sessionId: "session-xyz", // optional: stable id (generated when omitted)
   title: "New chat", // optional: human-readable title
   messages: [], // optional: pre-seed the transcript
   metadata: { source: "web" }, // optional: arbitrary unindexed data
 });
 
-await history.setTitle("user-123", "session-abc", "Trip planning"); // set/replace the title
-await history.deleteChat("user-123", "session-abc"); // delete a chat (also de-indexes it)
+await history.setTitle({ userId: "user-123", sessionId: "session-abc", title: "Trip planning" });
+await history.deleteChat({ userId: "user-123", sessionId: "session-abc" }); // delete (also de-indexes it)
 ```
+
+> **`userId` and `sessionId` are required and must be non-empty** — they are the only tenant
+> boundary, so an empty value throws rather than silently mis-scoping a chat. Make `userId` unique
+> per user (e.g. your auth subject id); a chat can't be read or overwritten by a different `userId`.
 
 ### Agent memory
 
@@ -92,19 +106,23 @@ const memory = new AgentMemory({
 });
 
 await memory.add("The user prefers TypeScript", {
-  namespace: "user-123", // optional: the memory scope (defaults to "default")
+  namespace: "user-123", // required, non-empty: the memory scope — make it unique per user
   id: "pref-lang", // optional: stable id (generated when omitted)
   metadata: { source: "chat" }, // optional: extra data stored with the memory
 });
 
 const hits = await memory.recall("typescript preference", {
-  namespace: "user-123", // optional: the memory scope to search (defaults to "default")
+  namespace: "user-123", // required, non-empty: the memory scope to search — unique per user
   topK: 5, // optional: max memories to return (defaults to 5)
   minScore: 0, // optional: BM25 relevance floor (defaults to the constructor's minScore)
 });
 
-await memory.forget("pref-lang", { namespace: "user-123" }); // optional namespace (defaults to "default")
+await memory.forget("pref-lang", { namespace: "user-123" }); // required, non-empty namespace
 ```
+
+> **`namespace` is required and must be non-empty** on every method — it's the only tenant boundary
+> for memory, so an empty value throws rather than collapsing all callers into one shared bucket.
+> Make it **unique per user** (e.g. the user id) to keep each user's memories isolated.
 
 ### Search tools
 
@@ -131,29 +149,32 @@ const defs = createSearchToolDefs({
 
 ### RAG
 
-Chunk documents, index the chunks, then fuzzily retrieve the most relevant ones. Stored at
-`agentkit:rag:<docId>:<chunk>`.
+Ingest documents, then fuzzily retrieve the most relevant ones for a query. A document is just your
+typed `data` (no separate text field) — its string/number values are indexed for `$smart` matching,
+and the `data` is returned as-is on retrieval. Stored at `agentkit:rag:<id>`.
 
 ```ts
-const rag = new Rag({
+// Type the document data via the generic — it flows through to retrieved documents.
+const rag = new Rag<{ title: string; body: string }>({
   redis, // the Upstash Redis client (the search index is created/managed internally)
   namespace: "agentkit:rag", // optional: key prefix + index name base (defaults to "agentkit:rag")
-  chunkSize: 1000, // optional: target chunk size in characters (defaults to 1000)
-  chunkOverlap: 200, // optional: overlap between consecutive chunks in characters (defaults to 200)
 });
 
-await rag.ingest(
-  { id: "doc-1", text: longDocument, metadata: { source: "docs" } }, // `id`/`metadata` optional
-  { chunkSize: 1000, chunkOverlap: 200 }, // optional: per-call overrides of the constructor's chunking
-);
+// Ingest a single document or an array of documents.
+await rag.ingest([
+  {
+    id: "doc-1", // optional: stable document id (generated when omitted)
+    data: { title: "Upstash Redis", body: "a serverless database…" }, // the document, typed as the `Rag` generic
+  },
+]);
 
-const chunks = await rag.retrieve("how does redis search work?", {
-  topK: 4, // optional: max chunks to return (defaults to 5)
+const docs = await rag.retrieve("how does redis search work?", {
+  topK: 4, // optional: max documents to return (defaults to 5)
   minScore: 0, // optional: BM25 relevance floor (defaults to 0)
-  docId: "doc-1", // optional: restrict retrieval to a single document
 });
+// each result: { id, data, score } — `data` is your original object
 
-await rag.remove("doc-1", { chunkCount: chunks.length }); // remove a document's chunks
+await rag.remove("doc-1"); // remove a document by id
 ```
 
 ### Rate limiting
@@ -192,11 +213,16 @@ const tools = new ToolCache({
 
 // `wrap` returns a memoized version of your execute, keyed by "getWeather" + the args hash.
 const getWeather = tools.wrap(
-  "getWeather", // the per-call cache namespace (e.g. the tool name)
+  "getWeather", // required, non-empty: the per-call cache namespace (e.g. the tool name)
   (args) => fetchWeather(args), // the function to memoize
   { ttlSeconds: 600 }, // optional: per-result TTL (overrides the constructor default)
 );
 ```
+
+> **The per-call `namespace` is required and must be non-empty** (`get`/`set`/`invalidate`/`wrap`
+> all throw on an empty value). It is the cache-key prefix: if a tool's result is **user-specific**,
+> make the namespace **unique per user** (e.g. include the user id) — a static namespace caches one
+> result across all users and would serve user A's output to user B.
 
 ## Testing
 

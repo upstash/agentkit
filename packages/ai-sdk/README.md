@@ -12,7 +12,8 @@ pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
 ## Chat history
 
 `createChatHistory` returns a Redis-backed `ChatHistory<UIMessage>` — the durable source of truth for
-your conversations. Each chat is one JSON doc at `agentkit:chat:<sessionId>`, indexed over `userId` +
+your conversations. Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user,
+so two users can't collide on a `sessionId`), indexed over `userId` +
 `sessionId` (filters) and `userMessages` + `modelMessages` (`$smart` fuzzy text); the raw `messages`
 array and `metadata` ride along **unindexed**.
 
@@ -26,16 +27,24 @@ const history = createChatHistory({
 });
 ```
 
-`saveChat` overwrites the **whole** message array — `useChat` sends the full conversation, so there's
-no transport trimming and no delta to merge. Persist from your route's `onFinish`:
+Every method takes a single object; `userId` is **required, non-empty, and must be unique per user**
+(your auth subject id). It's the tenant boundary — a chat can't be read or overwritten under a
+different `userId`. `saveChat` overwrites the **whole** message array — `useChat` sends the full
+conversation, so there's no transport trimming and no delta to merge. Persist from your route's
+`onFinish`:
 
 ```ts
 // app/api/chat/route.ts
+import { createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
+
 const result = streamText({ model, messages: convertToModelMessages(messages) });
 
-return result.toUIMessageStreamResponse({
-  originalMessages: messages, // so onFinish receives the full UIMessage[] (request + reply)
-  onFinish: ({ messages }) => history.saveChat(userId, chatId, messages, { title }), // overwrite the whole array
+return createUIMessageStreamResponse({
+  stream: toUIMessageStream({
+    stream: result.stream,
+    originalMessages: messages, // so onFinish receives the full UIMessage[] (request + reply)
+    onFinish: ({ messages }) => history.saveChat({ userId, sessionId: chatId, messages, title }), // overwrite the whole array
+  }),
 });
 ```
 
@@ -44,9 +53,9 @@ for a sidebar:
 
 ```ts
 // page loader (server)
-const chat = await history.getChat(userId, chatId); // full transcript, or null
-const chats = await history.listChats(userId, { limit: 50 }); // sidebar: summaries, no messages
-const hits = await history.searchChats(userId, "headphones", { target: "both", limit: 20, minScore: 0 });
+const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
+const chats = await history.listChats({ userId, limit: 50 }); // sidebar: summaries, no messages
+const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20, minScore: 0 });
 
 // client — hand the stored messages straight to useChat
 // const { messages } = useChat({ id: chatId, messages: chat?.messages ?? [] });
@@ -65,7 +74,7 @@ import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
 import { generateText, stepCountIs } from "ai";
 
 const tools = createMemoryTools({
-  namespace: userId, // the memory scope — a string, or (input, options) => string (e.g. a user id)
+  namespace: userId, // required, non-empty: the memory scope — unique per user (a string, or (input, options) => string)
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   topK: 5, // optional: max memories the recall tool returns
   minScore: 0, // optional: BM25 relevance floor for recall
@@ -75,6 +84,10 @@ const tools = createMemoryTools({
 
 await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
 ```
+
+> **`namespace` is required and must be non-empty** — it's the only tenant boundary for memory.
+> Make it **unique per user** (pass the user id, or a `(input, options) => string` deriving it); an
+> empty value throws rather than collapsing every user into one shared bucket.
 
 ## Search tools
 
@@ -147,13 +160,17 @@ const getWeather = cachedTool({
   description: "Get the weather for a city", // (AI SDK tool field) shown to the model
   inputSchema: z.object({ city: z.string() }), // (AI SDK tool field) zod/Standard Schema — types `execute`
   execute: async ({ city }) => fetchWeather(city), // (AI SDK tool field) memoized; `city` is inferred
-  namespace: "getWeather", // the cache key — a string, or (input, options) => string
+  namespace: "getWeather", // required, non-empty: the cache key — a string, or (input, options) => string
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
 });
 
 await generateText({ model, tools: { getWeather }, prompt: "What's the weather in Paris?" });
 ```
+
+> **`namespace` is required and must be non-empty.** It's the cache-key prefix, so if a tool's result
+> is **user-specific**, make it unique per user via the `(input, options) => string` form (e.g. derive
+> the user id from `options`) — a static namespace caches one result across all users.
 
 Cache a whole map at once with `cachedTools` — pass tools built with the AI SDK's `tool()` (so each
 keeps full type inference); each is cached under its map key, so there's no per-tool namespace.

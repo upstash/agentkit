@@ -9,10 +9,10 @@ export async function GET(req: Request) {
   const q = new URL(req.url).searchParams.get("q")?.trim();
 
   if (q) {
-    const hits = await history.searchChats(USER, q, { target: "both", limit: 20 });
+    const hits = await history.searchChats({ userId: USER, query: q, target: "both", limit: 20 });
     return Response.json({ chats: hits });
   }
 
-  const chats = await history.listChats(USER, { limit: 50 });
+  const chats = await history.listChats({ userId: USER, limit: 50 });
   return Response.json({ chats });
 }

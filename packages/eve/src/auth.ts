@@ -7,10 +7,12 @@ export interface RateLimitAuthConfig extends Omit<RateLimitConfig, "redis"> {
   /** Upstash Redis client backing the limiter. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /**
-   * The rate-limit identifier (e.g. a user/tenant id, an API key, an IP), or a function deriving one
-   * from the inbound `Request`. Defaults to `"global"` (one shared bucket for every caller).
+   * The rate-limit identifier — **required**. A static string (e.g. a tenant id) shares one bucket, so
+   * for per-user limiting pass a function deriving the id from the inbound `Request` (an authenticated
+   * user id, an API key, or `x-forwarded-for` for per-IP). There is intentionally **no** default: a
+   * single global bucket means one abusive caller can exhaust the window for everyone.
    */
-  identifier?: string | ((request: Request) => string | Promise<string>);
+  identifier: string | ((request: Request) => string | Promise<string>);
   /** Message returned in the 403 body when the caller is over the limit. */
   message?: string;
 }
@@ -29,17 +31,24 @@ export interface RateLimitAuthConfig extends Omit<RateLimitConfig, "redis"> {
  * import { eveChannel } from "eve/channels/eve";
  *
  * export default eveChannel({
- *   auth: [createRateLimitAuth({ limit: 20, window: "1 m" }), localDev(), vercelOidc()],
+ *   auth: [
+ *     createRateLimitAuth({
+ *       limit: 20,
+ *       window: "1 m",
+ *       identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous", // required
+ *     }),
+ *     localDev(),
+ *     vercelOidc(),
+ *   ],
  * });
  * ```
  */
-export function createRateLimitAuth(config: RateLimitAuthConfig = {}): AuthFn<Request> {
+export function createRateLimitAuth(config: RateLimitAuthConfig): AuthFn<Request> {
   const { identifier, message, redis, ...rest } = config;
   const ratelimit = createRateLimit({ ...rest, redis: redis ?? Redis.fromEnv() });
 
   return async (request) => {
-    const id =
-      typeof identifier === "function" ? await identifier(request) : (identifier ?? "global");
+    const id = typeof identifier === "function" ? await identifier(request) : identifier;
     const { success } = await ratelimit.limit(id);
     if (!success) {
       throw new ForbiddenError({ message: message ?? "Rate limit exceeded. Try again shortly." });
