@@ -3,22 +3,25 @@ import { Redis } from "@upstash/redis";
 import { defineTool } from "eve/tools";
 import type { ToolContext, ToolDefinition } from "eve/tools";
 
-/** The cache key for a tool call: a fixed string, or a function of the tool input + context. */
-export type CacheNamespace<TInput> = string | ((input: TInput, ctx: ToolContext) => string);
+/** The user a cache entry is scoped to: a fixed string, or a function of the tool input + context. */
+export type CacheUserId<TInput> = string | ((input: TInput, ctx: ToolContext) => string);
 
 export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOutput> & {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /** Cache key — a string, or a function of the tool input + context (e.g. to scope by user). */
-  namespace: CacheNamespace<TInput>;
+  /** The tool name — the `toolName` segment of the cache key. */
+  toolName: string;
+  /** The user the cache entry is scoped to — a string, or a per-call function of input + ctx. */
+  userId: CacheUserId<TInput>;
   /** Per-result TTL (seconds). */
   ttlSeconds?: number;
 };
 
 /**
  * Like Eve's `defineTool`, but the tool's `execute` is memoized in an Upstash {@link ToolCache}.
- * Takes the same fields as `defineTool` plus `namespace` (and an optional `redis`), calls `defineTool`
- * for you, and returns the branded `ToolDefinition` — export it directly, no extra wrapping.
+ * Takes the same fields as `defineTool` plus `toolName` and `userId` (and an optional `redis`), calls
+ * `defineTool` for you, and returns the branded `ToolDefinition` — export it directly. Cache keys are
+ * `agentkit:toolCache:<userId>:<toolName>:<hash-of-input>`.
  *
  * ```ts
  * // agent/tools/get_weather.ts
@@ -28,7 +31,8 @@ export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOu
  * export default defineCachedTool({
  *   description: "Get the current weather for a city.",
  *   inputSchema: z.object({ city: z.string() }),
- *   namespace: "get_weather",
+ *   toolName: "get_weather",
+ *   userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id, // scope per user
  *   execute: async ({ city }) => fetchWeather(city),
  * });
  * ```
@@ -36,15 +40,16 @@ export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOu
 export function defineCachedTool<TInput, TOutput>(
   config: DefineCachedToolConfig<TInput, TOutput>,
 ): ToolDefinition<TInput, TOutput> {
-  const { redis, namespace, ttlSeconds, execute, ...rest } = config;
+  const { redis, toolName, userId, ttlSeconds, execute, ...rest } = config;
   const cache = new ToolCache({ redis: redis ?? Redis.fromEnv() });
 
   return defineTool({
     ...rest,
     execute: (input: TInput, ctx: ToolContext) => {
-      const name = typeof namespace === "function" ? namespace(input, ctx) : namespace;
+      const resolvedUserId = typeof userId === "function" ? userId(input, ctx) : userId;
       const run = cache.wrap<TInput, TOutput>(
-        name,
+        resolvedUserId,
+        toolName,
         (i) => Promise.resolve(execute(i, ctx)),
         ttlSeconds !== undefined ? { ttlSeconds } : {},
       );

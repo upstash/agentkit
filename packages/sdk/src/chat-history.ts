@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { s } from "@upstash/redis";
-import type { InferFilterFromSchema, Redis, SearchIndex } from "@upstash/redis";
-import { withIndex } from "./reactive-index.js";
+import type { InferFilterFromSchema, Redis } from "@upstash/redis";
+import { ReactiveSearchIndex } from "./reactive-index.js";
 import { now } from "./utils.js";
 
 /**
@@ -50,8 +49,10 @@ export interface ExtractedText {
 export interface ChatHistoryConfig<TMessage = unknown> {
   /** The Upstash Redis client. The search index is created and managed internally. */
   redis: Redis;
-  /** Base key prefix + index name base; defaults to `agentkit:chat`. */
+  /** Base key prefix for stored chats; defaults to `agentkit:chat`. */
   prefix?: string;
+  /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
+  indexName?: string;
   /** Optional TTL (seconds) per chat. The search index self-syncs when a chat key expires. Omit for no expiry. */
   ttlSeconds?: number;
   /**
@@ -123,27 +124,28 @@ const ChatHistorySchema = s.object({
  */
 export class ChatHistory<TMessage = unknown> {
   private redis: Redis;
-  private indexName: string;
   private keyPrefix: string;
-  private schema: typeof ChatHistorySchema;
-  private index: SearchIndex<typeof ChatHistorySchema>;
+  private index: ReactiveSearchIndex<typeof ChatHistorySchema>;
   private ttlSeconds?: number;
   private extract: (messages: TMessage[]) => ExtractedText;
-  private created?: Promise<void>;
 
   constructor(config: ChatHistoryConfig<TMessage>) {
     this.redis = config.redis;
     const prefix = config.prefix ?? "agentkit:chat";
     // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
-    this.indexName = prefix.replace(/[^a-zA-Z0-9_]/g, "_");
+    const indexName = config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_");
     this.keyPrefix = `${prefix}:`;
-    this.schema = ChatHistorySchema;
-    this.index = this.redis.search.index({ name: this.indexName, schema: this.schema });
+    this.index = new ReactiveSearchIndex({
+      redis: this.redis,
+      indexName,
+      prefix: this.keyPrefix,
+      schema: ChatHistorySchema,
+    });
     this.ttlSeconds = config.ttlSeconds;
     this.extract = config.extractText ?? (defaultExtract as (m: TMessage[]) => ExtractedText);
   }
 
-  /** The underlying Upstash Redis Search index handle (`query`, `count`, `waitIndexing`, `drop`, …). */
+  /** The underlying (reactive) Upstash Redis Search index handle. */
   get searchIndex() {
     return this.index;
   }
@@ -154,34 +156,6 @@ export class ChatHistory<TMessage = unknown> {
    */
   private keyFor(userId: string, sessionId: string): string {
     return `${this.keyPrefix}${userId}:${sessionId}`;
-  }
-
-  private createIndex(): Promise<void> {
-    return this.redis.search
-      .createIndex({
-        name: this.indexName,
-        dataType: "json",
-        prefix: this.keyPrefix,
-        schema: this.schema,
-      })
-      .then(() => undefined)
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!/already exists/i.test(msg)) throw err;
-      });
-  }
-
-  /** Create the index once on write (idempotent), so docs start indexing as they're saved. */
-  private ensure(): Promise<void> {
-    if (!this.created) this.created = this.createIndex();
-    return this.created;
-  }
-
-  /** Create the index and wait until it's queryable — the recovery path for {@link withIndex}. */
-  private async provision(): Promise<void> {
-    this.created = undefined;
-    await this.ensure();
-    await this.index.waitIndexing();
   }
 
   private toSummary(doc: ChatDoc<TMessage>): ChatSummary {
@@ -226,7 +200,7 @@ export class ChatHistory<TMessage = unknown> {
     const { userId, sessionId, messages } = params;
     assertId(userId, "userId");
     assertId(sessionId, "sessionId");
-    await this.ensure();
+    // Writes go straight to Redis — no index needed; the index is provisioned on the first read.
     const existing = await this.getDoc(userId, sessionId);
     const ts = now();
     const { userMessages, modelMessages } = this.extract(messages);
@@ -249,24 +223,6 @@ export class ChatHistory<TMessage = unknown> {
     return this.toRecord(doc);
   }
 
-  /** Create a new (optionally pre-seeded) chat. Generates a `sessionId` when omitted. */
-  async createChat(params: {
-    /** The chat owner. Must be unique per user. Required, non-empty. */
-    userId: string;
-    sessionId?: string;
-    title?: string;
-    messages?: TMessage[];
-    metadata?: Record<string, unknown>;
-  }): Promise<ChatRecord<TMessage>> {
-    return this.saveChat({
-      userId: params.userId,
-      sessionId: params.sessionId ?? randomUUID(),
-      messages: params.messages ?? [],
-      ...(params.title !== undefined ? { title: params.title } : {}),
-      ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
-    });
-  }
-
   private async getDoc(userId: string, sessionId: string): Promise<ChatDoc<TMessage> | null> {
     const doc = await this.redis.json.get<ChatDoc<TMessage>[]>(this.keyFor(userId, sessionId), "$");
     return Array.isArray(doc) ? (doc[0] ?? null) : ((doc as ChatDoc<TMessage> | null) ?? null);
@@ -285,25 +241,19 @@ export class ChatHistory<TMessage = unknown> {
   }
 
   /**
-   * Run a filtered query and return its rows. The typed index narrows `data` to the indexed schema
-   * fields and never types `null`, but at runtime `query` returns the **full stored JSON** as `data`
-   * (verified against live Redis) and a missing index yields `null`. This one helper bridges both —
-   * everywhere else `r.data` is a fully-typed {@link ChatDoc}.
+   * Run a filtered query (the index is provisioned reactively on first read) and return its rows. The
+   * typed index narrows `data` to the indexed schema fields, but at runtime `query` returns the **full
+   * stored JSON** as `data` (verified against live Redis). This one cast bridges that — everywhere
+   * else `r.data` is a fully-typed {@link ChatDoc}.
    */
   private async queryChats(
     filter: InferFilterFromSchema<typeof ChatHistorySchema>,
     limit?: number,
   ): Promise<{ score: number; data: ChatDoc<TMessage> }[]> {
-    const rows = await withIndex(
-      () => this.provision(),
-      () =>
-        this.index.query({
-          filter,
-          ...(limit !== undefined ? { limit } : {}),
-        }) as unknown as Promise<{ score: number; data: ChatDoc<TMessage> }[] | null>,
-      (r) => r === null,
-    );
-    return rows ?? [];
+    return this.index.query({
+      filter,
+      ...(limit !== undefined ? { limit } : {}),
+    }) as unknown as Promise<{ score: number; data: ChatDoc<TMessage> }[]>;
   }
 
   /** List a user's chats (summaries only), newest-updated first. Filters the index by `userId`. */
@@ -357,21 +307,5 @@ export class ChatHistory<TMessage = unknown> {
     assertId(userId, "userId");
     assertId(sessionId, "sessionId");
     await this.redis.del(this.keyFor(userId, sessionId));
-  }
-
-  /** Set/replace a chat's title. No-op if the chat isn't this user's. */
-  async setTitle(params: { userId: string; sessionId: string; title: string }): Promise<void> {
-    const { userId, sessionId, title } = params;
-    assertId(userId, "userId");
-    assertId(sessionId, "sessionId");
-    const existing = await this.getChat({ userId, sessionId });
-    if (!existing) return;
-    await this.saveChat({
-      userId,
-      sessionId,
-      messages: existing.messages,
-      title,
-      ...(existing.metadata !== undefined ? { metadata: existing.metadata } : {}),
-    });
   }
 }

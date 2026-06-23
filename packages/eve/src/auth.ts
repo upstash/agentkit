@@ -26,15 +26,14 @@ export interface RateLimitAuthConfig extends Omit<RateLimitConfig, "redis"> {
  *
  * ```ts
  * // agent/channels/eve.ts
- * import { createRateLimitAuth } from "@upstash/agentkit-eve";
+ * import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
  * import { localDev, vercelOidc } from "eve/channels/auth";
  * import { eveChannel } from "eve/channels/eve";
  *
  * export default eveChannel({
  *   auth: [
  *     createRateLimitAuth({
- *       limit: 20,
- *       window: "1 m",
+ *       limiter: Ratelimit.slidingWindow(20, "1 m"),
  *       identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous", // required
  *     }),
  *     localDev(),

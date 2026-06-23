@@ -1,4 +1,4 @@
-import { createRateLimitAuth } from "@upstash/agentkit-eve";
+import { Ratelimit, createRateLimitAuth } from "@upstash/agentkit-eve";
 import { localDev, placeholderAuth, vercelOidc, type AuthFn } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
 
@@ -26,8 +26,7 @@ export default eveChannel({
     createRateLimitAuth({
       // `redis` omitted → defaults to Redis.fromEnv() inside the package (keeps this channel file
       // free of any agent-source import, which eve's per-channel bundle doesn't include).
-      limit: 20, // optional: requests allowed per window (default 10)
-      window: "1 m", // optional: sliding-window duration (default "60 s")
+      limiter: Ratelimit.slidingWindow(20, "1 m"), // the limiter algorithm
       // required: who to limit — the selected user (falls back to per-IP, then "anonymous").
       identifier: (req) =>
         req.headers.get(USER_HEADER) ?? req.headers.get("x-forwarded-for") ?? "anonymous",

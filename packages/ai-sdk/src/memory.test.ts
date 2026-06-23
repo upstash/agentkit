@@ -1,7 +1,7 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it } from "vitest";
 import { createMemoryTools } from "./memory.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
 function call<R>(execute: unknown, input: unknown): Promise<R> {
@@ -11,8 +11,8 @@ function call<R>(execute: unknown, input: unknown): Promise<R> {
 describe.skipIf(!hasRedisCreds)("createMemoryTools (live Redis)", () => {
   const redis = testRedis();
   // The tools own their AgentMemory (default `agentkit:memory` index); isolate this run by scope.
-  const ns = uniqueNamespace("aisdk-mem");
-  const tools = createMemoryTools({ redis, namespace: ns });
+  const ns = uniquePrefix("aisdk-mem");
+  const tools = createMemoryTools({ redis, userId: ns });
   // A throwaway handle on the same default index, just to wait for indexing before recall.
   const index = new AgentMemory({ redis }).searchIndex;
 

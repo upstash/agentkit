@@ -1,6 +1,11 @@
 // Utilities
 export { key, now, stableHash, stableStringify } from "./utils.js";
 
+// Reactive search index — provisions the Upstash index on first read; the type each feature's
+// `.searchIndex` getter returns.
+export { ReactiveSearchIndex } from "./reactive-index.js";
+export type { ReactiveSearchIndexConfig, AnySearchSchema } from "./reactive-index.js";
+
 // Features
 export { AgentMemory } from "./memory.js";
 export type { AgentMemoryConfig, MemoryRecord, RecalledMemory } from "./memory.js";

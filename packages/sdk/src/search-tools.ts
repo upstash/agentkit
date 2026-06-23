@@ -1,14 +1,6 @@
 import { z } from "zod";
-import type {
-  FlatIndexSchema,
-  InferFilterFromSchema,
-  NestedIndexSchema,
-  Redis,
-} from "@upstash/redis";
-import { withIndex } from "./reactive-index.js";
-
-/** The schema type accepted by `redis.search.index` / `createIndex` (an `s.object({...})`) — the generic bound. */
-type AnySearchSchema = NestedIndexSchema | FlatIndexSchema;
+import type { InferFilterFromSchema, Redis } from "@upstash/redis";
+import { ReactiveSearchIndex, type AnySearchSchema } from "./reactive-index.js";
 
 export interface SearchToolDefsConfig<TSchema extends AnySearchSchema = AnySearchSchema> {
   /** The Upstash Redis Search schema (built with `s` from `@upstash/redis`). */
@@ -103,27 +95,12 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
   const indexName = config.indexName ?? "agentkit:search";
   const prefix = config.prefix ?? `${indexName}:`;
   const defaultLimit = config.defaultLimit ?? 10;
-  // `SearchIndex<TSchema>` — concrete, inferred from the caller's schema (no loose handle).
-  const index = redis.search.index({ name: indexName, schema });
+  // The index is provisioned reactively on first read; writes (your seeding) need no index.
+  const index = new ReactiveSearchIndex({ redis, indexName, prefix, schema });
   // The filter/aggregation objects come from the model (untyped at runtime), so they're cast to the
   // index's real, schema-derived parameter types at the call sites below — not to `never`.
   type Filter = InferFilterFromSchema<TSchema>;
   const fields = describeSchema(schema as Record<string, unknown>);
-
-  /** Create the index (idempotent) and wait until it's queryable — the missing-index recovery path. */
-  const provision = async (): Promise<void> => {
-    // `createIndex`'s generic can't infer through our own `TSchema` param, so cast this one setup call
-    // to its real parameter type (not `never`); `schema` already matches it structurally.
-    await redis.search
-      .createIndex({ name: indexName, dataType: "json", prefix, schema } as Parameters<
-        Redis["search"]["createIndex"]
-      >[0])
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!/already exists/i.test(msg)) throw err;
-      });
-    await index.waitIndexing();
-  };
 
   const schemaGuide = `\n\nFields:\n${fieldGuide(fields)}\n\n${FILTER_GUIDE}`;
   const filterParam = z
@@ -137,15 +114,10 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
       limit: z.number().int().positive().max(100).optional().describe("Max rows to return."),
     }),
     execute: (input) =>
-      withIndex(
-        provision,
-        () =>
-          index.query({
-            filter: input.filter as Filter,
-            limit: (input.limit as number | undefined) ?? defaultLimit,
-          }) as unknown as Promise<unknown[] | null>, // runtime: missing index → null
-        (r) => r === null,
-      ),
+      index.query({
+        filter: input.filter as Filter,
+        limit: (input.limit as number | undefined) ?? defaultLimit,
+      }),
   };
 
   const aggregate: SearchToolDef = {
@@ -162,14 +134,11 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
         .optional()
         .describe("Optional pre-aggregation filter."),
     }),
-    // missing index → aggregate throws (caught by withIndex), so no sentinel needed.
     execute: (input) =>
-      withIndex(provision, () =>
-        index.aggregate({
-          aggregations: input.aggregations,
-          ...(input.filter !== undefined ? { filter: input.filter as Filter } : {}),
-        } as Parameters<typeof index.aggregate>[0]),
-      ),
+      index.aggregate({
+        aggregations: input.aggregations,
+        ...(input.filter !== undefined ? { filter: input.filter as Filter } : {}),
+      } as Parameters<typeof index.aggregate>[0]),
   };
 
   const count: SearchToolDef = {
@@ -180,12 +149,7 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
         .optional()
         .describe(`Optional filter.${schemaGuide}`),
     }),
-    execute: (input) =>
-      withIndex(
-        provision,
-        () => index.count({ filter: (input.filter ?? {}) as Filter }),
-        (r) => r.count === -1, // missing index → { count: -1 }
-      ),
+    execute: (input) => index.count({ filter: (input.filter ?? {}) as Filter }),
   };
 
   return { search, aggregate, count };

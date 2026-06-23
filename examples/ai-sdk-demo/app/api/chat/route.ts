@@ -4,12 +4,14 @@ import {
   createUIMessageStreamResponse,
   streamText,
   stepCountIs,
+  tool,
   toUIMessageStream,
   type UIMessage,
 } from "ai";
 import { z } from "zod";
 import {
-  cachedTool,
+  Ratelimit,
+  cachedTools,
   createMemoryTools,
   createRateLimit,
   createSearchTools,
@@ -31,8 +33,7 @@ export async function POST(req: Request) {
   // Rate limiting — limit per user (the identifier), before doing any model work.
   const ratelimit = createRateLimit({
     redis, // the Upstash Redis client backing the limiter
-    limit: 30, // optional: requests allowed per window (default 10)
-    window: "1 m", // optional: sliding-window duration (default "60 s")
+    limiter: Ratelimit.slidingWindow(30, "1 m"), // the limiter algorithm
     // prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
   });
   const { success } = await ratelimit.limit(userId); // per-user identifier
@@ -40,23 +41,25 @@ export async function POST(req: Request) {
     return new Response("Rate limited", { status: 429 });
   }
 
-  // Agent memory tools — recall_memory / save_memory, scoped to this user via `namespace`.
-  const memoryTools = createMemoryTools({ redis, namespace: userId });
+  // Agent memory tools — recall_memory / save_memory, scoped to this user.
+  const memoryTools = createMemoryTools({ redis, userId });
 
   // Schema-driven search tools — search / aggregate / count over the books index (created reactively).
-  // The books index is intentionally SHARED across users, so no per-user namespace here.
+  // The books index is intentionally SHARED across users, so no per-user scoping here.
   const searchTools = createSearchTools({ schema: bookSchema, redis, indexName: BOOKS_INDEX });
 
-  // Tool cache — deterministic tool results memoized in Redis, scoped per user via the namespace.
-  const cachedToolSet = {
-    convert_price: cachedTool({
-      description: "Convert a USD price to another currency at today's rate.",
-      inputSchema: z.object({ usd: z.number(), currency: z.string() }),
-      namespace: `${userId}:convert_price`, // per-user cache key
-      redis,
-      execute: async ({ usd, currency }) => ({ usd, currency, amount: usd * 0.92 }),
-    }),
-  };
+  // Tool cache — deterministic tool results memoized in Redis, scoped per user. Each tool is cached
+  // under its map key (the tool name); `userId` scopes the entries to this user.
+  const cachedToolSet = cachedTools(
+    {
+      convert_price: tool({
+        description: "Convert a USD price to another currency at today's rate.",
+        inputSchema: z.object({ usd: z.number(), currency: z.string() }),
+        execute: async ({ usd, currency }) => ({ usd, currency, amount: usd * 0.92 }),
+      }),
+    },
+    { userId, redis },
+  );
 
   const model = openai(DEMO_MODEL);
   const tools = { ...memoryTools, ...searchTools, ...cachedToolSet };

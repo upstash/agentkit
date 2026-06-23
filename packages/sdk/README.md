@@ -47,7 +47,8 @@ fuzzy text); the raw `messages` array and `metadata` ride along **unindexed**. S
 ```ts
 const history = new ChatHistory<MyMessage>({
   redis, // the Upstash Redis client (the search index is created/managed internally)
-  prefix: "agentkit:chat", // optional: base key prefix + index name base (defaults to "agentkit:chat")
+  prefix: "agentkit:chat", // optional: base key prefix (defaults to "agentkit:chat")
+  indexName: "agentkit_chat", // optional: Redis Search index name (defaults to the prefix)
   ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL in seconds (default: no expiry)
   extractText: (messages) => ({ userMessages: "...", modelMessages: "..." }), // optional: override how text is pulled into the two indexed fields (defaults to the UIMessage/EveMessage convention)
 });
@@ -78,15 +79,6 @@ const hits = await history.searchChats({
   minScore: 0, // optional: BM25 relevance floor (defaults to 0)
 });
 
-const created = await history.createChat({
-  userId: "user-123", // required
-  sessionId: "session-xyz", // optional: stable id (generated when omitted)
-  title: "New chat", // optional: human-readable title
-  messages: [], // optional: pre-seed the transcript
-  metadata: { source: "web" }, // optional: arbitrary unindexed data
-});
-
-await history.setTitle({ userId: "user-123", sessionId: "session-abc", title: "Trip planning" });
 await history.deleteChat({ userId: "user-123", sessionId: "session-abc" }); // delete (also de-indexes it)
 ```
 
@@ -96,31 +88,32 @@ await history.deleteChat({ userId: "user-123", sessionId: "session-abc" }); // d
 
 ### Agent memory
 
-Long-term, fuzzily-recalled memory scoped per agent/user. Stored at `agentkit:memory:<namespace>:<id>`.
+Long-term, fuzzily-recalled memory scoped per user. Stored at `agentkit:memory:<userId>:<id>`.
 
 ```ts
 const memory = new AgentMemory({
   redis, // the Upstash Redis client (the search index is created/managed internally)
-  prefix: "agentkit:memory", // optional: base key prefix + index name base (defaults to "agentkit:memory")
+  prefix: "agentkit:memory", // optional: base key prefix (defaults to "agentkit:memory")
+  indexName: "agentkit_memory", // optional: Redis Search index name (defaults to the prefix)
   minScore: 0, // optional: default BM25 relevance floor for recall
 });
 
 await memory.add("The user prefers TypeScript", {
-  namespace: "user-123", // required, non-empty: the memory scope — make it unique per user
+  userId: "user-123", // required, non-empty: the user the memory belongs to
   id: "pref-lang", // optional: stable id (generated when omitted)
   metadata: { source: "chat" }, // optional: extra data stored with the memory
 });
 
 const hits = await memory.recall("typescript preference", {
-  namespace: "user-123", // required, non-empty: the memory scope to search — unique per user
+  userId: "user-123", // required, non-empty: the user to recall for
   topK: 5, // optional: max memories to return (defaults to 5)
   minScore: 0, // optional: BM25 relevance floor (defaults to the constructor's minScore)
 });
 
-await memory.forget("pref-lang", { namespace: "user-123" }); // required, non-empty namespace
+await memory.forget("pref-lang", { userId: "user-123" }); // required, non-empty userId
 ```
 
-> **`namespace` is required and must be non-empty** on every method — it's the only tenant boundary
+> **`userId` is required and must be non-empty** on every method — it's the only tenant boundary
 > for memory, so an empty value throws rather than collapsing all callers into one shared bucket.
 > Make it **unique per user** (e.g. the user id) to keep each user's memories isolated.
 
@@ -163,10 +156,8 @@ import { createRateLimit, Ratelimit } from "@upstash/agentkit-sdk";
 
 const ratelimit = createRateLimit({
   redis, // the Upstash Redis client backing the limiter
-  limit: 20, // optional: requests allowed per window (default: 10)
-  window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
+  limiter: Ratelimit.slidingWindow(20, "1 m"), // required: the limiter algorithm (or fixedWindow, …)
   prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
-  limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
 });
 
 const { success } = await ratelimit.limit("user-123"); // pass a per-user identifier to limit by user
@@ -175,8 +166,8 @@ if (!success) throw new Error("rate limited");
 
 ### Tool cache
 
-Memoize deterministic tool results in Redis, keyed by namespace + a stable hash of the arguments.
-Keys are `agentkit:toolCache:<namespace>:<hash>`.
+Memoize deterministic tool results in Redis, keyed by user, then tool, then a stable hash of the
+arguments. Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
 
 ```ts
 const tools = new ToolCache({
@@ -185,24 +176,24 @@ const tools = new ToolCache({
   ttlSeconds: 600, // optional: default TTL in seconds for cached results (default: no expiry)
 });
 
-// `wrap` returns a memoized version of your execute, keyed by "getWeather" + the args hash.
+// `wrap` returns a memoized version of your execute, keyed by userId + "getWeather" + the args hash.
 const getWeather = tools.wrap(
-  "getWeather", // required, non-empty: the per-call cache namespace (e.g. the tool name)
+  "user-123", // required, non-empty: the user the cache entry is scoped to
+  "getWeather", // required, non-empty: the tool name
   (args) => fetchWeather(args), // the function to memoize
   { ttlSeconds: 600 }, // optional: per-result TTL (overrides the constructor default)
 );
 ```
 
-> **The per-call `namespace` is required and must be non-empty** (`get`/`set`/`invalidate`/`wrap`
-> all throw on an empty value). It is the cache-key prefix: if a tool's result is **user-specific**,
-> make the namespace **unique per user** (e.g. include the user id) — a static namespace caches one
-> result across all users and would serve user A's output to user B.
+> **`userId` and `toolName` are both required and must be non-empty** (`get`/`set`/`invalidate`/`wrap`
+> all throw on an empty value). The entry is scoped to the user first, so one user's cached result is
+> never served to another.
 
 ## Testing
 
 The SDK is tested against a **real Upstash Redis** instance (no Redis mock) — only LLM calls are
 mocked. Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (the suites skip themselves when
-these are absent). Each suite uses a unique namespace and cleans up its index/keys afterwards.
+these are absent). Each suite uses a unique key prefix and cleans up its index/keys afterwards.
 
 ## License
 

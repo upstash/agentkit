@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ForbiddenError } from "eve/channels/auth";
-import { createRateLimitAuth } from "./auth.js";
+import { Ratelimit, createRateLimitAuth } from "./index.js";
 import { hasRedisCreds, testRedis } from "./test-support.js";
 
 const req = () => new Request("http://localhost/agent");
@@ -14,8 +14,7 @@ describe.skipIf(!hasRedisCreds)("createRateLimitAuth (live Redis)", () => {
   it("falls through under the limit, throws ForbiddenError over it", async () => {
     const auth = createRateLimitAuth({
       redis,
-      limit: 1,
-      window: "60 s",
+      limiter: Ratelimit.slidingWindow(1, "60 s"),
       identifier: `test:${randomUUID().slice(0, 8)}`, // a fresh bucket per run
     });
 
@@ -31,8 +30,7 @@ describe.skipIf(!hasRedisCreds)("createRateLimitAuth (live Redis)", () => {
     const idB = `test:${randomUUID().slice(0, 8)}`;
     const auth = createRateLimitAuth({
       redis,
-      limit: 1,
-      window: "60 s",
+      limiter: Ratelimit.slidingWindow(1, "60 s"),
       identifier: (request) => (request.headers.get("x-user") === "b" ? idB : idA),
     });
 

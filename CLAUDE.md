@@ -24,13 +24,12 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 ### Core SDK exports (`@upstash/agentkit-sdk`)
 - `AgentMemory`, `ToolCache`, `ChatHistory`, `createSearchToolDefs` (the framework-agnostic search-tool
   defs — **use these for RAG**, there is no `Rag` primitive), `createRateLimit` (+ `RateLimitConfig`;
-  thin `@upstash/ratelimit` factory with AgentKit defaults — returns a plain `Ratelimit`), `s` (schema
-  builder, re-exported from `@upstash/redis`), types `ChatRecord`/`ChatSummary`/`ChatSearchHit`,
-  utils `key`/`now`/`stableHash`/`stableStringify`. (The reactive-index helpers
-  `withIndex`/`isMissingIndexError` in `reactive-index.ts` are **internal**, not exported.)
-  (**Model cache removed**; **`Rag` removed** — RAG
-  is done via the search tools; **`search-index.ts`/`RedisSearchIndex` removed** — `AgentMemory` owns a
-  simple typed index inline.)
+  thin `@upstash/ratelimit` factory — `limiter` required), `ReactiveSearchIndex` (+ `ReactiveSearchIndexConfig`/
+  `AnySearchSchema`, in `reactive-index.ts`), `s` (schema builder, re-exported from `@upstash/redis`),
+  types `ChatRecord`/`ChatSummary`/`ChatSearchHit`, utils `key`/`now`/`stableHash`/`stableStringify`.
+  (**Model cache removed**; **`Rag` removed** — RAG is done via the search tools;
+  **`search-index.ts`/`RedisSearchIndex` and the `withIndex` helper removed** — `ReactiveSearchIndex`
+  replaces them, owning create-on-read.)
 - `@upstash/ratelimit` is a **dependency** of core (not a peer); rate limiting lives here now.
 - **`ChatHistory`** is durable chat history on **Redis Search** (the source of truth for transcripts,
   resurrecting the old removed ChatHistory). One JSON doc per chat at `agentkit:chat:<userId>:<sessionId>`
@@ -51,12 +50,12 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 
 ### ai-sdk exports
 - `createRateLimit` (re-exported from core — call `.limit(id)` before `generateText`, **no model
-  wrapper**), `cachedTool`, `cachedTools`, `createMemoryTools`, `createSearchTools`,
+  wrapper**), `cachedTools`, `createMemoryTools`, `createSearchTools`,
   `createChatHistory` (→ `ChatHistory<UIMessage>`; also re-exports `ChatHistory`/`ChatRecord`/etc.).
   (**No model cache** — removed.)
-- `cachedTool` config = the AI SDK's `tool()` config (full input/output inference) plus `redis?` /
-  `namespace` / `ttlSeconds?` — **no `toolCache`**. `cachedTools(map, { redis?, ttlSeconds? })` takes a
-  map of `tool()`-built tools (so each keeps inference) and caches each under its map key.
+- **Only `cachedTools`** (no singular `cachedTool` — removed): `cachedTools(map, { userId, redis?, ttlSeconds? })`
+  takes a map of `tool()`-built tools (so each keeps inference) and caches each under its **map key as
+  the toolName**, scoped to `userId` — so the user never passes a tool name.
 - **Self-contained:** users import only from this package. `redis` defaults to `Redis.fromEnv()`; tools
   build their own `ToolCache`/`AgentMemory` internally. No `@upstash/agentkit-sdk` import required by users.
 
@@ -79,9 +78,9 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   returns `null` to fall through to the real authenticators (`localDev()`/`vercelOidc()`/…).
 
 ## Naming history (so you don't resurrect old names)
-- ai-sdk `cacheTools(map)` → `cachedTool(single)` → now **`cachedTool` + `cachedTools`**; `cachePrefix` → **`namespace`**.
-- eve `cachedExecute` → **`defineCachedTool`** (also `cachePrefix` → **`namespace`**); `recall/saveMemoryTool` → **`defineMemoryRecallTool`/`defineMemorySaveTool`**.
-- Memory/eve memory tools: `scope` → **`namespace`** (string or per-call function).
+- ai-sdk caching: `cacheTools` → `cachedTool`+`cachedTools` → now **`cachedTools` only** (singular `cachedTool` removed; toolName = map key, `userId` scopes).
+- eve `cachedExecute` → **`defineCachedTool`** (cache key field: `cachePrefix` → `namespace` → **`toolName`**); `recall/saveMemoryTool` → **`defineMemoryRecallTool`/`defineMemorySaveTool`**.
+- Memory + memory-tool scoping: `scope` → `namespace` → **`userId`** (string or per-call function).
 - **ChatHistory is back** (was removed pending a frontend+backend solution) — now `ChatHistory` on Redis
   Search; Redis is the durable source of truth (eve's Workflow store is pruned 1–30 days after a run
   completes, per Vercel plan, so don't rely on it for long-term history).
@@ -89,22 +88,31 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   Telemetry, the generic Sandbox (sandbox is eve-only), and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
 
 ## API conventions
-- **Naming of the three knobs (consistent across all features):**
-  - `prefix` — the base `agentkit:X` key prefix (constructor/config level). `ToolCache`/`AgentMemory`/
-    `ChatHistory` configs and `createRateLimit`/`createChatHistory` all use `prefix` (was `namespace`).
-  - `indexName` — the explicit Redis Search index name (was `name`): `createSearchToolDefs`/
-    `createSearchTools`/`defineSearchTools` configs, and internally in `AgentMemory`/`ChatHistory`.
-  - `namespace` — the **per-call** value that splits data **under** a prefix (one user's data from
-    another's): `AgentMemory.add/recall/forget`, the memory tools, and `ToolCache`/`cachedTool` keys.
-- `redis` is **optional everywhere** → falls back to `Redis.fromEnv()`. It's the **only** client knob:
-  there are **no** pre-built `memory`/`toolCache`/`cache` instance options — nothing replaces `redis`.
-- Memory tools: `namespace` is **required** — either a string (memory shared across all users; avoid in
-  multi-tenant prod) or `(input, ctx/options) => string` to derive per-call (e.g. a user id).
-- Cached tools: `namespace` is the per-call cache key — a string or `(input, ctx/options) => string`
-  (ai-sdk `cachedTools` defaults each tool's namespace to its map key).
-- Rate limiting: `prefix` is the key prefix (a string); the per-user value is `identifier`.
-- Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`,
-  `agentkit:memory:<namespace>:<id>`, `agentkit:chat:<userId>:<sessionId>` (default prefixes shown).
+- **Naming of the knobs (consistent across all features):**
+  - `prefix` — the base `agentkit:X` key prefix (config level). `ToolCache`/`AgentMemory`/`ChatHistory`
+    configs and `createRateLimit`/`createChatHistory` all use `prefix`.
+  - `indexName` — the explicit Redis Search index name, **separate** from `prefix` (defaults to the
+    identifier-safe `prefix`): `createSearchToolDefs`/`createSearchTools`/`defineSearchTools`,
+    `AgentMemory`, and `ChatHistory` configs.
+  - `userId` — the **per-call** value that splits data **under** a prefix (one user's data from
+    another's): `AgentMemory.add/recall/forget`, the memory tools, and the `ToolCache` key.
+  - `toolName` — the per-call tool segment of the `ToolCache` key (the ai-sdk `cachedTools` map key;
+    eve `defineCachedTool`'s `toolName` field).
+- `redis` is **optional everywhere** → falls back to `Redis.fromEnv()`. It's the **only** client knob.
+- Memory tools: `userId` is **required** — a string (shared if static; avoid in multi-tenant prod) or
+  `(input, ctx/options) => string` to derive per-call.
+- Cached tools: key is `userId` + `toolName`. ai-sdk **`cachedTools(map, { userId })`** only (toolName =
+  map key; no singular `cachedTool`). eve `defineCachedTool({ toolName, userId })`.
+- Rate limiting: **`limiter` is required** (e.g. `Ratelimit.slidingWindow(10, "60 s")`) — `limit`/`window`
+  were removed. `prefix` is the key prefix; the per-user value is `identifier` (required on eve's
+  `createRateLimitAuth`).
+- **Reactive index** (`ReactiveSearchIndex`, exported): wraps a `SearchIndex` and provisions it on the
+  first **read** (`query`/`aggregate`/`count`) via `existsOk` + retry. Writes (`json.set`) never need
+  the index, so features call **no `ensure()` on the write path**. Used by `AgentMemory`/`ChatHistory`/
+  `createSearchToolDefs`; it's the type each feature's `.searchIndex` getter returns. (The old
+  `withIndex` helper is gone.)
+- Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<userId>:<toolName>:<hash>`,
+  `agentkit:memory:<userId>:<id>`, `agentkit:chat:<userId>:<sessionId>` (default prefixes shown).
 
 ## AI SDK version strategy — IMPORTANT
 - **AI SDK v7-beta everywhere.** Every package + demo pins `ai` to exactly **`7.0.0-beta.178`** (the
@@ -125,7 +133,7 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   except the `e2e.test.ts` files which hit **real OpenAI**.
 - **Models:** unit/e2e tests use `gpt-4o` (`TEST_MODEL`); READMEs + demos use `gpt-5.4-mini`.
 - Each package has `src/test-support.ts`: `hasRedisCreds`, `testRedis()` (`Redis.fromEnv`),
-  `uniqueNamespace(label)`, `cleanupKeys(redis, ns)` — loads repo-root `.env` via dotenv. ai-sdk also has
+  `uniquePrefix(label)`, `cleanupKeys(redis, prefix)` — loads repo-root `.env` via dotenv. ai-sdk also has
   `hasOpenAIKey`, `TEST_MODEL`. Suites `describe.skipIf(!hasRedisCreds)` so they skip without creds.
 - vitest: `fileParallelism: false`, `testTimeout: 30_000`.
 - **Upstash DB caps at 10 search indexes** (`ERR Exceeded max index count of 10`). Tests must `drop()` /

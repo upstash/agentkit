@@ -1,25 +1,26 @@
 import { z } from "zod";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { defineCachedTool } from "./tools.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 const CTX = {} as never;
 
 describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
   const redis = testRedis();
-  // The tool owns its ToolCache (default `agentkit:toolCache` base); isolate this run by cache namespace.
-  const ns = uniqueNamespace("eve-tool").replace("test:", "");
+  // The tool owns its ToolCache (default `agentkit:toolCache` base); isolate this run by userId.
+  const ns = uniquePrefix("eve-tool").replace("test:", "");
 
   afterAll(async () => {
     await cleanupKeys(redis, `agentkit:toolCache:${ns}`);
   });
 
-  it("memoizes by namespace + input so execute runs once", async () => {
+  it("memoizes by userId + toolName + input so execute runs once", async () => {
     const fn = vi.fn(async ({ x }: { x: number }) => x * 2);
     const t = defineCachedTool({
       description: "double",
       inputSchema: z.object({ x: z.number() }),
-      namespace: `${ns}:double`,
+      toolName: "double",
+      userId: ns,
       execute: fn,
       redis,
     });
@@ -29,12 +30,13 @@ describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it("supports a function namespace", async () => {
+  it("supports a function userId (derived from input/ctx)", async () => {
     const fn = vi.fn(async ({ id }: { id: string }) => id.toUpperCase());
     const t = defineCachedTool({
       description: "upper",
       inputSchema: z.object({ id: z.string() }),
-      namespace: ({ id }) => `${ns}:upper:${id}`,
+      toolName: "upper",
+      userId: ({ id }) => `${ns}:${id}`,
       execute: fn,
       redis,
     });

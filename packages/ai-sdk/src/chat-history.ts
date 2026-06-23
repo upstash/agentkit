@@ -7,6 +7,8 @@ export interface CreateChatHistoryConfig {
   redis?: Redis;
   /** Base key prefix. Defaults to `agentkit:chat`. */
   prefix?: string;
+  /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
+  indexName?: string;
   /** Optional TTL (seconds) per chat. Omit for no expiry. */
   ttlSeconds?: number;
 }

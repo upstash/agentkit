@@ -8,14 +8,15 @@ async function fetchWeather(city: string) {
 
 // A normal eve tool, but its `execute` result is memoized in an Upstash ToolCache
 // so repeated calls for the same input skip `fetchWeather` (and any real upstream
-// API). The cache key is `agentkit:toolCache:<namespace>:<hash-of-input>`.
+// API). The cache key is `agentkit:toolCache:<userId>:<toolName>:<hash-of-input>`.
 // `defineCachedTool` calls eve's `defineTool` internally, so export it directly.
 export default defineCachedTool({
   description: "Get the current weather for a city.", // shown to the model
   inputSchema: z.object({ city: z.string().min(1) }), // zod schema, infers `execute` input
-  // cache key — scoped to the selected user (auth principal from the `x-user-id` header) so one
-  // user's cached results don't serve another's.
-  namespace: (_, ctx) => `${ctx.session.auth.current?.principalId ?? ctx.session.id}:get_weather`,
+  toolName: "get_weather", // the toolName segment of the cache key
+  // scope the cache to the selected user (auth principal from the `x-user-id` header) so one user's
+  // cached results don't serve another's.
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
   ttlSeconds: 600, // optional: per-result TTL (omit to cache indefinitely)
   async execute({ city }) {
     return fetchWeather(city);

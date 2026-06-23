@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { ChatHistory } from "./chat-history.js";
-import { hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
+import { hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 interface Msg {
   id: string;
@@ -16,7 +16,7 @@ const msg = (id: string, role: Msg["role"], text: string): Msg => ({
 
 describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis Search)", () => {
   const redis = testRedis();
-  const history = new ChatHistory<Msg>({ redis, prefix: uniqueNamespace("chat") });
+  const history = new ChatHistory<Msg>({ redis, prefix: uniquePrefix("chat") });
   const user = "user-1";
 
   afterAll(async () => {
@@ -54,7 +54,7 @@ describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis Search)", () => {
     expect(await history.getChat({ userId: "someone-else", sessionId: "c1" })).toBeNull();
   });
 
-  // Chats are keyed per user (`<namespace>:<userId>:<sessionId>`), so a second user reusing the same
+  // Chats are keyed per user (`<prefix>:<userId>:<sessionId>`), so a second user reusing the same
   // sessionId gets their OWN separate chat and can't read or clobber another user's.
   it("scopes chats per user — same sessionId, different user, is a separate chat", async () => {
     await history.saveChat({
