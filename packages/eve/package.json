@@ -1,6 +1,6 @@
 {
   "name": "@upstash/agentkit-eve",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Vercel Eve framework adapter for Upstash AgentKit: cached tools, long-term memory tools, and an Upstash Box code-execution sandbox backend.",
   "license": "MIT",
   "type": "module",

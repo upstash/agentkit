@@ -1,6 +1,6 @@
 {
   "name": "@upstash/agentkit-sdk",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Core primitives for building AI agents on Upstash Redis: memory, chat history, semantic & tool caching, telemetry, sandbox, and RAG.",
   "license": "MIT",
   "type": "module",
