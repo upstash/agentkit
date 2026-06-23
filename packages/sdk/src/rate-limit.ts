@@ -1,6 +1,12 @@
 import { Ratelimit, type Duration } from "@upstash/ratelimit";
 import type { Redis } from "@upstash/redis";
 
+// Re-export the `@upstash/ratelimit` surface AgentKit users need so they never have to import from
+// (or install) `@upstash/ratelimit` directly. `Ratelimit` is the class whose static helpers build a
+// custom `limiter` (e.g. `Ratelimit.fixedWindow(...)`); `Duration` types the `window` option.
+export { Ratelimit };
+export type { Duration };
+
 /** Limiter algorithm accepted by `@upstash/ratelimit` (the value `Ratelimit.slidingWindow(...)` etc. returns). */
 type Limiter = ConstructorParameters<typeof Ratelimit>[0]["limiter"];
 

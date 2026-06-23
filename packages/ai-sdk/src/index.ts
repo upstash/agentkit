@@ -1,7 +1,9 @@
 // Rate limiting — re-exported from the core adapter. Call `.limit(identifier)` yourself before
 // `generateText` (no model wrapper). Keys are `agentkit:rateLimit:<identifier>`.
-export { createRateLimit } from "@upstash/agentkit-sdk";
-export type { RateLimitConfig } from "@upstash/agentkit-sdk";
+// `Ratelimit` (for custom limiters like `Ratelimit.fixedWindow(...)`) and the `Duration` type are
+// re-exported too, so users never import from (or install) `@upstash/ratelimit` directly.
+export { createRateLimit, Ratelimit } from "@upstash/agentkit-sdk";
+export type { RateLimitConfig, Duration } from "@upstash/agentkit-sdk";
 
 // Tool-call caching (self-contained cached tools)
 export { cachedTool, cachedTools } from "./tools.js";

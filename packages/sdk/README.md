@@ -164,8 +164,7 @@ before doing work (e.g. before calling a model) and short-circuit when over the 
 `agentkit:rateLimit:<identifier>`.
 
 ```ts
-import { Ratelimit } from "@upstash/ratelimit";
-import { createRateLimit } from "@upstash/agentkit-sdk";
+import { createRateLimit, Ratelimit } from "@upstash/agentkit-sdk";
 
 const ratelimit = createRateLimit({
   redis, // the Upstash Redis client backing the limiter

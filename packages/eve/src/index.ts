@@ -15,7 +15,9 @@ export type { DefineSearchToolsConfig, SearchToolSet } from "./search-tools.js";
 // custom use. Keys are `agentkit:rateLimit:<identifier>`.
 export { createRateLimitAuth } from "./auth.js";
 export type { RateLimitAuthConfig } from "./auth.js";
-export { createRateLimit } from "@upstash/agentkit-sdk";
-export type { RateLimitConfig } from "@upstash/agentkit-sdk";
+// `Ratelimit` (for custom limiters like `Ratelimit.fixedWindow(...)`) and the `Duration` type are
+// re-exported too, so users never import from (or install) `@upstash/ratelimit` directly.
+export { createRateLimit, Ratelimit } from "@upstash/agentkit-sdk";
+export type { RateLimitConfig, Duration } from "@upstash/agentkit-sdk";
 
 // Code-execution sandbox (Upstash Box backend) lives at "@upstash/agentkit-eve/sandbox".

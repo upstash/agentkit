@@ -84,8 +84,7 @@ throws a 403). Backed by [Upstash Ratelimit](https://github.com/upstash/ratelimi
 ```ts
 // agent/channels/eve.ts — import only packages here; eve's per-channel bundle does NOT include
 // other agent-source files, so don't import a shared `../lib/redis` into a channel.
-import { Ratelimit } from "@upstash/ratelimit";
-import { createRateLimitAuth } from "@upstash/agentkit-eve";
+import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
 import { localDev, vercelOidc } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
 
