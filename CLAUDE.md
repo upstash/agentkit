@@ -34,7 +34,7 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 - **`ChatHistory`** is durable chat history on **Redis Search** (the source of truth for transcripts,
   resurrecting the old removed ChatHistory). One JSON doc per chat at `agentkit:chat:<userId>:<sessionId>`
   indexed over `userId`+`sessionId` (filters) and `userMessages`+`modelMessages` (`$smart` text); the
-  raw `messages` array + `metadata` ride along **unindexed**. **Every method takes a single object**
+  raw `messages` array rides along **unindexed**. **Every method takes a single object**
   with a **required, non-empty `userId`/`sessionId`** (validated; the per-user key is the tenant
   boundary — no cross-user collision possible, so no ownership check). `listChats({userId})` filters by
   user; `searchChats({userId, query, target})` fuzzy-searches user/model text; `saveChat` **replaces**
@@ -116,7 +116,7 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 
 ## AI SDK version strategy — IMPORTANT
 - **AI SDK v7-beta everywhere.** Every package + demo pins `ai` to exactly **`7.0.0-beta.178`** (the
-  version `eve@0.11.7` depends on — it pins an exact version, not a range). Providers: `@ai-sdk/openai`
+  version `eve@0.13.1` depends on — it pins an exact version, not a range). Providers: `@ai-sdk/openai`
   and `@ai-sdk/provider` on `^4.0.0-beta`.
 - **Why exact-pin and not a pnpm `override`:** because everyone (incl. eve's transitive dep) lands on the
   same exact `ai`, pnpm installs a single copy. Two copies of `ai` cause type/identity breakage. An
@@ -157,7 +157,7 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- `eve@0.11.7` is on npm with subpath exports: `eve/tools`, `eve/sandbox`, `eve/sandbox/vercel`, `eve/next`, …
+- `eve@0.13.1` is on npm with subpath exports: `eve/tools`, `eve/sandbox`, `eve/sandbox/vercel`, `eve/next`, …
 - **Import eve's real types — do NOT hand-roll them.** From `eve/tools`: `defineTool`, `ToolDefinition`,
   `ToolContext`. From `eve/sandbox`: `defineSandbox`, `SandboxBackend`, `SandboxSession`,
   `SandboxNetworkPolicy`, etc. (`eve` is a devDep of `packages/eve` for these type imports.)

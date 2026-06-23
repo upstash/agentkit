@@ -41,7 +41,7 @@ Durable conversation transcripts backed by Upstash Redis Search — the source o
 `UIMessage`, eve to `EveMessage`). Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>`
 (keyed per user, so two users can't collide on a `sessionId`), indexed
 over `userId` + `sessionId` (exact-match filters) and `userMessages` + `modelMessages` (`$smart`
-fuzzy text); the raw `messages` array and `metadata` ride along **unindexed**. So you can filter by
+fuzzy text); the raw `messages` array rides along **unindexed**. So you can filter by
 `userId` to list a user's chats and `$smart`-search within what the user or the model said.
 
 ```ts
@@ -62,7 +62,6 @@ await history.saveChat({
   sessionId: "session-abc", // required, non-empty (the chat/session id)
   messages, // the full transcript
   title: "Trip planning", // optional: human-readable title
-  metadata: { session: cursor }, // optional: arbitrary unindexed data (e.g. an eve session cursor)
 });
 
 const chat = await history.getChat({ userId: "user-123", sessionId: "session-abc" }); // full transcript, or null
@@ -98,13 +97,14 @@ const memory = new AgentMemory({
   minScore: 0, // optional: default BM25 relevance floor for recall
 });
 
-await memory.add("The user prefers TypeScript", {
+await memory.add({
+  text: "The user prefers TypeScript",
   userId: "user-123", // required, non-empty: the user the memory belongs to
   id: "pref-lang", // optional: stable id (generated when omitted)
-  metadata: { source: "chat" }, // optional: extra data stored with the memory
 });
 
-const hits = await memory.recall("typescript preference", {
+const hits = await memory.recall({
+  query: "typescript preference", // optional: omit (or "") to return everything for the user
   userId: "user-123", // required, non-empty: the user to recall for
   topK: 5, // optional: max memories to return (defaults to 5)
   minScore: 0, // optional: BM25 relevance floor (defaults to the constructor's minScore)

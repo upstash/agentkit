@@ -27,12 +27,10 @@ export interface ChatSummary {
   messageCount: number;
 }
 
-/** A full chat record: its summary plus the raw stored messages and optional metadata. */
+/** A full chat record: its summary plus the raw stored messages. */
 export interface ChatRecord<TMessage = unknown> extends ChatSummary {
   /** The raw transcript exactly as the framework needs it (e.g. AI SDK `UIMessage[]`). Not indexed. */
   messages: TMessage[];
-  /** Arbitrary metadata (e.g. an eve session cursor for live resume). Not indexed. */
-  metadata?: Record<string, unknown>;
 }
 
 /** A search hit: a chat summary plus its BM25 relevance score. */
@@ -74,7 +72,6 @@ interface ChatDoc<TMessage> {
   title?: string;
   createdAt: number;
   updatedAt: number;
-  metadata?: Record<string, unknown>;
 }
 
 type TextLike = { role?: string; parts?: { type?: string; text?: string }[]; content?: unknown };
@@ -118,9 +115,9 @@ const ChatHistorySchema = s.object({
  *
  * Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` — keyed per user, so two users
  * can never collide on a `sessionId`. The index covers four fields: `userId` + `sessionId` (exact-match
- * filters) and `userMessages` + `modelMessages` (fuzzy `$smart` text). The raw `messages` array (and
- * `metadata`) ride along in the same doc but are **not** indexed. So you can filter by `userId` to list
- * a user's chats, and `$smart`-search within what the user or the model said.
+ * filters) and `userMessages` + `modelMessages` (fuzzy `$smart` text). The raw `messages` array rides
+ * along in the same doc but is **not** indexed. So you can filter by `userId` to list a user's chats,
+ * and `$smart`-search within what the user or the model said.
  */
 export class ChatHistory<TMessage = unknown> {
   private redis: Redis;
@@ -173,7 +170,6 @@ export class ChatHistory<TMessage = unknown> {
     return {
       ...this.toSummary(doc),
       messages: doc.messages ?? [],
-      ...(doc.metadata !== undefined ? { metadata: doc.metadata } : {}),
     };
   }
 
@@ -195,7 +191,6 @@ export class ChatHistory<TMessage = unknown> {
     /** The full transcript (the whole conversation — there is no delta merge). */
     messages: TMessage[];
     title?: string;
-    metadata?: Record<string, unknown>;
   }): Promise<ChatRecord<TMessage>> {
     const { userId, sessionId, messages } = params;
     assertId(userId, "userId");
@@ -213,9 +208,6 @@ export class ChatHistory<TMessage = unknown> {
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
       ...((params.title ?? existing?.title) ? { title: params.title ?? existing?.title } : {}),
-      ...(params.metadata || existing?.metadata
-        ? { metadata: { ...existing?.metadata, ...params.metadata } }
-        : {}),
     };
     await this.redis.json.set(this.keyFor(userId, sessionId), "$", doc as never);
     if (this.ttlSeconds !== undefined)

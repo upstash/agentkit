@@ -15,7 +15,7 @@ pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
 your conversations. Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user,
 so two users can't collide on a `sessionId`), indexed over `userId` +
 `sessionId` (filters) and `userMessages` + `modelMessages` (`$smart` fuzzy text); the raw `messages`
-array and `metadata` ride along **unindexed**.
+array rides along **unindexed**.
 
 ```ts
 import { createChatHistory } from "@upstash/agentkit-ai-sdk";

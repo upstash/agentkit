@@ -64,7 +64,8 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
       execute: async (input, options) => {
         // recall() falls back to "everything for the user" when a query matches nothing, so a
         // model that passes a placeholder like "everything" still gets results.
-        const hits = await memory.recall(input.query, {
+        const hits = await memory.recall({
+          query: input.query,
           userId: resolveUserId(input, options as ToolExecutionOptions<never>),
           ...(topK !== undefined ? { topK } : {}),
           ...(minScore !== undefined ? { minScore } : {}),
@@ -80,7 +81,8 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
         text: z.string().describe("A concise, durable fact about the user to remember for later."),
       }),
       execute: async (input, options) => {
-        const record = await memory.add(input.text, {
+        const record = await memory.add({
+          text: input.text,
           userId: resolveUserId(input, options as ToolExecutionOptions<never>),
         });
         return { id: record.id, saved: true };

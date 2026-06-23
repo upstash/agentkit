@@ -17,7 +17,6 @@ function assertUserId(userId: string | undefined): asserts userId is string {
 export interface MemoryRecord {
   id: string;
   text: string;
-  metadata?: Record<string, unknown>;
   createdAt: number;
 }
 
@@ -36,17 +35,11 @@ export interface AgentMemoryConfig {
   minScore?: number;
 }
 
-/** Where the non-indexed memory metadata (incl. `createdAt`) rides along in each JSON document. */
-const META_FIELD = "__meta";
-
 /** One JSON doc per memory: `text` is fuzzy-searchable, `userId` is an exact-match tenant filter. */
 const MemorySchema = s.object({
   text: s.string(),
   userId: s.string().noTokenize(),
 });
-
-/** The metadata blob stored under {@link META_FIELD} (the per-call metadata plus `createdAt`). */
-type StoredMeta = { createdAt?: number; [k: string]: unknown };
 
 /**
  * Long-term agent memory with fuzzy recall, backed entirely by Upstash Redis Search. You pass only
@@ -90,22 +83,15 @@ export class AgentMemory {
    * Store a memory for `userId` (required, non-empty — unique per user). Returns the persisted record.
    * Key: `<prefix>:<userId>:<id>`. Writes go straight to Redis; the index is created on first recall.
    */
-  async add(
-    text: string,
-    opts: { userId: string; id?: string; metadata?: Record<string, unknown> },
-  ): Promise<MemoryRecord> {
-    const { userId } = opts;
+  async add(params: { text: string; userId: string; id?: string }): Promise<MemoryRecord> {
+    const { text, userId } = params;
     assertUserId(userId);
-    const record: MemoryRecord = {
-      id: opts.id ?? randomUUID(),
-      text,
-      metadata: opts.metadata,
-      createdAt: now(),
-    };
+    const record: MemoryRecord = { id: params.id ?? randomUUID(), text, createdAt: now() };
+    // `createdAt` is stored but not in the schema, so it rides along unindexed.
     await this.redis.json.set(this.keyFor(userId, record.id), "$", {
       text,
       userId,
-      [META_FIELD]: { createdAt: record.createdAt, ...opts.metadata },
+      createdAt: record.createdAt,
     });
     return record;
   }
@@ -117,16 +103,18 @@ export class AgentMemory {
    * so recall isn't empty just because the fuzzy text didn't match (e.g. a model passing "everything").
    * `minScore` still filters genuine-but-weak matches (no fallback then).
    */
-  async recall(
-    query: string | undefined,
-    opts: { userId: string; topK?: number; minScore?: number },
-  ): Promise<RecalledMemory[]> {
-    const { userId } = opts;
+  async recall(params: {
+    userId: string;
+    query?: string;
+    topK?: number;
+    minScore?: number;
+  }): Promise<RecalledMemory[]> {
+    const { userId, query } = params;
     assertUserId(userId);
-    const topK = opts.topK ?? 5;
+    const topK = params.topK ?? 5;
     const hasQuery = Boolean(query && query.trim());
     // BM25 relevance only exists when there's a text query; a filter-only fetch scores 0 for all.
-    const minScore = hasQuery ? (opts.minScore ?? this.minScore) : 0;
+    const minScore = hasQuery ? (params.minScore ?? this.minScore) : 0;
 
     const matched = await this.query(userId, hasQuery ? query : undefined, topK);
     // Fall back to "everything for the user" only when the text matched nothing — not when a genuine
@@ -137,16 +125,12 @@ export class AgentMemory {
         : matched.filter((h) => h.score >= minScore);
 
     const idPrefix = this.keyFor(userId, "");
-    return hits.map((h) => {
-      const { createdAt, ...rest } = h.meta;
-      return {
-        id: h.key.startsWith(idPrefix) ? h.key.slice(idPrefix.length) : h.key,
-        text: h.text,
-        createdAt: createdAt ?? 0,
-        metadata: Object.keys(rest).length ? rest : undefined,
-        score: h.score,
-      };
-    });
+    return hits.map((h) => ({
+      id: h.key.startsWith(idPrefix) ? h.key.slice(idPrefix.length) : h.key,
+      text: h.text,
+      createdAt: h.createdAt,
+      score: h.score,
+    }));
   }
 
   /** Run a `userId`-scoped query (optionally fuzzy on `text`) and return normalized rows. */
@@ -154,22 +138,22 @@ export class AgentMemory {
     userId: string,
     query: string | undefined,
     topK: number,
-  ): Promise<{ key: string; text: string; meta: StoredMeta; score: number }[]> {
+  ): Promise<{ key: string; text: string; createdAt: number; score: number }[]> {
     const filter: Record<string, unknown> = { userId: { $eq: userId } };
     if (query && query.trim()) filter.text = { $smart: query };
-    // `query` returns the indexed fields plus the unindexed `__meta` we read here, so cast the result.
+    // `query` returns the indexed fields plus the unindexed `createdAt`, so cast the result.
     const rows = (await this.index.query({
       filter: filter as InferFilterFromSchema<typeof MemorySchema>,
       limit: topK,
     })) as unknown as {
       key: string;
       score: number;
-      data?: { text?: string; [META_FIELD]?: StoredMeta };
+      data?: { text?: string; createdAt?: number };
     }[];
     return rows.map((r) => ({
       key: r.key,
       text: typeof r.data?.text === "string" ? r.data.text : "",
-      meta: r.data?.[META_FIELD] ?? {},
+      createdAt: typeof r.data?.createdAt === "number" ? r.data.createdAt : 0,
       score: r.score,
     }));
   }
