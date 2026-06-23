@@ -1,13 +1,18 @@
 import { z } from "zod";
-import type { Redis } from "@upstash/redis";
-import { withIndex } from "./search-index.js";
+import type {
+  FlatIndexSchema,
+  InferFilterFromSchema,
+  NestedIndexSchema,
+  Redis,
+} from "@upstash/redis";
+import { withIndex } from "./reactive-index.js";
 
-/** The schema type accepted by `redis.search.index` (an `s.object({...})`). */
-type SearchSchema = NonNullable<Parameters<Redis["search"]["index"]>[0]["schema"]>;
+/** The schema type accepted by `redis.search.index` / `createIndex` (an `s.object({...})`) — the generic bound. */
+type AnySearchSchema = NestedIndexSchema | FlatIndexSchema;
 
-export interface SearchToolDefsConfig {
+export interface SearchToolDefsConfig<TSchema extends AnySearchSchema = AnySearchSchema> {
   /** The Upstash Redis Search schema (built with `s` from `@upstash/redis`). */
-  schema: SearchSchema;
+  schema: TSchema;
   /** Upstash Redis client. */
   redis: Redis;
   /** Index name. Defaults to `"agentkit:search"`. */
@@ -91,18 +96,28 @@ const FILTER_GUIDE = [
  * The index is provisioned **reactively**: each op runs straight away, and only if the index doesn't
  * exist yet does it get created (+ `waitIndexing`) and the op retried — see {@link withIndex}.
  */
-export function createSearchToolDefs(config: SearchToolDefsConfig): SearchToolDefs {
+export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearchSchema>(
+  config: SearchToolDefsConfig<TSchema>,
+): SearchToolDefs {
   const { redis, schema } = config;
   const name = config.name ?? "agentkit:search";
   const prefix = config.prefix ?? `${name}:`;
   const defaultLimit = config.defaultLimit ?? 10;
+  // `SearchIndex<TSchema>` — concrete, inferred from the caller's schema (no loose handle).
   const index = redis.search.index({ name, schema });
+  // The filter/aggregation objects come from the model (untyped at runtime), so they're cast to the
+  // index's real, schema-derived parameter types at the call sites below — not to `never`.
+  type Filter = InferFilterFromSchema<TSchema>;
   const fields = describeSchema(schema as Record<string, unknown>);
 
   /** Create the index (idempotent) and wait until it's queryable — the missing-index recovery path. */
   const provision = async (): Promise<void> => {
+    // `createIndex`'s generic can't infer through our own `TSchema` param, so cast this one setup call
+    // to its real parameter type (not `never`); `schema` already matches it structurally.
     await redis.search
-      .createIndex({ name, dataType: "json", prefix, schema })
+      .createIndex({ name, dataType: "json", prefix, schema } as Parameters<
+        Redis["search"]["createIndex"]
+      >[0])
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (!/already exists/i.test(msg)) throw err;
@@ -126,10 +141,10 @@ export function createSearchToolDefs(config: SearchToolDefsConfig): SearchToolDe
         provision,
         () =>
           index.query({
-            filter: input.filter as never,
+            filter: input.filter as Filter,
             limit: (input.limit as number | undefined) ?? defaultLimit,
-          } as never) as Promise<unknown[] | null>,
-        (r) => r === null, // missing index → query returns null
+          }) as unknown as Promise<unknown[] | null>, // runtime: missing index → null
+        (r) => r === null,
       ),
   };
 
@@ -152,8 +167,8 @@ export function createSearchToolDefs(config: SearchToolDefsConfig): SearchToolDe
       withIndex(provision, () =>
         index.aggregate({
           aggregations: input.aggregations,
-          ...(input.filter !== undefined ? { filter: input.filter } : {}),
-        } as never),
+          ...(input.filter !== undefined ? { filter: input.filter as Filter } : {}),
+        } as Parameters<typeof index.aggregate>[0]),
       ),
   };
 
@@ -168,8 +183,8 @@ export function createSearchToolDefs(config: SearchToolDefsConfig): SearchToolDe
     execute: (input) =>
       withIndex(
         provision,
-        () => index.count({ filter: (input.filter ?? {}) as never }),
-        (r) => (r as { count: number }).count === -1, // missing index → { count: -1 }
+        () => index.count({ filter: (input.filter ?? {}) as Filter }),
+        (r) => r.count === -1, // missing index → { count: -1 }
       ),
   };
 

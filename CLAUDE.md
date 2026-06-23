@@ -22,13 +22,15 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 `langchain` and `tanstack-ai` packages were **removed** — don't reintroduce them.
 
 ### Core SDK exports (`@upstash/agentkit-sdk`)
-- `AgentMemory`, `ToolCache`, `Rag` (no chunking — `ingest` takes one document or an array, each
-  `{ id?, data }` where `data` is the typed document; no separate `text` field, its string/number
-  values are indexed for `$smart` and `data` is returned as-is), `ChatHistory`, `createRateLimit` (+ `RateLimitConfig`;
+- `AgentMemory`, `ToolCache`, `ChatHistory`, `createSearchToolDefs` (the framework-agnostic search-tool
+  defs — **use these for RAG**, there is no `Rag` primitive), `createRateLimit` (+ `RateLimitConfig`;
   thin `@upstash/ratelimit` factory with AgentKit defaults — returns a plain `Ratelimit`), `s` (schema
-  builder, re-exported from `@upstash/redis`), types `FilterValue`/`SearchHit`/`SearchIndexHandle`/
-  `ChatRecord`/`ChatSummary`/`ChatSearchHit`, the reactive-index helpers `withIndex`/`isMissingIndexError`,
-  utils `key`/`now`/`stableHash`/`stableStringify`. (**Model cache removed** — no `ModelCache`.)
+  builder, re-exported from `@upstash/redis`), types `ChatRecord`/`ChatSummary`/`ChatSearchHit`,
+  utils `key`/`now`/`stableHash`/`stableStringify`. (The reactive-index helpers
+  `withIndex`/`isMissingIndexError` in `reactive-index.ts` are **internal**, not exported.)
+  (**Model cache removed**; **`Rag` removed** — RAG
+  is done via the search tools; **`search-index.ts`/`RedisSearchIndex` removed** — `AgentMemory` owns a
+  simple typed index inline.)
 - `@upstash/ratelimit` is a **dependency** of core (not a peer); rate limiting lives here now.
 - **`ChatHistory`** is durable chat history on **Redis Search** (the source of truth for transcripts,
   resurrecting the old removed ChatHistory). One JSON doc per chat at `agentkit:chat:<userId>:<sessionId>`
@@ -94,7 +96,7 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   `cachedTools` defaults each tool's namespace to its map key).
 - Rate limiting: `namespace` is a plain **string** (the key prefix) only; the per-user value is `identifier`.
 - Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`,
-  `agentkit:memory:<namespace>:<id>`, `agentkit:rag:<id>`.
+  `agentkit:memory:<namespace>:<id>`.
 
 ## AI SDK version strategy — IMPORTANT
 - **AI SDK v7-beta everywhere.** Every package + demo pins `ai` to exactly **`7.0.0-beta.178`** (the
@@ -193,7 +195,7 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
 - [x] Search tools: ensure the index (create + `waitIndexing`, memoized) before running each tool — a missing Upstash index returns `null`/`-1` rather than throwing, so we ensure up front.
 - [x] `createMemoryTools` (ai-sdk) + eve memory tools: `scope` → `namespace` (string or per-call function). Core `AgentMemory` add/recall/forget use `namespace`.
 - [x] Rate limiting: `namespace` is a plain string; prefix `agentkit:rateLimit`.
-- [x] Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`, `agentkit:memory:<namespace>:<id>`, `agentkit:rag:<id>`.
+- [x] Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`, `agentkit:memory:<namespace>:<id>`.
 - [x] Unit/e2e tests use `gpt-4o` (`TEST_MODEL`).
 - [x] eve: dropped the `./model` subpath — model wrappers are exported from the package root.
 - [x] ai-sdk example app fleshed out (memory + search + cached tool + rate limit).

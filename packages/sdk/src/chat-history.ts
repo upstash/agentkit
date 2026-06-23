@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { s } from "@upstash/redis";
-import type { Redis } from "@upstash/redis";
-import { withIndex, type SearchIndexHandle } from "./search-index.js";
+import type { InferFilterFromSchema, Redis, SearchIndex } from "@upstash/redis";
+import { withIndex } from "./reactive-index.js";
 import { now } from "./utils.js";
 
 /**
@@ -103,8 +103,12 @@ function defaultExtract(messages: unknown[]): ExtractedText {
   return { userMessages: user.join("\n"), modelMessages: model.join("\n") };
 }
 
-/** The schema type accepted by `redis.search.index`. */
-type SearchSchema = NonNullable<Parameters<Redis["search"]["index"]>[0]["schema"]>;
+const ChatHistorySchema = s.object({
+  userId: s.string().noTokenize(),
+  sessionId: s.string().noTokenize(),
+  userMessages: s.string(),
+  modelMessages: s.string(),
+});
 
 /**
  * Durable chat history backed by **Upstash Redis Search** — the source of truth for a conversation's
@@ -122,8 +126,8 @@ export class ChatHistory<TMessage = unknown> {
   private namespace: string;
   private name: string;
   private prefix: string;
-  private schema: SearchSchema;
-  private index: SearchIndexHandle;
+  private schema: typeof ChatHistorySchema;
+  private index: SearchIndex<typeof ChatHistorySchema>;
   private ttlSeconds?: number;
   private extract: (messages: TMessage[]) => ExtractedText;
   private created?: Promise<void>;
@@ -133,19 +137,14 @@ export class ChatHistory<TMessage = unknown> {
     this.namespace = config.namespace ?? "agentkit:chat";
     this.name = this.namespace.replace(/[^a-zA-Z0-9_]/g, "_");
     this.prefix = `${this.namespace}:`;
-    this.schema = s.object({
-      userId: s.string().noTokenize(),
-      sessionId: s.string().noTokenize(),
-      userMessages: s.string(),
-      modelMessages: s.string(),
-    }) as SearchSchema;
+    this.schema = ChatHistorySchema;
     this.index = this.redis.search.index({ name: this.name, schema: this.schema });
     this.ttlSeconds = config.ttlSeconds;
     this.extract = config.extractText ?? (defaultExtract as (m: TMessage[]) => ExtractedText);
   }
 
   /** The underlying Upstash Redis Search index handle (`query`, `count`, `waitIndexing`, `drop`, …). */
-  get searchIndex(): SearchIndexHandle {
+  get searchIndex() {
     return this.index;
   }
 
@@ -278,22 +277,34 @@ export class ChatHistory<TMessage = unknown> {
     return doc ? this.toRecord(doc) : null;
   }
 
+  /**
+   * Run a filtered query and return its rows. The typed index narrows `data` to the indexed schema
+   * fields and never types `null`, but at runtime `query` returns the **full stored JSON** as `data`
+   * (verified against live Redis) and a missing index yields `null`. This one helper bridges both —
+   * everywhere else `r.data` is a fully-typed {@link ChatDoc}.
+   */
+  private async queryChats(
+    filter: InferFilterFromSchema<typeof ChatHistorySchema>,
+    limit?: number,
+  ): Promise<{ score: number; data: ChatDoc<TMessage> }[]> {
+    const rows = await withIndex(
+      () => this.provision(),
+      () =>
+        this.index.query({
+          filter,
+          ...(limit !== undefined ? { limit } : {}),
+        }) as unknown as Promise<{ score: number; data: ChatDoc<TMessage> }[] | null>,
+      (r) => r === null,
+    );
+    return rows ?? [];
+  }
+
   /** List a user's chats (summaries only), newest-updated first. Filters the index by `userId`. */
   async listChats(params: { userId: string; limit?: number }): Promise<ChatSummary[]> {
     const { userId } = params;
     assertId(userId, "userId");
-    const results = await withIndex(
-      () => this.provision(),
-      () =>
-        this.index.query({
-          filter: { userId: { $eq: userId } } as never,
-          ...(params.limit !== undefined ? { limit: params.limit } : {}),
-        }) as Promise<{ data?: ChatDoc<TMessage> }[] | null>,
-      (r) => r === null,
-    );
-    const summaries = (results ?? [])
-      .map((r) => (r.data ? this.toSummary(r.data) : undefined))
-      .filter((x): x is ChatSummary => x !== undefined);
+    const rows = await this.queryChats({ userId: { $eq: userId } }, params.limit);
+    const summaries = rows.map((r) => this.toSummary(r.data));
     summaries.sort((a, b) => b.updatedAt - a.updatedAt);
     return summaries;
   }
@@ -312,25 +323,25 @@ export class ChatHistory<TMessage = unknown> {
     const { userId, query } = params;
     assertId(userId, "userId");
     const target = params.target ?? "both";
-    const text =
+    const userClause = { userId: { $eq: userId } };
+    const filter: InferFilterFromSchema<typeof ChatHistorySchema> =
       target === "user"
-        ? [{ userMessages: { $smart: query } }]
+        ? { $and: [userClause, { userMessages: { $smart: query } }] }
         : target === "model"
-          ? [{ modelMessages: { $smart: query } }]
-          : [{ userMessages: { $smart: query } }, { modelMessages: { $smart: query } }];
-    const results = await withIndex(
-      () => this.provision(),
-      () =>
-        this.index.query({
-          filter: { $and: [{ userId: { $eq: userId } }, { $or: text }] } as never,
-          ...(params.limit !== undefined ? { limit: params.limit } : {}),
-        }) as Promise<{ data?: ChatDoc<TMessage>; score: number }[] | null>,
-      (r) => r === null,
-    );
+          ? { $and: [userClause, { modelMessages: { $smart: query } }] }
+          : {
+              $and: [
+                userClause,
+                {
+                  $or: [{ userMessages: { $smart: query } }, { modelMessages: { $smart: query } }],
+                },
+              ],
+            };
+    const rows = await this.queryChats(filter, params.limit);
     const minScore = params.minScore ?? 0;
-    return (results ?? [])
-      .filter((r) => r.data && r.score >= minScore)
-      .map((r) => ({ ...this.toSummary(r.data as ChatDoc<TMessage>), score: r.score }));
+    return rows
+      .filter((r) => r.score >= minScore)
+      .map((r) => ({ ...this.toSummary(r.data), score: r.score }));
   }
 
   /** Delete this user's chat (also removes it from the index). No-op if it doesn't exist. */

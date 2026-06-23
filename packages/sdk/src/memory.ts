@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Redis } from "@upstash/redis";
-import { RedisSearchIndex, type SearchIndexHandle } from "./search-index.js";
+import { s } from "@upstash/redis";
+import type { InferFilterFromSchema, Redis, SearchIndex } from "@upstash/redis";
 import { now } from "./utils.js";
 
 /**
@@ -33,29 +33,71 @@ export interface AgentMemoryConfig {
   minScore?: number;
 }
 
+/** Where the non-indexed memory metadata (incl. `createdAt`) rides along in each JSON document. */
+const META_FIELD = "__meta";
+
+/** One JSON doc per memory: `text` is fuzzy-searchable, `namespace` is an exact-match tenant filter. */
+const MemorySchema = s.object({
+  text: s.string(),
+  namespace: s.string().noTokenize(),
+});
+
+/** The metadata blob stored under {@link META_FIELD} (the per-call metadata plus `createdAt`). */
+type StoredMeta = { createdAt?: number; [k: string]: unknown };
+
 /**
  * Long-term agent memory with fuzzy recall, backed entirely by Upstash Redis Search. You pass only
- * the `redis` client; the memory creates and owns its search index internally and exposes the raw
+ * the `redis` client; the memory creates and owns its search index internally and exposes the typed
  * handle via {@link AgentMemory.searchIndex} for advanced use (`describe`, `count`, `drop`, …).
  *
- * Memories are scoped (e.g. per user/agent) via an exact-match filter, and recalled with the `$smart`
- * operator (phrase / term / fuzzy / prefix matching).
+ * Each memory is one JSON doc at `agentkit:memory:<namespace>:<id>`. Memories are scoped per
+ * user/agent via the exact-match `namespace` filter, and recalled with the `$smart` operator
+ * (phrase / term / fuzzy / prefix matching).
  */
 export class AgentMemory {
-  private store: RedisSearchIndex;
+  private redis: Redis;
+  private name: string;
+  private prefix: string;
+  private index: SearchIndex<typeof MemorySchema>;
   private minScore: number;
+  private created?: Promise<void>;
 
   constructor(config: AgentMemoryConfig) {
-    this.store = new RedisSearchIndex(config.redis, {
-      namespace: config.namespace ?? "agentkit:memory",
-      filterFields: ["namespace"],
-    });
+    this.redis = config.redis;
+    const namespace = config.namespace ?? "agentkit:memory";
+    // Index names must be identifier-safe; the key prefix keeps the human-readable namespace.
+    this.name = namespace.replace(/[^a-zA-Z0-9_]/g, "_");
+    this.prefix = `${namespace}:`;
+    this.index = this.redis.search.index({ name: this.name, schema: MemorySchema });
     this.minScore = config.minScore ?? 0;
   }
 
-  /** The underlying Upstash Redis Search index handle. */
-  get searchIndex(): SearchIndexHandle {
-    return this.store.index;
+  /** The underlying (typed) Upstash Redis Search index handle. */
+  get searchIndex() {
+    return this.index;
+  }
+
+  private keyFor(namespace: string, id: string): string {
+    return `${this.prefix}${namespace}:${id}`;
+  }
+
+  /** Create the index once (idempotent — "already exists" is treated as success). */
+  private ensure(): Promise<void> {
+    if (!this.created) {
+      this.created = this.redis.search
+        .createIndex({
+          name: this.name,
+          dataType: "json",
+          prefix: this.prefix,
+          schema: MemorySchema,
+        })
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/already exists/i.test(msg)) throw err;
+        });
+    }
+    return this.created;
   }
 
   /**
@@ -68,20 +110,18 @@ export class AgentMemory {
   ): Promise<MemoryRecord> {
     const { namespace } = opts;
     assertNamespace(namespace);
+    await this.ensure();
     const record: MemoryRecord = {
       id: opts.id ?? randomUUID(),
       text,
       metadata: opts.metadata,
       createdAt: now(),
     };
-    await this.store.upsert([
-      {
-        id: `${namespace}:${record.id}`,
-        content: text,
-        filters: { namespace },
-        metadata: { createdAt: record.createdAt, ...opts.metadata },
-      },
-    ]);
+    await this.redis.json.set(this.keyFor(namespace, record.id), "$", {
+      text,
+      namespace,
+      [META_FIELD]: { createdAt: record.createdAt, ...opts.metadata },
+    });
     return record;
   }
 
@@ -98,26 +138,26 @@ export class AgentMemory {
   ): Promise<RecalledMemory[]> {
     const { namespace } = opts;
     assertNamespace(namespace);
+    await this.ensure();
     const topK = opts.topK ?? 5;
     const hasQuery = Boolean(query && query.trim());
     // BM25 relevance only exists when there's a text query; a filter-only fetch scores 0 for all.
     const minScore = hasQuery ? (opts.minScore ?? this.minScore) : 0;
 
-    const matched = await this.store.search(query, { topK, filters: { namespace } });
+    const matched = await this.query(namespace, hasQuery ? query : undefined, topK);
     // Fall back to "everything in the namespace" only when the text matched nothing — not when a
     // genuine match was filtered out by `minScore`.
     const hits =
       hasQuery && matched.length === 0
-        ? await this.store.search(undefined, { topK, filters: { namespace } })
+        ? await this.query(namespace, undefined, topK)
         : matched.filter((h) => h.score >= minScore);
 
-    const idPrefix = `${namespace}:`;
+    const idPrefix = this.keyFor(namespace, "");
     return hits.map((h) => {
-      const md = (h.metadata ?? {}) as { createdAt?: number; [k: string]: unknown };
-      const { createdAt, ...rest } = md;
+      const { createdAt, ...rest } = h.meta;
       return {
-        id: h.id.startsWith(idPrefix) ? h.id.slice(idPrefix.length) : h.id,
-        text: h.content,
+        id: h.key.startsWith(idPrefix) ? h.key.slice(idPrefix.length) : h.key,
+        text: h.text,
         createdAt: createdAt ?? 0,
         metadata: Object.keys(rest).length ? rest : undefined,
         score: h.score,
@@ -125,10 +165,33 @@ export class AgentMemory {
     });
   }
 
+  /** Run a `namespace`-scoped query (optionally fuzzy on `text`) and return normalized rows. */
+  private async query(
+    namespace: string,
+    query: string | undefined,
+    topK: number,
+  ): Promise<{ key: string; text: string; meta: StoredMeta; score: number }[]> {
+    const filter: Record<string, unknown> = { namespace: { $eq: namespace } };
+    if (query && query.trim()) filter.text = { $smart: query };
+    // `query` returns the indexed fields plus the unindexed `__meta` we read here, so cast the result.
+    const rows = (await this.index.query({
+      filter: filter as InferFilterFromSchema<typeof MemorySchema>,
+      limit: topK,
+    })) as unknown as
+      | { key: string; score: number; data?: { text?: string; [META_FIELD]?: StoredMeta } }[]
+      | null;
+    return (rows ?? []).map((r) => ({
+      key: r.key,
+      text: typeof r.data?.text === "string" ? r.data.text : "",
+      meta: r.data?.[META_FIELD] ?? {},
+      score: r.score,
+    }));
+  }
+
   /** Delete a memory by id within its `namespace` (required, non-empty). */
   async forget(id: string, opts: { namespace: string }): Promise<void> {
     const { namespace } = opts;
     assertNamespace(namespace);
-    await this.store.delete([`${namespace}:${id}`]);
+    await this.redis.del(this.keyFor(namespace, id));
   }
 }

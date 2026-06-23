@@ -2,7 +2,7 @@
 
 Core, framework-agnostic primitives for building AI agents — entirely on
 [Upstash Redis](https://upstash.com/). No vector database required: the "semantic" features (memory
-recall, RAG) are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
+recall, search) are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
 and its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM25-scored).
 
 ```bash
@@ -16,13 +16,12 @@ and own their Redis Search index internally:
 
 ```ts
 import { Redis } from "@upstash/redis";
-import { AgentMemory, ChatHistory, Rag, ToolCache } from "@upstash/agentkit-sdk";
+import { AgentMemory, ChatHistory, ToolCache } from "@upstash/agentkit-sdk";
 
 const redis = Redis.fromEnv();
 
 const history = new ChatHistory({ redis });
 const memory = new AgentMemory({ redis });
-const rag = new Rag({ redis });
 const tools = new ToolCache({ redis });
 ```
 
@@ -30,7 +29,7 @@ The raw search index handle is exposed for advanced use (`describe`, `count`, `w
 
 ```ts
 await memory.searchIndex.waitIndexing();
-const info = await rag.searchIndex.describe();
+const info = await memory.searchIndex.describe();
 ```
 
 ## Features
@@ -147,35 +146,9 @@ const defs = createSearchToolDefs({
 // defs.search / defs.aggregate / defs.count — each `{ description, inputSchema, execute }`.
 ```
 
-### RAG
-
-Ingest documents, then fuzzily retrieve the most relevant ones for a query. A document is just your
-typed `data` (no separate text field) — its string/number values are indexed for `$smart` matching,
-and the `data` is returned as-is on retrieval. Stored at `agentkit:rag:<id>`.
-
-```ts
-// Type the document data via the generic — it flows through to retrieved documents.
-const rag = new Rag<{ title: string; body: string }>({
-  redis, // the Upstash Redis client (the search index is created/managed internally)
-  namespace: "agentkit:rag", // optional: key prefix + index name base (defaults to "agentkit:rag")
-});
-
-// Ingest a single document or an array of documents.
-await rag.ingest([
-  {
-    id: "doc-1", // optional: stable document id (generated when omitted)
-    data: { title: "Upstash Redis", body: "a serverless database…" }, // the document, typed as the `Rag` generic
-  },
-]);
-
-const docs = await rag.retrieve("how does redis search work?", {
-  topK: 4, // optional: max documents to return (defaults to 5)
-  minScore: 0, // optional: BM25 relevance floor (defaults to 0)
-});
-// each result: { id, data, score } — `data` is your original object
-
-await rag.remove("doc-1"); // remove a document by id
-```
+> **RAG?** There's no dedicated RAG primitive — use the **search tools** above over your own
+> documents. Index your docs as JSON under one prefix with a schema you control, then give the agent
+> the generated `search`/`aggregate`/`count` tools (typo-tolerant `$smart` retrieval, BM25-ranked).
 
 ### Rate limiting
 

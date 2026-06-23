@@ -1,20 +1,12 @@
 // Utilities
 export { key, now, stableHash, stableStringify } from "./utils.js";
 
-// Search index handle type (the raw Upstash Redis Search index features expose via `.searchIndex`)
-export type { FilterValue, SearchHit, SearchIndexHandle } from "./search-index.js";
-// Reactive index provisioning: run a search op, create the index + waitIndexing on missing, retry.
-export { withIndex, isMissingIndexError } from "./search-index.js";
-
 // Features
 export { AgentMemory } from "./memory.js";
 export type { AgentMemoryConfig, MemoryRecord, RecalledMemory } from "./memory.js";
 
 export { ToolCache } from "./tool-cache.js";
 export type { ToolCacheConfig, ToolCacheHit } from "./tool-cache.js";
-
-export { Rag } from "./rag.js";
-export type { RagConfig, RagDocument, RetrievedDocument, StoredDocument } from "./rag.js";
 
 export { createRateLimit, Ratelimit } from "./rate-limit.js";
 export type { RateLimitConfig, Duration } from "./rate-limit.js";
