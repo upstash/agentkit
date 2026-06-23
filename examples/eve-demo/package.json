@@ -1,6 +1,7 @@
 {
   "name": "eve-demo",
   "version": "0.0.1",
+  "private": true,
   "type": "module",
   "imports": {
     "#*": "./agent/*",

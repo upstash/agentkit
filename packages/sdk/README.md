@@ -201,14 +201,8 @@ const getWeather = tools.wrap(
 ## Testing
 
 The SDK is tested against a **real Upstash Redis** instance (no Redis mock) — only LLM calls are
-mocked, via `MockModel`:
-
-```ts
-import { MockModel } from "@upstash/agentkit-sdk/testing";
-```
-
-Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (the suites skip themselves when these
-are absent). Each suite uses a unique namespace and cleans up its index/keys afterwards.
+mocked. Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (the suites skip themselves when
+these are absent). Each suite uses a unique namespace and cleans up its index/keys afterwards.
 
 ## License
 

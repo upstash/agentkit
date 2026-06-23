@@ -39,7 +39,6 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   against live Redis). `withIndex(provision, op, isMissingResult?)` runs the op, and on a missing index
   (sentinel return or thrown error) creates the index + `waitIndexing()` and retries once. Used by
   `ChatHistory` reads and `ai-sdk` `createSearchTools` (replaced its old proactive ensure).
-- Testing: `@upstash/agentkit-sdk/testing` → `MockModel`.
 - **Design rule:** every feature takes only `redis` and **creates/owns its search index internally**,
   exposing the raw handle via `.searchIndex`. Callers never pass a search index in.
 
