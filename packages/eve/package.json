@@ -8,7 +8,7 @@
     "url": "git+https://github.com/upstash/agentkit.git",
     "directory": "packages/eve"
   },
-  "homepage": "https://upstash.com/docs/redis/integrations/agentkit/eve",
+  "homepage": "https://upstash.com/docs/redis/sdks/agentkit/eve",
   "bugs": {
     "url": "https://github.com/upstash/agentkit/issues"
   },

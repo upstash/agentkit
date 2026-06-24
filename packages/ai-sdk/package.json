@@ -8,7 +8,7 @@
     "url": "git+https://github.com/upstash/agentkit.git",
     "directory": "packages/ai-sdk"
   },
-  "homepage": "https://upstash.com/docs/redis/integrations/agentkit/ai-sdk",
+  "homepage": "https://upstash.com/docs/redis/sdks/agentkit/ai-sdk",
   "bugs": {
     "url": "https://github.com/upstash/agentkit/issues"
   },
