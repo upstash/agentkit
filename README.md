@@ -1,7 +1,7 @@
 # Redis AgentKit
 
 A toolkit for building production AI agents entirely on [Upstash Redis](https://upstash.com/). It
-gives you the stateful primitives agents need — memory, conversation history, caching, and RAG —
+gives you the stateful primitives agents need — memory, conversation history, search, and caching —
 plus thin adapters for the popular agent frameworks. The "semantic" features
 are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction) and its
 `$smart` fuzzy operator, so no separate vector database is required.
@@ -22,8 +22,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Agent memory** — long-term, fuzzily-recalled memories scoped per agent/user, plus drop-in
   `recall`/`save` tools for `generateText`.
 - **Search tools** — schema-driven `search`/`aggregate`/`count` tools over Upstash Redis Search; the
-  index is created reactively on first use.
-- **RAG** — chunk, index, and fuzzily retrieve document chunks (`Rag` + `chunkText`).
+  index is created reactively on first use. Use these over your own documents for RAG-style retrieval.
 - **Rate limiting** — a configured Upstash Ratelimit factory (`createRateLimit`) you call before the model.
 - **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
   Eve's `defineSandbox`.

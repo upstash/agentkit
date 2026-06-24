@@ -1,7 +1,9 @@
 "use client";
 import { useState } from "react";
 import { useChat } from "@ai-sdk/react";
-import type { UIMessage } from "ai";
+import { DefaultChatTransport, type UIMessage } from "ai";
+import { USER_HEADER } from "../lib/users";
+import { useUser } from "./UserProvider";
 
 const PRESETS = [
   "Remember that I love science fiction.",
@@ -18,9 +20,15 @@ export default function Chat({
   initialMessages: UIMessage[];
   title?: string;
 }) {
+  const { userId } = useUser();
   const [input, setInput] = useState("");
-  // Default transport posts the WHOLE messages array + the chat id to /api/chat.
-  const { messages, sendMessage, status } = useChat({ id, messages: initialMessages });
+  // Posts the WHOLE messages array + the chat id to /api/chat, with the user id as a header so the
+  // server scopes memory / history / cache / rate limit to this user.
+  const { messages, sendMessage, status } = useChat({
+    id,
+    messages: initialMessages,
+    transport: new DefaultChatTransport({ headers: { [USER_HEADER]: userId } }),
+  });
   const busy = status === "submitted" || status === "streaming";
 
   function send(text: string) {

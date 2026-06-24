@@ -1,34 +1,38 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { cachedTool, cachedTools } from "./tools.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
+import { cachedTools } from "./tools.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
 function call<R>(execute: unknown, input: unknown): Promise<R> {
   return (execute as (i: unknown, o: unknown) => Promise<R>)(input, TOOL_OPTS);
 }
 
-describe.skipIf(!hasRedisCreds)("cachedTool (live Redis)", () => {
+describe.skipIf(!hasRedisCreds)("cachedTools (live Redis)", () => {
   const redis = testRedis();
+  // The cache key is `agentkit:toolCache:<userId>:<toolName>:<hash>`; isolate this run by userId.
+  const userId = uniquePrefix("aisdk-tool").replace("test:", "");
 
   afterAll(async () => {
-    // cachedTool uses the default ToolCache namespace; our per-tool namespaces are unique per test.
-    await cleanupKeys(redis, "agentkit:toolCache:aisdk-tool");
+    await cleanupKeys(redis, `agentkit:toolCache:${userId}`);
   });
 
-  it("memoizes execute by namespace + input", async () => {
+  it("memoizes each tool under its map key (toolName), scoped by userId", async () => {
     const getWeather = vi.fn(async ({ city }: { city: string }) => ({ city, tempF: 70 }));
-    const weather = cachedTool({
-      description: "weather",
-      inputSchema: z.object({ city: z.string() }),
-      namespace: uniqueNamespace("aisdk-tool").replace("test:", ""),
-      execute: getWeather,
-      redis,
-    });
+    const tools = cachedTools(
+      {
+        weather: tool({
+          description: "weather",
+          inputSchema: z.object({ city: z.string() }),
+          execute: getWeather,
+        }),
+      },
+      { userId, redis },
+    );
 
-    const a = await call<{ city: string }>(weather.execute, { city: "NYC" });
-    const b = await call<{ city: string }>(weather.execute, { city: "NYC" });
+    const a = await call<{ city: string }>(tools.weather!.execute, { city: "NYC" });
+    const b = await call<{ city: string }>(tools.weather!.execute, { city: "NYC" });
     expect(a).toEqual({ city: "NYC", tempF: 70 });
     expect(b).toEqual({ city: "NYC", tempF: 70 });
     expect(getWeather).toHaveBeenCalledTimes(1);
@@ -36,34 +40,33 @@ describe.skipIf(!hasRedisCreds)("cachedTool (live Redis)", () => {
 
   it("does not share cache across different inputs", async () => {
     const inc = vi.fn(async ({ n }: { n: number }) => n + 1);
-    const tool = cachedTool({
-      description: "inc",
-      inputSchema: z.object({ n: z.number() }),
-      namespace: uniqueNamespace("aisdk-tool").replace("test:", ""),
-      execute: inc,
-      redis,
-    });
-    await call(tool.execute, { n: 1 });
-    await call(tool.execute, { n: 2 });
+    const tools = cachedTools(
+      { inc: tool({ description: "inc", inputSchema: z.object({ n: z.number() }), execute: inc }) },
+      { userId, redis },
+    );
+    await call(tools.inc!.execute, { n: 1 });
+    await call(tools.inc!.execute, { n: 2 });
     expect(inc).toHaveBeenCalledTimes(2);
   });
 
-  it("cachedTools caches a map, defaulting the namespace to the map key", async () => {
+  it("does not share cache across users", async () => {
     const fn = vi.fn(async ({ city }: { city: string }) => ({ city, tempF: 70 }));
-    const ns = uniqueNamespace("aisdk-tool").replace("test:", "");
-    const tools = cachedTools(
-      {
-        [ns]: tool({
-          description: "weather",
-          inputSchema: z.object({ city: z.string() }),
-          execute: fn,
-        }),
-      },
-      { redis },
-    );
+    const make = (u: string) =>
+      cachedTools(
+        {
+          weather: tool({
+            description: "weather",
+            inputSchema: z.object({ city: z.string() }),
+            execute: fn,
+          }),
+        },
+        { userId: u, redis },
+      );
+    await call(make(`${userId}-a`).weather!.execute, { city: "LA" });
+    await call(make(`${userId}-b`).weather!.execute, { city: "LA" });
+    expect(fn).toHaveBeenCalledTimes(2); // different users → separate cache entries
 
-    await call(tools[ns]!.execute, { city: "LA" });
-    await call(tools[ns]!.execute, { city: "LA" });
-    expect(fn).toHaveBeenCalledTimes(1);
+    await cleanupKeys(redis, `agentkit:toolCache:${userId}-a`);
+    await cleanupKeys(redis, `agentkit:toolCache:${userId}-b`);
   });
 });

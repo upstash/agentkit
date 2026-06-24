@@ -34,7 +34,7 @@ function wrap(def: SearchToolDef): Tool {
  * const schema = s.object({ name: s.string(), age: s.number() });
  * const result = await generateText({
  *   model,
- *   tools: createSearchTools({ schema, name: "users" }),
+ *   tools: createSearchTools({ schema, indexName: "users" }),
  *   stopWhen: stepCountIs(5),
  *   prompt: "Find users named Ada older than 30",
  * });

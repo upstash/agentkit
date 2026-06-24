@@ -1,6 +1,20 @@
-import { createRateLimitAuth } from "@upstash/agentkit-eve";
-import { localDev, placeholderAuth, vercelOidc } from "eve/channels/auth";
+import { Ratelimit, createRateLimitAuth } from "@upstash/agentkit-eve";
+import { localDev, placeholderAuth, vercelOidc, type AuthFn } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
+
+// The UI's user dropdown sends the selected user as this header (see app/_components/agent-chat.tsx).
+const USER_HEADER = "x-user-id";
+
+// Demo-only: trust the `x-user-id` header as the session identity, so the agent's memory and cached
+// tools (which read `ctx.session.auth.current.principalId`) are scoped to the selected user, and one
+// user's data stays separate from another's. Returns null when the header is absent, so the walk
+// falls through to the real authenticators below. **Never trust a client-supplied identity header in
+// production** — replace this with your real auth provider (Auth.js, Clerk, …).
+const demoUserAuth: AuthFn<Request> = (req) => {
+  const userId = req.headers.get(USER_HEADER);
+  if (!userId) return null;
+  return { authenticator: "demo-user-header", principalId: userId, principalType: "user", attributes: {} };
+};
 
 export default eveChannel({
   // eve walks `auth` in order: each entry accepts (returns a SessionAuthContext),
@@ -8,15 +22,18 @@ export default eveChannel({
   // throttles, then returns null to fall through to the real authenticators below.
   // Keys are `agentkit:rateLimit:<identifier>`.
   auth: [
-    // Throttle first, before any identity check or model work.
+    // Throttle first, per user, before any identity check or model work.
     createRateLimitAuth({
       // `redis` omitted → defaults to Redis.fromEnv() inside the package (keeps this channel file
       // free of any agent-source import, which eve's per-channel bundle doesn't include).
-      limit: 20, // optional: requests allowed per window (default 10)
-      window: "1 m", // optional: sliding-window duration (default "60 s")
-      identifier: "eve-demo", // optional: who to limit — a string, or (request) => string (default "global")
-      // namespace: "agentkit:rateLimit", // optional: key prefix; keys are `<namespace>:<identifier>`
+      limiter: Ratelimit.slidingWindow(20, "1 m"), // the limiter algorithm
+      // required: who to limit — the selected user (falls back to per-IP, then "anonymous").
+      identifier: (req) =>
+        req.headers.get(USER_HEADER) ?? req.headers.get("x-forwarded-for") ?? "anonymous",
+      // prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
     }),
+    // Set the session identity from the user dropdown's header (before the fallbacks below).
+    demoUserAuth,
     // Open on localhost for `eve dev` and the REPL; ignored in production.
     localDev(),
     // Lets the eve TUI and your Vercel deployments reach the deployed agent.

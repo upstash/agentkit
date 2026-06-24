@@ -37,4 +37,28 @@ describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
       await handle.dispose();
     }
   }, 120_000);
+
+  // With no networkPolicy configured, egress is denied by default — model-generated code in the box
+  // can't reach the network. Opening it explicitly (allow-all) lets the same call through.
+  it("denies network egress by default, allows it when opened", async () => {
+    const fetchCmd = `node -e "fetch('https://example.com').then(r=>process.exit(r.ok?0:9)).catch(()=>process.exit(7))"`;
+
+    const denied = upstash({ runtime: "node", keepAlive: false }); // no networkPolicy → deny-all
+    const deniedHandle = await denied.create(createInput);
+    try {
+      const r = await deniedHandle.session.run({ command: fetchCmd });
+      expect(r.exitCode).not.toBe(0); // egress blocked → fetch rejects
+    } finally {
+      await deniedHandle.dispose();
+    }
+
+    const open = upstash({ runtime: "node", keepAlive: false, networkPolicy: "allow-all" });
+    const openHandle = await open.create(createInput);
+    try {
+      const r = await openHandle.session.run({ command: fetchCmd });
+      expect(r.exitCode).toBe(0); // egress allowed → fetch resolves
+    } finally {
+      await openHandle.dispose();
+    }
+  }, 180_000);
 });

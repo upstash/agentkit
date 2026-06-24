@@ -13,6 +13,8 @@ button:disabled { opacity: .5; }
 .layout { display: grid; grid-template-columns: 260px 1fr; gap: 1.5rem; align-items: start; }
 
 .sidebar { display: flex; flex-direction: column; gap: .6rem; position: sticky; top: 1.5rem; }
+.user-switcher { display: flex; align-items: center; gap: .4rem; font-size: .85rem; }
+.user-switcher select { flex: 1; padding: .35rem .5rem; border: 1px solid #e4e4e7; border-radius: 8px; background: #fff; color: #18181b; font-weight: 600; cursor: pointer; }
 .new-chat { display: block; width: 100%; text-align: center; padding: .5rem .9rem; border-radius: 8px; background: #059669; color: #fff; font-weight: 600; text-decoration: none; cursor: pointer; }
 .search { font-size: .9rem; }
 .chat-list { display: flex; flex-direction: column; gap: .35rem; margin-top: .25rem; }

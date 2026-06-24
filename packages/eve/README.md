@@ -23,15 +23,15 @@ pnpm add eve @ai-sdk/openai @upstash/box
 
 `defineMemoryRecallTool` and `defineMemorySaveTool` are ready eve tools — they call `defineTool`
 internally, so you export them directly (no extra wrapping). One file each, one import. Pass a
-`namespace` (a string shared across users, or a function deriving it from the context); `redis`
-defaults to env. Memories are stored at `agentkit:memory:<namespace>:<id>`.
+`userId` (a string shared across users, or a function deriving it from the context); `redis`
+defaults to env. Memories are stored at `agentkit:memory:<userId>:<id>`.
 
 ```ts
 // agent/tools/recall_memory.ts
 import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
 
 export default defineMemoryRecallTool({
-  namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id, // the user — a string, or (input, ctx) => string
   topK: 5, // optional: max memories to return
   minScore: 0, // optional: BM25 relevance floor for recall
   // redis, // optional: Upstash Redis client — omit to default to Redis.fromEnv()
@@ -43,7 +43,7 @@ export default defineMemoryRecallTool({
 import { defineMemorySaveTool } from "@upstash/agentkit-eve";
 
 export default defineMemorySaveTool({
-  namespace: (_, ctx) => ctx.session.id, // the memory scope — a string, or (input, ctx) => string
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id, // the user — a string, or (input, ctx) => string
 });
 ```
 
@@ -65,7 +65,7 @@ import { defineSearchTools } from "@upstash/agentkit-eve";
 
 export default defineSearchTools({
   schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }), // the schema (built with `s`)
-  name: "books", // optional: index name (defaults to "agentkit:search"); ties all three tools to one index
+  indexName: "books", // optional: index name (defaults to "agentkit:search"); ties all three tools to one index
   // prefix: "books:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
   // defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
   // redis, // optional: omit to default to Redis.fromEnv()
@@ -92,18 +92,20 @@ export default eveChannel({
   auth: [
     createRateLimitAuth({
       // redis, // optional: omit to default to Redis.fromEnv() (don't import a shared client here)
-      limit: 20, // optional: requests allowed per window (default: 10)
-      window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
-      namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
-      identifier: "global", // optional: who to limit — a string, or (request) => string (default: "global")
+      limiter: Ratelimit.slidingWindow(20, "1 m"), // required: the limiter algorithm (or fixedWindow, …)
+      prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
+      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous", // required: who to limit — a string, or (request) => string
       message: "Rate limit exceeded.", // optional: message in the 403 body when over the limit
-      limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
     }),
     localDev(), // throttle first, then authenticate
     vercelOidc(),
   ],
 });
 ```
+
+> **`identifier` is required** — there is no implicit `"global"` default. A single shared bucket means
+> one abusive caller can exhaust the window for everyone, so for per-user limiting derive it per
+> request (an authenticated user id, an API key, or `x-forwarded-for` for per-IP).
 
 ## Code-execution sandbox (`agent/sandbox.ts`)
 
@@ -123,23 +125,30 @@ export default defineSandbox({
   }),
   revalidationKey: () => "repo-bootstrap-v1",
   async bootstrap({ use }) {
-    const sandbox = await use();
+    // Egress is denied by default — open it here because installing a package needs the network.
+    const sandbox = await use({ networkPolicy: "allow-all" });
     await sandbox.run({ command: "apt-get install -y jq" });
   },
   async onSession({ use }) {
-    await use({ networkPolicy: "deny-all" });
+    await use(); // sessions inherit the secure default (deny-all); pass a networkPolicy to open egress
   },
 });
 ```
+
+> **Network egress is denied by default.** The sandbox runs untrusted, model-generated code, so open
+> egress would mean SSRF / data exfiltration / reaching your own infrastructure from inside the box.
+> Pass a `networkPolicy` (on the backend, in `bootstrap`'s `use(...)`, or in the session `use(...)`)
+> to allow it. Note that `env` passed to `upstash({ env })` is readable by code running in the box —
+> don't pass secrets you wouldn't want that code to see.
 
 Set `UPSTASH_BOX_API_KEY` (or pass `apiKey`). `@upstash/box` is an optional peer dependency — only
 needed when you import `@upstash/agentkit-eve/sandbox`.
 
 ## Cached tools (`agent/tools/*.ts`)
 
-`defineCachedTool` is like Eve's `defineTool`, but its result is memoized — pass a `namespace` (string,
-or a function of the input + context). It calls `defineTool` internally, so you export it directly.
-`redis` defaults to env. Keys are `agentkit:toolCache:<namespace>:<hash>`.
+`defineCachedTool` is like Eve's `defineTool`, but its result is memoized — pass a `toolName` and a
+`userId` (a string, or a function of the input + context). It calls `defineTool` internally, so you
+export it directly. `redis` defaults to env. Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
 
 ```ts
 // agent/tools/get_weather.ts
@@ -150,7 +159,8 @@ export default defineCachedTool({
   description: "Get the current weather for a city.", // (defineTool field) shown to the model
   inputSchema: z.object({ city: z.string() }), // (defineTool field) zod schema for the input
   execute: async ({ city }) => fetchWeather(city), // (defineTool field) memoized
-  namespace: "get_weather", // the cache key — a string, or (input, ctx) => string
+  toolName: "get_weather", // the toolName segment of the cache key
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id, // scope per user
   ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
   // redis, // optional: omit to default to Redis.fromEnv()
 });

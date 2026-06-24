@@ -14,14 +14,10 @@ type Limiter = ConstructorParameters<typeof Ratelimit>[0]["limiter"];
 export interface RateLimitConfig {
   /** Upstash Redis client used to back the limiter. */
   redis: Redis;
-  /** Requests allowed per `window` for the default sliding-window limiter. Defaults to 10. */
-  limit?: number;
-  /** Sliding-window duration for the default limiter (e.g. `"10 s"`, `"1 m"`). Defaults to `"60 s"`. */
-  window?: Duration;
-  /** Key prefix for the limiter. Defaults to `agentkit:rateLimit`; keys are `agentkit:rateLimit:<identifier>`. */
-  namespace?: string;
-  /** A fully custom limiter (e.g. `Ratelimit.fixedWindow(...)`) overriding the `limit`/`window` default. */
-  limiter?: Limiter;
+  /** The limiter algorithm, e.g. `Ratelimit.slidingWindow(10, "60 s")` or `Ratelimit.fixedWindow(...)`. */
+  limiter: Limiter;
+  /** Key prefix for the limiter. Defaults to `agentkit:rateLimit`; keys are `<prefix>:<identifier>`. */
+  prefix?: string;
 }
 
 /**
@@ -30,7 +26,7 @@ export interface RateLimitConfig {
  * before doing work (e.g. before `generateText`). Keys are `agentkit:rateLimit:<identifier>`.
  *
  * ```ts
- * const ratelimit = createRateLimit({ redis, limit: 30, window: "1 m" });
+ * const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(30, "1 m") });
  * const { success } = await ratelimit.limit("user-123");
  * if (!success) throw new Error("rate limited");
  * ```
@@ -38,7 +34,7 @@ export interface RateLimitConfig {
 export function createRateLimit(config: RateLimitConfig): Ratelimit {
   return new Ratelimit({
     redis: config.redis,
-    limiter: config.limiter ?? Ratelimit.slidingWindow(config.limit ?? 10, config.window ?? "60 s"),
-    prefix: config.namespace ?? "agentkit:rateLimit",
+    limiter: config.limiter,
+    prefix: config.prefix ?? "agentkit:rateLimit",
   });
 }

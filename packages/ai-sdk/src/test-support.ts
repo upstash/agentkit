@@ -24,16 +24,16 @@ export function testRedis(): Redis {
   return Redis.fromEnv();
 }
 
-/** A collision-proof namespace so parallel test runs never share keys or indexes. */
-export function uniqueNamespace(label: string): string {
+/** A collision-proof key prefix so parallel test runs never share keys or indexes. */
+export function uniquePrefix(label: string): string {
   return `test:${label}:${randomUUID().slice(0, 8)}`;
 }
 
-/** Delete every key under a namespace (best-effort cleanup in afterAll hooks). */
-export async function cleanupKeys(redis: Redis, namespace: string): Promise<void> {
+/** Delete every key under a key prefix (best-effort cleanup in afterAll hooks). */
+export async function cleanupKeys(redis: Redis, prefix: string): Promise<void> {
   let cursor = "0";
   do {
-    const [next, keys] = await redis.scan(cursor, { match: `${namespace}*`, count: 200 });
+    const [next, keys] = await redis.scan(cursor, { match: `${prefix}*`, count: 200 });
     cursor = next;
     if (keys.length) await redis.del(...keys);
   } while (cursor !== "0");

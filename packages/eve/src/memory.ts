@@ -5,17 +5,15 @@ import { defineTool } from "eve/tools";
 import type { ToolContext, ToolDefinition } from "eve/tools";
 
 /**
- * Namespace the memory is read/written under. A string shares all memory across users (fine for a
+ * The user the memory is read/written under. A string shares all memory across callers (fine for a
  * single-user agent — avoid in multi-tenant production unless intentional). A function derives the
- * namespace per call from the tool input and Eve context (e.g. `(_, ctx) => ctx.session.auth.current.id`).
+ * user per call from the tool input and Eve context (e.g. `(_, ctx) => ctx.session.auth.current.id`).
  */
-export type MemoryNamespace =
-  | string
-  | ((input: Record<string, unknown>, ctx: ToolContext) => string);
+export type MemoryUserId = string | ((input: Record<string, unknown>, ctx: ToolContext) => string);
 
 export interface MemoryToolConfig {
-  /** Required namespace — a shared string, or a per-call function deriving it from the context. */
-  namespace: MemoryNamespace;
+  /** Required user — a shared string, or a per-call function deriving it from the context. */
+  userId: MemoryUserId;
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** Max memories returned by the recall tool. */
@@ -28,12 +26,8 @@ function resolveMemory(config: MemoryToolConfig): AgentMemory {
   return new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
 }
 
-function resolveNamespace(
-  config: MemoryToolConfig,
-  input: Record<string, unknown>,
-  ctx: ToolContext,
-) {
-  return typeof config.namespace === "function" ? config.namespace(input, ctx) : config.namespace;
+function resolveUserId(config: MemoryToolConfig, input: Record<string, unknown>, ctx: ToolContext) {
+  return typeof config.userId === "function" ? config.userId(input, ctx) : config.userId;
 }
 
 /**
@@ -44,7 +38,7 @@ function resolveNamespace(
  * // agent/tools/recall_memory.ts
  * import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
  *
- * export default defineMemoryRecallTool({ namespace: (_, ctx) => ctx.session.id });
+ * export default defineMemoryRecallTool({ userId: (_, ctx) => ctx.session.id });
  * ```
  */
 export function defineMemoryRecallTool(
@@ -66,10 +60,11 @@ export function defineMemoryRecallTool(
         ),
     }),
     execute: async ({ query }, ctx) => {
-      // recall() falls back to "everything in the namespace" when a query matches nothing, so a
+      // recall() falls back to "everything for the user" when a query matches nothing, so a
       // model that passes a placeholder like "everything" still gets results.
-      const hits = await memory.recall(query, {
-        namespace: resolveNamespace(config, { query }, ctx),
+      const hits = await memory.recall({
+        query,
+        userId: resolveUserId(config, { query }, ctx),
         ...(config.topK !== undefined ? { topK: config.topK } : {}),
         ...(config.minScore !== undefined ? { minScore: config.minScore } : {}),
       });
@@ -87,7 +82,7 @@ export function defineMemoryRecallTool(
  *
  * ```ts
  * // agent/tools/save_memory.ts
- * export default defineMemorySaveTool({ namespace: (_, ctx) => ctx.session.id });
+ * export default defineMemorySaveTool({ userId: (_, ctx) => ctx.session.id });
  * ```
  */
 export function defineMemorySaveTool(
@@ -102,7 +97,7 @@ export function defineMemorySaveTool(
       text: z.string().describe("A concise, durable fact about the user to remember for later."),
     }),
     execute: async ({ text }, ctx) => {
-      const record = await memory.add(text, { namespace: resolveNamespace(config, { text }, ctx) });
+      const record = await memory.add({ text, userId: resolveUserId(config, { text }, ctx) });
       return { id: record.id, saved: true };
     },
   } as Parameters<typeof defineTool>[0]) as ToolDefinition<

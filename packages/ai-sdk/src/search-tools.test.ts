@@ -1,7 +1,7 @@
 import { s } from "@upstash/redis";
 import { afterAll, describe, expect, it } from "vitest";
 import { createSearchTools } from "./search-tools.js";
-import { hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
+import { hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
 function call<R>(execute: unknown, input: unknown): Promise<R> {
@@ -16,9 +16,9 @@ const schema = s.object({
 
 describe.skipIf(!hasRedisCreds)("createSearchTools (live Redis)", () => {
   const redis = testRedis();
-  const name = uniqueNamespace("searchtools").replace(/[^a-zA-Z0-9_]/g, "_");
+  const name = uniquePrefix("searchtools").replace(/[^a-zA-Z0-9_]/g, "_");
   const prefix = `${name}:`;
-  const tools = createSearchTools({ schema, redis, name, prefix });
+  const tools = createSearchTools({ schema, redis, indexName: name, prefix });
 
   afterAll(async () => {
     try {

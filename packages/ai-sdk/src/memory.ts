@@ -4,17 +4,17 @@ import { AgentMemory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 
 /**
- * Namespace the memory is read/written under. A string shares all memory across users (fine for a
- * single-user agent, avoid in multi-tenant prod) — or a function deriving the namespace per call from
- * the tool input and call options (e.g. a user id). Keys are `agentkit:memory:<namespace>:<id>`.
+ * The user the memory is read/written under. A string shares all memory across callers (fine for a
+ * single-user agent, avoid in multi-tenant prod) — or a function deriving the user per call from the
+ * tool input and call options. Keys are `agentkit:memory:<userId>:<id>`.
  */
-export type MemoryNamespace =
+export type MemoryUserId =
   | string
   | ((input: unknown, options: ToolExecutionOptions<never>) => string);
 
 export interface CreateMemoryToolsConfig {
-  /** Namespace (e.g. a user id) the tools operate under — a string or a per-call function. */
-  namespace: MemoryNamespace;
+  /** The user (e.g. a user id) the tools operate under — a string or a per-call function. */
+  userId: MemoryUserId;
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** Max memories returned by the recall tool. */
@@ -33,18 +33,18 @@ export interface CreateMemoryToolsConfig {
  * `Redis.fromEnv()`.
  *
  * ```ts
- * const tools = createMemoryTools({ namespace: userId });
+ * const tools = createMemoryTools({ userId });
  * await generateText({ model, tools, stopWhen: stepCountIs(5), prompt });
  * ```
  */
 export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
-  const { namespace, topK, minScore } = config;
+  const { userId, topK, minScore } = config;
   const memory = new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
   const recallName = config.recallToolName ?? "recall_memory";
   const saveName = config.saveToolName ?? "save_memory";
 
-  const resolveNamespace = (input: unknown, options: ToolExecutionOptions<never>): string =>
-    typeof namespace === "function" ? namespace(input, options) : namespace;
+  const resolveUserId = (input: unknown, options: ToolExecutionOptions<never>): string =>
+    typeof userId === "function" ? userId(input, options) : userId;
 
   return {
     [recallName]: tool({
@@ -62,10 +62,11 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
           ),
       }),
       execute: async (input, options) => {
-        // recall() falls back to "everything in the namespace" when a query matches nothing, so a
+        // recall() falls back to "everything for the user" when a query matches nothing, so a
         // model that passes a placeholder like "everything" still gets results.
-        const hits = await memory.recall(input.query, {
-          namespace: resolveNamespace(input, options as ToolExecutionOptions<never>),
+        const hits = await memory.recall({
+          query: input.query,
+          userId: resolveUserId(input, options as ToolExecutionOptions<never>),
           ...(topK !== undefined ? { topK } : {}),
           ...(minScore !== undefined ? { minScore } : {}),
         });
@@ -80,8 +81,9 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
         text: z.string().describe("A concise, durable fact about the user to remember for later."),
       }),
       execute: async (input, options) => {
-        const record = await memory.add(input.text, {
-          namespace: resolveNamespace(input, options as ToolExecutionOptions<never>),
+        const record = await memory.add({
+          text: input.text,
+          userId: resolveUserId(input, options as ToolExecutionOptions<never>),
         });
         return { id: record.id, saved: true };
       },

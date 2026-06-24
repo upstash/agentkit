@@ -43,7 +43,7 @@ function wrap(def: SearchToolDef): ToolDefinition {
  *
  * export const bookSearch = defineSearchTools({
  *   schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
- *   name: "books",
+ *   indexName: "books",
  *   redis,
  * });
  * ```

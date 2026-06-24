@@ -1,41 +1,55 @@
 import { openai } from "@ai-sdk/openai";
-import { convertToModelMessages, streamText, stepCountIs, tool, type UIMessage } from "ai";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  streamText,
+  stepCountIs,
+  tool,
+  toUIMessageStream,
+  type UIMessage,
+} from "ai";
 import { z } from "zod";
 import {
+  Ratelimit,
   cachedTools,
   createMemoryTools,
   createRateLimit,
   createSearchTools,
 } from "@upstash/agentkit-ai-sdk";
 import { getRedis } from "../../lib/redis";
-import { BOOKS_INDEX, DEMO_MODEL, USER, bookSchema, getHistory } from "../../lib/chat";
+import { BOOKS_INDEX, DEMO_MODEL, bookSchema, getHistory } from "../../lib/chat";
+import { USER_HEADER, normalizeUser } from "../../lib/users";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  // The client (`useChat` with the default transport) posts the WHOLE messages array + the chat id.
+  // The client (`useChat`) posts the WHOLE messages array + the chat id, and sends the active user id
+  // as a header. Memory, history, tool cache and rate limit are all scoped to this user; only the
+  // shared books index is common to everyone.
   const { id, messages } = (await req.json()) as { id: string; messages: UIMessage[] };
+  const userId = normalizeUser(req.headers.get(USER_HEADER));
   const redis = getRedis();
 
-  // Rate limiting — check an Upstash Ratelimit (by user) before doing any model work.
+  // Rate limiting — limit per user (the identifier), before doing any model work.
   const ratelimit = createRateLimit({
     redis, // the Upstash Redis client backing the limiter
-    limit: 30, // optional: requests allowed per window (default 10)
-    window: "1 m", // optional: sliding-window duration (default "60 s")
-    // namespace: "agentkit:rateLimit", // optional: key prefix; keys are `<namespace>:<identifier>`
+    limiter: Ratelimit.slidingWindow(30, "1 m"), // the limiter algorithm
+    // prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
   });
-  const { success } = await ratelimit.limit(USER);
+  const { success } = await ratelimit.limit(userId); // per-user identifier
   if (!success) {
     return new Response("Rate limited", { status: 429 });
   }
 
-  // Agent memory tools — recall_memory / save_memory, scoped per user via `namespace`.
-  const memoryTools = createMemoryTools({ redis, namespace: USER });
+  // Agent memory tools — recall_memory / save_memory, scoped to this user.
+  const memoryTools = createMemoryTools({ redis, userId });
 
   // Schema-driven search tools — search / aggregate / count over the books index (created reactively).
-  const searchTools = createSearchTools({ schema: bookSchema, redis, name: BOOKS_INDEX });
+  // The books index is intentionally SHARED across users, so no per-user scoping here.
+  const searchTools = createSearchTools({ schema: bookSchema, redis, indexName: BOOKS_INDEX });
 
-  // Tool cache — deterministic tools whose results are memoized in Redis (cached under their map key).
+  // Tool cache — deterministic tool results memoized in Redis, scoped per user. Each tool is cached
+  // under its map key (the tool name); `userId` scopes the entries to this user.
   const cachedToolSet = cachedTools(
     {
       convert_price: tool({
@@ -44,7 +58,7 @@ export async function POST(req: Request) {
         execute: async ({ usd, currency }) => ({ usd, currency, amount: usd * 0.92 }),
       }),
     },
-    { redis },
+    { userId, redis },
   );
 
   const model = openai(DEMO_MODEL);
@@ -64,13 +78,19 @@ export async function POST(req: Request) {
     .join(" ")
     .trim();
 
-  return result.toUIMessageStreamResponse({
-    originalMessages: messages,
-    // Persist the WHOLE conversation (including the new assistant reply) when the stream finishes.
-    onFinish: async ({ messages }) => {
-      await history.saveChat(USER, id, messages, {
-        title: firstUserText ? firstUserText.slice(0, 60) : "New chat",
-      });
-    },
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      // Persist the WHOLE conversation (including the new assistant reply) when the stream finishes.
+      onFinish: async ({ messages }) => {
+        await history.saveChat({
+          userId,
+          sessionId: id,
+          messages,
+          title: firstUserText ? firstUserText.slice(0, 60) : "New chat",
+        });
+      },
+    }),
   });
 }

@@ -18,7 +18,7 @@ export function stableStringify(value: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
 }
 
-/** Build a namespaced Redis key from parts, skipping empty segments. */
+/** Build a colon-joined Redis key from parts, skipping empty segments. */
 export function key(...parts: (string | number | undefined | null)[]): string {
   return parts.filter((p) => p !== undefined && p !== null && p !== "").join(":");
 }

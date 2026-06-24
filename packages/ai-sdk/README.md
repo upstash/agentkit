@@ -12,30 +12,40 @@ pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
 ## Chat history
 
 `createChatHistory` returns a Redis-backed `ChatHistory<UIMessage>` — the durable source of truth for
-your conversations. Each chat is one JSON doc at `agentkit:chat:<sessionId>`, indexed over `userId` +
+your conversations. Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user,
+so two users can't collide on a `sessionId`), indexed over `userId` +
 `sessionId` (filters) and `userMessages` + `modelMessages` (`$smart` fuzzy text); the raw `messages`
-array and `metadata` ride along **unindexed**.
+array rides along **unindexed**.
 
 ```ts
 import { createChatHistory } from "@upstash/agentkit-ai-sdk";
 
 const history = createChatHistory({
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  namespace: "agentkit:chat", // optional: key prefix + index name base (defaults to "agentkit:chat")
+  prefix: "agentkit:chat", // optional: base key prefix (defaults to "agentkit:chat")
+  indexName: "agentkit_chat", // optional: Redis Search index name (defaults to the prefix)
   ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL in seconds (default: no expiry)
 });
 ```
 
-`saveChat` overwrites the **whole** message array — `useChat` sends the full conversation, so there's
-no transport trimming and no delta to merge. Persist from your route's `onFinish`:
+Every method takes a single object; `userId` is **required, non-empty, and must be unique per user**
+(your auth subject id). It's the tenant boundary — a chat can't be read or overwritten under a
+different `userId`. `saveChat` overwrites the **whole** message array — `useChat` sends the full
+conversation, so there's no transport trimming and no delta to merge. Persist from your route's
+`onFinish`:
 
 ```ts
 // app/api/chat/route.ts
+import { createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
+
 const result = streamText({ model, messages: convertToModelMessages(messages) });
 
-return result.toUIMessageStreamResponse({
-  originalMessages: messages, // so onFinish receives the full UIMessage[] (request + reply)
-  onFinish: ({ messages }) => history.saveChat(userId, chatId, messages, { title }), // overwrite the whole array
+return createUIMessageStreamResponse({
+  stream: toUIMessageStream({
+    stream: result.stream,
+    originalMessages: messages, // so onFinish receives the full UIMessage[] (request + reply)
+    onFinish: ({ messages }) => history.saveChat({ userId, sessionId: chatId, messages, title }), // overwrite the whole array
+  }),
 });
 ```
 
@@ -44,28 +54,27 @@ for a sidebar:
 
 ```ts
 // page loader (server)
-const chat = await history.getChat(userId, chatId); // full transcript, or null
-const chats = await history.listChats(userId, { limit: 50 }); // sidebar: summaries, no messages
-const hits = await history.searchChats(userId, "headphones", { target: "both", limit: 20, minScore: 0 });
+const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
+const chats = await history.listChats({ userId, limit: 50 }); // sidebar: summaries, no messages
+const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20, minScore: 0 });
 
 // client — hand the stored messages straight to useChat
 // const { messages } = useChat({ id: chatId, messages: chat?.messages ?? [] });
 ```
 
-Other methods: `createChat(userId, { sessionId?, title?, messages?, metadata? })`,
-`setTitle(userId, sessionId, title)`, `deleteChat(userId, sessionId)`.
+Other methods: `getChat({ userId, sessionId })`, `deleteChat({ userId, sessionId })`.
 
 ## Agent memory
 
 `createMemoryTools` returns `recall_memory` and `save_memory` tools so the model can read and write
-long-term memory itself. Memories are stored at `agentkit:memory:<namespace>:<id>`.
+long-term memory itself. Memories are stored at `agentkit:memory:<userId>:<id>`.
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
 import { generateText, stepCountIs } from "ai";
 
 const tools = createMemoryTools({
-  namespace: userId, // the memory scope — a string, or (input, options) => string (e.g. a user id)
+  userId, // required, non-empty: the user the memory belongs to (a string, or (input, options) => string)
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
   topK: 5, // optional: max memories the recall tool returns
   minScore: 0, // optional: BM25 relevance floor for recall
@@ -75,6 +84,10 @@ const tools = createMemoryTools({
 
 await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
 ```
+
+> **`userId` is required and must be non-empty** — it's the only tenant boundary for memory.
+> Make it **unique per user** (pass the user id, or a `(input, options) => string` deriving it); an
+> empty value throws rather than collapsing every user into one shared bucket.
 
 ## Search tools
 
@@ -93,7 +106,7 @@ const schema = s.object({ name: s.string(), age: s.number(), city: s.string().no
 const tools = createSearchTools({
   schema, // the Upstash Redis Search schema (built with `s` from @upstash/redis)
   redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  name: "users", // optional: index name (defaults to "agentkit:search")
+  indexName: "users", // optional: index name (defaults to "agentkit:search")
   prefix: "users:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
   defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
 });
@@ -120,10 +133,8 @@ import { createRateLimit, Ratelimit } from "@upstash/agentkit-ai-sdk";
 
 const ratelimit = createRateLimit({
   redis, // the Upstash Redis client backing the limiter
-  limit: 20, // optional: requests allowed per window (default: 10)
-  window: "1 m", // optional: sliding-window duration, e.g. "10 s" / "1 m" (default: "60 s")
-  namespace: "agentkit:rateLimit", // optional: key prefix string; keys are `<namespace>:<identifier>`
-  limiter: Ratelimit.fixedWindow(20, "1 m"), // optional: a custom limiter overriding limit/window
+  limiter: Ratelimit.slidingWindow(20, "1 m"), // required: the limiter algorithm (or fixedWindow, …)
+  prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
 });
 
 const { success } = await ratelimit.limit(userId); // pass a per-user identifier to limit by user
@@ -134,29 +145,10 @@ await generateText({ model: openai("gpt-5.4-mini"), prompt: "..." });
 
 ## Tool cache
 
-`cachedTool` is the AI SDK's `tool()` with its `execute` memoized in Redis — same config (so
-`inputSchema` still infers `execute`'s input), plus the cache options. Cache keys are
-`agentkit:toolCache:<namespace>:<hash-of-input>`.
-
-```ts
-import { z } from "zod";
-import { generateText } from "ai";
-import { cachedTool } from "@upstash/agentkit-ai-sdk";
-
-const getWeather = cachedTool({
-  description: "Get the weather for a city", // (AI SDK tool field) shown to the model
-  inputSchema: z.object({ city: z.string() }), // (AI SDK tool field) zod/Standard Schema — types `execute`
-  execute: async ({ city }) => fetchWeather(city), // (AI SDK tool field) memoized; `city` is inferred
-  namespace: "getWeather", // the cache key — a string, or (input, options) => string
-  redis, // optional: Upstash Redis client (defaults to Redis.fromEnv())
-  ttlSeconds: 600, // optional: per-result TTL in seconds (default: no expiry)
-});
-
-await generateText({ model, tools: { getWeather }, prompt: "What's the weather in Paris?" });
-```
-
-Cache a whole map at once with `cachedTools` — pass tools built with the AI SDK's `tool()` (so each
-keeps full type inference); each is cached under its map key, so there's no per-tool namespace.
+`cachedTools` memoizes a map of AI SDK tools' results in Redis. Pass tools built with the AI SDK's
+`tool()` (so each keeps full input/output inference) — each is cached under **its map key as the tool
+name** (so you don't pass a name yourself), scoped to `userId`. Cache keys are
+`agentkit:toolCache:<userId>:<toolName>:<hash-of-input>`.
 
 ```ts
 import { z } from "zod";
@@ -172,6 +164,7 @@ const tools = cachedTools(
     }),
   },
   {
+    userId, // required: scope every entry to this user (a string, or (input, options) => string)
     redis, // optional: Upstash Redis client shared by every tool (defaults to Redis.fromEnv())
     ttlSeconds: 600, // optional: default per-result TTL in seconds for every tool
   },

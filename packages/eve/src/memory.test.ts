@@ -1,16 +1,16 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it } from "vitest";
 import { defineMemoryRecallTool, defineMemorySaveTool } from "./memory.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueNamespace } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 const CTX = {} as never;
 
 describe.skipIf(!hasRedisCreds)("memory tools (live Redis)", () => {
   const redis = testRedis();
-  // The tools own their AgentMemory (default `agentkit:memory` index); isolate this run by namespace.
-  const ns = uniqueNamespace("eve-mem");
-  const recall = defineMemoryRecallTool({ redis, namespace: ns });
-  const save = defineMemorySaveTool({ redis, namespace: ns });
+  // The tools own their AgentMemory (default `agentkit:memory` index); isolate this run by userId.
+  const ns = uniquePrefix("eve-mem");
+  const recall = defineMemoryRecallTool({ redis, userId: ns });
+  const save = defineMemorySaveTool({ redis, userId: ns });
   // A throwaway handle on the same default index, just to wait for indexing before recall.
   const index = new AgentMemory({ redis }).searchIndex;
 

@@ -1,10 +1,20 @@
 import type { Redis } from "@upstash/redis";
 import { key, stableHash } from "./utils.js";
 
+/**
+ * Reject an empty/missing key part. `userId` and `toolName` are both part of the cache key, so a blank
+ * one would collapse unrelated users (or unrelated tools) into one shared cache entry.
+ */
+function assertKeyPart(value: string | undefined, name: string): asserts value is string {
+  if (value === undefined || value === "") {
+    throw new Error(`ToolCache: \`${name}\` is required and must be a non-empty string.`);
+  }
+}
+
 export interface ToolCacheConfig {
   redis: Redis;
   /** Base key prefix; defaults to `agentkit:toolCache`. */
-  namespace?: string;
+  prefix?: string;
   /** Default TTL (seconds) for cached results. Omit for no expiry. */
   ttlSeconds?: number;
 }
@@ -21,23 +31,25 @@ export interface ToolCacheHit<T> {
  */
 export class ToolCache {
   private redis: Redis;
-  private namespace: string;
+  private prefix: string;
   private ttlSeconds?: number;
 
   constructor(config: ToolCacheConfig) {
     this.redis = config.redis;
-    this.namespace = config.namespace ?? "agentkit:toolCache";
+    this.prefix = config.prefix ?? "agentkit:toolCache";
     this.ttlSeconds = config.ttlSeconds;
   }
 
-  /** Key shape: `agentkit:toolCache:<namespace>:<hash>` (namespace is the per-call cache key). */
-  private entryKey(namespace: string, args: unknown): string {
-    return key(this.namespace, namespace, stableHash(args));
+  /** Key shape: `<prefix>:<userId>:<toolName>:<hash>` — scoped per user, then per tool. */
+  private entryKey(userId: string, toolName: string, args: unknown): string {
+    assertKeyPart(userId, "userId");
+    assertKeyPart(toolName, "toolName");
+    return key(this.prefix, userId, toolName, stableHash(args));
   }
 
   /** Fetch a cached result, or `null` if absent. The hit is wrapped so a cached `null` is distinct. */
-  async get<T>(namespace: string, args: unknown): Promise<ToolCacheHit<T> | null> {
-    const raw = await this.redis.get<string>(this.entryKey(namespace, args));
+  async get<T>(userId: string, toolName: string, args: unknown): Promise<ToolCacheHit<T> | null> {
+    const raw = await this.redis.get<string>(this.entryKey(userId, toolName, args));
     if (raw === null || raw === undefined) return null;
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     return { value: (parsed as { v: T }).v };
@@ -45,39 +57,41 @@ export class ToolCache {
 
   /** Cache a tool result. */
   async set<T>(
-    namespace: string,
+    userId: string,
+    toolName: string,
     args: unknown,
     value: T,
     opts: { ttlSeconds?: number } = {},
   ): Promise<void> {
     const ttl = opts.ttlSeconds ?? this.ttlSeconds;
     await this.redis.set(
-      this.entryKey(namespace, args),
+      this.entryKey(userId, toolName, args),
       JSON.stringify({ v: value }),
       ttl !== undefined ? { ex: ttl } : undefined,
     );
   }
 
   /** Invalidate a single cached result. */
-  async invalidate(namespace: string, args: unknown): Promise<void> {
-    await this.redis.del(this.entryKey(namespace, args));
+  async invalidate(userId: string, toolName: string, args: unknown): Promise<void> {
+    await this.redis.del(this.entryKey(userId, toolName, args));
   }
 
   /**
    * Wrap a tool's execute function so results are cached automatically. The returned function checks
-   * the cache first, runs the original on a miss, and stores the result. `namespace` is the per-call
-   * cache key (e.g. the tool name).
+   * the cache first, runs the original on a miss, and stores the result. The cache entry is scoped to
+   * `userId` then `toolName`.
    */
   wrap<A, R>(
-    namespace: string,
+    userId: string,
+    toolName: string,
     execute: (args: A) => Promise<R>,
     opts: { ttlSeconds?: number } = {},
   ): (args: A) => Promise<R> {
     return async (args: A) => {
-      const hit = await this.get<R>(namespace, args);
+      const hit = await this.get<R>(userId, toolName, args);
       if (hit) return hit.value;
       const result = await execute(args);
-      await this.set(namespace, args, result, opts);
+      await this.set(userId, toolName, args, result, opts);
       return result;
     };
   }

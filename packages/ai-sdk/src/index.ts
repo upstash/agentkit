@@ -6,17 +6,12 @@ export { createRateLimit, Ratelimit } from "@upstash/agentkit-sdk";
 export type { RateLimitConfig, Duration } from "@upstash/agentkit-sdk";
 
 // Tool-call caching (self-contained cached tools)
-export { cachedTool, cachedTools } from "./tools.js";
-export type {
-  CacheNamespace,
-  CacheOptions,
-  CachedToolConfig,
-  CachedToolsOptions,
-} from "./tools.js";
+export { cachedTools } from "./tools.js";
+export type { CacheUserId, CachedToolsOptions } from "./tools.js";
 
 // Long-term memory as tools (recall + save)
 export { createMemoryTools } from "./memory.js";
-export type { CreateMemoryToolsConfig, MemoryNamespace } from "./memory.js";
+export type { CreateMemoryToolsConfig, MemoryUserId } from "./memory.js";
 
 // Schema-driven Redis Search tools (search / aggregate / count)
 export { createSearchTools } from "./search-tools.js";
