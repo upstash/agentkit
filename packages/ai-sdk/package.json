@@ -1,6 +1,6 @@
 {
   "name": "@upstash/agentkit-ai-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Upstash AgentKit adapter for the Vercel AI SDK: chat history, memory tools, Redis-Search tools, rate limiting, and cached tools.",
   "license": "MIT",
   "repository": {
