@@ -1,8 +1,15 @@
 # @upstash/agentkit-eve
 
 [Upstash AgentKit](https://upstash.com/) for **Eve, the Vercel agent framework**. You drop these into
-your `agent/` tree: memory tools, Redis-Search tools, a rate-limit gate, an
-[Upstash Box](https://github.com/upstash/box) sandbox backend, and cached tools.
+your `agent/` tree:
+
+| Import | Feature |
+| --- | --- |
+| `defineMemoryRecallTool` / `defineMemorySaveTool` | Long-term memory tools the model reads and writes. |
+| `defineSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
+| `createRateLimitAuth` | A rate-limit gate for your channel's `auth` walk. |
+| `upstash` (`@upstash/agentkit-eve/sandbox`) | Upstash Box sandbox backend for `defineSandbox`. |
+| `defineCachedTool` | A `defineTool` whose result is memoized in Redis. |
 
 Start from an eve project. Scaffold one (it installs `eve` and an AI-SDK provider for you):
 

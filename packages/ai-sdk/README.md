@@ -1,9 +1,16 @@
 # @upstash/agentkit-ai-sdk
 
-[Vercel AI SDK](https://ai-sdk.dev) adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk).
-It adds chat history, agent memory, Redis-Search tools, rate limiting, and tool caching to
-`generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()`, so you import only from this
-package.
+[Vercel AI SDK](https://ai-sdk.dev) adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk) —
+drop-ins for `generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()`, so you import only
+from this package.
+
+| Import | Feature |
+| --- | --- |
+| `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
+| `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
+| `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
+| `cachedTools` | Memoize a map of AI SDK tools' results in Redis. |
 
 ```bash
 pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
