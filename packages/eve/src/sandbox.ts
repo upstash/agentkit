@@ -12,7 +12,7 @@
  * import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: import { vercel } from "eve/sandbox/vercel"
  *
  * export default defineSandbox({
- *   backend: upstash({ runtime: "node24", resources: { vcpus: 2 } }),
+ *   backend: upstash({ runtime: "node", size: "medium" }),
  *   revalidationKey: () => "repo-bootstrap-v1",
  *   async bootstrap({ use }) {
  *     // Network egress is denied by default — open it here because installing a package needs it.
@@ -39,7 +39,7 @@
  * backend is type-checked against Eve's real types but cannot be runtime-verified in this repo.
  */
 import { Box } from "@upstash/box";
-import type { BoxSize, NetworkPolicy as BoxNetworkPolicy, Runtime } from "@upstash/box";
+import type { BoxConfig, NetworkPolicy as BoxNetworkPolicy } from "@upstash/box";
 import type {
   SandboxBackend,
   SandboxBackendCreateInput,
@@ -58,30 +58,21 @@ export interface UpstashSandboxOptions {
   networkPolicy?: SandboxNetworkPolicy;
 }
 
-export interface UpstashBackendConfig {
-  /** Backend name (participates in Eve's cache-key derivation). Defaults to `"upstash"`. */
-  name?: string;
-  /** Upstash Box API key. Falls back to `UPSTASH_BOX_API_KEY`. */
-  apiKey?: string;
-  /** Box runtime. Accepts Eve-style strings like `"node24"` (mapped to Box's `"node"`). */
-  runtime?: Runtime | string;
-  /** Box resource size. Inferred from `resources.vcpus` when omitted. */
-  size?: BoxSize;
-  /** Vercel-style resource hint; `vcpus` maps to a Box size (2→small, 4→medium, 8→large). */
-  resources?: { vcpus?: number };
-  /** Keep the box alive between turns. Defaults to true. */
-  keepAlive?: boolean;
-  /** Startup script run once when a keep-alive box is created. */
-  initCommand?: string;
-  /** Environment variables available inside the box. */
-  env?: Record<string, string>;
-  /** Initial network policy applied to every session. */
-  networkPolicy?: SandboxNetworkPolicy;
-}
+/**
+ * Configuration for the {@link upstash} backend — the **Upstash Box** `BoxConfig` as-is (`runtime`,
+ * `size`, `apiKey`/`baseUrl`, `keepAlive`, `initCommand`, `env`, `git`, `skills`, `mcpServers`,
+ * `timeout`, `debug`, `name`, …). Whatever you'd pass to `Box.create({...})` you pass here, so there
+ * are no AgentKit-invented knobs to learn or keep in sync.
+ *
+ * `networkPolicy` is intentionally **omitted**: in Eve, network access is governed by the secure
+ * deny-all default (see {@link DEFAULT_NETWORK_POLICY}) plus per-session `use({ networkPolicy })`, not
+ * a backend-level knob. `name` doubles as the Eve backend name (it participates in cache-key
+ * derivation; defaults to `"upstash"`).
+ */
+export type UpstashBackendConfig = Omit<BoxConfig, "networkPolicy">;
 
 /** The directory Eve anchors relative sandbox paths to. */
 const WORKSPACE = "/workspace";
-const RUNTIMES = new Set<Runtime>(["node", "python", "golang", "ruby", "rust"]);
 
 /**
  * Secure default: deny all network egress unless the caller opts in via `networkPolicy` (on the
@@ -90,20 +81,6 @@ const RUNTIMES = new Set<Runtime>(["node", "python", "golang", "ruby", "rust"]);
  * infrastructure from inside the box by default.
  */
 const DEFAULT_NETWORK_POLICY: SandboxNetworkPolicy = "deny-all";
-
-function toBoxRuntime(runtime?: Runtime | string): Runtime {
-  if (!runtime) return "node";
-  const base = runtime.replace(/[0-9.]+$/, ""); // "node24" -> "node"
-  return (RUNTIMES.has(base as Runtime) ? base : "node") as Runtime;
-}
-
-function toBoxSize(config: UpstashBackendConfig): BoxSize {
-  if (config.size) return config.size;
-  const vcpus = config.resources?.vcpus ?? 0;
-  if (vcpus >= 8) return "large";
-  if (vcpus >= 4) return "medium";
-  return "small";
-}
 
 /** Map Eve's (Vercel-shaped) network policy onto Box's network policy. */
 function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPolicy {
@@ -273,14 +250,14 @@ export class UpstashSandboxBackend implements SandboxBackend<
     this.name = config.name ?? "upstash";
   }
 
-  private boxConfig() {
+  /** The Box `BoxConfig` passed to `Box.create` / `Box.fromSnapshot` — the user's config verbatim,
+   * defaulting `keepAlive` on and enforcing the secure deny-all egress default at creation. */
+  private boxConfig(): BoxConfig {
     return {
-      ...(this.config.apiKey !== undefined ? { apiKey: this.config.apiKey } : {}),
-      runtime: toBoxRuntime(this.config.runtime),
-      size: toBoxSize(this.config),
+      ...this.config,
       keepAlive: this.config.keepAlive ?? true,
-      ...(this.config.initCommand !== undefined ? { initCommand: this.config.initCommand } : {}),
-      ...(this.config.env !== undefined ? { env: this.config.env } : {}),
+      // Lock egress down atomically at creation; callers open it per-session via `use({ networkPolicy })`.
+      networkPolicy: toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY),
     };
   }
 
@@ -291,11 +268,6 @@ export class UpstashSandboxBackend implements SandboxBackend<
     const box = snapshotId
       ? await Box.fromSnapshot(snapshotId, this.boxConfig())
       : await Box.create(this.boxConfig());
-
-    // Lock egress down by default; the caller opens it explicitly via `networkPolicy` / `use(...)`.
-    await box.updateNetworkPolicy(
-      toBoxNetworkPolicy(this.config.networkPolicy ?? DEFAULT_NETWORK_POLICY),
-    );
 
     const session = buildSession(box);
 
@@ -329,11 +301,8 @@ export class UpstashSandboxBackend implements SandboxBackend<
 
     const box = await Box.create(this.boxConfig());
     try {
-      // Same secure default during template build; `bootstrap`'s `use({ networkPolicy })` opens it
-      // when the build genuinely needs network (e.g. installing packages).
-      await box.updateNetworkPolicy(
-        toBoxNetworkPolicy(this.config.networkPolicy ?? DEFAULT_NETWORK_POLICY),
-      );
+      // The box starts with the secure deny-all default (set in `boxConfig`); `bootstrap`'s
+      // `use({ networkPolicy })` opens egress when the build genuinely needs it (e.g. installing pkgs).
       const session = buildSession(box);
 
       for (const file of input.seedFiles) {

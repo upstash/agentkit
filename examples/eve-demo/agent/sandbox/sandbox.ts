@@ -14,10 +14,12 @@ import { upstash } from "@upstash/agentkit-eve/sandbox";
 export default defineSandbox({
   // `upstash()` is a drop-in replacement for eve's `vercel()` backend.
   backend: upstash({
-    runtime: "node24", // optional: Box runtime; eve-style strings ("node24") map to Box's "node"
-    resources: { vcpus: 2 }, // optional: vcpu hint mapped to a Box size (2 -> small)
-    // optional: name, apiKey (defaults to UPSTASH_BOX_API_KEY), size, keepAlive,
-    // initCommand, env, networkPolicy
+    // The Upstash Box `BoxConfig`, verbatim (whatever you'd pass to `Box.create({...})`):
+    runtime: "node", // optional: Box runtime (node | python | golang | ruby | rust)
+    size: "small", // optional: Box resource size (small | medium | large)
+    // optional: name, apiKey (defaults to UPSTASH_BOX_API_KEY), keepAlive,
+    // initCommand, env, skills, mcpServers, timeout, … — all BoxConfig fields.
+    // (networkPolicy is not a config knob — egress is deny-all by default, set per-session below.)
   }),
   // optional: durable-session-scoped, runs once per session. A good place to lock
   // down the network before the agent runs any commands. (Add a `bootstrap` hook
