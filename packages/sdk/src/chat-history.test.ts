@@ -93,6 +93,22 @@ describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis Search)", () => {
     await expect(history.searchChats({ userId: "", query: "hi" })).rejects.toThrow(/userId/);
   });
 
+  // A ':' in userId or sessionId would let `<userId>:<sessionId>` keys collide across users, so both
+  // are rejected up front (e.g. user "a" + session "b:c" must not reach user "a:b" + session "c").
+  it("throws on a ':' in userId or sessionId", async () => {
+    await expect(history.saveChat({ userId: "a:b", sessionId: "x", messages: [] })).rejects.toThrow(
+      /userId.*':'/,
+    );
+    await expect(history.getChat({ userId: "a:b", sessionId: "x" })).rejects.toThrow(/userId.*':'/);
+    await expect(history.getChat({ userId: user, sessionId: "b:c" })).rejects.toThrow(
+      /sessionId.*':'/,
+    );
+    await expect(history.deleteChat({ userId: user, sessionId: "b:c" })).rejects.toThrow(
+      /sessionId.*':'/,
+    );
+    await expect(history.listChats({ userId: "a:b" })).rejects.toThrow(/userId.*':'/);
+  });
+
   it("lists a user's chats (filtered by userId in the index)", async () => {
     await history.saveChat({
       userId: user,

@@ -71,6 +71,13 @@ describe.skipIf(!hasRedisCreds)("ToolCache (live Redis)", () => {
     await expect(cache.wrap("", "tool", async () => 1)({})).rejects.toThrow(/userId/i);
   });
 
+  it("rejects a ':' in userId or toolName (the key separator)", async () => {
+    const cache = new ToolCache({ redis, prefix });
+    await expect(cache.get("a:b", "tool", { x: 1 })).rejects.toThrow(/userId.*':'/);
+    await expect(cache.get(U, "to:ol", { x: 1 })).rejects.toThrow(/toolName.*':'/);
+    await expect(cache.set("a:b", "tool", { x: 1 }, "v")).rejects.toThrow(/userId.*':'/);
+  });
+
   it("honors TTL", async () => {
     const cache = new ToolCache({ redis, prefix, ttlSeconds: 1 });
     await cache.set(U, "ttl", { x: 1 }, "v");

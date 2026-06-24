@@ -86,7 +86,7 @@ const FILTER_GUIDE = [
  * `schema` so the model learns the fields, their types, and which filter operators apply.
  *
  * The index is provisioned **reactively**: each op runs straight away, and only if the index doesn't
- * exist yet does it get created (+ `waitIndexing`) and the op retried — see {@link withIndex}.
+ * exist yet does it get created (+ `waitIndexing`) and the op retried — see {@link ReactiveSearchIndex}.
  */
 export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearchSchema>(
   config: SearchToolDefsConfig<TSchema>,

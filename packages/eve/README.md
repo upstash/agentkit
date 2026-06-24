@@ -7,7 +7,7 @@ code-execution **sandbox backend** powered by [Upstash Box](https://github.com/u
 cached tools.
 
 ```bash
-pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
+pnpm add @upstash/agentkit-eve @upstash/redis
 # in your app (Eve + the OpenAI provider, plus Box only if you use /sandbox):
 pnpm add eve @ai-sdk/openai @upstash/box
 ```
@@ -46,6 +46,12 @@ export default defineMemorySaveTool({
   userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id, // the user — a string, or (input, ctx) => string
 });
 ```
+
+> **`userId` is the tenant boundary** (required, non-empty, no `:`). Derive it from eve's **verified
+> session auth** — `ctx.session.auth.current?.principalId` (the authenticated principal, gated by your
+> channel's `auth` walk) — as above, not from anything the client supplies. Configure a real
+> authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId` is trustworthy;
+> the `?? ctx.session.id` fallback only applies when a request is unauthenticated.
 
 ## Search tools (`agent/tools/*.ts`)
 
@@ -106,6 +112,12 @@ export default eveChannel({
 > **`identifier` is required** — there is no implicit `"global"` default. A single shared bucket means
 > one abusive caller can exhaust the window for everyone, so for per-user limiting derive it per
 > request (an authenticated user id, an API key, or `x-forwarded-for` for per-IP).
+
+> **Only `POST` requests are counted.** eve runs each turn as two authenticated requests — the message
+> `POST` (which invokes the model) and a follow-up `GET …/stream` that opens the reply stream — and the
+> `auth` walk runs on both. `createRateLimitAuth` throttles only the `POST`s, so **one turn costs one
+> token** of your limiter (a `Ratelimit.slidingWindow(20, "1 m")` allows 20 turns/min, not 10); the
+> session-read `GET`s fall through unthrottled.
 
 ## Code-execution sandbox (`agent/sandbox.ts`)
 

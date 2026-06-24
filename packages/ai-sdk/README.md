@@ -28,9 +28,12 @@ const history = createChatHistory({
 });
 ```
 
-Every method takes a single object; `userId` is **required, non-empty, and must be unique per user**
-(your auth subject id). It's the tenant boundary — a chat can't be read or overwritten under a
-different `userId`. `saveChat` overwrites the **whole** message array — `useChat` sends the full
+Every method takes a single object; `userId` is **required, non-empty, and may not contain `:`**. It's
+the tenant boundary, so **derive it from a verified server-side auth source** — the subject/user id
+from your auth provider (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — and **never from a
+client-supplied header, query param, or body** (e.g. read it from the session in your route, not from
+the request the browser controls). A chat can't be read or overwritten under a different `userId`.
+`saveChat` overwrites the **whole** message array — `useChat` sends the full
 conversation, so there's no transport trimming and no delta to merge. Persist from your route's
 `onFinish`:
 
@@ -85,9 +88,10 @@ const tools = createMemoryTools({
 await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
 ```
 
-> **`userId` is required and must be non-empty** — it's the only tenant boundary for memory.
-> Make it **unique per user** (pass the user id, or a `(input, options) => string` deriving it); an
-> empty value throws rather than collapsing every user into one shared bucket.
+> **`userId` is required, non-empty, and may not contain `:`** — it's the only tenant boundary for
+> memory. **Derive it from a verified server-side auth source** (the subject/user id from Clerk,
+> Auth.js/NextAuth, Supabase Auth, Auth0, …), passed as a string or a `(input, options) => string`;
+> **never trust a client-supplied value.** An empty/separator-bearing value throws.
 
 ## Search tools
 
