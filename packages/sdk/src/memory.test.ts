@@ -99,6 +99,12 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     await expect(memory.forget("some-id", { userId: "" })).rejects.toThrow(/userId/i);
   });
 
+  it("rejects a userId containing the ':' key separator (no cross-user key collision)", async () => {
+    await expect(memory.add({ text: "x", userId: "a:b" })).rejects.toThrow(/':'/);
+    await expect(memory.recall({ userId: "a:b" })).rejects.toThrow(/':'/);
+    await expect(memory.forget("id", { userId: "a:b" })).rejects.toThrow(/':'/);
+  });
+
   it("round-trips createdAt", async () => {
     await memory.add({ text: "a dated fact", userId: "meta" });
     await memory.searchIndex.waitIndexing();

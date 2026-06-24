@@ -2,12 +2,17 @@ import type { Redis } from "@upstash/redis";
 import { key, stableHash } from "./utils.js";
 
 /**
- * Reject an empty/missing key part. `userId` and `toolName` are both part of the cache key, so a blank
- * one would collapse unrelated users (or unrelated tools) into one shared cache entry.
+ * Reject an empty/missing key part, or one containing the `:` key separator. `userId` and `toolName`
+ * are both segments of the cache key `<prefix>:<userId>:<toolName>:<hash>`, so a blank one would
+ * collapse unrelated users (or tools) into one shared entry — and a `:` would let segments slide across
+ * the boundary (e.g. one user's entry colliding with another's), defeating the per-user scoping.
  */
 function assertKeyPart(value: string | undefined, name: string): asserts value is string {
   if (value === undefined || value === "") {
     throw new Error(`ToolCache: \`${name}\` is required and must be a non-empty string.`);
+  }
+  if (value.includes(":")) {
+    throw new Error(`ToolCache: \`${name}\` must not contain ':' (it is the key separator).`);
   }
 }
 

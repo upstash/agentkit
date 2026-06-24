@@ -81,9 +81,12 @@ const hits = await history.searchChats({
 await history.deleteChat({ userId: "user-123", sessionId: "session-abc" }); // delete (also de-indexes it)
 ```
 
-> **`userId` and `sessionId` are required and must be non-empty** — they are the only tenant
-> boundary, so an empty value throws rather than silently mis-scoping a chat. Make `userId` unique
-> per user (e.g. your auth subject id); a chat can't be read or overwritten by a different `userId`.
+> **`userId` and `sessionId` are required, non-empty, and may not contain `:`** (the key separator) —
+> they are the only tenant boundary, so an empty or separator-bearing value throws rather than
+> silently mis-scoping a chat. **Derive `userId` from a verified server-side auth source** — the
+> subject/user id from your auth provider (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — and
+> **never from a client-supplied header, query param, or request body**, or a caller can impersonate
+> any user. A chat can't be read or overwritten under a different `userId`.
 
 ### Agent memory
 
@@ -113,9 +116,11 @@ const hits = await memory.recall({
 await memory.forget("pref-lang", { userId: "user-123" }); // required, non-empty userId
 ```
 
-> **`userId` is required and must be non-empty** on every method — it's the only tenant boundary
-> for memory, so an empty value throws rather than collapsing all callers into one shared bucket.
-> Make it **unique per user** (e.g. the user id) to keep each user's memories isolated.
+> **`userId` is required, non-empty, and may not contain `:`** on every method — it's the only tenant
+> boundary for memory, so an empty or separator-bearing value throws rather than collapsing or
+> colliding callers. **Derive it from a verified server-side auth source** (the subject/user id from
+> Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — **never from a client-supplied value** — to keep
+> each user's memories isolated.
 
 ### Search tools
 
@@ -185,9 +190,10 @@ const getWeather = tools.wrap(
 );
 ```
 
-> **`userId` and `toolName` are both required and must be non-empty** (`get`/`set`/`invalidate`/`wrap`
-> all throw on an empty value). The entry is scoped to the user first, so one user's cached result is
-> never served to another.
+> **`userId` and `toolName` are both required, non-empty, and may not contain `:`** (`get`/`set`/
+> `invalidate`/`wrap` all throw otherwise). The entry is scoped to the user first, so one user's cached
+> result is never served to another — provided `userId` comes from a verified auth source, not a
+> client-supplied value.
 
 ## Testing
 

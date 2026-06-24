@@ -29,7 +29,7 @@ export interface CreateMemoryToolsConfig {
 
 /**
  * Build `recall_memory` and `save_memory` AI SDK tools backed by long-term {@link AgentMemory}. Spread
- * the returned map into `generateText({ tools })`. Pass only a `scope`; `redis` defaults to
+ * the returned map into `generateText({ tools })`. Pass only a `userId`; `redis` defaults to
  * `Redis.fromEnv()`.
  *
  * ```ts

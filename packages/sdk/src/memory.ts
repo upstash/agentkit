@@ -5,12 +5,17 @@ import { ReactiveSearchIndex } from "./reactive-index.js";
 import { now } from "./utils.js";
 
 /**
- * Reject an empty/missing userId. The userId is the only tenant boundary for memory, so a blank one
- * would silently collapse every caller into one shared bucket and leak memories across users.
+ * Reject an empty/missing userId, or one containing the `:` key separator. The userId is the only
+ * tenant boundary for memory, so a blank one would silently collapse every caller into one shared
+ * bucket — and a `:` would let `<userId>:<id>` collide across users (e.g. userId `"a"` + id `"b:c"`
+ * lands on the same key as userId `"a:b"` + id `"c"`), breaking the per-user isolation by direct key.
  */
 function assertUserId(userId: string | undefined): asserts userId is string {
   if (userId === undefined || userId === "") {
     throw new Error("AgentMemory: `userId` is required and must be a non-empty string.");
+  }
+  if (userId.includes(":")) {
+    throw new Error("AgentMemory: `userId` must not contain ':' (it is the key separator).");
   }
 }
 

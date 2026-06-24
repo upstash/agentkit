@@ -24,6 +24,12 @@ export interface RateLimitAuthConfig extends Omit<RateLimitConfig, "redis"> {
  * Over the limit it throws a `ForbiddenError` (HTTP 403). Backed by {@link createRateLimit}; keys are
  * `agentkit:rateLimit:<identifier>`.
  *
+ * **Only `POST` requests are counted** (the message-submitting routes that actually invoke the model:
+ * `POST /eve/v1/session` and `POST /eve/v1/session/:id`). eve drives each turn as two authenticated
+ * requests — the message `POST` **and** a follow-up `GET …/stream` that opens the reply stream — and
+ * the auth walk runs on both. Counting both would charge every turn twice; gating only the `POST`
+ * makes one turn cost exactly one token, while the session-read `GET`s fall through unthrottled.
+ *
  * ```ts
  * // agent/channels/eve.ts
  * import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
@@ -47,6 +53,10 @@ export function createRateLimitAuth(config: RateLimitAuthConfig): AuthFn<Request
   const ratelimit = createRateLimit({ ...rest, redis: redis ?? Redis.fromEnv() });
 
   return async (request) => {
+    // Only throttle the model-invoking message submissions (POST). The follow-up `GET …/stream` (and
+    // other session reads) share this auth walk but shouldn't each cost a token — let them through so
+    // a single turn = a single increment.
+    if (request.method !== "POST") return null;
     const id = typeof identifier === "function" ? await identifier(request) : identifier;
     const { success } = await ratelimit.limit(id);
     if (!success) {

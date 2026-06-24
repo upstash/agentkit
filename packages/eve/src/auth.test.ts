@@ -4,7 +4,8 @@ import { ForbiddenError } from "eve/channels/auth";
 import { Ratelimit, createRateLimitAuth } from "./index.js";
 import { hasRedisCreds, testRedis } from "./test-support.js";
 
-const req = () => new Request("http://localhost/agent");
+// Only POST requests (the model-invoking message submissions) are counted, so default to POST here.
+const req = () => new Request("http://localhost/agent", { method: "POST" });
 
 describe.skipIf(!hasRedisCreds)("createRateLimitAuth (live Redis)", () => {
   const redis = testRedis();
@@ -35,11 +36,27 @@ describe.skipIf(!hasRedisCreds)("createRateLimitAuth (live Redis)", () => {
     });
 
     const reqFor = (user: string) =>
-      new Request("http://localhost/agent", { headers: { "x-user": user } });
+      new Request("http://localhost/agent", { method: "POST", headers: { "x-user": user } });
 
     // Exhaust A's bucket; B's is untouched and still passes.
     expect(await auth(reqFor("a"))).toBeNull();
     await expect(auth(reqFor("a"))).rejects.toBeInstanceOf(ForbiddenError);
     expect(await auth(reqFor("b"))).toBeNull();
+  });
+
+  // eve runs the auth walk on the follow-up `GET …/stream` too; only POSTs (which invoke the model)
+  // are counted, so a turn isn't charged twice. A GET always falls through without touching the limiter.
+  it("does not count non-POST requests (e.g. the stream GET)", async () => {
+    const auth = createRateLimitAuth({
+      redis,
+      limiter: Ratelimit.slidingWindow(1, "60 s"),
+      identifier: `test:${randomUUID().slice(0, 8)}`,
+    });
+    const get = () => new Request("http://localhost/agent", { method: "GET" });
+
+    // Many GETs in a row never exhaust the (size-1) window — they're not counted at all.
+    expect(await auth(get())).toBeNull();
+    expect(await auth(get())).toBeNull();
+    expect(await auth(get())).toBeNull();
   });
 });

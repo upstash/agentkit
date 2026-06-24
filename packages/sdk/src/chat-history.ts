@@ -4,12 +4,19 @@ import { ReactiveSearchIndex } from "./reactive-index.js";
 import { now } from "./utils.js";
 
 /**
- * Reject an empty/missing id. `userId` and `sessionId` are the only tenant boundary, so a blank one
- * would silently mis-scope a chat (or, for `userId`, let any caller read/overwrite another user's chat).
+ * Reject an empty/missing id, or one containing the `:` key separator. `userId` and `sessionId` are
+ * the only tenant boundary, so a blank one would silently mis-scope a chat (or, for `userId`, let any
+ * caller read/overwrite another user's chat). Keys are `<prefix>:<userId>:<sessionId>` and the
+ * direct-key reads (`getChat`/`deleteChat`/`saveChat`) trust that structure, so a `:` in either id
+ * would let `"a"` + sessionId `"b:c"` collide with user `"a:b"` + sessionId `"c"` and reach the other
+ * user's chat. Forbidding `:` in both keeps the boundary unambiguous.
  */
 function assertId(value: string | undefined, name: string): asserts value is string {
   if (value === undefined || value === "") {
     throw new Error(`ChatHistory: \`${name}\` is required and must be a non-empty string.`);
+  }
+  if (value.includes(":")) {
+    throw new Error(`ChatHistory: \`${name}\` must not contain ':' (it is the key separator).`);
   }
 }
 

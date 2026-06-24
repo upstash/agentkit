@@ -205,13 +205,17 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
 - Conventional commits; use `!` for breaking changes. Commit at meaningful checkpoints.
 
 ## TODO (current task)
+> **Historical log — superseded naming.** The items below record a completed task and use the
+> intermediate `namespace` name, which was later renamed to **`userId`** (the per-call tenant value)
+> plus **`toolName`** (the cache's tool segment). For the live key naming and conventions, see the
+> "API conventions" section above — not this checklist.
 - [x] Remove model cache (code + examples done; READMEs pending below).
 - [x] ai-sdk: add `cachedTools` (map of `tool()`-built tools, namespace defaults to map key) alongside `cachedTool`; `cachePrefix` → `namespace`; dropped `toolCache` from the config.
 - [x] `cachedTool`/`cachedTools` are fully type-safe (config extends the AI SDK `tool()` type — input/output inference, no `any`).
 - [x] Search tools: ensure the index (create + `waitIndexing`, memoized) before running each tool — a missing Upstash index returns `null`/`-1` rather than throwing, so we ensure up front.
 - [x] `createMemoryTools` (ai-sdk) + eve memory tools: `scope` → `namespace` (string or per-call function). Core `AgentMemory` add/recall/forget use `namespace`.
 - [x] Rate limiting: `namespace` is a plain string; prefix `agentkit:rateLimit`.
-- [x] Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<namespace>:<hash>`, `agentkit:memory:<namespace>:<id>`.
+- [x] Key naming (now `userId`/`toolName`, not `namespace`): `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<userId>:<toolName>:<hash>`, `agentkit:memory:<userId>:<id>`.
 - [x] Unit/e2e tests use `gpt-4o` (`TEST_MODEL`).
 - [x] eve: dropped the `./model` subpath — model wrappers are exported from the package root.
 - [x] ai-sdk example app fleshed out (memory + search + cached tool + rate limit).

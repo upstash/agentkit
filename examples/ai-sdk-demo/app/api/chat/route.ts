@@ -27,6 +27,11 @@ export async function POST(req: Request) {
   // as a header. Memory, history, tool cache and rate limit are all scoped to this user; only the
   // shared books index is common to everyone.
   const { id, messages } = (await req.json()) as { id: string; messages: UIMessage[] };
+  // ⚠️ DEMO ONLY: this trusts a client-supplied header to identify the user, so anyone can send
+  // `x-user-id: <someone-else>` and read/overwrite their data. It's only safe here because
+  // `normalizeUser` allow-lists it to two fixed demo users. In production, derive `userId` from a
+  // VERIFIED server-side session (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — e.g.
+  // `const { userId } = await auth()` with Clerk — and NEVER from a request header/param/body.
   const userId = normalizeUser(req.headers.get(USER_HEADER));
   const redis = getRedis();
 
