@@ -233,9 +233,17 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
   `session` is a full `SandboxSession` built over Box (run/spawn/read*/write*/setNetworkPolicy/removePath).
   Typechecks against eve and the offline + live-Box `sandbox.test.ts` pass. `spawn` runs to completion
   then replays output as streams (Box has no detached-process primitive). Config is **`UpstashBackendConfig
-  = Omit<BoxConfig, "networkPolicy">`** — the real `@upstash/box` `BoxConfig` passed through verbatim
-  (`runtime`/`size`/`apiKey`/`keepAlive`/`initCommand`/`env`/`skills`/…), **no** invented `resources.vcpus`
-  hint or runtime-string coercion. `networkPolicy` is intentionally excluded: egress is enforced deny-all
-  at creation (in `boxConfig()`) and opened only per-session via Eve's `use({ networkPolicy })`.
+  = Omit<BoxConfig, "networkPolicy"> & { redis?, templatePrefix? }`** — the real `@upstash/box` `BoxConfig`
+  passed through verbatim (`runtime`/`size`/`apiKey`/`keepAlive`/`initCommand`/`env`/`skills`/…), **no**
+  invented `resources.vcpus` hint or runtime-string coercion. `networkPolicy` is intentionally excluded:
+  egress is enforced deny-all at creation (in `boxConfig()`) and opened only per-session via Eve's
+  `use({ networkPolicy })`. **Template registry:** `prewarm` (build/startup) and `create` (per request)
+  run in different processes, so the `templateKey → snapshotId` map lives in a **durable Redis registry**
+  (`agentkit:sandbox:template:<name>:<templateKey>`, `redis` defaults to `Redis.fromEnv()`) — an in-memory
+  map orphaned the prewarmed box (the old "two boxes, first unused" bug) and Box has no static snapshot
+  lookup. `prewarm` builds **no** box when there's nothing to bake (no seed files/bootstrap). **Path
+  bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`, so the backend
+  remaps both `resolvePath` (file ops) and raw commands (`find /workspace …` → `/workspace/home`) via the
+  exported `toBoxPath`/`rewriteWorkspacePaths`.
 - `gpt-5.4-mini` (demo model) may not exist → demos build fine but can 404 at runtime. Swap if needed.
 - The `19.2.17` `@types/react` may linger as an unpruned orphan in `.pnpm`; harmless (nothing links it).
