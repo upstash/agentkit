@@ -33,15 +33,23 @@ describe("upstash() backend (offline)", () => {
   it("rewrites /workspace inside raw commands (Eve's find/grep tools)", () => {
     expect(rewriteWorkspacePaths("find /workspace -type f")).toBe("find /workspace/home -type f");
     expect(rewriteWorkspacePaths("node /workspace/app.js")).toBe("node /workspace/home/app.js");
+    expect(rewriteWorkspacePaths("D=/workspace/x; echo $D")).toBe("D=/workspace/home/x; echo $D");
     expect(rewriteWorkspacePaths("ls /workspace/home")).toBe("ls /workspace/home"); // no double-map
     expect(rewriteWorkspacePaths("echo /workspaces")).toBe("echo /workspaces"); // word boundary respected
+  });
+
+  it("does NOT rewrite /workspace mid-token (URLs, relative paths)", () => {
+    // A `/workspace` inside a URL must be left alone — it's not a filesystem path.
+    expect(rewriteWorkspacePaths("curl https://api.example.com/workspace/items")).toBe(
+      "curl https://api.example.com/workspace/items",
+    );
+    expect(rewriteWorkspacePaths("cat ./workspace/x")).toBe("cat ./workspace/x"); // relative, untouched
   });
 });
 
 describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
-  it("creates a session, runs a command, round-trips a file, and disposes it", async () => {
-    // keepAlive: false so dispose() deletes the box and cleans up after the test.
-    const backend = upstash({ runtime: "node", size: "small", keepAlive: false });
+  it("creates a session, runs a command, round-trips a file", async () => {
+    const backend = upstash({ runtime: "node", size: "small" });
     const handle = await backend.create(createInput);
     const session = handle.session;
     try {
@@ -60,7 +68,28 @@ describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
       const found = await session.run({ command: "find /workspace -name note.txt" });
       expect(found.stdout).toContain("/workspace/home/note.txt");
     } finally {
-      await handle.dispose();
+      // dispose() is a no-op (boxes persist for reuse), so delete explicitly to clean up the test.
+      await Box.delete({ boxIds: handle.session.id }).catch(() => {});
+    }
+  }, 120_000);
+
+  // Eve re-opens a session several times per turn and hands back the box id we captured; `create` must
+  // REATTACH to it, not spin a fresh box each time (the "three boxes per turn" bug).
+  it("reuses the same box across opens via existingMetadata", async () => {
+    const backend = upstash({ runtime: "node" });
+    const first = await backend.create(createInput);
+    const boxId = first.session.id;
+    const state = await first.captureState();
+    await first.dispose(); // no-op — the box persists for reuse
+    try {
+      const second = await backend.create({
+        ...createInput,
+        existingMetadata: state.metadata,
+      } as never);
+      expect(second.session.id).toBe(boxId); // reattached to the SAME box, not a new one
+      expect((await second.session.run({ command: "echo reused" })).stdout).toContain("reused");
+    } finally {
+      await Box.delete({ boxIds: boxId }).catch(() => {});
     }
   }, 120_000);
 
@@ -69,7 +98,7 @@ describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
   it("denies network egress by default, allows it when opened", async () => {
     const fetchCmd = `node -e "fetch('https://example.com').then(r=>process.exit(r.ok?0:9)).catch(()=>process.exit(7))"`;
 
-    const backend = upstash({ runtime: "node", keepAlive: false });
+    const backend = upstash({ runtime: "node" });
     const handle = await backend.create(createInput);
     try {
       const denied = await handle.session.run({ command: fetchCmd });
@@ -79,7 +108,7 @@ describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
       const allowed = await handle.session.run({ command: fetchCmd });
       expect(allowed.exitCode).toBe(0); // egress allowed → fetch resolves
     } finally {
-      await handle.dispose();
+      await Box.delete({ boxIds: handle.session.id }).catch(() => {});
     }
   }, 180_000);
 });
@@ -94,7 +123,7 @@ describe.skipIf(!hasBoxCreds || !hasRedisCreds)(
       const redis = testRedis();
       const templatePrefix = uniquePrefix("sandboxtpl"); // unique so reruns don't collide
       const templateKey = "tmpl-1";
-      const cfg = { runtime: "node" as const, keepAlive: false, redis, templatePrefix };
+      const cfg = { runtime: "node" as const, redis, templatePrefix };
       const prewarmInput = {
         templateKey,
         seedFiles: [{ path: "seeded.txt", content: "from-template" }],
@@ -123,7 +152,7 @@ describe.skipIf(!hasBoxCreds || !hasRedisCreds)(
             "from-template",
           );
         } finally {
-          await handle.dispose();
+          await Box.delete({ boxIds: handle.session.id }).catch(() => {});
         }
       } finally {
         if (snapshotId) await Box.deleteSnapshots({ snapshotIds: snapshotId }).catch(() => {});

@@ -167,6 +167,12 @@ needed when you import `@upstash/agentkit-eve/sandbox`.
 > tools at `/workspace`; a Box session lives at `/workspace/home`, and the backend bridges the two
 > automatically.
 
+> **One box per conversation.** Eve re-opens a sandbox session several times per turn; the backend
+> reattaches to the same Box (via the box id it captured) instead of creating a new one each time. Boxes
+> default to Box's pause-based idle lifecycle (`keepAlive: false`) — auto-paused when idle, resumed on
+> reattach, reaped by Box — so nothing leaks. Pass `upstash({ keepAlive: true })` only if you want an
+> always-running box you manage yourself.
+
 ## Cached tools (`agent/tools/*.ts`)
 
 `defineCachedTool` is like Eve's `defineTool`, but its result is memoized — pass a `toolName` and a

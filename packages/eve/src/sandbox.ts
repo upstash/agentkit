@@ -38,6 +38,13 @@
  * processes, and Box has no static snapshot lookup. When a sandbox has nothing to bake (no seed files,
  * no `bootstrap`), `prewarm` builds **no** box at all and `create` just spins a fresh one.
  *
+ * **Session reuse:** Eve re-opens a session many times (per turn / retry / re-render) and hands the box
+ * id we returned in `captureState` back as `create`'s `existingMetadata`. `create` **reattaches** to that
+ * box (`Box.get`) instead of making a new one, and `dispose` is a **no-op** — so a conversation keeps a
+ * single box rather than piling up one per open. Boxes default to Box's pause-based idle lifecycle
+ * (`keepAlive: false`): idle → auto-paused, reattach → resumed, then reaped by Box. (`keepAlive: true`
+ * opts into an always-running box you manage yourself.)
+ *
  * Eve roots its sandbox tools at `/workspace`, but a Box session lives in `/workspace/home`; this backend
  * bridges the two (in `resolvePath` and in raw commands), so the agent's file ops and `find`/`grep`
  * commands hit the right directory.
@@ -117,11 +124,17 @@ export function toBoxPath(path: string): string {
 /**
  * Remap `/workspace` → `/workspace/home` inside a raw command string. Eve's built-in glob/grep tools
  * run commands like `find /workspace …` with the literal Eve root (they don't go through `resolvePath`),
- * so the box would search the wrong (off-limits) directory. Leaves `/workspace/home…` and words like
- * `/workspaces` alone.
+ * so the box would search the wrong (off-limits) directory.
+ *
+ * Only rewrites `/workspace` when it **starts a path token**: the lookbehind skips it when preceded by a
+ * word char, `.`, or `/` — i.e. inside a URL (`https://host/workspace/x`) or a relative path
+ * (`./workspace`) — and the lookahead leaves `/workspace/home…` (already box-rooted) and words like
+ * `/workspaces` alone. This still can't reach `/workspace` paths baked **inside files** the model writes
+ * (only the command text is rewritten); the model normally avoids that because tool output shows it the
+ * real `/workspace/home` paths.
  */
 export function rewriteWorkspacePaths(command: string): string {
-  return command.replace(/\/workspace(?!\/home)(?=$|[^\w])/g, BOX_ROOT);
+  return command.replace(/(?<![\w./])\/workspace(?!\/home)(?=$|[^\w])/g, BOX_ROOT);
 }
 
 /**
@@ -332,33 +345,65 @@ export class UpstashSandboxBackend implements SandboxBackend<
     const { redis: _redis, templatePrefix: _templatePrefix, ...box } = this.config;
     return {
       ...box,
-      keepAlive: box.keepAlive ?? true,
+      // Default to Box's pause-based idle lifecycle: the box auto-pauses when idle (cheap), resumes on
+      // reattach, and is reaped after its TTL — so sessions are reused, not leaked. `keepAlive: true`
+      // opts into an always-running box (which can't be paused) that you manage yourself.
+      keepAlive: box.keepAlive ?? false,
       // Lock egress down atomically at creation; callers open it per-session via `use({ networkPolicy })`.
       networkPolicy: toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY),
     };
   }
 
-  async create(
-    input: SandboxBackendCreateInput,
-  ): Promise<SandboxBackendHandle<UpstashSandboxOptions>> {
+  /** Connection-only options for `Box.get` (it retrieves an existing box; it doesn't take create config). */
+  private connOptions(): { apiKey?: string; baseUrl?: string } {
+    const { apiKey, baseUrl } = this.config;
+    return {
+      ...(apiKey !== undefined ? { apiKey } : {}),
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+    };
+  }
+
+  /**
+   * Open the Box for a session, in priority order:
+   *  1. **Reattach** to the box from a previous open of this session (Eve hands our captured `boxId`
+   *     back as `existingMetadata`) — this is what stops every open from spinning a fresh box.
+   *  2. Restore the prewarmed **template snapshot** (from the Redis registry).
+   *  3. Create a **fresh** box from the base runtime.
+   */
+  private async openBox(input: SandboxBackendCreateInput): Promise<Box> {
+    const existingBoxId = (input.existingMetadata as { boxId?: string } | undefined)?.boxId;
+    if (existingBoxId) {
+      try {
+        const box = await Box.get(existingBoxId, this.connOptions());
+        // Re-assert the secure default; each opened session starts deny-all (use(...) re-opens egress).
+        await box.updateNetworkPolicy(toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY)).catch(() => {});
+        return box;
+      } catch {
+        // The box was deleted/expired since we captured it — fall through to template/fresh.
+      }
+    }
+
     const snapshotId = input.templateKey
       ? await this.resolveSnapshot(input.templateKey)
       : undefined;
-    let box: Box;
     if (snapshotId) {
       try {
-        box = await Box.fromSnapshot(snapshotId, this.boxConfig());
+        return await Box.fromSnapshot(snapshotId, this.boxConfig());
       } catch {
         // The snapshot was deleted out from under the registry — drop the stale entry and start fresh.
         this.templates.delete(input.templateKey as string);
         await this.redis()
           .del(this.templateRegistryKey(input.templateKey as string))
           .catch(() => {});
-        box = await Box.create(this.boxConfig());
       }
-    } else {
-      box = await Box.create(this.boxConfig());
     }
+    return Box.create(this.boxConfig());
+  }
+
+  async create(
+    input: SandboxBackendCreateInput,
+  ): Promise<SandboxBackendHandle<UpstashSandboxOptions>> {
+    const box = await this.openBox(input);
 
     const session = buildSession(box);
 
@@ -377,10 +422,12 @@ export class UpstashSandboxBackend implements SandboxBackend<
       },
     });
 
-    const dispose = async (): Promise<void> => {
-      if (this.config.keepAlive ?? true) await box.pause();
-      else await box.delete();
-    };
+    // Don't tear the box down here: Eve calls `dispose` at the end of every session-open, and the next
+    // open reattaches to this same box via `existingMetadata` (see `openBox`). Deleting/pausing it would
+    // force a fresh box each turn (the "N boxes per turn" bug; keep-alive boxes can't even be paused).
+    // A non-keep-alive box auto-pauses when idle and is reaped by Box's lifecycle, so this is a no-op —
+    // matching Eve's own Vercel backend.
+    const dispose = async (): Promise<void> => {};
 
     return { session, useSessionFn, captureState, dispose };
   }
