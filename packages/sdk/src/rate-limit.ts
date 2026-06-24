@@ -1,5 +1,5 @@
 import { Ratelimit, type Duration } from "@upstash/ratelimit";
-import type { Redis } from "@upstash/redis";
+import { Redis } from "@upstash/redis";
 
 // Re-export the `@upstash/ratelimit` surface AgentKit users need so they never have to import from
 // (or install) `@upstash/ratelimit` directly. `Ratelimit` is the class whose static helpers build a
@@ -12,8 +12,8 @@ type Limiter = ConstructorParameters<typeof Ratelimit>[0]["limiter"];
 
 /** Configuration for {@link createRateLimit}. */
 export interface RateLimitConfig {
-  /** Upstash Redis client used to back the limiter. */
-  redis: Redis;
+  /** Upstash Redis client backing the limiter. Defaults to `Redis.fromEnv()`. */
+  redis?: Redis;
   /** The limiter algorithm, e.g. `Ratelimit.slidingWindow(10, "60 s")` or `Ratelimit.fixedWindow(...)`. */
   limiter: Limiter;
   /** Key prefix for the limiter. Defaults to `agentkit:rateLimit`; keys are `<prefix>:<identifier>`. */
@@ -33,7 +33,7 @@ export interface RateLimitConfig {
  */
 export function createRateLimit(config: RateLimitConfig): Ratelimit {
   return new Ratelimit({
-    redis: config.redis,
+    redis: config.redis ?? Redis.fromEnv(),
     limiter: config.limiter,
     prefix: config.prefix ?? "agentkit:rateLimit",
   });

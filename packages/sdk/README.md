@@ -155,7 +155,7 @@ if (!success) throw new Error("rate limited");
 <summary>Options</summary>
 
 - **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
-- `redis` — the Upstash Redis client backing the limiter.
+- `redis` — the Upstash Redis client backing the limiter; defaults to `Redis.fromEnv()`.
 - `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
 
 There is no model wrapper; pass a per-user `identifier` to `.limit()` to throttle per user.
@@ -168,7 +168,7 @@ Memoize deterministic tool results in Redis, keyed by user, then tool, then a ha
 
 ```ts
 // `wrap` returns a memoized version of your execute, keyed by userId + "getWeather" + the args hash.
-const getWeather = tools.wrap("user-123", "getWeather", (args) => fetchWeather(args));
+const getWeather = cache.wrap("user-123", "getWeather", (args) => fetchWeather(args));
 ```
 
 <details>

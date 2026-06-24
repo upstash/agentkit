@@ -145,12 +145,39 @@ export function rewriteWorkspacePaths(command: string): string {
  */
 const DEFAULT_NETWORK_POLICY: SandboxNetworkPolicy = "deny-all";
 
-/** Map Eve's (Vercel-shaped) network policy onto Box's network policy. */
-function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPolicy {
+/**
+ * Map Eve's (Vercel-shaped) network policy onto Box's. Box's policy is a plain domain/CIDR allow-list,
+ * so it can't honor Eve's per-domain firewall rules: `transform` (inject headers at the firewall to
+ * broker credentials so secrets never enter the box) or `forwardURL`. Silently dropping those would send
+ * the request unauthenticated, or push the model to embed the secret inside the box, so we **throw**
+ * rather than quietly downgrade a security control. (Plain allow-lists and empty rule arrays map fine.)
+ *
+ * For credential brokering on Box, set `attachHeaders` at backend creation instead:
+ * `upstash({ attachHeaders: { "api.example.com": { Authorization: "Bearer ..." } } })`.
+ */
+export function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPolicy {
   if (policy === "allow-all") return { mode: "allow-all" };
   if (policy === "deny-all") return { mode: "deny-all" };
   const allow = policy.allow;
-  const allowedDomains = Array.isArray(allow) ? allow : allow ? Object.keys(allow) : undefined;
+  let allowedDomains: string[] | undefined;
+  if (Array.isArray(allow)) {
+    allowedDomains = allow;
+  } else if (allow) {
+    for (const [domain, rules] of Object.entries(allow)) {
+      if (
+        Array.isArray(rules) &&
+        rules.some((r) => r && (r.transform || r.forwardURL || r.match))
+      ) {
+        throw new Error(
+          `UpstashSandboxBackend: the Upstash Box backend can't honor per-domain network rules ` +
+            `(transform / forwardURL / match) for "${domain}"; its network policy is a plain ` +
+            `domain/CIDR allow-list. To inject credentials into outbound requests, set Box's ` +
+            `attachHeaders at backend creation: upstash({ attachHeaders: { "${domain}": { ... } } }).`,
+        );
+      }
+    }
+    allowedDomains = Object.keys(allow);
+  }
   return {
     mode: "custom",
     ...(allowedDomains ? { allowedDomains } : {}),

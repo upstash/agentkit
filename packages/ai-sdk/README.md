@@ -144,7 +144,7 @@ before the model and short-circuit when over the limit.
 ```ts
 import { createRateLimit, Ratelimit } from "@upstash/agentkit-ai-sdk";
 
-const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(20, "1 m") });
+const ratelimit = createRateLimit({ limiter: Ratelimit.slidingWindow(20, "1 m") });
 
 const { success } = await ratelimit.limit(userId);
 if (!success) throw new Error("rate limited"); // or return a 429 from your route
@@ -154,7 +154,7 @@ if (!success) throw new Error("rate limited"); // or return a 429 from your rout
 <summary>Options</summary>
 
 - **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
-- `redis` — the Upstash Redis client backing the limiter.
+- `redis` — defaults to `Redis.fromEnv()`.
 - `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
 
 There is no model wrapper; pass a per-user `identifier` to `.limit()` to throttle per user.

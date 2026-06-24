@@ -28,30 +28,25 @@ function wrap(def: SearchToolDef): ToolDefinition {
 }
 
 /**
- * Build eve `search` / `aggregate` / `count` tools over an Upstash Redis Search index — the eve
+ * Build eve `search` / `aggregate` / `count` tools over an Upstash Redis Search index, the eve
  * counterpart to the AI SDK adapter's `createSearchTools`. Returns a record of ready (already
  * `defineTool`-branded) tools; the index is created on first use (reactively). `redis` defaults to env.
  *
- * eve is file-centric (filename = tool name), so build the set once in `agent/lib/` and re-export each
- * tool from its own file:
- *
- * ```ts
- * // agent/lib/book-search.ts
- * import { s } from "@upstash/redis";
- * import { defineSearchTools } from "@upstash/agentkit-eve";
- * import { redis } from "../redis.js";
- *
- * export const bookSearch = defineSearchTools({
- *   schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
- *   indexName: "books",
- *   redis,
- * });
- * ```
+ * eve snapshots each tool file and resolves only **package** imports, so every `agent/tools/*.ts` file
+ * must be self-contained: call `defineSearchTools` in each file and export the member you want, repeating
+ * the same `schema` + `indexName` across them. Don't import a shared `agent/` module (e.g. a
+ * `../redis.js` or `../lib/book-search.js`) — it fails at the turn step with `Cannot find module`. Omit
+ * `redis` so it defaults to `Redis.fromEnv()`.
  *
  * ```ts
  * // agent/tools/search_books.ts
- * import { bookSearch } from "../lib/book-search.js";
- * export default bookSearch.search; // also: aggregate_books.ts → bookSearch.aggregate, etc.
+ * import { s } from "@upstash/redis";
+ * import { defineSearchTools } from "@upstash/agentkit-eve";
+ *
+ * export default defineSearchTools({
+ *   schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+ *   indexName: "books",
+ * }).search; // aggregate_books.ts → .aggregate, count_books.ts → .count (repeat schema + indexName)
  * ```
  */
 export function defineSearchTools(config: DefineSearchToolsConfig): SearchToolSet {
