@@ -2,204 +2,210 @@
 
 Core, framework-agnostic primitives for building AI agents — entirely on
 [Upstash Redis](https://upstash.com/). No vector database required: the "semantic" features (memory
-recall, search) are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
-and its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM25-scored).
+recall, search) run on [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction) and
+its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM25-scored).
 
 ```bash
 pnpm add @upstash/agentkit-sdk @upstash/redis
 ```
 
-## Wiring up
-
-Every feature takes the `@upstash/redis` client and nothing else — the search-backed features create
-and own their Redis Search index internally:
+Every feature takes only the `@upstash/redis` client — the search-backed ones create and own their
+Redis Search index internally:
 
 ```ts
 import { Redis } from "@upstash/redis";
 import { AgentMemory, ChatHistory, ToolCache } from "@upstash/agentkit-sdk";
 
 const redis = Redis.fromEnv();
-
 const history = new ChatHistory({ redis });
 const memory = new AgentMemory({ redis });
-const tools = new ToolCache({ redis });
+const cache = new ToolCache({ redis });
 ```
 
-The raw search index handle is exposed for advanced use (`describe`, `count`, `waitIndexing`, `drop`):
+## Chat history
+
+Durable conversation transcripts on Redis Search — the source of truth for a chat. `saveChat` replaces
+the whole message array; `getChat` / `listChats` / `searchChats` read it back.
 
 ```ts
-await memory.searchIndex.waitIndexing();
-const info = await memory.searchIndex.describe();
+await history.saveChat({ userId: "user-123", sessionId: "session-abc", messages, title: "Trip planning" });
+
+const chat = await history.getChat({ userId: "user-123", sessionId: "session-abc" }); // or null
+const chats = await history.listChats({ userId: "user-123", limit: 50 });
+const hits = await history.searchChats({ userId: "user-123", query: "wireless headphones", target: "both" });
+await history.deleteChat({ userId: "user-123", sessionId: "session-abc" });
 ```
 
-## Features
-
-### Chat history
-
-Durable conversation transcripts backed by Upstash Redis Search — the source of truth for a chat.
-`ChatHistory<TMessage>` is generic over the message type (the ai-sdk adapter specializes it to
-`UIMessage`, eve to `EveMessage`). Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>`
-(keyed per user, so two users can't collide on a `sessionId`), indexed
-over `userId` + `sessionId` (exact-match filters) and `userMessages` + `modelMessages` (`$smart`
-fuzzy text); the raw `messages` array rides along **unindexed**. So you can filter by
-`userId` to list a user's chats and `$smart`-search within what the user or the model said.
+<details>
+<summary>Config, method options &amp; how it's stored</summary>
 
 ```ts
-const history = new ChatHistory<MyMessage>({
-  redis, // the Upstash Redis client (the search index is created/managed internally)
-  prefix: "agentkit:chat", // optional: base key prefix (defaults to "agentkit:chat")
+new ChatHistory<MyMessage>({
+  redis,
+  prefix: "agentkit:chat", // optional: base key prefix
   indexName: "agentkit_chat", // optional: Redis Search index name (defaults to the prefix)
-  ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL in seconds (default: no expiry)
-  extractText: (messages) => ({ userMessages: "...", modelMessages: "..." }), // optional: override how text is pulled into the two indexed fields (defaults to the UIMessage/EveMessage convention)
+  ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
+  extractText: (messages) => ({ userMessages: "...", modelMessages: "..." }), // optional: override text extraction
 });
-
-// Every method takes a single object. `userId` is **required** and must be **unique per user** — it's
-// the tenant boundary: chats are keyed per user, so one user can never read or overwrite another's.
-// `saveChat` REPLACES the whole message array (overwrite, not append) — pass the complete transcript,
-// typically server-side once a turn finishes (e.g. the AI SDK route's `onFinish`).
-await history.saveChat({
-  userId: "user-123", // required, non-empty, unique per user (the owner of the chat)
-  sessionId: "session-abc", // required, non-empty (the chat/session id)
-  messages, // the full transcript
-  title: "Trip planning", // optional: human-readable title
-});
-
-const chat = await history.getChat({ userId: "user-123", sessionId: "session-abc" }); // full transcript, or null
-const chats = await history.listChats({
-  userId: "user-123", // required
-  limit: 50, // optional: max chats to return (newest-updated first)
-});
-
-const hits = await history.searchChats({
-  userId: "user-123", // required
-  query: "wireless headphones",
-  target: "both", // optional: which side to match — "user" | "model" | "both" (defaults to "both")
-  limit: 20, // optional: max hits to return
-  minScore: 0, // optional: BM25 relevance floor (defaults to 0)
-});
-
-await history.deleteChat({ userId: "user-123", sessionId: "session-abc" }); // delete (also de-indexes it)
 ```
 
-> **`userId` and `sessionId` are required, non-empty, and may not contain `:`** (the key separator) —
-> they are the only tenant boundary, so an empty or separator-bearing value throws rather than
-> silently mis-scoping a chat. **Derive `userId` from a verified server-side auth source** — the
-> subject/user id from your auth provider (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — and
-> **never from a client-supplied header, query param, or request body**, or a caller can impersonate
-> any user. A chat can't be read or overwritten under a different `userId`.
+- `searchChats` also takes `limit`, `minScore` (BM25 floor, default 0), and `target` (`"user"` | `"model"` | `"both"`).
+- `saveChat` is an overwrite, not an append — pass the complete transcript (typically from the route's `onFinish`).
 
-### Agent memory
+`ChatHistory<TMessage>` is generic over the message type (ai-sdk → `UIMessage`, eve → `EveMessage`).
+Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users can't
+collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+`modelMessages` (`$smart` text); the raw `messages` array rides along unindexed.
 
-Long-term, fuzzily-recalled memory scoped per user. Stored at `agentkit:memory:<userId>:<id>`.
+</details>
+
+<details>
+<summary>Security — <code>userId</code> / <code>sessionId</code> are the tenant boundary</summary>
+
+Both are **required, non-empty, and may not contain `:`** (the key separator) — they're the only tenant
+boundary, so an empty or separator-bearing value throws rather than silently mis-scoping a chat.
+**Derive `userId` from a verified server-side auth source** (Clerk, Auth.js/NextAuth, Supabase Auth,
+Auth0, …) — **never from a client-supplied header, query param, or body**, or a caller can impersonate
+any user. A chat can't be read or overwritten under a different `userId`.
+
+</details>
+
+## Agent memory
+
+Long-term, fuzzily-recalled memory scoped per user.
 
 ```ts
-const memory = new AgentMemory({
-  redis, // the Upstash Redis client (the search index is created/managed internally)
-  prefix: "agentkit:memory", // optional: base key prefix (defaults to "agentkit:memory")
+await memory.add({ text: "The user prefers TypeScript", userId: "user-123" });
+
+const hits = await memory.recall({ query: "typescript preference", userId: "user-123", topK: 5 });
+await memory.forget("pref-lang", { userId: "user-123" });
+```
+
+<details>
+<summary>Config, method options &amp; the tenant boundary</summary>
+
+```ts
+new AgentMemory({
+  redis,
+  prefix: "agentkit:memory", // optional: base key prefix
   indexName: "agentkit_memory", // optional: Redis Search index name (defaults to the prefix)
   minScore: 0, // optional: default BM25 relevance floor for recall
 });
-
-await memory.add({
-  text: "The user prefers TypeScript",
-  userId: "user-123", // required, non-empty: the user the memory belongs to
-  id: "pref-lang", // optional: stable id (generated when omitted)
-});
-
-const hits = await memory.recall({
-  query: "typescript preference", // optional: omit (or "") to return everything for the user
-  userId: "user-123", // required, non-empty: the user to recall for
-  topK: 5, // optional: max memories to return (defaults to 5)
-  minScore: 0, // optional: BM25 relevance floor (defaults to the constructor's minScore)
-});
-
-await memory.forget("pref-lang", { userId: "user-123" }); // required, non-empty userId
 ```
 
-> **`userId` is required, non-empty, and may not contain `:`** on every method — it's the only tenant
-> boundary for memory, so an empty or separator-bearing value throws rather than collapsing or
-> colliding callers. **Derive it from a verified server-side auth source** (the subject/user id from
-> Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — **never from a client-supplied value** — to keep
-> each user's memories isolated.
+- `add` takes an optional `id` (a stable id; generated when omitted).
+- `recall` takes `topK` (default 5), `minScore`, and an optional `query` — omit it (or pass `""`) to return everything for the user.
+- Stored at `agentkit:memory:<userId>:<id>`.
 
-### Search tools
+`userId` is **required, non-empty, and may not contain `:`** on every method — the only tenant boundary
+for memory. **Derive it from a verified server-side auth source** (Clerk, Auth.js/NextAuth, Supabase
+Auth, Auth0, …) — never a client-supplied value.
+
+</details>
+
+## Search tools
 
 Framework-agnostic `search` / `aggregate` / `count` tool **definitions** over an Upstash Redis Search
-index. `createSearchToolDefs` returns `{ description, inputSchema, execute }` triples — the ai-sdk
-adapter wraps them with `tool()`, the eve adapter with `defineTool()`. The descriptions are generated
-from your `s.object(...)` schema (fields, types, applicable filter operators). The index is created
-**reactively** on first use (no setup step).
+index — this is how you do **RAG** (over your own documents, no dedicated primitive). The descriptions
+are generated from your schema.
 
 ```ts
 import { s } from "@upstash/redis";
 import { createSearchToolDefs } from "@upstash/agentkit-sdk";
 
 const defs = createSearchToolDefs({
-  schema: s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() }), // the Upstash Redis Search schema (built with `s`)
-  redis, // the Upstash Redis client
-  indexName: "users", // optional: index name (defaults to "agentkit:search")
-  prefix: "users:", // optional: key prefix for indexed JSON docs (defaults to "<name>:")
-  defaultLimit: 10, // optional: default page size for the `search` tool (defaults to 10)
+  schema: s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() }),
+  redis,
+  indexName: "users",
 });
-
-// defs.search / defs.aggregate / defs.count — each `{ description, inputSchema, execute }`.
+// defs.search / defs.aggregate / defs.count — each { description, inputSchema, execute }
 ```
 
-> **RAG?** There's no dedicated RAG primitive — use the **search tools** above over your own
-> documents. Index your docs as JSON under one prefix with a schema you control, then give the agent
-> the generated `search`/`aggregate`/`count` tools (typo-tolerant `$smart` retrieval, BM25-ranked).
+<details>
+<summary>Options &amp; how the adapters use it</summary>
 
-### Rate limiting
+- **`schema`** _(required)_ — built with `s`.
+- **`redis`** _(required)_ — the Upstash Redis client.
+- `indexName` — defaults to `"agentkit:search"`.
+- `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+- `defaultLimit` — default page size for `search` (10).
 
-`createRateLimit` returns a configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js)
-`Ratelimit` with AgentKit defaults. There's no model wrapper — call `.limit(identifier)` yourself
-before doing work (e.g. before calling a model) and short-circuit when over the limit. Keys are
-`agentkit:rateLimit:<identifier>`.
+Each def is `{ description, inputSchema, execute }` — the ai-sdk adapter wraps them with `tool()`, the
+eve adapter with `defineTool()`. The index is created reactively on first use (no setup step). For RAG,
+index your docs as JSON under one prefix and hand the agent these tools (typo-tolerant `$smart`
+retrieval, BM25-ranked).
+
+</details>
+
+## Rate limiting
+
+A configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js) — call `.limit(identifier)`
+before doing work and short-circuit when over the limit.
 
 ```ts
 import { createRateLimit, Ratelimit } from "@upstash/agentkit-sdk";
 
-const ratelimit = createRateLimit({
-  redis, // the Upstash Redis client backing the limiter
-  limiter: Ratelimit.slidingWindow(20, "1 m"), // required: the limiter algorithm (or fixedWindow, …)
-  prefix: "agentkit:rateLimit", // optional: base key prefix; keys are `<prefix>:<identifier>`
-});
+const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(20, "1 m") });
 
-const { success } = await ratelimit.limit("user-123"); // pass a per-user identifier to limit by user
+const { success } = await ratelimit.limit("user-123");
 if (!success) throw new Error("rate limited");
 ```
 
-### Tool cache
+<details>
+<summary>Options</summary>
 
-Memoize deterministic tool results in Redis, keyed by user, then tool, then a stable hash of the
-arguments. Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
+- **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
+- `redis` — the Upstash Redis client backing the limiter.
+- `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
+
+There's no model wrapper — pass a per-user `identifier` to `.limit()` to throttle per user.
+
+</details>
+
+## Tool cache
+
+Memoize deterministic tool results in Redis, keyed by user, then tool, then a hash of the arguments.
 
 ```ts
-const tools = new ToolCache({
-  redis, // the Upstash Redis client
-  prefix: "agentkit:toolCache", // optional: base key prefix (defaults to "agentkit:toolCache")
-  ttlSeconds: 600, // optional: default TTL in seconds for cached results (default: no expiry)
-});
-
 // `wrap` returns a memoized version of your execute, keyed by userId + "getWeather" + the args hash.
-const getWeather = tools.wrap(
-  "user-123", // required, non-empty: the user the cache entry is scoped to
-  "getWeather", // required, non-empty: the tool name
-  (args) => fetchWeather(args), // the function to memoize
-  { ttlSeconds: 600 }, // optional: per-result TTL (overrides the constructor default)
-);
+const getWeather = tools.wrap("user-123", "getWeather", (args) => fetchWeather(args));
 ```
 
-> **`userId` and `toolName` are both required, non-empty, and may not contain `:`** (`get`/`set`/
-> `invalidate`/`wrap` all throw otherwise). The entry is scoped to the user first, so one user's cached
-> result is never served to another — provided `userId` comes from a verified auth source, not a
-> client-supplied value.
+<details>
+<summary>Config, the low-level API &amp; the key parts</summary>
+
+```ts
+new ToolCache({
+  redis,
+  prefix: "agentkit:toolCache", // optional: base key prefix
+  ttlSeconds: 600, // optional: default TTL (default: no expiry)
+});
+```
+
+`wrap(userId, toolName, execute, { ttlSeconds? })` is the high-level helper; `get` / `set` /
+`invalidate` are the low-level API. Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
+
+`userId` and `toolName` are both **required, non-empty, and may not contain `:`** (all methods throw
+otherwise). The entry is scoped to the user first, so one user's cached result is never served to
+another — provided `userId` comes from a verified auth source, not a client-supplied value.
+
+</details>
+
+## Advanced — the raw search index
+
+The search-backed features expose their Redis Search index handle (`describe`, `count`, `waitIndexing`,
+`drop`):
+
+```ts
+await memory.searchIndex.waitIndexing();
+const info = await memory.searchIndex.describe();
+```
 
 ## Testing
 
-The SDK is tested against a **real Upstash Redis** instance (no Redis mock) — only LLM calls are
-mocked. Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (the suites skip themselves when
-these are absent). Each suite uses a unique key prefix and cleans up its index/keys afterwards.
+Tested against a **real Upstash Redis** instance (no Redis mock) — only LLM calls are mocked. Set
+`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (suites skip when absent). Each suite uses a
+unique key prefix and cleans up afterwards.
 
 ## License
 
