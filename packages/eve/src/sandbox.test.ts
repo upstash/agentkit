@@ -1,7 +1,7 @@
 import { config } from "dotenv";
 import { describe, expect, it } from "vitest";
 import { Box } from "@upstash/box";
-import { rewriteWorkspacePaths, toBoxPath, upstash } from "./sandbox.js";
+import { rewriteWorkspacePaths, toBoxNetworkPolicy, toBoxPath, upstash } from "./sandbox.js";
 import { hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 config(); // load repo-root .env for UPSTASH_BOX_API_KEY
@@ -44,6 +44,28 @@ describe("upstash() backend (offline)", () => {
       "curl https://api.example.com/workspace/items",
     );
     expect(rewriteWorkspacePaths("cat ./workspace/x")).toBe("cat ./workspace/x"); // relative, untouched
+  });
+
+  // Box's policy is a plain domain/CIDR allow-list. It must not silently drop Eve's per-domain
+  // credential-brokering rules (transform / forwardURL); those throw instead.
+  it("maps plain network policies and throws on per-domain rules", () => {
+    expect(toBoxNetworkPolicy("deny-all")).toEqual({ mode: "deny-all" });
+    expect(toBoxNetworkPolicy("allow-all")).toEqual({ mode: "allow-all" });
+    expect(toBoxNetworkPolicy({ allow: ["github.com"] } as never)).toEqual({
+      mode: "custom",
+      allowedDomains: ["github.com"],
+    });
+    // Empty rule arrays just allow the domains — fine.
+    expect(toBoxNetworkPolicy({ allow: { "github.com": [], "*": [] } } as never)).toEqual({
+      mode: "custom",
+      allowedDomains: ["github.com", "*"],
+    });
+    // A transform rule (firewall header injection) has no dynamic Box equivalent — throw, don't drop.
+    expect(() =>
+      toBoxNetworkPolicy({
+        allow: { "github.com": [{ transform: [{ headers: { authorization: "Basic x" } }] }] },
+      } as never),
+    ).toThrow(/attachHeaders/);
   });
 });
 
@@ -111,6 +133,85 @@ describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
       await Box.delete({ boxIds: handle.session.id }).catch(() => {});
     }
   }, 180_000);
+
+  /**
+   * Users don't call `create` — they pass the backend to `defineSandbox`, and eve calls `create`, then
+   * drives `useSessionFn` (its implementation of the `use({ networkPolicy })` you write in
+   * `bootstrap`/`onSession`) and the session's `setNetworkPolicy` (the agent changing policy mid-run).
+   *
+   * The user code that hits this error — a per-domain `transform` (firewall header injection) in `use()`:
+   *
+   * ```ts
+   * // agent/sandbox.ts
+   * export default defineSandbox({
+   *   backend: upstash({ runtime: "node" }),
+   *   async onSession({ use }) {
+   *     await use({
+   *       networkPolicy: {
+   *         allow: { "api.example.com": [{ transform: [{ headers: { authorization: "Bearer …" } }] }] },
+   *       },
+   *     }); // throws: Box can't inject headers via a per-session policy
+   *   },
+   * });
+   * ```
+   *
+   * What to do instead — broker credentials with Box's `attachHeaders` (set at backend creation), and
+   * just open the domain per session:
+   *
+   * ```ts
+   * export default defineSandbox({
+   *   backend: upstash({
+   *     runtime: "node",
+   *     attachHeaders: { "api.example.com": { Authorization: "Bearer …" } }, // injected by Box's proxy
+   *   }),
+   *   async onSession({ use }) {
+   *     await use({ networkPolicy: { allow: ["api.example.com"] } }); // plain allow-list, no rules
+   *   },
+   * });
+   * ```
+   *
+   * The test drives the same backend methods eve calls (`useSessionFn` = `use()`, plus `setNetworkPolicy`),
+   * since standing up the full eve runtime in a unit test isn't practical.
+   */
+  it("rejects a per-session transform rule on use()/setNetworkPolicy; a plain allow-list works", async () => {
+    const backend = upstash({ runtime: "node" });
+    const handle = await backend.create(createInput); // eve does this for you
+    const transformPolicy = {
+      allow: { "api.example.com": [{ transform: [{ headers: { authorization: "Bearer x" } }] }] },
+    } as never;
+    try {
+      // The user's `use({ networkPolicy })` (eve → useSessionFn): errors, pointing to attachHeaders.
+      await expect(handle.useSessionFn({ networkPolicy: transformPolicy })).rejects.toThrow(
+        /attachHeaders/,
+      );
+      // The agent's `session.setNetworkPolicy(...)`: same guard.
+      await expect(handle.session.setNetworkPolicy(transformPolicy)).rejects.toThrow(
+        /attachHeaders/,
+      );
+
+      // Works instead: a bare domain allow-list (no per-domain rules).
+      await expect(
+        handle.useSessionFn({ networkPolicy: ["api.example.com"] as never }),
+      ).resolves.toBeDefined();
+    } finally {
+      await Box.delete({ boxIds: handle.session.id }).catch(() => {});
+    }
+  }, 120_000);
+
+  // The supported credential-brokering path: Box's `attachHeaders`, set at backend creation. We can't
+  // observe injection without an echo endpoint, but the box must at least be created with it and run.
+  it("accepts attachHeaders at backend creation (credential brokering)", async () => {
+    const backend = upstash({
+      runtime: "node",
+      attachHeaders: { "api.example.com": { Authorization: "Bearer test" } },
+    });
+    const handle = await backend.create(createInput);
+    try {
+      expect((await handle.session.run({ command: "echo ok" })).stdout).toContain("ok");
+    } finally {
+      await Box.delete({ boxIds: handle.session.id }).catch(() => {});
+    }
+  }, 120_000);
 });
 
 // Bug fix: prewarm (build/startup) and create (per request) run in different processes, so the

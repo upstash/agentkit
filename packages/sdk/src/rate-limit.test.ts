@@ -24,4 +24,14 @@ describe.skipIf(!hasRedisCreds)("createRateLimit (live Redis)", () => {
     const second = await ratelimit.limit(id);
     expect(second.success).toBe(false);
   });
+
+  // `redis` is optional everywhere in AgentKit; createRateLimit falls back to Redis.fromEnv().
+  it("defaults redis to Redis.fromEnv() when omitted", async () => {
+    const ratelimit = createRateLimit({
+      limiter: Ratelimit.slidingWindow(1, "60 s"),
+      prefix: `${prefix}:fromenv`,
+    });
+    const result = await ratelimit.limit("user-2");
+    expect(result.success).toBe(true);
+  });
 });

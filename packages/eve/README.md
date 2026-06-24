@@ -179,6 +179,45 @@ readable by code running in the box; don't pass secrets you wouldn't want it to 
 </details>
 
 <details>
+<summary>Brokering credentials (injecting headers)</summary>
+
+Box network policies are plain domain/CIDR allow-lists. Eve's per-domain firewall rules (`transform`
+header injection, `forwardURL`) have no Box equivalent, so passing them in `use({ networkPolicy })`
+**throws** rather than silently sending the request unauthenticated:
+
+```ts
+// ❌ throws — Box can't inject headers via a per-session policy
+export default defineSandbox({
+  backend: upstash({ runtime: "node" }),
+  async onSession({ use }) {
+    await use({
+      networkPolicy: {
+        allow: { "api.example.com": [{ transform: [{ headers: { authorization: "Bearer …" } }] }] },
+      },
+    });
+  },
+});
+```
+
+Broker credentials with Box's `attachHeaders` instead (set at backend creation; a proxy on the box
+injects them), and open the domain with a plain allow-list:
+
+```ts
+// ✅ headers injected at the firewall; the secret never enters the box
+export default defineSandbox({
+  backend: upstash({
+    runtime: "node",
+    attachHeaders: { "api.example.com": { Authorization: "Bearer …" } },
+  }),
+  async onSession({ use }) {
+    await use({ networkPolicy: { allow: ["api.example.com"] } });
+  },
+});
+```
+
+</details>
+
+<details>
 <summary>Lifecycle: one box per conversation</summary>
 
 **Reuse** — eve re-opens a session several times per turn; the backend reattaches to the same Box
