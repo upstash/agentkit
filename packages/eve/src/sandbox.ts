@@ -12,7 +12,7 @@
  * import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: import { vercel } from "eve/sandbox/vercel"
  *
  * export default defineSandbox({
- *   backend: upstash({ runtime: "node24", resources: { vcpus: 2 } }),
+ *   backend: upstash({ runtime: "node", size: "medium" }),
  *   revalidationKey: () => "repo-bootstrap-v1",
  *   async bootstrap({ use }) {
  *     // Network egress is denied by default — open it here because installing a package needs it.
@@ -26,20 +26,35 @@
  * ```
  *
  * **Network egress is denied by default** (see {@link DEFAULT_NETWORK_POLICY}); pass a `networkPolicy`
- * on the backend, in `bootstrap`'s `use(...)`, or in the session `use(...)` to open it. Note also that
- * `config.env` is injected into the box and is therefore readable by code running inside it — don't
- * pass secrets you wouldn't want model-generated code to see.
+ * in `bootstrap`'s `use(...)` or the session `use(...)` to open it. Note also that `config.env` is
+ * injected into the box and is therefore readable by code running inside it — don't pass secrets you
+ * wouldn't want model-generated code to see.
  *
- * The lifecycle maps onto Box like this: `prewarm` builds a template box (seed files + your
- * `bootstrap` hook) and captures a Box **snapshot**; `create` opens a live session from that snapshot
- * with `Box.fromSnapshot` (or a fresh `Box.create` when there's no template). The prewarmed snapshots
- * are cached on the backend instance, so use the factory form of `backend` to keep that cache warm.
+ * The lifecycle maps onto Box like this: `prewarm` builds a template box (seed files + your `bootstrap`
+ * hook), captures a Box **snapshot**, and records `templateKey → snapshotId` in a **durable Redis
+ * registry**; `create` opens a live session from that snapshot with `Box.fromSnapshot` (or a fresh
+ * `Box.create` when there's no template). The registry is what lets `create` (running per request) reuse
+ * the snapshot built by `prewarm` (running at build/startup) — a plain in-memory map can't bridge those
+ * processes, and Box has no static snapshot lookup. When a sandbox has nothing to bake (no seed files,
+ * no `bootstrap`), `prewarm` builds **no** box at all and `create` just spins a fresh one.
+ *
+ * **Session reuse:** Eve re-opens a session many times (per turn / retry / re-render) and hands the box
+ * id we returned in `captureState` back as `create`'s `existingMetadata`. `create` **reattaches** to that
+ * box (`Box.get`) instead of making a new one, and `dispose` is a **no-op** — so a conversation keeps a
+ * single box rather than piling up one per open. Boxes default to Box's pause-based idle lifecycle
+ * (`keepAlive: false`): idle → auto-paused, reattach → resumed, then reaped by Box. (`keepAlive: true`
+ * opts into an always-running box you manage yourself.)
+ *
+ * Eve roots its sandbox tools at `/workspace`, but a Box session lives in `/workspace/home`; this backend
+ * bridges the two (in `resolvePath` and in raw commands), so the agent's file ops and `find`/`grep`
+ * commands hit the right directory.
  *
  * `@upstash/box` is an optional peer dependency — only needed when you import this entry point. This
  * backend is type-checked against Eve's real types but cannot be runtime-verified in this repo.
  */
 import { Box } from "@upstash/box";
-import type { BoxSize, NetworkPolicy as BoxNetworkPolicy, Runtime } from "@upstash/box";
+import type { BoxConfig, NetworkPolicy as BoxNetworkPolicy } from "@upstash/box";
+import { Redis } from "@upstash/redis";
 import type {
   SandboxBackend,
   SandboxBackendCreateInput,
@@ -58,30 +73,69 @@ export interface UpstashSandboxOptions {
   networkPolicy?: SandboxNetworkPolicy;
 }
 
-export interface UpstashBackendConfig {
-  /** Backend name (participates in Eve's cache-key derivation). Defaults to `"upstash"`. */
-  name?: string;
-  /** Upstash Box API key. Falls back to `UPSTASH_BOX_API_KEY`. */
-  apiKey?: string;
-  /** Box runtime. Accepts Eve-style strings like `"node24"` (mapped to Box's `"node"`). */
-  runtime?: Runtime | string;
-  /** Box resource size. Inferred from `resources.vcpus` when omitted. */
-  size?: BoxSize;
-  /** Vercel-style resource hint; `vcpus` maps to a Box size (2→small, 4→medium, 8→large). */
-  resources?: { vcpus?: number };
-  /** Keep the box alive between turns. Defaults to true. */
-  keepAlive?: boolean;
-  /** Startup script run once when a keep-alive box is created. */
-  initCommand?: string;
-  /** Environment variables available inside the box. */
-  env?: Record<string, string>;
-  /** Initial network policy applied to every session. */
-  networkPolicy?: SandboxNetworkPolicy;
+/**
+ * Configuration for the {@link upstash} backend — the **Upstash Box** `BoxConfig` as-is (`runtime`,
+ * `size`, `apiKey`/`baseUrl`, `keepAlive`, `initCommand`, `env`, `git`, `skills`, `mcpServers`,
+ * `timeout`, `debug`, `name`, …). Whatever you'd pass to `Box.create({...})` you pass here, so there
+ * are no AgentKit-invented knobs to learn or keep in sync.
+ *
+ * `networkPolicy` is intentionally **omitted**: in Eve, network access is governed by the secure
+ * deny-all default (see {@link DEFAULT_NETWORK_POLICY}) plus per-session `use({ networkPolicy })`, not
+ * a backend-level knob. `name` doubles as the Eve backend name (it participates in cache-key
+ * derivation; defaults to `"upstash"`).
+ *
+ * Two AgentKit-only fields sit alongside the Box config: `redis` and `templatePrefix`, which back the
+ * durable template→snapshot registry (so a snapshot built by `prewarm` at build time is reused by
+ * `create` per request — see {@link UpstashSandboxBackend}). They are stripped before the rest is
+ * handed to `Box.create`.
+ */
+export type UpstashBackendConfig = Omit<BoxConfig, "networkPolicy"> & {
+  /**
+   * Redis client backing the template→snapshot registry. `prewarm` and `create` run in different
+   * processes (build/startup vs. per request), so the snapshot id must be stored durably to be reused
+   * — an in-memory map would orphan the prewarmed box. Defaults to `Redis.fromEnv()`; only touched when
+   * a sandbox has a template (seed files or a `bootstrap`).
+   */
+  redis?: Redis;
+  /** Key prefix for the template registry. Defaults to `agentkit:sandbox:template`. */
+  templatePrefix?: string;
+};
+
+/** Eve's canonical sandbox root (hardcoded in its glob/grep/file tools). */
+const EVE_ROOT = "/workspace";
+/** Upstash Box's actual working directory — every session starts here; `/workspace` itself is off-limits. */
+const BOX_ROOT = "/workspace/home";
+
+/**
+ * Bridge an Eve-rooted path to its Box location: Eve assumes `/workspace`, Box uses `/workspace/home`.
+ * Relative paths anchor under the box root; `/workspace[/…]` is remapped; already-Box-rooted and other
+ * absolute paths (`/tmp`, `/etc`) pass through untouched.
+ */
+export function toBoxPath(path: string): string {
+  if (!path.startsWith("/")) return `${BOX_ROOT}/${path}`;
+  if (path === EVE_ROOT || path === `${EVE_ROOT}/`) return BOX_ROOT;
+  if (path.startsWith(`${EVE_ROOT}/`)) {
+    const rest = path.slice(EVE_ROOT.length + 1);
+    return rest === "home" || rest.startsWith("home/") ? path : `${BOX_ROOT}/${rest}`;
+  }
+  return path;
 }
 
-/** The directory Eve anchors relative sandbox paths to. */
-const WORKSPACE = "/workspace";
-const RUNTIMES = new Set<Runtime>(["node", "python", "golang", "ruby", "rust"]);
+/**
+ * Remap `/workspace` → `/workspace/home` inside a raw command string. Eve's built-in glob/grep tools
+ * run commands like `find /workspace …` with the literal Eve root (they don't go through `resolvePath`),
+ * so the box would search the wrong (off-limits) directory.
+ *
+ * Only rewrites `/workspace` when it **starts a path token**: the lookbehind skips it when preceded by a
+ * word char, `.`, or `/` — i.e. inside a URL (`https://host/workspace/x`) or a relative path
+ * (`./workspace`) — and the lookahead leaves `/workspace/home…` (already box-rooted) and words like
+ * `/workspaces` alone. This still can't reach `/workspace` paths baked **inside files** the model writes
+ * (only the command text is rewritten); the model normally avoids that because tool output shows it the
+ * real `/workspace/home` paths.
+ */
+export function rewriteWorkspacePaths(command: string): string {
+  return command.replace(/(?<![\w./])\/workspace(?!\/home)(?=$|[^\w])/g, BOX_ROOT);
+}
 
 /**
  * Secure default: deny all network egress unless the caller opts in via `networkPolicy` (on the
@@ -90,20 +144,6 @@ const RUNTIMES = new Set<Runtime>(["node", "python", "golang", "ruby", "rust"]);
  * infrastructure from inside the box by default.
  */
 const DEFAULT_NETWORK_POLICY: SandboxNetworkPolicy = "deny-all";
-
-function toBoxRuntime(runtime?: Runtime | string): Runtime {
-  if (!runtime) return "node";
-  const base = runtime.replace(/[0-9.]+$/, ""); // "node24" -> "node"
-  return (RUNTIMES.has(base as Runtime) ? base : "node") as Runtime;
-}
-
-function toBoxSize(config: UpstashBackendConfig): BoxSize {
-  if (config.size) return config.size;
-  const vcpus = config.resources?.vcpus ?? 0;
-  if (vcpus >= 8) return "large";
-  if (vcpus >= 4) return "medium";
-  return "small";
-}
 
 /** Map Eve's (Vercel-shaped) network policy onto Box's network policy. */
 function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPolicy {
@@ -129,14 +169,17 @@ function buildCommand(options: {
   workingDirectory?: string;
   env?: Record<string, string>;
 }): string {
-  let cmd = options.command;
+  // Bridge Eve's `/workspace` paths in the command itself to Box's `/workspace/home`.
+  let cmd = rewriteWorkspacePaths(options.command);
   if (options.env && Object.keys(options.env).length) {
     const env = Object.entries(options.env)
       .map(([k, v]) => `${k}=${shellQuote(v)}`)
       .join(" ");
     cmd = `${env} ${cmd}`;
   }
-  if (options.workingDirectory) cmd = `cd ${shellQuote(options.workingDirectory)} && ${cmd}`;
+  // Default cwd is Box's `/workspace/home`; only emit a `cd` when a working directory is requested.
+  if (options.workingDirectory)
+    cmd = `cd ${shellQuote(toBoxPath(options.workingDirectory))} && ${cmd}`;
   return cmd;
 }
 
@@ -173,8 +216,8 @@ async function streamToBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8A
 
 /** Build Eve's public {@link SandboxSession} over a live Box. */
 function buildSession(box: Box): SandboxSession {
-  const resolvePath = (path: string): string =>
-    path.startsWith("/") ? path : `${WORKSPACE}/${path}`;
+  // Eve hands us `/workspace`-rooted (or relative) paths; map them to Box's `/workspace/home`.
+  const resolvePath = (path: string): string => toBoxPath(path);
 
   return {
     get id() {
@@ -265,37 +308,102 @@ export class UpstashSandboxBackend implements SandboxBackend<
 > {
   readonly name: string;
   private readonly config: UpstashBackendConfig;
-  /** templateKey → Box snapshot id, captured by `prewarm` and reused by `create`. */
+  /** In-process fast-path cache over the durable Redis registry (templateKey → Box snapshot id). */
   private readonly templates = new Map<string, string>();
+  private redisClient?: Redis;
 
   constructor(config: UpstashBackendConfig = {}) {
     this.config = config;
     this.name = config.name ?? "upstash";
   }
 
-  private boxConfig() {
+  /** Lazily resolve the Redis client backing the template registry (so envless setups that never use a
+   * template don't trip `Redis.fromEnv()`). */
+  private redis(): Redis {
+    return (this.redisClient ??= this.config.redis ?? Redis.fromEnv());
+  }
+
+  /** Registry key for a template's snapshot id, namespaced by backend name. */
+  private templateRegistryKey(templateKey: string): string {
+    const prefix = this.config.templatePrefix ?? "agentkit:sandbox:template";
+    return `${prefix}:${this.name}:${templateKey}`;
+  }
+
+  /** Snapshot id for a template — in-process cache first, then the durable Redis registry. */
+  private async resolveSnapshot(templateKey: string): Promise<string | undefined> {
+    const cached = this.templates.get(templateKey);
+    if (cached) return cached;
+    const stored = await this.redis().get<string>(this.templateRegistryKey(templateKey));
+    if (stored) this.templates.set(templateKey, stored);
+    return stored ?? undefined;
+  }
+
+  /** The Box `BoxConfig` passed to `Box.create` / `Box.fromSnapshot` — the user's config verbatim
+   * (minus the AgentKit-only `redis`/`templatePrefix`), defaulting `keepAlive` on and enforcing the
+   * secure deny-all egress default at creation. */
+  private boxConfig(): BoxConfig {
+    const { redis: _redis, templatePrefix: _templatePrefix, ...box } = this.config;
     return {
-      ...(this.config.apiKey !== undefined ? { apiKey: this.config.apiKey } : {}),
-      runtime: toBoxRuntime(this.config.runtime),
-      size: toBoxSize(this.config),
-      keepAlive: this.config.keepAlive ?? true,
-      ...(this.config.initCommand !== undefined ? { initCommand: this.config.initCommand } : {}),
-      ...(this.config.env !== undefined ? { env: this.config.env } : {}),
+      ...box,
+      // Default to Box's pause-based idle lifecycle: the box auto-pauses when idle (cheap), resumes on
+      // reattach, and is reaped after its TTL — so sessions are reused, not leaked. `keepAlive: true`
+      // opts into an always-running box (which can't be paused) that you manage yourself.
+      keepAlive: box.keepAlive ?? false,
+      // Lock egress down atomically at creation; callers open it per-session via `use({ networkPolicy })`.
+      networkPolicy: toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY),
     };
+  }
+
+  /** Connection-only options for `Box.get` (it retrieves an existing box; it doesn't take create config). */
+  private connOptions(): { apiKey?: string; baseUrl?: string } {
+    const { apiKey, baseUrl } = this.config;
+    return {
+      ...(apiKey !== undefined ? { apiKey } : {}),
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+    };
+  }
+
+  /**
+   * Open the Box for a session, in priority order:
+   *  1. **Reattach** to the box from a previous open of this session (Eve hands our captured `boxId`
+   *     back as `existingMetadata`) — this is what stops every open from spinning a fresh box.
+   *  2. Restore the prewarmed **template snapshot** (from the Redis registry).
+   *  3. Create a **fresh** box from the base runtime.
+   */
+  private async openBox(input: SandboxBackendCreateInput): Promise<Box> {
+    const existingBoxId = (input.existingMetadata as { boxId?: string } | undefined)?.boxId;
+    if (existingBoxId) {
+      try {
+        const box = await Box.get(existingBoxId, this.connOptions());
+        // Re-assert the secure default; each opened session starts deny-all (use(...) re-opens egress).
+        await box.updateNetworkPolicy(toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY)).catch(() => {});
+        return box;
+      } catch {
+        // The box was deleted/expired since we captured it — fall through to template/fresh.
+      }
+    }
+
+    const snapshotId = input.templateKey
+      ? await this.resolveSnapshot(input.templateKey)
+      : undefined;
+    if (snapshotId) {
+      try {
+        return await Box.fromSnapshot(snapshotId, this.boxConfig());
+      } catch {
+        // The snapshot was deleted out from under the registry — drop the stale entry and start fresh.
+        this.templates.delete(input.templateKey as string);
+        await this.redis()
+          .del(this.templateRegistryKey(input.templateKey as string))
+          .catch(() => {});
+      }
+    }
+    return Box.create(this.boxConfig());
   }
 
   async create(
     input: SandboxBackendCreateInput,
   ): Promise<SandboxBackendHandle<UpstashSandboxOptions>> {
-    const snapshotId = input.templateKey ? this.templates.get(input.templateKey) : undefined;
-    const box = snapshotId
-      ? await Box.fromSnapshot(snapshotId, this.boxConfig())
-      : await Box.create(this.boxConfig());
-
-    // Lock egress down by default; the caller opens it explicitly via `networkPolicy` / `use(...)`.
-    await box.updateNetworkPolicy(
-      toBoxNetworkPolicy(this.config.networkPolicy ?? DEFAULT_NETWORK_POLICY),
-    );
+    const box = await this.openBox(input);
 
     const session = buildSession(box);
 
@@ -314,10 +422,12 @@ export class UpstashSandboxBackend implements SandboxBackend<
       },
     });
 
-    const dispose = async (): Promise<void> => {
-      if (this.config.keepAlive ?? true) await box.pause();
-      else await box.delete();
-    };
+    // Don't tear the box down here: Eve calls `dispose` at the end of every session-open, and the next
+    // open reattaches to this same box via `existingMetadata` (see `openBox`). Deleting/pausing it would
+    // force a fresh box each turn (the "N boxes per turn" bug; keep-alive boxes can't even be paused).
+    // A non-keep-alive box auto-pauses when idle and is reaped by Box's lifecycle, so this is a no-op —
+    // matching Eve's own Vercel backend.
+    const dispose = async (): Promise<void> => {};
 
     return { session, useSessionFn, captureState, dispose };
   }
@@ -325,15 +435,19 @@ export class UpstashSandboxBackend implements SandboxBackend<
   async prewarm(
     input: SandboxBackendPrewarmInput<UpstashSandboxOptions>,
   ): Promise<{ reused: boolean }> {
-    if (this.templates.has(input.templateKey)) return { reused: true };
+    // Nothing to bake into a template → don't build a throwaway box; `create` spins a fresh box per
+    // session. (Avoids the "two boxes, first unused" case for sandboxes with no seed files/bootstrap.)
+    if (input.seedFiles.length === 0 && !input.bootstrap) return { reused: false };
+
+    // Already provisioned (durably, in Redis) → reuse; this is what lets `create` (a different process)
+    // find the snapshot. The in-memory map is only a same-process fast path.
+    const existing = await this.resolveSnapshot(input.templateKey);
+    if (existing) return { reused: true };
 
     const box = await Box.create(this.boxConfig());
     try {
-      // Same secure default during template build; `bootstrap`'s `use({ networkPolicy })` opens it
-      // when the build genuinely needs network (e.g. installing packages).
-      await box.updateNetworkPolicy(
-        toBoxNetworkPolicy(this.config.networkPolicy ?? DEFAULT_NETWORK_POLICY),
-      );
+      // The box starts with the secure deny-all default (set in `boxConfig`); `bootstrap`'s
+      // `use({ networkPolicy })` opens egress when the build genuinely needs it (e.g. installing pkgs).
       const session = buildSession(box);
 
       for (const file of input.seedFiles) {
@@ -356,6 +470,8 @@ export class UpstashSandboxBackend implements SandboxBackend<
       }
 
       const snapshot = await box.snapshot({ name: `agentkit-${input.templateKey}`.slice(0, 200) });
+      // Persist durably so `create` (running in another process) can restore from it.
+      await this.redis().set(this.templateRegistryKey(input.templateKey), snapshot.id);
       this.templates.set(input.templateKey, snapshot.id);
       return { reused: false };
     } finally {

@@ -131,9 +131,12 @@ import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: import { vercel
 
 export default defineSandbox({
   backend: upstash({
-    runtime: "node24", // the Upstash Box runtime (node | python | golang | ruby | rust)
-    resources: { vcpus: 2 }, // optional: requested resources
+    // The Upstash Box `BoxConfig`, verbatim — whatever you'd pass to `Box.create({...})`:
+    runtime: "node", // the Box runtime (node | python | golang | ruby | rust)
+    size: "medium", // optional: Box resource size (small | medium | large)
+    // env: { ... }, initCommand, keepAlive, skills, mcpServers, timeout, … — all BoxConfig fields
     // apiKey, // optional: Upstash Box API key (defaults to UPSTASH_BOX_API_KEY)
+    // (networkPolicy is NOT a config knob — egress is deny-all by default, opened per-session below)
   }),
   revalidationKey: () => "repo-bootstrap-v1",
   async bootstrap({ use }) {
@@ -149,12 +152,26 @@ export default defineSandbox({
 
 > **Network egress is denied by default.** The sandbox runs untrusted, model-generated code, so open
 > egress would mean SSRF / data exfiltration / reaching your own infrastructure from inside the box.
-> Pass a `networkPolicy` (on the backend, in `bootstrap`'s `use(...)`, or in the session `use(...)`)
-> to allow it. Note that `env` passed to `upstash({ env })` is readable by code running in the box —
-> don't pass secrets you wouldn't want that code to see.
+> Open it per-session — in `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob.
+> Note that `env` passed to `upstash({ env })` is readable by code running in the box — don't pass
+> secrets you wouldn't want that code to see.
 
 Set `UPSTASH_BOX_API_KEY` (or pass `apiKey`). `@upstash/box` is an optional peer dependency — only
 needed when you import `@upstash/agentkit-eve/sandbox`.
+
+> **Template registry uses Redis.** Eve builds your sandbox template (seed files + `bootstrap`) at
+> build/startup via `prewarm`, but `create` runs per request in a different process — so the built
+> snapshot's id is stored in a durable Redis registry (`redis` defaults to `Redis.fromEnv()`; override
+> with `upstash({ redis })`). Without it, `create` couldn't find the prewarmed snapshot and would spin a
+> fresh, empty box every time (Box has no cross-process snapshot lookup). Eve roots its file/`find`/`grep`
+> tools at `/workspace`; a Box session lives at `/workspace/home`, and the backend bridges the two
+> automatically.
+
+> **One box per conversation.** Eve re-opens a sandbox session several times per turn; the backend
+> reattaches to the same Box (via the box id it captured) instead of creating a new one each time. Boxes
+> default to Box's pause-based idle lifecycle (`keepAlive: false`) — auto-paused when idle, resumed on
+> reattach, reaped by Box — so nothing leaks. Pass `upstash({ keepAlive: true })` only if you want an
+> always-running box you manage yourself.
 
 ## Cached tools (`agent/tools/*.ts`)
 
