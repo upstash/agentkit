@@ -1,8 +1,17 @@
 {
   "name": "@upstash/agentkit-sdk",
   "version": "0.1.0",
-  "description": "Core primitives for building AI agents on Upstash Redis: memory, chat history, semantic & tool caching, telemetry, sandbox, and RAG.",
+  "description": "Core, framework-agnostic primitives for AI agents on Upstash Redis: chat history, long-term memory, schema-driven search tools (RAG), tool caching, and rate limiting.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/upstash/agentkit/tree/main/packages/sdk",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
