@@ -7,7 +7,7 @@ code-execution **sandbox backend** powered by [Upstash Box](https://github.com/u
 cached tools.
 
 ```bash
-pnpm add @upstash/agentkit-eve @upstash/agentkit-sdk @upstash/redis
+pnpm add @upstash/agentkit-eve @upstash/redis
 # in your app (Eve + the OpenAI provider, plus Box only if you use /sandbox):
 pnpm add eve @ai-sdk/openai @upstash/box
 ```
