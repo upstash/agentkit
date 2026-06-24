@@ -1,6 +1,6 @@
 # @upstash/agentkit-sdk
 
-Core, framework-agnostic primitives for building AI agents — entirely on
+Core, framework-agnostic primitives for building AI agents on
 [Upstash Redis](https://upstash.com/). No vector database required: the "semantic" features (memory
 recall, search) run on [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction) and
 its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM25-scored).
@@ -9,7 +9,7 @@ its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM
 pnpm add @upstash/agentkit-sdk @upstash/redis
 ```
 
-Every feature takes only the `@upstash/redis` client — the search-backed ones create and own their
+Every feature takes only the `@upstash/redis` client. The search-backed ones create and own their
 Redis Search index internally:
 
 ```ts
@@ -24,7 +24,7 @@ const cache = new ToolCache({ redis });
 
 ## Chat history
 
-Durable conversation transcripts on Redis Search — the source of truth for a chat. `saveChat` replaces
+Durable conversation transcripts on Redis Search, the source of truth for a chat. `saveChat` replaces
 the whole message array; `getChat` / `listChats` / `searchChats` read it back.
 
 ```ts
@@ -60,7 +60,7 @@ collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `us
 </details>
 
 <details>
-<summary>Security — <code>userId</code> / <code>sessionId</code> are the tenant boundary</summary>
+<summary>Security: <code>userId</code> / <code>sessionId</code> are the tenant boundary</summary>
 
 Both are **required, non-empty, and may not contain `:`** (the key separator) — they're the only tenant
 boundary, so an empty or separator-bearing value throws rather than silently mis-scoping a chat.
@@ -106,8 +106,8 @@ Auth, Auth0, …) — never a client-supplied value.
 ## Search tools
 
 Framework-agnostic `search` / `aggregate` / `count` tool **definitions** over an Upstash Redis Search
-index — this is how you do **RAG** (over your own documents, no dedicated primitive). The descriptions
-are generated from your schema.
+index. This is how you do **RAG**: index your own documents, then hand the agent these tools (there's
+no dedicated RAG primitive). The descriptions are generated from your schema.
 
 ```ts
 import { s } from "@upstash/redis";
@@ -130,7 +130,7 @@ const defs = createSearchToolDefs({
 - `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
 - `defaultLimit` — default page size for `search` (10).
 
-Each def is `{ description, inputSchema, execute }` — the ai-sdk adapter wraps them with `tool()`, the
+Each def is `{ description, inputSchema, execute }`; the ai-sdk adapter wraps them with `tool()`, the
 eve adapter with `defineTool()`. The index is created reactively on first use (no setup step). For RAG,
 index your docs as JSON under one prefix and hand the agent these tools (typo-tolerant `$smart`
 retrieval, BM25-ranked).
@@ -139,7 +139,7 @@ retrieval, BM25-ranked).
 
 ## Rate limiting
 
-A configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js) — call `.limit(identifier)`
+A configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js). Call `.limit(identifier)`
 before doing work and short-circuit when over the limit.
 
 ```ts
@@ -158,7 +158,7 @@ if (!success) throw new Error("rate limited");
 - `redis` — the Upstash Redis client backing the limiter.
 - `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
 
-There's no model wrapper — pass a per-user `identifier` to `.limit()` to throttle per user.
+There is no model wrapper; pass a per-user `identifier` to `.limit()` to throttle per user.
 
 </details>
 
@@ -203,7 +203,7 @@ const info = await memory.searchIndex.describe();
 
 ## Testing
 
-Tested against a **real Upstash Redis** instance (no Redis mock) — only LLM calls are mocked. Set
+Tested against a **real Upstash Redis** instance (no Redis mock); only LLM calls are mocked. Set
 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (suites skip when absent). Each suite uses a
 unique key prefix and cleans up afterwards.
 

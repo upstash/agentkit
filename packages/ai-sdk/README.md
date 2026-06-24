@@ -1,9 +1,9 @@
 # @upstash/agentkit-ai-sdk
 
 [Vercel AI SDK](https://ai-sdk.dev) adapter for [Upstash AgentKit](https://www.npmjs.com/package/@upstash/agentkit-sdk).
-Drop-ins for `generateText` / `streamText`: durable chat history, ready-made memory + Redis-Search
-tools, a rate limiter, and self-contained cached tools. `redis` defaults to `Redis.fromEnv()`
-everywhere, so you import only from this package.
+It adds chat history, agent memory, Redis-Search tools, rate limiting, and tool caching to
+`generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()`, so you import only from this
+package.
 
 ```bash
 pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
@@ -11,33 +11,41 @@ pnpm add @upstash/agentkit-ai-sdk @upstash/redis ai
 
 ## Chat history
 
-A Redis-backed `ChatHistory<UIMessage>` — the durable source of truth for your conversations. Persist
-the full transcript from your route's `onFinish`:
+A Redis-backed `ChatHistory<UIMessage>`, the durable source of truth for your conversations. `userId`
+comes from your auth session; `chatId` is the `useChat` id that the client posts. Save the full
+transcript from your route's `onFinish`:
 
 ```ts
 // app/api/chat/route.ts
-import { createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
+import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
 import { createChatHistory } from "@upstash/agentkit-ai-sdk";
 
 const history = createChatHistory();
-const result = streamText({ model, messages: convertToModelMessages(messages) });
 
-return createUIMessageStreamResponse({
-  stream: toUIMessageStream({
-    stream: result.stream,
-    originalMessages: messages,
-    onFinish: ({ messages }) => history.saveChat({ userId, sessionId: chatId, messages, title }),
-  }),
-});
+export async function POST(req: Request) {
+  const userId = await getSessionUserId(req); // your auth session — never trust a client-sent id
+  const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
+
+  const result = streamText({ model, messages: convertToModelMessages(messages) });
+
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      onFinish: ({ messages }) =>
+        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+    }),
+  });
+}
 ```
 
-Load a transcript and list/search chats for a sidebar:
+To load a chat, take `chatId` from the page route and `userId` from the session, then seed `useChat`:
 
 ```ts
 const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
 const chats = await history.listChats({ userId, limit: 50 }); // summaries, no messages
 const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20 });
-// then: useChat({ id: chatId, messages: chat?.messages ?? [] })
+// client: useChat({ id: chatId, messages: chat?.messages ?? [] })
 ```
 
 <details>
@@ -61,7 +69,7 @@ overwrites the **whole** array (no delta merge) — `useChat` sends the full con
 </details>
 
 <details>
-<summary>Security — <code>userId</code> is the tenant boundary</summary>
+<summary>Security: <code>userId</code> is the tenant boundary</summary>
 
 Every method takes a single object; `userId` is **required, non-empty, and may not contain `:`**.
 **Derive it from a verified server-side auth source** — the subject/user id from your auth provider
@@ -130,7 +138,7 @@ The index is created (and `waitIndexing`-ed) reactively on first use — no setu
 
 ## Rate limiting
 
-A configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js) — call `.limit(identifier)`
+A configured [Upstash Ratelimit](https://github.com/upstash/ratelimit-js). Call `.limit(identifier)`
 before the model and short-circuit when over the limit.
 
 ```ts
@@ -149,13 +157,13 @@ if (!success) throw new Error("rate limited"); // or return a 429 from your rout
 - `redis` — the Upstash Redis client backing the limiter.
 - `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
 
-There's no model wrapper — pass a per-user `identifier` to `.limit()` to throttle per user.
+There is no model wrapper; pass a per-user `identifier` to `.limit()` to throttle per user.
 
 </details>
 
 ## Tool cache
 
-Memoize a map of AI SDK tools' results in Redis — each tool is cached under its map key, scoped to
+Memoize a map of AI SDK tools' results in Redis. Each tool is cached under its map key, scoped to
 `userId`.
 
 ```ts

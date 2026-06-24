@@ -1,8 +1,17 @@
 {
   "name": "@upstash/agentkit-eve",
   "version": "0.1.0",
-  "description": "Vercel Eve framework adapter for Upstash AgentKit: cached tools, long-term memory tools, and an Upstash Box code-execution sandbox backend.",
+  "description": "Upstash AgentKit adapter for the Vercel Eve agent framework: memory tools, Redis-Search tools, a rate-limit gate, an Upstash Box sandbox backend, and cached tools.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/eve"
+  },
+  "homepage": "https://upstash.com/docs/redis/integrations/agentkit/eve",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

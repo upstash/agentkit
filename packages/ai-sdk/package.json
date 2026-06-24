@@ -1,8 +1,17 @@
 {
   "name": "@upstash/agentkit-ai-sdk",
   "version": "0.1.0",
-  "description": "Vercel AI SDK adapter for Upstash AgentKit: model response cache, rate limiting, cached tools, and memory + Redis-Search tools.",
+  "description": "Upstash AgentKit adapter for the Vercel AI SDK: chat history, memory tools, Redis-Search tools, rate limiting, and cached tools.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/ai-sdk"
+  },
+  "homepage": "https://upstash.com/docs/redis/integrations/agentkit/ai-sdk",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

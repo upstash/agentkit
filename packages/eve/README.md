@@ -1,18 +1,20 @@
 # @upstash/agentkit-eve
 
-[Upstash AgentKit](https://upstash.com/) for **Eve, the Vercel agent framework**. Drop-in pieces for
+[Upstash AgentKit](https://upstash.com/) for **Eve, the Vercel agent framework**. You drop these into
 your `agent/` tree: memory tools, Redis-Search tools, a rate-limit gate, an
 [Upstash Box](https://github.com/upstash/box) sandbox backend, and cached tools.
 
 ```bash
 pnpm add @upstash/agentkit-eve @upstash/redis
-# in your app (Eve + the OpenAI provider, plus Box only if you use /sandbox):
-pnpm add eve @ai-sdk/openai @upstash/box
+# only if you use the sandbox backend:
+pnpm add @upstash/box
 ```
+
+Add these to your existing eve project; `eve` and your AI-SDK provider are already installed there.
 
 ## Memory tools
 
-Long-term memory the model reads and writes itself — `recall_memory` and `save_memory`, one file each.
+Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
 
 ```ts
 // agent/tools/recall_memory.ts
@@ -82,7 +84,7 @@ you want — repeat the same `schema` + `indexName` across `search_books.ts` / `
 
 ## Rate limiting
 
-A ready `AuthFn` that throttles inbound requests — drop it into your channel's `auth` walk ahead of
+A ready `AuthFn` that throttles inbound requests. Drop it into your channel's `auth` walk ahead of
 your real authenticators.
 
 ```ts
@@ -104,7 +106,7 @@ export default eveChannel({
 ```
 
 <details>
-<summary>Options, the required <code>identifier</code> &amp; POST-only counting</summary>
+<summary>Options and the required <code>identifier</code></summary>
 
 - **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
 - **`identifier`** _(required)_ — a string, or `(request) => string`. There's no implicit `"global"`:
@@ -114,16 +116,25 @@ export default eveChannel({
 - `message` — 403 body when over the limit.
 - `redis` — defaults to `Redis.fromEnv()`.
 
-It's a _gate_: under the limit it returns `null` to fall through to the next `AuthFn`; over it throws a
-403. **Only `POST` requests are counted** — eve runs each turn as a message `POST` plus a follow-up
-`GET …/stream`, and the auth walk runs on both, so counting only the `POST`s means one turn costs one
-token (a `slidingWindow(20, "1 m")` allows 20 turns/min, not 10).
+It's a gate: under the limit it returns `null` to fall through to the next `AuthFn`; over it throws a
+403.
+
+</details>
+
+<details>
+<summary>Why only <code>POST</code> requests are counted</summary>
+
+eve runs each turn as two authenticated requests: the message `POST` (which invokes the model) and a
+follow-up `GET …/stream` that opens the reply stream. The auth walk runs on both, so counting both
+would charge every turn twice. `createRateLimitAuth` counts only the `POST`s, so one turn costs one
+token: a `Ratelimit.slidingWindow(20, "1 m")` allows 20 turns per minute, not 10. The session-read
+`GET`s pass through unthrottled.
 
 </details>
 
 ## Code-execution sandbox
 
-A drop-in replacement for Eve's `vercel()` backend, powered by Upstash Box — swap the import and keep
+A drop-in replacement for Eve's `vercel()` backend, powered by Upstash Box. Swap the import and keep
 the rest of your [sandbox file](https://eve.dev/docs/sandbox) the same.
 
 ```ts
@@ -145,7 +156,7 @@ export default defineSandbox({
 ```
 
 <details>
-<summary>Config — it's Box's <code>BoxConfig</code></summary>
+<summary>Config: Box's <code>BoxConfig</code></summary>
 
 `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
 `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
@@ -158,7 +169,7 @@ export default defineSandbox({
 </details>
 
 <details>
-<summary>Security — network egress is deny-all by default</summary>
+<summary>Security: network egress is deny-all by default</summary>
 
 The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data exfiltration /
 reaching your own infrastructure from inside the box. Open it per-session — in `bootstrap`'s `use(...)`
@@ -168,7 +179,7 @@ readable by code running in the box; don't pass secrets you wouldn't want it to 
 </details>
 
 <details>
-<summary>Lifecycle — one box per conversation, Redis template registry</summary>
+<summary>Lifecycle: one box per conversation</summary>
 
 **Reuse** — eve re-opens a session several times per turn; the backend reattaches to the same Box
 instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
