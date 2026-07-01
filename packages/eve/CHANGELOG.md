@@ -1,5 +1,11 @@
 # @upstash/agentkit-eve
 
+## 0.2.2
+
+### Patch Changes
+
+- 0970c09: change network policy to open boxes with allow-all network
+
 ## 0.2.1
 
 ### Patch Changes
