@@ -445,10 +445,12 @@ export class UpstashSandboxBackend implements SandboxBackend<
     const existingBoxId = (input.existingMetadata as { boxId?: string } | undefined)?.boxId;
     if (existingBoxId) {
       try {
-        const box = await Box.get(existingBoxId, this.connOptions());
-        // Re-assert the secure default; each opened session starts deny-all (use(...) re-opens egress).
-        await box.updateNetworkPolicy(toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY)).catch(() => {});
-        return box;
+        // Reattach as-is; the box keeps whatever network policy the session last set.
+        // (Don't re-assert deny-all here: Eve runs `onSession` — which calls
+        // `use({ networkPolicy })` — only ONCE per session, so resetting to deny-all on
+        // reattach would strip egress for every turn after the first, with nothing to
+        // re-open it. `create()` re-applies the persisted policy instead.)
+        return await Box.get(existingBoxId, this.connOptions());
       } catch {
         // The box was deleted/expired since we captured it — fall through to template/fresh.
       }
@@ -478,9 +480,23 @@ export class UpstashSandboxBackend implements SandboxBackend<
 
     const session = buildSession(box);
 
+    // Eve runs the authored `onSession` (which calls `use({ networkPolicy })`) only ONCE
+    // per session, but a session opens several boxes over its life — reattach, or a fresh
+    // box after the old one was reaped — and each starts at the secure deny-all default.
+    // So we persist the policy the session chose and re-apply it on every open; otherwise
+    // egress silently reverts to deny-all after the first turn.
+    let networkPolicy = (
+      input.existingMetadata as { networkPolicy?: SandboxNetworkPolicy } | undefined
+    )?.networkPolicy;
+    if (networkPolicy) {
+      await box.updateNetworkPolicy(toBoxNetworkPolicy(networkPolicy)).catch(() => {});
+    }
+
     const useSessionFn: SandboxSessionUseFn<UpstashSandboxOptions> = async (options) => {
-      if (options?.networkPolicy)
+      if (options?.networkPolicy) {
+        networkPolicy = options.networkPolicy;
         await box.updateNetworkPolicy(toBoxNetworkPolicy(options.networkPolicy));
+      }
       return session;
     };
 
@@ -489,6 +505,7 @@ export class UpstashSandboxBackend implements SandboxBackend<
       sessionKey: input.sessionKey,
       metadata: {
         boxId: box.id,
+        ...(networkPolicy ? { networkPolicy } : {}),
         ...(input.templateKey ? { templateKey: input.templateKey } : {}),
       },
     });
