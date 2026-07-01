@@ -99,6 +99,23 @@ export type UpstashBackendConfig = Omit<BoxConfig, "networkPolicy"> & {
   redis?: Redis;
   /** Key prefix for the template registry. Defaults to `agentkit:sandbox:template`. */
   templatePrefix?: string;
+  /**
+   * A **base Box snapshot** every fresh session restores from, instead of a bare `Box.create`. Use it
+   * to bake heavy, slow-changing setup (browser binaries, ffmpeg, a preinstalled toolchain) into one
+   * snapshot out-of-band — e.g. built once at server startup from Next.js `instrumentation.ts` — and
+   * have every session start from it.
+   *
+   * This is orthogonal to Eve's `bootstrap`/prewarm template mechanism: `bootstrap` bakes a template
+   * from *this repo's* seed files + hook and Eve decides when to rebuild it; `baseSnapshot` points at a
+   * snapshot **you** manage and address by id, which Box has no static name lookup for — hence a
+   * resolver so you can look the id up from your own store (Redis keyed by a name) at open time.
+   *
+   * Pass a snapshot id string, or a function resolving one (sync or async). Returning `undefined` (or
+   * a snapshot that no longer exists) falls back to a fresh `Box.create`. When both a prewarmed
+   * template snapshot and a `baseSnapshot` apply, the template snapshot wins (it's the more specific,
+   * repo-derived one); `baseSnapshot` is the fallback for sessions with no template.
+   */
+  baseSnapshot?: string | (() => string | undefined | Promise<string | undefined>);
 };
 
 /** Eve's canonical sandbox root (hardcoded in its glob/grep/file tools). */
@@ -366,10 +383,15 @@ export class UpstashSandboxBackend implements SandboxBackend<
   }
 
   /** The Box `BoxConfig` passed to `Box.create` / `Box.fromSnapshot` — the user's config verbatim
-   * (minus the AgentKit-only `redis`/`templatePrefix`), defaulting `keepAlive` on and enforcing the
-   * secure deny-all egress default at creation. */
+   * (minus the AgentKit-only `redis`/`templatePrefix`/`baseSnapshot`), defaulting `keepAlive` on and
+   * enforcing the secure deny-all egress default at creation. */
   private boxConfig(): BoxConfig {
-    const { redis: _redis, templatePrefix: _templatePrefix, ...box } = this.config;
+    const {
+      redis: _redis,
+      templatePrefix: _templatePrefix,
+      baseSnapshot: _baseSnapshot,
+      ...box
+    } = this.config;
     return {
       ...box,
       // Default to Box's pause-based idle lifecycle: the box auto-pauses when idle (cheap), resumes on
@@ -379,6 +401,28 @@ export class UpstashSandboxBackend implements SandboxBackend<
       // Lock egress down atomically at creation; callers open it per-session via `use({ networkPolicy })`.
       networkPolicy: toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY),
     };
+  }
+
+  /** Resolve the configured base snapshot id (string or resolver), or undefined when none/unresolved. */
+  private async resolveBaseSnapshot(): Promise<string | undefined> {
+    const base = this.config.baseSnapshot;
+    if (!base) return undefined;
+    return (typeof base === "function" ? await base() : base) ?? undefined;
+  }
+
+  /** A fresh box: from the configured `baseSnapshot` when one resolves (falling back to a bare create if
+   * that snapshot is gone), otherwise a bare `Box.create`. Shared by `openBox`'s fresh path and `prewarm`
+   * so a template is layered on top of the same base. */
+  private async createBaseBox(): Promise<Box> {
+    const baseId = await this.resolveBaseSnapshot();
+    if (baseId) {
+      try {
+        return await Box.fromSnapshot(baseId, this.boxConfig());
+      } catch {
+        // The base snapshot was deleted/expired — degrade to a bare box rather than failing the session.
+      }
+    }
+    return Box.create(this.boxConfig());
   }
 
   /** Connection-only options for `Box.get` (it retrieves an existing box; it doesn't take create config). */
@@ -424,7 +468,7 @@ export class UpstashSandboxBackend implements SandboxBackend<
           .catch(() => {});
       }
     }
-    return Box.create(this.boxConfig());
+    return this.createBaseBox();
   }
 
   async create(
@@ -471,7 +515,9 @@ export class UpstashSandboxBackend implements SandboxBackend<
     const existing = await this.resolveSnapshot(input.templateKey);
     if (existing) return { reused: true };
 
-    const box = await Box.create(this.boxConfig());
+    // Layer this repo's template (seed files + bootstrap) on top of the base snapshot, so a prewarmed
+    // template inherits whatever the base bakes in.
+    const box = await this.createBaseBox();
     try {
       // The box starts with the secure deny-all default (set in `boxConfig`); `bootstrap`'s
       // `use({ networkPolicy })` opens egress when the build genuinely needs it (e.g. installing pkgs).
