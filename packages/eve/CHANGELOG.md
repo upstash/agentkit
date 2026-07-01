@@ -1,5 +1,11 @@
 # @upstash/agentkit-eve
 
+## 0.2.1
+
+### Patch Changes
+
+- fcc8eb1: Add baseSnapshot parameter to upstash sandbox
+
 ## 0.2.0
 
 ### Minor Changes
