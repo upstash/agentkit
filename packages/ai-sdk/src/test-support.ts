@@ -29,6 +29,11 @@ export function uniquePrefix(label: string): string {
   return `test:${label}:${randomUUID().slice(0, 8)}`;
 }
 
+/** A collision-proof, colon-free userId (core key-part validation rejects ':', the key separator). */
+export function uniqueUserId(label: string): string {
+  return `test-${label}-${randomUUID().slice(0, 8)}`;
+}
+
 /** Delete every key under a key prefix (best-effort cleanup in afterAll hooks). */
 export async function cleanupKeys(redis: Redis, prefix: string): Promise<void> {
   let cursor = "0";

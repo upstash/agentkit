@@ -14,13 +14,13 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.0-beta",
+    "@ai-sdk/openai": "^4.0.15",
     "@upstash/agentkit-eve": "workspace:*",
     "@upstash/box": "^0.5.1",
     "@upstash/redis": "^1.38.0",
     "@vercel/connect": "0.2.2",
-    "ai": "7.0.0-beta.178",
-    "eve": "^0.17.1",
+    "ai": "7.0.30",
+    "eve": "^0.24.6",
     "zod": "4.4.3",
     "@radix-ui/react-use-controllable-state": "1.2.2",
     "@shikijs/core": "4.1.0",

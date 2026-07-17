@@ -1,14 +1,14 @@
 import { z } from "zod";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { defineCachedTool } from "./tools.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "./test-support.js";
 
 const CTX = {} as never;
 
 describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
   const redis = testRedis();
   // The tool owns its ToolCache (default `agentkit:toolCache` base); isolate this run by userId.
-  const ns = uniquePrefix("eve-tool").replace("test:", "");
+  const ns = uniqueUserId("eve-tool");
 
   afterAll(async () => {
     await cleanupKeys(redis, `agentkit:toolCache:${ns}`);
@@ -36,7 +36,7 @@ describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
       description: "upper",
       inputSchema: z.object({ id: z.string() }),
       toolName: "upper",
-      userId: ({ id }) => `${ns}:${id}`,
+      userId: ({ id }) => `${ns}-${id}`,
       execute: fn,
       redis,
     });

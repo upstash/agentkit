@@ -510,14 +510,15 @@ export class UpstashSandboxBackend implements SandboxBackend<
       },
     });
 
-    // Don't tear the box down here: Eve calls `dispose` at the end of every session-open, and the next
-    // open reattaches to this same box via `existingMetadata` (see `openBox`). Deleting/pausing it would
-    // force a fresh box each turn (the "N boxes per turn" bug; keep-alive boxes can't even be paused).
-    // A non-keep-alive box auto-pauses when idle and is reaped by Box's lifecycle, so this is a no-op —
-    // matching Eve's own Vercel backend.
-    const dispose = async (): Promise<void> => {};
+    // Eve calls `shutdown` only when the server itself is stopping (SIGINT/SIGTERM/nitro close):
+    // nothing may be left running, but the box must stay reattachable from `captureState`'s `boxId`
+    // on the next start. Pausing does exactly that (`openBox` reattaches via `Box.get`). Keep-alive
+    // boxes can't be paused — tolerate the failure, matching Eve's own Vercel backend's try/catch.
+    const shutdown = async (): Promise<void> => {
+      await box.pause().catch(() => {});
+    };
 
-    return { session, useSessionFn, captureState, dispose };
+    return { session, useSessionFn, captureState, shutdown };
   }
 
   async prewarm(

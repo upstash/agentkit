@@ -90,7 +90,7 @@ describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
       const found = await session.run({ command: "find /workspace -name note.txt" });
       expect(found.stdout).toContain("/workspace/home/note.txt");
     } finally {
-      // dispose() is a no-op (boxes persist for reuse), so delete explicitly to clean up the test.
+      // Boxes persist for reuse (only server shutdown pauses them), so delete explicitly to clean up.
       await Box.delete({ boxIds: handle.session.id }).catch(() => {});
     }
   }, 120_000);
@@ -102,7 +102,7 @@ describe.skipIf(!hasBoxCreds)("upstash() backend (live Upstash Box)", () => {
     const first = await backend.create(createInput);
     const boxId = first.session.id;
     const state = await first.captureState();
-    await first.dispose(); // no-op — the box persists for reuse
+    await first.shutdown(); // pauses the box — it stays reattachable from the captured state
     try {
       const second = await backend.create({
         ...createInput,
