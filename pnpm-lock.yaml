@@ -203,6 +203,28 @@ importers:
         specifier: 7.0.0-dev.20260523.1
         version: 7.0.0-dev.20260523.1
 
+  examples/eve-extension-demo:
+    dependencies:
+      '@vercel/connect':
+        specifier: 0.2.2
+        version: 0.2.2(ai@7.0.30(zod@4.4.3))(eve@0.24.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.30(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
+      ai:
+        specifier: ^7.0.26
+        version: 7.0.30(zod@4.4.3)
+      eve:
+        specifier: ^0.24.6
+        version: 0.24.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.30(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.x
+        version: 24.13.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   packages/ai-sdk:
     dependencies:
       '@upstash/agentkit-sdk':
@@ -256,6 +278,22 @@ importers:
         specifier: ^0.17.1
         version: 0.17.1(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
+  packages/eve-extension:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.x
+        version: 24.13.2
+      eve:
+        specifier: ^0.24.6
+        version: 0.24.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.30(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   packages/sdk:
     dependencies:
       '@upstash/ratelimit':
@@ -276,6 +314,12 @@ packages:
 
   '@ai-sdk/gateway@4.0.0-beta.109':
     resolution: {integrity: sha512-W/1kLlPb6Bgbhwep3CA3R6do0HD7SXV5gyuz2XBLY1YABqgxYkw+IhEcjOYlmn9v+Tifjqy5yJqmWdSHMJhyPQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/gateway@4.0.22':
+    resolution: {integrity: sha512-KdXJLa6O25fltJC/Lh8gnB1VaYMdX2mEKIalkohuItS+Ig523XxwK9e/Uuc66AvtrLIf7G51cDg3rDpP9mrxwQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -304,12 +348,22 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@5.0.10':
+    resolution: {integrity: sha512-uPyec0+85dwxZYXtb8qe8gCjhjDfxP4LCDo/uRQS/iG+FIgYbHPRhr/ys281udG90bTaE18+5cxWraYaf8oHCw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider@4.0.0-beta.19':
     resolution: {integrity: sha512-Aca/KiGeRtMM7rOJ38Qio+Dc2V45PpiGoWgdrdtIkgM9zkhYpS043t0ggKoNOWgm/csv99XWGrfSF63PSkVeHw==}
     engines: {node: '>=22'}
 
   '@ai-sdk/provider@4.0.0-canary.18':
     resolution: {integrity: sha512-+XBwXEPkN+l/90bb7TaSK15jAq9ScsGrauJ/NLSGip0KX5Mf1pfEfqBWDuJMIYVRYHNdV1dDBy7JCoKUCQe/tA==}
+    engines: {node: '>=22'}
+
+  '@ai-sdk/provider@4.0.3':
+    resolution: {integrity: sha512-e0CpNWJUY7OxAFAnCZkw+ri9QOHWwTs1tXP42782KFGCU07qt8NiXCrCVowyCB5dP2r5/Uls+g2oPd8kOJn9dw==}
     engines: {node: '>=22'}
 
   '@ai-sdk/react@4.0.0-beta.182':
@@ -2582,6 +2636,126 @@ packages:
     engines: {node: '>=16.20.0'}
     hasBin: true
 
+  '@typescript/typescript-aix-ppc64@7.0.2':
+    resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [ppc64]
+    os: [aix]
+
+  '@typescript/typescript-darwin-arm64@7.0.2':
+    resolution: {integrity: sha512-gowzar9MwS/aRWp6f3a4KUqzRjAZjOsmGNCM6LcTgXum+dBfgsBVMN+AgvOCCbguXyick6LJhpBszxMebJ8syA==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@typescript/typescript-darwin-x64@7.0.2':
+    resolution: {integrity: sha512-SZ9xZInqApNlNGc9s0W1VSsktYSOe9cFqNOIqmN1Gs8SmkjKZYFt017G4VwPxASInODuAdbTW7sXiFUf893RgA==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@typescript/typescript-freebsd-arm64@7.0.2':
+    resolution: {integrity: sha512-W5NH4y/J0plIIS5b2xvTEkU7JFxyqdMAOgf+Ilhl0vHQXKO5dZoxd+C/jEtq56c4F3wk71RB4BMRQ2XdI+bwYQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [freebsd]
+
+  '@typescript/typescript-freebsd-x64@7.0.2':
+    resolution: {integrity: sha512-UMGDx5sTpzNw3WiPebH7l90IWfJggEd+egHt/q6p7/Cm3zqoV7VxkGXt+3DxPIw8CcmvAB0j3sVVfbhX+M4Tpw==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [freebsd]
+
+  '@typescript/typescript-linux-arm64@7.0.2':
+    resolution: {integrity: sha512-Qh4eU4/y3yDjnfjjyPYihMj5/ODIlmt+Bzu17OI+fiSRDW57QmU5SiN63exPRNJPKUzcc1INa1NXdrJ+MqHjUQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@typescript/typescript-linux-arm@7.0.2':
+    resolution: {integrity: sha512-gffT3xPz9sR7j/YJExkyPntrI0P2EP9XbOyWzth2/Gs0RstK+90RBcO0ncXoXy/beYll1SXw846Nf2zdnEz0QQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm]
+    os: [linux]
+
+  '@typescript/typescript-linux-loong64@7.0.2':
+    resolution: {integrity: sha512-uEHck9i8hoAzXPiYRib1O7miOnz23SxIeVl6F4LXox+qov1K35jHcEW6VHKvZI+pyvl7fZEP4MCU5LYvIq1GuQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [loong64]
+    os: [linux]
+
+  '@typescript/typescript-linux-mips64el@7.0.2':
+    resolution: {integrity: sha512-R4KvAMnE43W5Qeqb0Ly56O3mWMWIAgsMyz36DCaycd5nbg/9kzm0liw3JocfRqyJY0KPmzFjbswozXyW0DnIYA==}
+    engines: {node: '>=16.20.0'}
+    cpu: [mips64el]
+    os: [linux]
+
+  '@typescript/typescript-linux-ppc64@7.0.2':
+    resolution: {integrity: sha512-DORx5b3sd/4S7eayxm4FQv+A7CrkUIGRaHiwI8oiHTAI1fAPWhF4J0vAlkC8biAlHSVVwxMQ3tjZ2/DVbnQiiA==}
+    engines: {node: '>=16.20.0'}
+    cpu: [ppc64]
+    os: [linux]
+
+  '@typescript/typescript-linux-riscv64@7.0.2':
+    resolution: {integrity: sha512-wf0jqEDOjrPRnKwYRyyJDRo11KMbvMFrU+q4zqKyChODBzvlkbhNQfKvLxQCcwTpdDaXSHZTVuh0JoCrKCUMHQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [riscv64]
+    os: [linux]
+
+  '@typescript/typescript-linux-s390x@7.0.2':
+    resolution: {integrity: sha512-IkwJc3L7yhytWd/ewjyxNDfOmswCm9GWMJT/ue/dU4aZNbwZeYAetq42VyLmsmSjvoX7z74X6ZaYCtzAr0EuGw==}
+    engines: {node: '>=16.20.0'}
+    cpu: [s390x]
+    os: [linux]
+
+  '@typescript/typescript-linux-x64@7.0.2':
+    resolution: {integrity: sha512-EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [linux]
+
+  '@typescript/typescript-netbsd-arm64@7.0.2':
+    resolution: {integrity: sha512-+polYF4MF04aPpO5FTkHran9yUQDSXqy5GiSDKpsll5jy3l3+g9QLhpf39T+ePtefhXLOGrLl0QIjkQP6VnelA==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [netbsd]
+
+  '@typescript/typescript-netbsd-x64@7.0.2':
+    resolution: {integrity: sha512-8YIT0EHM/3dq10ZOVF/A7pc/YSMtbcecct4rWtexrnSCHOPcpC2KTLXfTCR6vDpnSiY12heNb1GiN/wu+T/FyA==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [netbsd]
+
+  '@typescript/typescript-openbsd-arm64@7.0.2':
+    resolution: {integrity: sha512-APT8+ClYnuYm1u9+kgGXoMj2VzWzcymwh2gNSQVySHfkRDGOTVkoWLjCmOQSaO+PoqQ57B0flRp9SA+7GnnkzQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [openbsd]
+
+  '@typescript/typescript-openbsd-x64@7.0.2':
+    resolution: {integrity: sha512-yX7s+Q0Dln0Dt9tEzZsAjXXR/+ytBM7AlglaqyeMPxQszJ1JhlJdZ6jLA+IzldHtflX81em7lDao1xXu+aRRkg==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [openbsd]
+
+  '@typescript/typescript-sunos-x64@7.0.2':
+    resolution: {integrity: sha512-dLJDGaLZ1D4HPQn62u1n8mBDkJREwMsAkCdkwd4Ieqw+x3TUyTsqY0YiBCtE6H6OzzgGk3iuZ3vFWRS+E8/d1g==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [sunos]
+
+  '@typescript/typescript-win32-arm64@7.0.2':
+    resolution: {integrity: sha512-Gyl1Vy6OsWesLzmq+EP0Fb7b4Nid5232AvcA2SFcdYreldpNtYFFofPjnt62y9hQy7VTaZp65ICJjuAQRaVcIQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@typescript/typescript-win32-x64@7.0.2':
+    resolution: {integrity: sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [win32]
+
   '@ungap/structured-clone@1.3.1':
     resolution: {integrity: sha512-mUFwbeTqrVgDQxFveS+df2yfap6iuP20NAKAsBt5jDEoOTDew+zwLAOilHCeQJOVSvmgCX4ogqIrA0mnyr08yQ==}
 
@@ -2685,6 +2859,12 @@ packages:
 
   ai@7.0.0-beta.178:
     resolution: {integrity: sha512-kOfIbf23FDkvvfDHOS1gIjImBF9MlYut8fEMlps57vvS622VKL1PeEDLJ181aVd2LPSiDr3SupAMSzI2rEaW3w==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  ai@7.0.30:
+    resolution: {integrity: sha512-tm0gTAHSWBdDfW4P2mj+LlglGCUQTSA9ktyS2PsPgVhxNO9gYWTSnRAehiJ3h1lYsJBp1Zgbz3RH2lezJXagiw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -3251,6 +3431,26 @@ packages:
       vite:
         optional: true
       vue:
+        optional: true
+
+  eve@0.24.6:
+    resolution: {integrity: sha512-/WuGD6gAzv7DviM0bN0y4813bJSbBTeiTHVUR1GAOIH7PUCOCFY7lXbrDOG7Wk/mTa2IBmT4Om3L+nudCc+02g==}
+    engines: {node: '>=24'}
+    hasBin: true
+    peerDependencies:
+      '@opentelemetry/api': ^1.0.0
+      ai: ^7.0.26
+      braintrust: ^3.0.0
+      just-bash: ^3.0.0
+      microsandbox: ^0.5.0
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
+      braintrust:
+        optional: true
+      just-bash:
+        optional: true
+      microsandbox:
         optional: true
 
   eventsource-parser@3.1.0:
@@ -4680,6 +4880,11 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  typescript@7.0.2:
+    resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
+    engines: {node: '>=16.20.0'}
+    hasBin: true
+
   ufo@1.6.4:
     resolution: {integrity: sha512-JFNbkD1Svwe0KvGi8GOeLcP4kAWQ609twvCdcHxq1oSL8svv39ZuSvajcD8B+5D0eL4+s1Is2D/O6KN3qcTeRA==}
 
@@ -4959,6 +5164,13 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.4.3
 
+  '@ai-sdk/gateway@4.0.22(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.3
+      '@ai-sdk/provider-utils': 5.0.10(zod@4.4.3)
+      '@vercel/oidc': 3.2.0
+      zod: 4.4.3
+
   '@ai-sdk/mcp@2.0.0-beta.66(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 4.0.0-beta.19
@@ -4988,11 +5200,23 @@ snapshots:
       eventsource-parser: 3.1.0
       zod: 4.4.3
 
+  '@ai-sdk/provider-utils@5.0.10(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.3
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.4.3
+
   '@ai-sdk/provider@4.0.0-beta.19':
     dependencies:
       json-schema: 0.4.0
 
   '@ai-sdk/provider@4.0.0-canary.18':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@4.0.3':
     dependencies:
       json-schema: 0.4.0
 
@@ -7082,6 +7306,66 @@ snapshots:
       '@typescript/native-preview-win32-arm64': 7.0.0-dev.20260523.1
       '@typescript/native-preview-win32-x64': 7.0.0-dev.20260523.1
 
+  '@typescript/typescript-aix-ppc64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-darwin-arm64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-darwin-x64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-freebsd-arm64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-freebsd-x64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-arm64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-arm@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-loong64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-mips64el@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-ppc64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-riscv64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-s390x@7.0.2':
+    optional: true
+
+  '@typescript/typescript-linux-x64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-netbsd-arm64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-netbsd-x64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-openbsd-arm64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-openbsd-x64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-sunos-x64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-win32-arm64@7.0.2':
+    optional: true
+
+  '@typescript/typescript-win32-x64@7.0.2':
+    optional: true
+
   '@ungap/structured-clone@1.3.1': {}
 
   '@upsetjs/venn.js@2.0.0':
@@ -7122,6 +7406,13 @@ snapshots:
     optionalDependencies:
       ai: 7.0.0-beta.178(zod@4.4.3)
       eve: 0.17.1(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.0-beta.178(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(next@16.2.6(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+
+  '@vercel/connect@0.2.2(ai@7.0.30(zod@4.4.3))(eve@0.24.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.30(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))':
+    dependencies:
+      '@vercel/oidc': 3.6.1
+    optionalDependencies:
+      ai: 7.0.30(zod@4.4.3)
+      eve: 0.24.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.30(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -7184,6 +7475,13 @@ snapshots:
       '@ai-sdk/gateway': 4.0.0-beta.109(zod@4.4.3)
       '@ai-sdk/provider': 4.0.0-beta.19
       '@ai-sdk/provider-utils': 5.0.0-beta.49(zod@4.4.3)
+      zod: 4.4.3
+
+  ai@7.0.30(zod@4.4.3):
+    dependencies:
+      '@ai-sdk/gateway': 4.0.22(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.3
+      '@ai-sdk/provider-utils': 5.0.10(zod@4.4.3)
       zod: 4.4.3
 
   ajv@6.15.0:
@@ -7826,6 +8124,52 @@ snapshots:
       - rollup
       - sqlite3
       - uploadthing
+      - wrangler
+      - xml2js
+      - zephyr-agent
+
+  eve@0.24.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.30(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+    dependencies:
+      ai: 7.0.30(zod@4.4.3)
+      nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.1
+    transitivePeerDependencies:
+      - '@azure/app-configuration'
+      - '@azure/cosmos'
+      - '@azure/data-tables'
+      - '@azure/identity'
+      - '@azure/keyvault-secrets'
+      - '@azure/storage-blob'
+      - '@capacitor/preferences'
+      - '@deno/kv'
+      - '@electric-sql/pglite'
+      - '@libsql/client'
+      - '@netlify/blobs'
+      - '@netlify/runtime'
+      - '@planetscale/database'
+      - '@upstash/redis'
+      - '@vercel/blob'
+      - '@vercel/functions'
+      - '@vercel/kv'
+      - '@vercel/queue'
+      - aws4fetch
+      - better-sqlite3
+      - chokidar
+      - dotenv
+      - drizzle-orm
+      - giget
+      - idb-keyval
+      - ioredis
+      - jiti
+      - lru-cache
+      - miniflare
+      - mongodb
+      - mysql2
+      - rollup
+      - sqlite3
+      - uploadthing
+      - vite
       - wrangler
       - xml2js
       - zephyr-agent
@@ -9635,6 +9979,29 @@ snapshots:
   type-fest@0.20.2: {}
 
   typescript@5.9.3: {}
+
+  typescript@7.0.2:
+    optionalDependencies:
+      '@typescript/typescript-aix-ppc64': 7.0.2
+      '@typescript/typescript-darwin-arm64': 7.0.2
+      '@typescript/typescript-darwin-x64': 7.0.2
+      '@typescript/typescript-freebsd-arm64': 7.0.2
+      '@typescript/typescript-freebsd-x64': 7.0.2
+      '@typescript/typescript-linux-arm': 7.0.2
+      '@typescript/typescript-linux-arm64': 7.0.2
+      '@typescript/typescript-linux-loong64': 7.0.2
+      '@typescript/typescript-linux-mips64el': 7.0.2
+      '@typescript/typescript-linux-ppc64': 7.0.2
+      '@typescript/typescript-linux-riscv64': 7.0.2
+      '@typescript/typescript-linux-s390x': 7.0.2
+      '@typescript/typescript-linux-x64': 7.0.2
+      '@typescript/typescript-netbsd-arm64': 7.0.2
+      '@typescript/typescript-netbsd-x64': 7.0.2
+      '@typescript/typescript-openbsd-arm64': 7.0.2
+      '@typescript/typescript-openbsd-x64': 7.0.2
+      '@typescript/typescript-sunos-x64': 7.0.2
+      '@typescript/typescript-win32-arm64': 7.0.2
+      '@typescript/typescript-win32-x64': 7.0.2
 
   ufo@1.6.4: {}
 
