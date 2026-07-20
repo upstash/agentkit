@@ -1,6 +1,6 @@
 {
   "name": "@upstash/agentkit-eve-extension",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Upstash AgentKit as an eve extension: long-term memory tools, Redis Search tools, and durable chat-history capture on Upstash Redis — mounted with one file.",
   "license": "MIT",
   "repository": {
