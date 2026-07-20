@@ -14,14 +14,15 @@ repeated schemas; upgrades come through the package manager.
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
-Start from an eve project (eve ≥ 0.24), then:
+Start from an eve project (eve ≥ 0.25.2), then:
 
 ```bash
-pnpm add @upstash/agentkit-eve-extension
+pnpm add @upstash/agentkit-eve-extension @upstash/redis
 ```
 
-Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` in your env (the extension defaults to
-`Redis.fromEnv()`).
+(`@upstash/redis` is for your own mount file — you import the `s` schema builder from it when
+configuring `search`.) Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` in your env (the
+extension defaults to `Redis.fromEnv()`).
 
 ## Mount it
 

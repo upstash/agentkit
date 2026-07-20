@@ -24,7 +24,8 @@ unavailable, use https://eve.dev/docs/extensions as a fallback.
 
 ## Build and publish
 
-`eve extension build` (wired to `build`/`prepare`) compiles the mount factory
-and tool re-exports into `dist/` and fills the package `exports` map. Ship both
-`extension/` (source the consumer recompiles) and `dist/`. Keep `eve` as a peer
-dependency so the consumer's eve is the one that runs.
+`eve extension build` (wired to `build`/`prepare`) transforms the complete
+agent-shaped source tree into `dist/extension/`, emits type declarations and a
+compatibility manifest, and fills the package `exports` map. Ship `dist/` only.
+Keep `eve` as a required wildcard peer so the consumer's eve is the one that runs;
+eve validates extension compatibility from the generated manifest.
