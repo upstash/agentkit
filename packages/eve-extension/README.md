@@ -25,50 +25,49 @@ Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` in your env (the exten
 
 ## Mount it
 
+Every field is optional. The smallest mount gives the agent memory tools:
+
+```ts
+// agent/extensions/agentkit.ts
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit();
+```
+
+Add `search` to turn on the search tools over one index:
+
 ```ts
 // agent/extensions/agentkit.ts
 import { s } from "@upstash/redis";
 import agentkit from "@upstash/agentkit-eve-extension";
 
 export default agentkit({
-  // optional: the tenant boundary for memory + chat history. A string shares one scope
-  // (single-user agents); a function derives it per call from eve's SessionContext.
-  // Default: auth.current?.principalId ?? auth.initiator?.principalId ?? session.id.
-  userId: (ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-
-  // optional: enables the search / search_aggregate / search_count tools over one index.
-  // Omit it and those tools simply don't exist.
   search: {
     schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
-    indexName: "books", // optional: defaults to "agentkit:search"
-    // prefix: "books:",       // optional: key prefix for indexed docs, defaults to "<indexName>:"
-    // defaultLimit: 10,       // optional: default page size for `search`
+    indexName: "books",
   },
-
-  // optional: tune the recall tool
-  // memory: { topK: 5, minScore: 1 },
-
-  // optional: chat-history capture is OFF by default; pass `true` to enable it,
-  // or an object to enable + tune it: { prefix: "agentkit:chat", indexName: "...", ttlSeconds: 60 * 60 * 24 * 30 }
-  // chatHistory: true,
-
-  // optional: an explicit Redis client; defaults to Redis.fromEnv()
-  // redis: new Redis({ url: "...", token: "..." }),
 });
 ```
 
-That's it. The tools appear to the model as `agentkit__recall_memory`, `agentkit__search`, …, and
-the instructions fragment is appended to your system prompt. (The transcript-capture hook only runs
-once you opt in with `chatHistory: true`.)
+That's it — the tools appear to the model as `agentkit__recall_memory`, `agentkit__search`, …, and a
+short memory instruction is added to your system prompt.
+
+### Options
+
+| Field | Default | |
+| --- | --- | --- |
+| `userId` | principal → session id | The tenant boundary for memory + chat history. A string (one shared scope), or `(ctx) => string` to derive it per call. |
+| `search` | _off_ | `{ schema, indexName?, prefix?, defaultLimit? }`. Omit it and the search tools don't exist. |
+| `memory` | — | `{ topK?, minScore? }` to tune recall. |
+| `chatHistory` | `false` | `true` to capture transcripts, or `{ prefix?, indexName?, ttlSeconds? }` to tune where they're stored. |
+| `redis` | `Redis.fromEnv()` | An explicit Upstash Redis client. |
 
 ## What lands in Redis
 
 - `agentkit:memory:<userId>:<id>` — memories (searchable via the `agentkit:memory` index).
 - `agentkit:chat:<userId>:<sessionId>` — one JSON doc per session (only when `chatHistory` is
-  enabled): the raw transcript plus `$smart`-indexed user/model text. Eve's own workflow store is
-  pruned days after a run completes;
-  Redis is the durable source of truth. Read it back anywhere with `ChatHistory` from
-  `@upstash/agentkit-sdk` (`listChats` / `searchChats` / `getChat`).
+  enabled): the raw transcript plus `$smart`-indexed user/model text. Read it back with `ChatHistory`
+  from `@upstash/agentkit-sdk` (`listChats` / `searchChats` / `getChat`).
 - Your `search` index documents are whatever you seed under `<prefix>` (`redis.json.set`).
 
 `userId` and `sessionId` are Redis key parts, so `:` in derived values is replaced with `_`.
