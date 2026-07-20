@@ -90,10 +90,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
-- **Consumer requirements** (verified against real `eve init` consumers): the app must declare
-  `@upstash/redis` (its own mount file imports `s` from it — pnpm strict layout rejects the phantom
-  dep; npm hoists and hides it). The old "also install `@upstash/agentkit-sdk`" workaround is **not**
-  needed on the 0.25 format — the compiled dist resolves sdk from the extension's own package.
+- **Consumer requirements** (verified against real `eve init` consumers): none for a bare mount. Apps
+  that configure `search` declare `@upstash/redis` themselves — their own mount file imports `s` from
+  it, and pnpm's strict layout rejects the phantom dep (npm hoists and hides it). The old "also
+  install `@upstash/agentkit-sdk`" workaround is **not** needed on the 0.25 format — the compiled
+  dist resolves sdk from the extension's own package.
   **Known eve bug:** `eve dev` fails to load an extension installed as a **real directory** (npm/yarn
   hoisted layouts) — the dev snapshot's module-map references `../../node_modules/...` relatively and
   misses; pnpm's symlink installs work, and production `eve build` bundles fine either way.

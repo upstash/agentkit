@@ -17,12 +17,11 @@ repeated schemas; upgrades come through the package manager.
 Start from an eve project (eve ≥ 0.25.2), then:
 
 ```bash
-pnpm add @upstash/agentkit-eve-extension @upstash/redis
+pnpm add @upstash/agentkit-eve-extension
 ```
 
-(`@upstash/redis` is for your own mount file — you import the `s` schema builder from it when
-configuring `search`.) Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` in your env (the
-extension defaults to `Redis.fromEnv()`).
+Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` in your env (the extension defaults to
+`Redis.fromEnv()`).
 
 ## Mount it
 
@@ -35,7 +34,9 @@ import agentkit from "@upstash/agentkit-eve-extension";
 export default agentkit();
 ```
 
-Add `search` to turn on the search tools over one index:
+Add `search` to turn on the search tools over one index. The schema is built with `s` from
+`@upstash/redis` — your mount file imports it, so add the package to your app
+(`pnpm add @upstash/redis`):
 
 ```ts
 // agent/extensions/agentkit.ts
