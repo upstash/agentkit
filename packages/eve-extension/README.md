@@ -14,7 +14,7 @@ repeated schemas; upgrades come through the package manager.
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
-Start from an eve project (eve ≥ 0.24), then:
+Start from an eve project (eve ≥ 0.25.2), then:
 
 ```bash
 pnpm add @upstash/agentkit-eve-extension
@@ -34,7 +34,9 @@ import agentkit from "@upstash/agentkit-eve-extension";
 export default agentkit();
 ```
 
-Add `search` to turn on the search tools over one index:
+Add `search` to turn on the search tools over one index. The schema is built with `s` from
+`@upstash/redis` — your mount file imports it, so add the package to your app
+(`pnpm add @upstash/redis`):
 
 ```ts
 // agent/extensions/agentkit.ts

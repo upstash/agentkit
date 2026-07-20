@@ -82,9 +82,22 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   returns `null` to fall through to the real authenticators (`localDev()`/`vercelOidc()`/…).
 
 ### eve-extension (`packages/eve-extension`)
-- Built with `eve extension build` (not tsup); `package.json` has `"eve": { "extension": "./extension" }`,
-  `eve` is a **peer** (`^0.24.6`), and `files` ships both `extension/` (source the consumer recompiles)
-  and `dist/` (mount factory + `./tools` re-exports). `prepare` runs the build on install.
+- Built with `eve extension build` (not tsup), on eve ≥0.25's **dist packaging format**: `package.json`
+  has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
+  **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
+  `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **wildcard peer**
+  (`"*"`, per the 0.25 scaffold — the manifest, not the range, is the compatibility tie). The old 0.24
+  format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
+  eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
+  install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
+- **Consumer requirements** (verified against real `eve init` consumers): none for a bare mount. Apps
+  that configure `search` declare `@upstash/redis` themselves — their own mount file imports `s` from
+  it, and pnpm's strict layout rejects the phantom dep (npm hoists and hides it). The old "also
+  install `@upstash/agentkit-sdk`" workaround is **not** needed on the 0.25 format — the compiled
+  dist resolves sdk from the extension's own package.
+  **Known eve bug:** `eve dev` fails to load an extension installed as a **real directory** (npm/yarn
+  hoisted layouts) — the dev snapshot's module-map references `../../node_modules/...` relatively and
+  misses; pnpm's symlink installs work, and production `eve build` bundles fine either way.
 - `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
   Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
   ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
@@ -147,8 +160,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `agentkit:memory:<userId>:<id>`, `agentkit:chat:<userId>:<sessionId>` (default prefixes shown).
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.30`**. `eve@0.24.x`
-  now declares `ai` as a **peer** (`^7.0.26`), so the apps/packages provide the single copy. Providers:
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.30`**. `eve` (0.24+)
+  declares `ai` as a **peer** (`^7.0.26`), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.15`, `@ai-sdk/provider` `^4.0.3`, `@ai-sdk/react` `^4.0.33` (all stable).
   (History: the repo was on `7.0.0-beta.178`, the exact version `eve@0.13.1` depended on.)
 - **Why exact-pin and not a pnpm `override`:** because everyone lands on the same exact `ai`, pnpm
@@ -194,9 +207,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.24.6`** (peer `>=0.24.0` in `packages/eve`, `^0.24.6` in the extension).
-  Subpath exports: `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`,
-  `eve/sandbox`, `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, …
+- The repo is on **`eve@0.25.2`** (peer `>=0.24.0` in `packages/eve` — its API is unchanged across
+  0.24→0.25; wildcard peer in the extension). Subpath exports: `eve/tools`, `eve/hooks`,
+  `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`, `eve/sandbox/vercel`,
+  `eve/channels/*`, `eve/next`, …
+- **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
+  prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
+  0.24-format packages at discovery.
 - **Import eve's real types — do NOT hand-roll them.** From `eve/tools`: `defineTool`, `defineDynamic`,
   `disableTool`, `toolResultFrom`, `ToolDefinition`, `ToolContext`, **`SessionContext`** (base of tool
   + hook ctx — use it for per-call `userId` fns). From `eve/hooks`: `defineHook`, `HookContext`. From
