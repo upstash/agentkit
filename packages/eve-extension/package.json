@@ -33,7 +33,6 @@
   },
   "scripts": {
     "build": "eve extension build",
-    "prepare": "eve extension build",
     "typecheck": "tsc"
   },
   "keywords": [
