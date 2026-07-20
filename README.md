@@ -13,6 +13,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-sdk`](./packages/sdk) | Core, framework-agnostic primitives. |
 | [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
+| [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat-history capture. |
 
 ## Core features
 
@@ -30,8 +31,10 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 
 ## Examples
 
-Runnable Next.js demos (real Upstash Redis + a mock/real model) live in [`examples/`](./examples):
-[`ai-sdk-demo`](./examples/ai-sdk-demo) and [`eve-demo`](./examples/eve-demo).
+Runnable demos (real Upstash Redis + a mock/real model) live in [`examples/`](./examples):
+[`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo), and
+[`eve-extension-demo`](./examples/eve-extension-demo) (an eve agent that mounts
+`@upstash/agentkit-eve-extension`).
 
 ## Development
 

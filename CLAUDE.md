@@ -17,8 +17,10 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-sdk` (`packages/sdk`) | Core, framework-agnostic primitives. **No `ai` dependency** (redis-only). |
 | `@upstash/agentkit-ai-sdk` (`packages/ai-sdk`) | Vercel AI SDK adapter. |
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
+| `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
 
-Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a real `eve` CLI scaffold).
+Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
+and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 `langchain` and `tanstack-ai` packages were **removed** — don't reintroduce them.
 
 ### Core SDK exports (`@upstash/agentkit-sdk`)
@@ -66,9 +68,11 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   `schema`+`name` — agent files must be self-contained, see eve-demo specifics),
   **plus** rate limiting: `createRateLimitAuth` (a ready eve route-auth `AuthFn`, `packages/eve/src/auth.ts`)
   and the core `createRateLimit` factory re-exported. **No model wrapper / no `./model` subpath.**
-- **No chat history in eve** — `ChatHistory` is core/ai-sdk only. eve sessions are durable server-side
-  (Vercel Workflow) and `useEveAgent` has no `initialMessages` prop, so a stored transcript doesn't
-  round-trip cleanly; resume is via eve's `session` cursor, not us.
+- **No chat history in the eve adapter** — `ChatHistory` is core/ai-sdk only here. eve sessions are
+  durable server-side (Vercel Workflow) and `useEveAgent` has no `initialMessages` prop, so a stored
+  transcript doesn't round-trip cleanly; resume is via eve's `session` cursor, not us. (The
+  **eve-extension** package does capture transcripts to Redis via its `chat_history` hook — write-side
+  only, same no-round-trip caveat.)
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
 - Eve is file-centric, but the tool factories now **call `defineTool` internally** and return the
   branded `ToolDefinition` — users export them directly (no outer `defineTool(...)` wrap). Because of
@@ -76,6 +80,34 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 - Rate limiting in eve = a route-auth gate: `createRateLimitAuth(config)` goes first in
   `eveChannel({ auth: [...] })`; it `.limit()`s, throws `ForbiddenError` (403) over the limit, else
   returns `null` to fall through to the real authenticators (`localDev()`/`vercelOidc()`/…).
+
+### eve-extension (`packages/eve-extension`)
+- Built with `eve extension build` (not tsup); `package.json` has `"eve": { "extension": "./extension" }`,
+  `eve` is a **peer** (`^0.24.6`), and `files` ships both `extension/` (source the consumer recompiles)
+  and `dist/` (mount factory + `./tools` re-exports). `prepare` runs the build on install.
+- `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
+  Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
+  ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
+  `search{schema,indexName,prefix,defaultLimit}`, `chatHistory: boolean | {prefix,indexName,ttlSeconds}`
+  (**off by default** — enable with `true` or a tuning object).
+  Non-JSON config values (`Redis`, functions, the `s` schema) pass through `z.custom` — fine, the mount
+  file is evaluated in the runtime.
+- Contributions: static tools `recall_memory`/`save_memory`; **dynamic** tools `search`/`search_aggregate`/
+  `search_count` (one `defineDynamic` per file, resolved at `session.started` — static modules evaluate at
+  discovery where mount config is **not yet bound**, so schema-derived descriptions/input schemas must be
+  built in a resolver; unconfigured `search` → resolver returns `null` and the tools don't exist);
+  hook `chat_history` (appends every `message.received`/`message.completed` via core `ChatHistory.getChat`
+  + `saveChat`, errors swallowed — a thrown hook fails the turn); `instructions.md` fragment (merges after
+  the agent's own instructions). Shared code lives in `extension/lib/runtime.ts` — extensions CAN have
+  internal shared modules (unlike agent files).
+- `resolveUserId` defaults `auth.current?.principalId ?? auth.initiator?.principalId ?? session.id` and
+  **sanitizes `:` → `_`** (eve principal ids like `eve:app` and session ids would break core key-part
+  validation). `sessionId` is sanitized the same way.
+- Consumers drop/override slots via a directory mount + `disableTool()` (that's the supported answer for
+  "I don't want tool X" — no config flags for it). Static memory tools are importable from
+  `@upstash/agentkit-eve-extension/tools` for `toolResultFrom`/overrides; dynamic search tools are not.
+- What an extension **cannot** contribute (stays in `@upstash/agentkit-eve`): sandbox, channels/auth
+  (rate limiting), schedules, agent config. `defineCachedTool` also stays there (wraps user tools).
 
 ## Naming history (so you don't resurrect old names)
 - ai-sdk caching: `cacheTools` → `cachedTool`+`cachedTools` → now **`cachedTools` only** (singular `cachedTool` removed; toolName = map key, `userId` scopes).
@@ -115,15 +147,18 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   `agentkit:memory:<userId>:<id>`, `agentkit:chat:<userId>:<sessionId>` (default prefixes shown).
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7-beta everywhere.** Every package + demo pins `ai` to exactly **`7.0.0-beta.178`** (the
-  version `eve@0.13.1` depends on — it pins an exact version, not a range). Providers: `@ai-sdk/openai`
-  and `@ai-sdk/provider` on `^4.0.0-beta`.
-- **Why exact-pin and not a pnpm `override`:** because everyone (incl. eve's transitive dep) lands on the
-  same exact `ai`, pnpm installs a single copy. Two copies of `ai` cause type/identity breakage. An
-  override was tried and removed as unnecessary — keep it that way unless a dep forces a different `ai@7`.
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.30`**. `eve@0.24.x`
+  now declares `ai` as a **peer** (`^7.0.26`), so the apps/packages provide the single copy. Providers:
+  `@ai-sdk/openai` `^4.0.15`, `@ai-sdk/provider` `^4.0.3`, `@ai-sdk/react` `^4.0.33` (all stable).
+  (History: the repo was on `7.0.0-beta.178`, the exact version `eve@0.13.1` depended on.)
+- **Why exact-pin and not a pnpm `override`:** because everyone lands on the same exact `ai`, pnpm
+  installs a single copy. Two copies of `ai` cause type/identity breakage. An override was tried and
+  removed as unnecessary — keep it that way unless a dep forces a different `ai@7`.
 - **No `pnpm.overrides` in root `package.json`.** Version alignment is the mechanism. (`@types/react` was
   also deduped by aligning `ai-sdk-demo` to `19.2.15`, not by an override.)
-- `pnpm-workspace.yaml` sets `minimumReleaseAge: 0` so beta installs aren't gated.
+- `pnpm-workspace.yaml` sets `minimumReleaseAge: 0` so fresh eve/ai releases aren't gated.
+- Two `zod` 4.x copies exist in the lockfile (`@vercel/cli-config`, eve-transitive, wants its own) —
+  preexisting and harmless; our packages all resolve one shared zod.
 - **v7 type renames to know:** `ToolCallOptions` → **`ToolExecutionOptions<never>`**. v7's
   `LanguageModelMiddleware = Omit<LanguageModelV4Middleware,'specificationVersion'> & { specificationVersion?: string }`
   so middlewares need **no** `specificationVersion` (v6 required `'v3'`, v5 required none — don't add it on v7).
@@ -133,8 +168,10 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   except the `e2e.test.ts` files which hit **real OpenAI**.
 - **Models:** unit/e2e tests use `gpt-4o` (`TEST_MODEL`); READMEs + demos use `gpt-5.4-mini`.
 - Each package has `src/test-support.ts`: `hasRedisCreds`, `testRedis()` (`Redis.fromEnv`),
-  `uniquePrefix(label)`, `cleanupKeys(redis, prefix)` — loads repo-root `.env` via dotenv. ai-sdk also has
-  `hasOpenAIKey`, `TEST_MODEL`. Suites `describe.skipIf(!hasRedisCreds)` so they skip without creds.
+  `uniquePrefix(label)` (colon-separated — key prefixes only), `uniqueUserId(label)` (dash-separated —
+  use for **userIds**, which reject `:`), `cleanupKeys(redis, prefix)` — loads repo-root `.env` via
+  dotenv. ai-sdk also has `hasOpenAIKey`, `TEST_MODEL`. Suites `describe.skipIf(!hasRedisCreds)` so
+  they skip without creds.
 - vitest: `fileParallelism: false`, `testTimeout: 30_000`.
 - **Upstash DB caps at 10 search indexes** (`ERR Exceeded max index count of 10`). Tests must `drop()` /
   reuse indexes and run sequentially. There is **no** `SEARCH.LIST` command to enumerate them.
@@ -157,17 +194,30 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- `eve@0.13.1` is on npm with subpath exports: `eve/tools`, `eve/sandbox`, `eve/sandbox/vercel`, `eve/next`, …
-- **Import eve's real types — do NOT hand-roll them.** From `eve/tools`: `defineTool`, `ToolDefinition`,
-  `ToolContext`. From `eve/sandbox`: `defineSandbox`, `SandboxBackend`, `SandboxSession`,
-  `SandboxNetworkPolicy`, etc. (`eve` is a devDep of `packages/eve` for these type imports.)
+- The repo is on **`eve@0.24.6`** (peer `>=0.24.0` in `packages/eve`, `^0.24.6` in the extension).
+  Subpath exports: `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`,
+  `eve/sandbox`, `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, …
+- **Import eve's real types — do NOT hand-roll them.** From `eve/tools`: `defineTool`, `defineDynamic`,
+  `disableTool`, `toolResultFrom`, `ToolDefinition`, `ToolContext`, **`SessionContext`** (base of tool
+  + hook ctx — use it for per-call `userId` fns). From `eve/hooks`: `defineHook`, `HookContext`. From
+  `eve/extension`: `defineExtension`. From `eve/sandbox`: `defineSandbox`, `SandboxBackend`,
+  `SandboxSession`, `SandboxNetworkPolicy`, etc. (`eve` is a devDep of `packages/eve` for these types.)
 - `ToolDefinition<TInput,TOutput>` = `{ description, inputSchema, execute(input, ctx: ToolContext), … }`.
+- **Extensions** (eve ≥0.24): agent-shaped packages mounted under `agent/extensions/<ns>.ts`; contributions
+  compose as `<ns>__<name>`. They may contribute tools/connections/skills/hooks/instructions — NOT sandbox,
+  channels, schedules, or agent config. Config binds at runtime (mount evaluation), not at discovery.
+  Hooks are observe-only (can't inject context or short-circuit); a thrown hook fails the turn.
+- Stream events for transcripts: `message.received` (`data.message`: flattened user text) and
+  `message.completed` (`data.message: string | null`, fires multiple times per turn — interim text before
+  tool calls; `data.finishReason` tells terminal from narration).
 - Eve uses AI SDK **v7** models, which is why the repo standardized on v7 (so eve can keep depending on
   the ai-sdk package instead of duplicating middleware).
 - The real `SandboxBackend` is **two-phase**: `{ name, create(input) → SandboxBackendHandle, prewarm(input)
   → { reused } }`. `SandboxSession` = the AI SDK `Experimental_SandboxSession` (`run`, `spawn`,
   `readFile`→stream, `readBinaryFile`, `readTextFile`, `writeFile`/`writeBinaryFile`/`writeTextFile`) plus
-  `id`, `resolvePath`, `setNetworkPolicy`, `removePath`.
+  `id`, `resolvePath`, `setNetworkPolicy`, `removePath`. In eve ≥0.24 the handle's lifecycle method is
+  **`shutdown()`** (fires only on server shutdown; must leave the session reattachable) — the old
+  per-open `dispose()` is gone.
 
 ## @upstash/box (sandbox backend)
 - Optional peer dep of the eve package. `Box.create({ apiKey | UPSTASH_BOX_API_KEY, runtime, size, … })`;
@@ -190,6 +240,16 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js) and `eve-demo` (a r
 - `engines.node: 24.x` → CI (Node 24) is clean; local Node 20 only warns. It still builds on 20.
 - Keep `ai-sdk-demo`'s `@types/react` pinned to `19.2.15` (and `react` 19.2.6) to match eve-demo and avoid
   a duplicate `@types/react` (causes a JSX `key` "unique symbol" type clash in eve-demo's build).
+
+## examples/eve-extension-demo specifics
+- A minimal `eve` CLI scaffold (agent + eve channel, no frontend) whose whole point is the one mount
+  file `agent/extensions/agentkit.ts`. Model: `openai("gpt-5.4-mini")`.
+- Its mount reuses **eve-demo's** books index (`eve-demo-books`, same schema) — the DB caps at 10 search
+  indexes, so the demos share; seed data comes from eve-demo's `lib/books.ts` seeder.
+- Needs a local `.env` (gitignored) with the Upstash + OpenAI creds — `eve dev` reads the project dir,
+  not the repo root.
+- The extension demo's `userId` is the static `"demo-user"` so memory persists across sessions in an
+  unauthenticated local agent (the default derivation would fall back to the per-session id).
 
 ## Commands
 ```bash
@@ -244,8 +304,9 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
   lookup. `prewarm` builds **no** box when there's nothing to bake (no seed files/bootstrap). **Session
   reuse:** `create` reattaches to the box from `input.existingMetadata.boxId` (`Box.get`) — Eve re-opens a
   session many times and hands our captured `boxId` back, so without this every open spun a fresh box (the
-  "3 boxes per turn" bug). `dispose` is a **no-op** (the box persists for reuse; Box's idle lifecycle reaps
-  it), and `keepAlive` defaults to **false** (pause-based idle; `true` can't be paused and runs until
+  "3 boxes per turn" bug). `shutdown` (eve ≥0.24's replacement for the old per-open `dispose`) fires only
+  when the server stops: it `box.pause()`s (reattachable; failure tolerated — keep-alive boxes can't
+  pause), and `keepAlive` defaults to **false** (pause-based idle; `true` can't be paused and runs until
   deleted). **Path bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`,
   so the backend remaps both `resolvePath` (file ops) and raw commands (`find /workspace …` →
   `/workspace/home`, URL-safe via lookbehind) through the exported `toBoxPath`/`rewriteWorkspacePaths`.

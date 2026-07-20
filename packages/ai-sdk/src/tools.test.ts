@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { cachedTools } from "./tools.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "./test-support.js";
 
 const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
 function call<R>(execute: unknown, input: unknown): Promise<R> {
@@ -12,7 +12,7 @@ function call<R>(execute: unknown, input: unknown): Promise<R> {
 describe.skipIf(!hasRedisCreds)("cachedTools (live Redis)", () => {
   const redis = testRedis();
   // The cache key is `agentkit:toolCache:<userId>:<toolName>:<hash>`; isolate this run by userId.
-  const userId = uniquePrefix("aisdk-tool").replace("test:", "");
+  const userId = uniqueUserId("aisdk-tool");
 
   afterAll(async () => {
     await cleanupKeys(redis, `agentkit:toolCache:${userId}`);

@@ -1,0 +1,63 @@
+{
+  "name": "@upstash/agentkit-eve-extension",
+  "version": "0.1.0",
+  "description": "Upstash AgentKit as an eve extension: long-term memory tools, Redis Search tools, and durable chat-history capture on Upstash Redis — mounted with one file.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/eve-extension"
+  },
+  "homepage": "https://upstash.com/docs/redis/sdks/agentkit/eve",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
+  "type": "module",
+  "eve": {
+    "extension": "./extension"
+  },
+  "files": [
+    "extension",
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "eve extension build",
+    "typecheck": "tsc"
+  },
+  "keywords": [
+    "upstash",
+    "eve",
+    "extension",
+    "vercel",
+    "ai",
+    "agent",
+    "memory",
+    "search",
+    "chat-history",
+    "redis"
+  ],
+  "dependencies": {
+    "@upstash/agentkit-sdk": "workspace:*",
+    "@upstash/redis": "^1.38.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.x",
+    "eve": "^0.24.6",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "eve": "^0.24.6"
+  }
+}
