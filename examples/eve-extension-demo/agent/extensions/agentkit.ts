@@ -3,8 +3,8 @@ import agentkit from "@upstash/agentkit-eve-extension";
 
 // One mount composes every AgentKit contribution under the `agentkit` namespace (the file basename):
 // the tools `agentkit__recall_memory`, `agentkit__save_memory`, `agentkit__search`,
-// `agentkit__search_aggregate`, and `agentkit__search_count`, the chat-history hook (on by default —
-// every message is persisted to Upstash Redis), and a memory instructions fragment.
+// `agentkit__search_aggregate`, and `agentkit__search_count`, the chat-history hook (opted into
+// below — it's off by default), and a memory instructions fragment.
 //
 // To drop a contribution, mount as a directory instead and disable its slot — see the
 // @upstash/agentkit-eve-extension README.
@@ -18,4 +18,6 @@ export default agentkit({
     schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
     indexName: "eve-demo-books",
   },
+  // Off by default; the demo turns it on so every message is persisted to Upstash Redis.
+  chatHistory: true,
 });

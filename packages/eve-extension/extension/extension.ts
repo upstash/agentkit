@@ -47,13 +47,13 @@ export default defineExtension({
       })
       .optional(),
     /**
-     * Durable transcript capture into Upstash Redis `ChatHistory` (on by default): a hook appends
-     * every user and assistant message as it streams, keyed by `userId` + session id. Pass `false`
-     * to turn it off, or an object to tune where chats are stored.
+     * Durable transcript capture into Upstash Redis `ChatHistory` (**off by default**): a hook
+     * appends every user and assistant message as it streams, keyed by `userId` + session id. Pass
+     * `true` to enable it with defaults, or an object to enable it and tune where chats are stored.
      */
     chatHistory: z
       .union([
-        z.literal(false),
+        z.boolean(),
         z.object({
           /** Base key prefix for stored chats; defaults to `agentkit:chat`. */
           prefix: z.string().min(1).optional(),

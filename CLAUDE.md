@@ -88,7 +88,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
   Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
   ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
-  `search{schema,indexName,prefix,defaultLimit}`, `chatHistory: false | {prefix,indexName,ttlSeconds}`.
+  `search{schema,indexName,prefix,defaultLimit}`, `chatHistory: boolean | {prefix,indexName,ttlSeconds}`
+  (**off by default** — enable with `true` or a tuning object).
   Non-JSON config values (`Redis`, functions, the `s` schema) pass through `z.custom` — fine, the mount
   file is evaluated in the runtime.
 - Contributions: static tools `recall_memory`/`save_memory`; **dynamic** tools `search`/`search_aggregate`/

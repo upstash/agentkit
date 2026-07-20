@@ -82,16 +82,20 @@ export interface StoredChatMessage {
 
 let chats: ChatHistory<StoredChatMessage> | null | undefined;
 
-/** The durable transcript store, or `null` when the consumer passed `chatHistory: false`. */
+/**
+ * The durable transcript store, or `null` unless the consumer opted in. Chat history is **off by
+ * default**: enabled only by `chatHistory: true` or a `chatHistory: {…}` tuning object.
+ */
 export function chatHistory(): ChatHistory<StoredChatMessage> | null {
   if (chats !== undefined) return chats;
   const config = extension.config.chatHistory;
-  if (config === false) return (chats = null);
+  if (!config) return (chats = null); // undefined or false → disabled
+  const options = config === true ? {} : config;
   chats = new ChatHistory<StoredChatMessage>({
     redis: redis(),
-    ...(config?.prefix !== undefined ? { prefix: config.prefix } : {}),
-    ...(config?.indexName !== undefined ? { indexName: config.indexName } : {}),
-    ...(config?.ttlSeconds !== undefined ? { ttlSeconds: config.ttlSeconds } : {}),
+    ...(options.prefix !== undefined ? { prefix: options.prefix } : {}),
+    ...(options.indexName !== undefined ? { indexName: options.indexName } : {}),
+    ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}),
   });
   return chats;
 }

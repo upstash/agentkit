@@ -9,7 +9,7 @@ repeated schemas; upgrades come through the package manager.
 | --- | --- |
 | `<ns>__recall_memory` / `<ns>__save_memory` | Long-term memory tools the model reads and writes. |
 | `<ns>__search` / `<ns>__search_aggregate` / `<ns>__search_count` | Tools over a Redis Search index (this is how you do RAG). Present only when `search` is configured. |
-| `<ns>__chat_history` (hook) | Persists every user/assistant message to Redis `ChatHistory` — a durable, `$smart`-searchable transcript store. On by default. |
+| `<ns>__chat_history` (hook) | Persists every user/assistant message to Redis `ChatHistory` — a durable, `$smart`-searchable transcript store. Off by default; enable with `chatHistory: true`. |
 | Instructions fragment | A short always-on rule teaching the model when to save/recall memories. |
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
@@ -48,23 +48,25 @@ export default agentkit({
   // optional: tune the recall tool
   // memory: { topK: 5, minScore: 1 },
 
-  // optional: chat-history capture is ON by default; pass `false` to turn it off,
-  // or an object to tune it: { prefix: "agentkit:chat", indexName: "...", ttlSeconds: 60 * 60 * 24 * 30 }
-  // chatHistory: false,
+  // optional: chat-history capture is OFF by default; pass `true` to enable it,
+  // or an object to enable + tune it: { prefix: "agentkit:chat", indexName: "...", ttlSeconds: 60 * 60 * 24 * 30 }
+  // chatHistory: true,
 
   // optional: an explicit Redis client; defaults to Redis.fromEnv()
   // redis: new Redis({ url: "...", token: "..." }),
 });
 ```
 
-That's it. The tools appear to the model as `agentkit__recall_memory`, `agentkit__search`, …, the
-hook records transcripts, and the instructions fragment is appended to your system prompt.
+That's it. The tools appear to the model as `agentkit__recall_memory`, `agentkit__search`, …, and
+the instructions fragment is appended to your system prompt. (The transcript-capture hook only runs
+once you opt in with `chatHistory: true`.)
 
 ## What lands in Redis
 
 - `agentkit:memory:<userId>:<id>` — memories (searchable via the `agentkit:memory` index).
-- `agentkit:chat:<userId>:<sessionId>` — one JSON doc per session: the raw transcript plus
-  `$smart`-indexed user/model text. Eve's own workflow store is pruned days after a run completes;
+- `agentkit:chat:<userId>:<sessionId>` — one JSON doc per session (only when `chatHistory` is
+  enabled): the raw transcript plus `$smart`-indexed user/model text. Eve's own workflow store is
+  pruned days after a run completes;
   Redis is the durable source of truth. Read it back anywhere with `ChatHistory` from
   `@upstash/agentkit-sdk` (`listChats` / `searchChats` / `getChat`).
 - Your `search` index documents are whatever you seed under `<prefix>` (`redis.json.set`).
