@@ -9,7 +9,7 @@ repeated schemas; upgrades come through the package manager.
 | --- | --- |
 | `<ns>__recall_memory` / `<ns>__save_memory` | Long-term memory tools the model reads and writes. |
 | `<ns>__search` / `<ns>__search_aggregate` / `<ns>__search_count` | Tools over a Redis Search index (this is how you do RAG). Present only when `search` is configured. |
-| `<ns>__chat_history` (hook) | Persists every user/assistant message to Redis `ChatHistory` — a durable, `$smart`-searchable transcript store. Off by default; enable with `chatHistory: true`. |
+| `<ns>__chat_history` (hook) | Persists every user/assistant message to Redis `ChatHistory` — a durable, `$smart`-searchable transcript store. Write-side only: no tool reads it back, you query it from your own code (or [wire it into `search`](#letting-the-agent-search-its-own-chat-history)). Off by default; enable with `chatHistory: true`. |
 | Instructions fragment | A short always-on rule teaching the model when to save/recall memories. |
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
@@ -73,6 +73,59 @@ short memory instruction is added to your system prompt.
 - Your `search` index documents are whatever you seed under `<prefix>` (`redis.json.set`).
 
 `userId` and `sessionId` are Redis key parts, so `:` in derived values is replaced with `_`.
+
+Memory, `search`, and `chatHistory` are three independent features: memory is what the model chooses
+to remember, `search` is RAG over documents **you** seed, and `chatHistory` is a transcript log. They
+don't read each other.
+
+## Letting the agent search its own chat history
+
+Captured chats are indexed Redis Search documents like any other, so you can aim `search` at them and
+the model gets a tool that queries past conversations. Mirror `ChatHistory`'s internal schema and
+point `indexName`/`prefix` at its keyspace:
+
+```ts
+// agent/extensions/agentkit.ts
+import { s } from "@upstash/redis";
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({
+  userId: "demo-user",
+  chatHistory: true,
+  search: {
+    // `ChatHistory`'s defaults: keys `agentkit:chat:<userId>:<sessionId>`, index `agentkit_chat`
+    // (the prefix, made identifier-safe). Set both here if you tuned `chatHistory.prefix`.
+    indexName: "agentkit_chat",
+    prefix: "agentkit:chat:",
+    schema: s.object({
+      userId: s.string().noTokenize(),
+      sessionId: s.string().noTokenize(),
+      userMessages: s.string(),
+      modelMessages: s.string(),
+    }),
+  },
+});
+```
+
+The model can then run `agentkit__search` with e.g.
+`{ "userMessages": { "$smart": "redis pipelining" } }` to find the session where that came up.
+
+**This is single-tenant only.** The `search` tools take the filter **from the model**, and nothing
+forces a `userId` clause onto it — so the tool can read *every* user's transcripts, not just the
+current one. That's the difference from `ChatHistory.searchChats({ userId, query })`, which pins
+`userId` server-side. Only wire this up when one user owns the whole Redis (a local or single-user
+agent); for a multi-tenant app, query `ChatHistory` from your own code instead and hand the result to
+the model yourself.
+
+Three more things to know before you reach for it:
+
+- You have **one `search` slot per mount**, so this spends it — no RAG over your own documents in the
+  same mount.
+- Hits are **whole chats, not messages**: `userMessages`/`modelMessages` are one merged blob per
+  session, and a result carries the full stored document, including the raw transcript. Keep `limit`
+  low or you'll flood the context window.
+- `search_aggregate` doesn't work over this index — `$terms` needs a FAST field, and these are text.
+  Disable that slot (`disableTool()`) if you don't want the model trying it.
 
 ## The search tools are dynamic
 
