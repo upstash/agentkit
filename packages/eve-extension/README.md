@@ -1,16 +1,17 @@
 # @upstash/agentkit-eve-extension
 
 [Upstash AgentKit](https://upstash.com/) as an [**Eve extension**](https://eve.dev/docs/extensions):
-one file in `agent/extensions/` mounts long-term memory tools, Redis Search tools, and durable
-chat-history capture — all on **Upstash Redis**, all under one namespace. No per-tool files, no
-repeated schemas; upgrades come through the package manager.
+one file in `agent/extensions/` mounts long-term memory tools, Redis Search tools, and durable chat
+history the agent can search — all on **Upstash Redis**, all under one namespace. No per-tool files,
+no repeated schemas; upgrades come through the package manager.
 
 | Contribution | What composes |
 | --- | --- |
 | `<ns>__recall_memory` / `<ns>__save_memory` | Long-term memory tools the model reads and writes. |
 | `<ns>__search` / `<ns>__search_aggregate` / `<ns>__search_count` | Tools over a Redis Search index (this is how you do RAG). Present only when `search` is configured. |
-| `<ns>__chat_history` (hook) | Persists every user/assistant message to Redis `ChatHistory` — a durable, `$smart`-searchable transcript store. Write-side only: no tool reads it back, you query it from your own code (or [wire it into `search`](#letting-the-agent-search-its-own-chat-history)). Off by default; enable with `chatHistory: true`. |
-| Instructions fragment | A short always-on rule teaching the model when to save/recall memories. |
+| `<ns>__search_chat_history` / `<ns>__read_chat_history` | Tools to find and read the user's **past conversations**. Present only when `chatHistory` is enabled. |
+| `<ns>__chat_history` (hook) | Persists every user/assistant message to Redis `ChatHistory` — the durable, `$smart`-searchable transcript store the two tools above read. Off by default; enable with `chatHistory: true`. |
+| Instructions fragment | A short always-on rule teaching the model when to save/recall memories and when to look back at past conversations. |
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
@@ -61,7 +62,7 @@ short memory instruction is added to your system prompt.
 | `userId` | principal → session id | The tenant boundary for memory + chat history. A string (one shared scope), or `(ctx) => string` to derive it per call. |
 | `search` | _off_ | `{ schema, indexName?, prefix?, defaultLimit? }`. Omit it and the search tools don't exist. |
 | `memory` | — | `{ topK?, minScore? }` to tune recall. |
-| `chatHistory` | `false` | `true` to capture transcripts, or `{ prefix?, indexName?, ttlSeconds? }` to tune where they're stored. |
+| `chatHistory` | `false` | `true` to capture transcripts and add the two past-conversation tools, or `{ prefix?, indexName?, ttlSeconds? }` to also tune where chats are stored. |
 | `redis` | `Redis.fromEnv()` | An explicit Upstash Redis client. |
 
 ## What lands in Redis
@@ -75,64 +76,50 @@ short memory instruction is added to your system prompt.
 `userId` and `sessionId` are Redis key parts, so `:` in derived values is replaced with `_`.
 
 Memory, `search`, and `chatHistory` are three independent features: memory is what the model chooses
-to remember, `search` is RAG over documents **you** seed, and `chatHistory` is a transcript log. They
-don't read each other.
+to remember, `search` is RAG over documents **you** seed, and `chatHistory` is the transcript of what
+was actually said. They live in separate keyspaces and separate indexes.
 
-## Letting the agent search its own chat history
+## Past conversations
 
-Captured chats are indexed Redis Search documents like any other, so you can aim `search` at them and
-the model gets a tool that queries past conversations. Mirror `ChatHistory`'s internal schema and
-point `indexName`/`prefix` at its keyspace:
+`chatHistory: true` does two things: the hook writes every message to Redis as the session streams,
+and the model gets two tools over that store — so "what did we decide about the schema last week?"
+works across sessions, not just within one.
 
 ```ts
 // agent/extensions/agentkit.ts
-import { s } from "@upstash/redis";
 import agentkit from "@upstash/agentkit-eve-extension";
 
-export default agentkit({
-  userId: "demo-user",
-  chatHistory: true,
-  search: {
-    // `ChatHistory`'s defaults: keys `agentkit:chat:<userId>:<sessionId>`, index `agentkit_chat`
-    // (the prefix, made identifier-safe). Set both here if you tuned `chatHistory.prefix`.
-    indexName: "agentkit_chat",
-    prefix: "agentkit:chat:",
-    schema: s.object({
-      userId: s.string().noTokenize(),
-      sessionId: s.string().noTokenize(),
-      userMessages: s.string(),
-      modelMessages: s.string(),
-    }),
-  },
-});
+export default agentkit({ chatHistory: true });
 ```
 
-The model can then run `agentkit__search` with e.g.
-`{ "userMessages": { "$smart": "redis pipelining" } }` to find the session where that came up.
+- **`<ns>__search_chat_history`** — `{ query, target?, limit? }`. Typo-tolerant (`$smart`) search over
+  what was said, returning the matching chats as `{ sessionId, title, updatedAt, messageCount, score }`
+  — summaries, not transcripts, so a wide search can't flood the context window. `target` narrows to
+  `"user"` (what they said), `"model"` (what you replied), or `"both"` (default). The **current**
+  conversation is excluded: it's already in context.
+- **`<ns>__read_chat_history`** — `{ sessionId, limit? }`. Reads one of those chats back, newest
+  messages last, capped at 50 per call with a `truncated` flag when there's more.
 
-**This is single-tenant only.** The `search` tools take the filter **from the model**, and nothing
-forces a `userId` clause onto it — so the tool can read *every* user's transcripts, not just the
-current one. That's the difference from `ChatHistory.searchChats({ userId, query })`, which pins
-`userId` server-side. Only wire this up when one user owns the whole Redis (a local or single-user
-agent); for a multi-tenant app, query `ChatHistory` from your own code instead and hand the result to
-the model yourself.
+Both **pin `userId` from the session**, never from model input, so a chat search can only ever reach
+the current user's own transcripts — one user's `sessionId` won't address another's chat. This is why
+they're separate tools rather than something you point the generic `search` tool at: `search` takes
+its filter from the model, so it couldn't enforce that boundary. Your `search` slot stays free for
+RAG over your own data.
 
-Three more things to know before you reach for it:
+You can still reach the same store from your own code — `ChatHistory` from `@upstash/agentkit-sdk`
+(`listChats` / `searchChats` / `getChat`) — for a history sidebar, evals, or analytics.
 
-- You have **one `search` slot per mount**, so this spends it — no RAG over your own documents in the
-  same mount.
-- Hits are **whole chats, not messages**: `userMessages`/`modelMessages` are one merged blob per
-  session, and a result carries the full stored document, including the raw transcript. Keep `limit`
-  low or you'll flood the context window.
-- `search_aggregate` doesn't work over this index — `$terms` needs a FAST field, and these are text.
-  Disable that slot (`disableTool()`) if you don't want the model trying it.
+Don't want the model reading history at all? Keep the capture and
+[disable the two tools](#overriding-or-disabling-contributions).
 
-## The search tools are dynamic
+## The search and chat-history tools are dynamic
 
-Their descriptions and input schemas are generated from your `search.schema` (field-by-field filter
-guidance for the model), which is only known once the mount config binds at runtime. So they're
+The search tools' descriptions and input schemas are generated from your `search.schema`
+(field-by-field filter guidance for the model), and whether the chat-history tools apply at all
+depends on `chatHistory` — neither is known until the mount config binds at runtime. So both sets are
 contributed as [dynamic tools](https://eve.dev/docs/guides/dynamic-capabilities) resolved at
-`session.started` — and when `search` isn't configured they resolve to nothing instead of erroring.
+`session.started`: unconfigured, they resolve to nothing rather than erroring when the model calls
+them. Only the memory tools are static.
 
 ## Overriding or disabling contributions
 

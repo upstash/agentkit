@@ -101,6 +101,21 @@ export function chatHistory(): ChatHistory<StoredChatMessage> | null {
 }
 
 /**
+ * The chat-history store, or throw a configuration error. The history tools are dynamic and only
+ * exist once `chatHistory` is enabled, so this only fires if config changed under a live session.
+ */
+export function requireChatHistory(): ChatHistory<StoredChatMessage> {
+  const history = chatHistory();
+  if (!history) {
+    throw new Error(
+      "[agentkit] The chat-history tools need `chatHistory: true` where the extension is mounted " +
+        "(agent/extensions/<name>.ts).",
+    );
+  }
+  return history;
+}
+
+/**
  * Append one message to the session's stored transcript. Core `saveChat` replaces the whole array,
  * so this reads the existing record and writes it back extended — stream events for one session are
  * dispatched in order, so the read-modify-write doesn't race itself.

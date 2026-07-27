@@ -71,8 +71,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - **No chat history in the eve adapter** — `ChatHistory` is core/ai-sdk only here. eve sessions are
   durable server-side (Vercel Workflow) and `useEveAgent` has no `initialMessages` prop, so a stored
   transcript doesn't round-trip cleanly; resume is via eve's `session` cursor, not us. (The
-  **eve-extension** package does capture transcripts to Redis via its `chat_history` hook — write-side
-  only, same no-round-trip caveat.)
+  **eve-extension** package does capture transcripts to Redis via its `chat_history` hook, and reads
+  them back as **tools** — `search_chat_history`/`read_chat_history` — so the model can look up past
+  conversations. That's lookup-on-demand, not session resume: the same no-round-trip caveat holds.)
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
 - Eve is file-centric, but the tool factories now **call `defineTool` internally** and return the
   branded `ToolDefinition` — users export them directly (no outer `defineTool(...)` wrap). Because of
@@ -109,16 +110,30 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `search_count` (one `defineDynamic` per file, resolved at `session.started` — static modules evaluate at
   discovery where mount config is **not yet bound**, so schema-derived descriptions/input schemas must be
   built in a resolver; unconfigured `search` → resolver returns `null` and the tools don't exist);
-  hook `chat_history` (appends every `message.received`/`message.completed` via core `ChatHistory.getChat`
+  **dynamic** tools `search_chat_history`/`read_chat_history` (same `defineDynamic` reason — they exist
+  only when `chatHistory` is enabled, which config binding decides at runtime); hook `chat_history`
+  (appends every `message.received`/`message.completed` via core `ChatHistory.getChat`
   + `saveChat`, errors swallowed — a thrown hook fails the turn); `instructions.md` fragment (merges after
   the agent's own instructions). Shared code lives in `extension/lib/runtime.ts` — extensions CAN have
   internal shared modules (unlike agent files).
+- **Chat-history tools** (`search_chat_history` = core `searchChats`, `read_chat_history` = `getChat`):
+  `userId` is pinned from the session via `resolveUserId(ctx)`, **never** model input — that's the reason
+  they're dedicated tools instead of pointing `search` at `agentkit:chat:` (the generic search tool takes
+  its filter from the model, so nothing would force a `userId` clause and it would read every tenant's
+  transcripts; also `$terms` aggregation fails on that index — text fields aren't FAST). Search returns
+  **summaries only** (`sessionId`/`title`/`updatedAt`/`messageCount`/`score`) and **excludes the live
+  session** (its text is already in context); read caps at 50 messages with a `truncated` flag. Verified
+  end to end against real Redis, incl. cross-tenant isolation (binding config in a probe = set
+  `globalThis[Symbol.for("eve.ext-config-scope")]` before importing the built `extension.mjs`, then call
+  the mount factory).
 - `resolveUserId` defaults `auth.current?.principalId ?? auth.initiator?.principalId ?? session.id` and
   **sanitizes `:` → `_`** (eve principal ids like `eve:app` and session ids would break core key-part
   validation). `sessionId` is sanitized the same way.
 - Consumers drop/override slots via a directory mount + `disableTool()` (that's the supported answer for
-  "I don't want tool X" — no config flags for it). Static memory tools are importable from
-  `@upstash/agentkit-eve-extension/tools` for `toolResultFrom`/overrides; dynamic search tools are not.
+  "I don't want tool X" — no config flags for it, incl. "capture history but don't let the model read it":
+  enable `chatHistory` and `disableTool()` the two history slots). Static memory tools are importable from
+  `@upstash/agentkit-eve-extension/tools` for `toolResultFrom`/overrides; the dynamic search and
+  chat-history tools are not.
 - What an extension **cannot** contribute (stays in `@upstash/agentkit-eve`): sandbox, channels/auth
   (rate limiting), schedules, agent config. `defineCachedTool` also stays there (wraps user tools).
 

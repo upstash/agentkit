@@ -13,7 +13,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-sdk`](./packages/sdk) | Core, framework-agnostic primitives. |
 | [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
-| [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat-history capture. |
+| [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
 
 ## Core features
 

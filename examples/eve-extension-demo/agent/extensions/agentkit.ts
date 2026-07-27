@@ -3,8 +3,9 @@ import agentkit from "@upstash/agentkit-eve-extension";
 
 // One mount composes every AgentKit contribution under the `agentkit` namespace (the file basename):
 // the tools `agentkit__recall_memory`, `agentkit__save_memory`, `agentkit__search`,
-// `agentkit__search_aggregate`, and `agentkit__search_count`, the chat-history hook (opted into
-// below — it's off by default), and a memory instructions fragment.
+// `agentkit__search_aggregate`, and `agentkit__search_count`, the chat-history hook plus its
+// `agentkit__search_chat_history` / `agentkit__read_chat_history` tools (opted into below — chat
+// history is off by default), and a memory instructions fragment.
 //
 // To drop a contribution, mount as a directory instead and disable its slot — see the
 // @upstash/agentkit-eve-extension README.
