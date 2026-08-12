@@ -1,6 +1,6 @@
 // Cached tools — like Eve's defineTool, but the result is memoized in an Upstash ToolCache
 export { defineCachedTool } from "./tools.js";
-export type { CacheUserId, DefineCachedToolConfig } from "./tools.js";
+export type { CacheUserId, DefineCachedToolConfig, ResolvedToolDefinition } from "./tools.js";
 
 // Long-term memory as Eve tools (drop into agent/tools/*.ts)
 export { defineMemoryRecallTool, defineMemorySaveTool } from "./memory.js";

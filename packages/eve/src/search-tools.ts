@@ -5,7 +5,7 @@ import {
 } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 import { defineTool } from "eve/tools";
-import type { ToolDefinition } from "eve/tools";
+import type { ResolvedToolDefinition } from "./tools";
 
 export interface DefineSearchToolsConfig extends Omit<SearchToolDefsConfig, "redis"> {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -14,17 +14,17 @@ export interface DefineSearchToolsConfig extends Omit<SearchToolDefsConfig, "red
 
 /** The three eve search tools over one index, each already `defineTool`-branded. */
 export interface SearchToolSet {
-  search: ToolDefinition;
-  aggregate: ToolDefinition;
-  count: ToolDefinition;
+  search: ResolvedToolDefinition<unknown, unknown>;
+  aggregate: ResolvedToolDefinition<unknown, unknown>;
+  count: ResolvedToolDefinition<unknown, unknown>;
 }
 
-function wrap(def: SearchToolDef): ToolDefinition {
+function wrap(def: SearchToolDef): ResolvedToolDefinition<unknown, unknown> {
   return defineTool({
     description: def.description,
     inputSchema: def.inputSchema,
     execute: (input: Record<string, unknown>) => def.execute(input),
-  } as Parameters<typeof defineTool>[0]) as ToolDefinition;
+  } as Parameters<typeof defineTool>[0]) as ResolvedToolDefinition<unknown, unknown>;
 }
 
 /**

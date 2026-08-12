@@ -14,14 +14,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.15",
-    "@upstash/agentkit-eve": "workspace:*",
-    "@upstash/box": "^0.5.1",
-    "@upstash/redis": "^1.38.0",
-    "@vercel/connect": "0.2.2",
-    "ai": "7.0.30",
-    "eve": "^0.25.2",
-    "zod": "4.4.3",
+    "@ai-sdk/openai": "^4.0.37",
     "@radix-ui/react-use-controllable-state": "1.2.2",
     "@shikijs/core": "4.1.0",
     "@shikijs/engine-javascript": "4.1.0",
@@ -31,9 +24,15 @@
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
     "@tailwindcss/postcss": "4.3.0",
+    "@upstash/agentkit-eve": "workspace:*",
+    "@upstash/box": "^0.5.1",
+    "@upstash/redis": "^1.38.0",
+    "@vercel/connect": "0.2.2",
+    "ai": "7.0.58",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
+    "eve": "^0.32.0",
     "lucide-react": "1.16.0",
     "motion": "12.40.0",
     "nanoid": "5.1.11",
@@ -45,13 +44,14 @@
     "streamdown": "2.5.0",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.0",
-    "use-stick-to-bottom": "1.1.4"
+    "use-stick-to-bottom": "1.1.4",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.x",
-    "@typescript/native-preview": "7.0.0-dev.20260523.1",
     "@types/react": "19.2.15",
-    "@types/react-dom": "19.2.3"
+    "@types/react-dom": "19.2.3",
+    "@typescript/native-preview": "7.0.0-dev.20260523.1"
   },
   "engines": {
     "node": "24.x"

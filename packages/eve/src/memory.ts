@@ -2,7 +2,8 @@ import { z } from "zod";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 import { defineTool } from "eve/tools";
-import type { ToolContext, ToolDefinition } from "eve/tools";
+import type { ToolContext } from "eve/tools";
+import type { ResolvedToolDefinition } from "./tools";
 
 /**
  * The user the memory is read/written under. A string shares all memory across callers (fine for a
@@ -43,7 +44,7 @@ function resolveUserId(config: MemoryToolConfig, input: Record<string, unknown>,
  */
 export function defineMemoryRecallTool(
   config: MemoryToolConfig,
-): ToolDefinition<{ query?: string }, { text: string; score: number }[]> {
+): ResolvedToolDefinition<{ query?: string }, { text: string; score: number }[]> {
   const memory = resolveMemory(config);
   return defineTool({
     description:
@@ -70,7 +71,7 @@ export function defineMemoryRecallTool(
       });
       return hits.map((h) => ({ text: h.text, score: h.score }));
     },
-  } as Parameters<typeof defineTool>[0]) as ToolDefinition<
+  } as Parameters<typeof defineTool>[0]) as ResolvedToolDefinition<
     { query?: string },
     { text: string; score: number }[]
   >;
@@ -87,7 +88,7 @@ export function defineMemoryRecallTool(
  */
 export function defineMemorySaveTool(
   config: MemoryToolConfig,
-): ToolDefinition<{ text: string }, { id: string; saved: boolean }> {
+): ResolvedToolDefinition<{ text: string }, { id: string; saved: boolean }> {
   const memory = resolveMemory(config);
   return defineTool({
     description:
@@ -100,7 +101,7 @@ export function defineMemorySaveTool(
       const record = await memory.add({ text, userId: resolveUserId(config, { text }, ctx) });
       return { id: record.id, saved: true };
     },
-  } as Parameters<typeof defineTool>[0]) as ToolDefinition<
+  } as Parameters<typeof defineTool>[0]) as ResolvedToolDefinition<
     { text: string },
     { id: string; saved: boolean }
   >;
