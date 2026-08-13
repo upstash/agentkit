@@ -510,15 +510,23 @@ export class UpstashSandboxBackend implements SandboxBackend<
       },
     });
 
+    // Eve calls `stop` when authored code ends sandbox work early (`ctx.getSandbox().stop()`,
+    // eve ≥0.32): stop the compute but keep the session reattachable from `captureState`'s `boxId`
+    // (`openBox` reattaches via `Box.get`). Pausing does exactly that. Per the contract, provider
+    // errors must reject — so no catch here; keep-alive boxes can't be paused and will reject.
+    const stop = async (): Promise<void> => {
+      await box.pause();
+    };
+
     // Eve calls `shutdown` only when the server itself is stopping (SIGINT/SIGTERM/nitro close):
-    // nothing may be left running, but the box must stay reattachable from `captureState`'s `boxId`
-    // on the next start. Pausing does exactly that (`openBox` reattaches via `Box.get`). Keep-alive
-    // boxes can't be paused — tolerate the failure, matching Eve's own Vercel backend's try/catch.
+    // nothing may be left running, but the box must stay reattachable on the next start — same
+    // pause as `stop`, except failures are tolerated (keep-alive boxes can't pause; eve collects
+    // and logs shutdown failures rather than blocking teardown).
     const shutdown = async (): Promise<void> => {
       await box.pause().catch(() => {});
     };
 
-    return { session, useSessionFn, captureState, shutdown };
+    return { session, useSessionFn, captureState, stop, shutdown };
   }
 
   async prewarm(

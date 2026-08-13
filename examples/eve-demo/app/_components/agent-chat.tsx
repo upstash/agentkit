@@ -28,7 +28,7 @@ export function AgentChat({
   function send(text: string) {
     const value = text.trim();
     if (!value || busy) return;
-    void agent.send({ message: value });
+    void agent.send(value);
     setInput("");
   }
 

@@ -24,11 +24,19 @@ describe.skipIf(!hasRedisCreds)("memory tools (live Redis)", () => {
   });
 
   it("save then recall round-trips through AgentMemory", async () => {
-    const saved = await save.execute({ text: "The user prefers dark mode" }, CTX);
+    // eve ≥0.31 types `execute` as possibly returning an AsyncIterable of output snapshots;
+    // our executors always resolve, so narrow the awaited results back to their plain values.
+    const saved = (await save.execute({ text: "The user prefers dark mode" }, CTX)) as {
+      id: string;
+      saved: boolean;
+    };
     expect(saved.saved).toBe(true);
     await index.waitIndexing();
 
-    const hits = await recall.execute({ query: "ui theme preference" }, CTX);
+    const hits = (await recall.execute({ query: "ui theme preference" }, CTX)) as {
+      text: string;
+      score: number;
+    }[];
     expect(hits.some((h) => h.text.includes("dark mode"))).toBe(true);
   });
 });

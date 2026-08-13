@@ -6,7 +6,23 @@ import type { ToolContext, ToolDefinition } from "eve/tools";
 /** The user a cache entry is scoped to: a fixed string, or a function of the tool input + context. */
 export type CacheUserId<TInput> = string | ((input: TInput, ctx: ToolContext) => string);
 
-export type DefineCachedToolConfig<TInput, TOutput> = ToolDefinition<TInput, TOutput> & {
+/**
+ * A value that is not an `AsyncIterable`. Without the `[Symbol.asyncIterator]: never` block, an
+ * async-generator executor would satisfy a plain `Promise<TOutput> | TOutput` union by inferring
+ * `TOutput` *as* the generator object itself.
+ */
+type NonStreaming<T> = T & { [Symbol.asyncIterator]?: never };
+
+export type DefineCachedToolConfig<TInput, TOutput> = Omit<
+  ToolDefinition<TInput, TOutput>,
+  "execute"
+> & {
+  /**
+   * The tool body to memoize. Must resolve to a value — a cached tool cannot stream, so eve ≥0.31
+   * async-generator executors (preliminary output snapshots) are rejected at the type level: a cache
+   * hit could never replay the snapshots, it can only return the stored final value.
+   */
+  execute(input: TInput, ctx: ToolContext): Promise<TOutput> | NonStreaming<TOutput>;
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** The tool name — the `toolName` segment of the cache key. */
@@ -50,10 +66,30 @@ export function defineCachedTool<TInput, TOutput>(
       const run = cache.wrap<TInput, TOutput>(
         resolvedUserId,
         toolName,
-        (i) => Promise.resolve(execute(i, ctx)),
+        (i) => {
+          const result = execute(i, ctx);
+          // Backstop for JS callers (the type-level rejection doesn't reach them): an async-generator
+          // executor returns the generator synchronously — refuse it before ToolCache would serialize
+          // the generator object into Redis as the "result". Matches eve's streaming semantics: only
+          // a *directly* returned AsyncIterable is a stream; a promised value is just a value.
+          if (isAsyncIterable(result)) {
+            throw new TypeError(
+              `defineCachedTool("${toolName}"): streaming (async generator) executors cannot be cached — execute must resolve to a value`,
+            );
+          }
+          return Promise.resolve(result);
+        },
         ttlSeconds !== undefined ? { ttlSeconds } : {},
       );
       return run(input);
     },
   } as Parameters<typeof defineTool>[0]) as ToolDefinition<TInput, TOutput>;
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+  );
 }

@@ -78,6 +78,17 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - Eve is file-centric, but the tool factories now **call `defineTool` internally** and return the
   branded `ToolDefinition` — users export them directly (no outer `defineTool(...)` wrap). Because of
   this, **`eve` is a required (non-optional) peer dep** of `packages/eve`.
+- **`defineCachedTool` does not cache streams:** eve ≥0.31 lets executors be async generators
+  (preliminary output snapshots), but a cache hit could never replay them — so
+  `DefineCachedToolConfig` narrows the **input** `execute` to `Promise<TOutput> | NonStreaming<TOutput>`
+  and rejects generator executors at the type level. The `NonStreaming` (`[Symbol.asyncIterator]?: never`)
+  intersection is load-bearing: with a plain `Promise<TOutput> | TOutput` union, TS just infers
+  `TOutput` *as* the generator object and the rejection silently fails (guarded by a
+  `@ts-expect-error` test in `tools.test.ts`). A **runtime backstop** covers JS callers: a directly
+  returned `AsyncIterable` throws a `TypeError` before `ToolCache` would serialize the generator
+  object into Redis (a *promised* value is just a value — only direct returns are streams, matching
+  eve). Factory **returns** stay plain `ToolDefinition` — direct `execute` callers (tests) narrow the
+  awaited union themselves.
 - Rate limiting in eve = a route-auth gate: `createRateLimitAuth(config)` goes first in
   `eveChannel({ auth: [...] })`; it `.limit()`s, throws `ForbiddenError` (403) over the limit, else
   returns `null` to fall through to the real authenticators (`localDev()`/`vercelOidc()`/…).
@@ -96,9 +107,12 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   it, and pnpm's strict layout rejects the phantom dep (npm hoists and hides it). The old "also
   install `@upstash/agentkit-sdk`" workaround is **not** needed on the 0.25 format — the compiled
   dist resolves sdk from the extension's own package.
-  **Known eve bug:** `eve dev` fails to load an extension installed as a **real directory** (npm/yarn
-  hoisted layouts) — the dev snapshot's module-map references `../../node_modules/...` relatively and
-  misses; pnpm's symlink installs work, and production `eve build` bundles fine either way.
+  (The old eve bug where `eve dev` failed to load an extension installed as a **real directory** —
+  npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
+  **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
+  eve's *current* contribution-format versions, and a consumer rejects any version not in its own
+  supported list — so a dist built with eve 0.32 (tool 11 / dynamicTool 12 / hook 9) needs consumers
+  on **eve ≥0.32**. The wildcard peer stays `"*"`; the manifest is the real compatibility tie.
 - `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
   Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
   ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
@@ -175,10 +189,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `agentkit:memory:<userId>:<id>`, `agentkit:chat:<userId>:<sessionId>` (default prefixes shown).
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.30`**. `eve` (0.24+)
-  declares `ai` as a **peer** (`^7.0.26`), so the apps/packages provide the single copy. Providers:
-  `@ai-sdk/openai` `^4.0.15`, `@ai-sdk/provider` `^4.0.3`, `@ai-sdk/react` `^4.0.33` (all stable).
-  (History: the repo was on `7.0.0-beta.178`, the exact version `eve@0.13.1` depended on.)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.32)
+  declares `ai` as a **peer** (`^7.0.58`), so the apps/packages provide the single copy. Providers:
+  `@ai-sdk/openai` `^4.0.37`, `@ai-sdk/provider` `^4.0.7`, `@ai-sdk/react` `^4.0.62` (all stable ranges;
+  bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
+  second, older `ai` copy via its peer resolution, which is exactly the two-copy breakage to avoid).
+  (History: the repo was on `7.0.0-beta.178` for `eve@0.13.1`, then `7.0.30` for `eve@0.25.2` — the
+  exact pin moves in lockstep with eve's `ai` peer range.)
 - **Why exact-pin and not a pnpm `override`:** because everyone lands on the same exact `ai`, pnpm
   installs a single copy. Two copies of `ai` cause type/identity breakage. An override was tried and
   removed as unnecessary — keep it that way unless a dep forces a different `ai@7`.
@@ -222,10 +239,21 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.25.2`** (peer `>=0.24.0` in `packages/eve` — its API is unchanged across
-  0.24→0.25; wildcard peer in the extension). Subpath exports: `eve/tools`, `eve/hooks`,
-  `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`, `eve/sandbox/vercel`,
-  `eve/channels/*`, `eve/next`, …
+- The repo is on **`eve@0.32.0`** (peer `>=0.24.0` in `packages/eve`; wildcard peer in the extension,
+  but the built dist needs consumers on ≥0.32 — see the eve-extension section). Subpath exports:
+  `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
+  `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
+- **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
+  APIs with fixed ID-addressed handles — frontend/client `send` is now **positional**
+  (`agent.send(message, options?)`, not `send({ message })`; eve-demo's `agent-chat.tsx` was updated);
+  (b) `SandboxBackendHandle` gained a required **`stop()`** (authored-runtime stop, errors must reject)
+  alongside `shutdown()`; (c) tool executors may return **`AsyncIterable<TOutput>`** (streaming output
+  snapshots, 0.31) — `ToolDefinition.execute`'s return type is now a union; `defineCachedTool` rejects
+  streaming executors at the type level (see the eve exports section);
+  (d) 0.30 changed `localDev()` to grant a deployment-based synthetic principal (runtime `principalId`
+  values differ in local dev; our sanitizing `resolveUserId` is unaffected); (e) eve 0.32's `ai` peer is
+  `^7.0.58` (drove the repo-wide exact-pin bump). Durable sessions now **complete after 30 days** by
+  default (0.28) — strengthens Redis `ChatHistory` as the long-term transcript store.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -247,9 +275,10 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - The real `SandboxBackend` is **two-phase**: `{ name, create(input) → SandboxBackendHandle, prewarm(input)
   → { reused } }`. `SandboxSession` = the AI SDK `Experimental_SandboxSession` (`run`, `spawn`,
   `readFile`→stream, `readBinaryFile`, `readTextFile`, `writeFile`/`writeBinaryFile`/`writeTextFile`) plus
-  `id`, `resolvePath`, `setNetworkPolicy`, `removePath`. In eve ≥0.24 the handle's lifecycle method is
-  **`shutdown()`** (fires only on server shutdown; must leave the session reattachable) — the old
-  per-open `dispose()` is gone.
+  `id`, `resolvePath`, `setNetworkPolicy`, `removePath`. The handle's lifecycle methods are
+  **`stop()`** (eve ≥0.32: authored code ends sandbox work early via `ctx.getSandbox().stop()`; must
+  keep the session reattachable and **reject** on provider errors) and **`shutdown()`** (server
+  shutdown; best-effort, failures collected/logged by eve) — the old per-open `dispose()` is gone.
 
 ## @upstash/box (sandbox backend)
 - Optional peer dep of the eve package. `Box.create({ apiKey | UPSTASH_BOX_API_KEY, runtime, size, … })`;
@@ -336,10 +365,11 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
   lookup. `prewarm` builds **no** box when there's nothing to bake (no seed files/bootstrap). **Session
   reuse:** `create` reattaches to the box from `input.existingMetadata.boxId` (`Box.get`) — Eve re-opens a
   session many times and hands our captured `boxId` back, so without this every open spun a fresh box (the
-  "3 boxes per turn" bug). `shutdown` (eve ≥0.24's replacement for the old per-open `dispose`) fires only
-  when the server stops: it `box.pause()`s (reattachable; failure tolerated — keep-alive boxes can't
-  pause), and `keepAlive` defaults to **false** (pause-based idle; `true` can't be paused and runs until
-  deleted). **Path bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`,
+  "3 boxes per turn" bug). Lifecycle: `stop()` (eve ≥0.32, authored `ctx.getSandbox().stop()`)
+  `box.pause()`s and **propagates** failures (the contract says provider errors must reject — keep-alive
+  boxes can't pause and will reject); `shutdown` (server stop) is the same pause but failure-tolerated.
+  Both leave the box reattachable. `keepAlive` defaults to **false** (pause-based idle; `true` can't be
+  paused and runs until deleted). **Path bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`,
   so the backend remaps both `resolvePath` (file ops) and raw commands (`find /workspace …` →
   `/workspace/home`, URL-safe via lookbehind) through the exported `toBoxPath`/`rewriteWorkspacePaths`.
 - `gpt-5.4-mini` (demo model) may not exist → demos build fine but can 404 at runtime. Swap if needed.
