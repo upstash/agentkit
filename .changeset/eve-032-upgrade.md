@@ -13,7 +13,8 @@ Upgrade to eve 0.32 (repo now builds and tests against eve 0.32.0 / AI SDK 7.0.5
 - `defineCachedTool` does not cache streams: eve ≥0.31 lets tool executors be async generators
   (streaming preliminary output snapshots), but a cache hit could never replay them —
   `DefineCachedToolConfig` now rejects async-generator executors at the type level (its `execute`
-  must resolve to a value).
+  must resolve to a value), and a runtime `TypeError` backstops untyped JS callers before the
+  generator object would be serialized into the cache.
 
 `@upstash/agentkit-eve-extension`:
 

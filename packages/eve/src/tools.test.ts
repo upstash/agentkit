@@ -61,4 +61,22 @@ describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
       },
     });
   });
+
+  it("rejects a streaming execute at runtime (JS callers bypass the types)", async () => {
+    const t = defineCachedTool({
+      description: "stream",
+      inputSchema: z.object({ n: z.number() }),
+      toolName: "stream-runtime",
+      userId: ns,
+      redis,
+      execute: async function* ({ n }: { n: number }) {
+        yield n;
+      } as never, // cast past the type-level rejection, like an untyped JS caller
+    });
+
+    // The generator must be refused before ToolCache serializes the generator object into Redis.
+    await expect(Promise.resolve(t.execute({ n: 1 }, CTX))).rejects.toThrow(
+      /streaming \(async generator\) executors cannot be cached/,
+    );
+  });
 });

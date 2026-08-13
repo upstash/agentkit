@@ -84,8 +84,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   and rejects generator executors at the type level. The `NonStreaming` (`[Symbol.asyncIterator]?: never`)
   intersection is load-bearing: with a plain `Promise<TOutput> | TOutput` union, TS just infers
   `TOutput` *as* the generator object and the rejection silently fails (guarded by a
-  `@ts-expect-error` test in `tools.test.ts`). Factory **returns** stay plain `ToolDefinition` — direct
-  `execute` callers (tests) narrow the awaited union themselves.
+  `@ts-expect-error` test in `tools.test.ts`). A **runtime backstop** covers JS callers: a directly
+  returned `AsyncIterable` throws a `TypeError` before `ToolCache` would serialize the generator
+  object into Redis (a *promised* value is just a value — only direct returns are streams, matching
+  eve). Factory **returns** stay plain `ToolDefinition` — direct `execute` callers (tests) narrow the
+  awaited union themselves.
 - Rate limiting in eve = a route-auth gate: `createRateLimitAuth(config)` goes first in
   `eveChannel({ auth: [...] })`; it `.limit()`s, throws `ForbiddenError` (403) over the limit, else
   returns `null` to fall through to the real authenticators (`localDev()`/`vercelOidc()`/…).

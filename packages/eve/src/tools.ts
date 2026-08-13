@@ -66,10 +66,30 @@ export function defineCachedTool<TInput, TOutput>(
       const run = cache.wrap<TInput, TOutput>(
         resolvedUserId,
         toolName,
-        (i) => Promise.resolve(execute(i, ctx)),
+        (i) => {
+          const result = execute(i, ctx);
+          // Backstop for JS callers (the type-level rejection doesn't reach them): an async-generator
+          // executor returns the generator synchronously — refuse it before ToolCache would serialize
+          // the generator object into Redis as the "result". Matches eve's streaming semantics: only
+          // a *directly* returned AsyncIterable is a stream; a promised value is just a value.
+          if (isAsyncIterable(result)) {
+            throw new TypeError(
+              `defineCachedTool("${toolName}"): streaming (async generator) executors cannot be cached — execute must resolve to a value`,
+            );
+          }
+          return Promise.resolve(result);
+        },
         ttlSeconds !== undefined ? { ttlSeconds } : {},
       );
       return run(input);
     },
   } as Parameters<typeof defineTool>[0]) as ToolDefinition<TInput, TOutput>;
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+  );
 }
