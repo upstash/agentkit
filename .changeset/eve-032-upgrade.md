@@ -10,13 +10,10 @@ Upgrade to eve 0.32 (repo now builds and tests against eve 0.32.0 / AI SDK 7.0.5
 - The Upstash Box sandbox backend implements eve ≥0.32's `SandboxBackendHandle.stop()` (authored
   `ctx.getSandbox().stop()`): pauses the box, keeps the session reattachable, and rejects on provider
   errors per the contract (`shutdown()` stays best-effort).
-- New exported type `ResolvedToolDefinition<TInput, TOutput>`: eve ≥0.31 widened
-  `ToolDefinition.execute`'s return type to include `AsyncIterable<TOutput>` (streaming output
-  snapshots); all agentkit tool factories (`defineCachedTool`, `defineMemoryRecallTool`,
-  `defineMemorySaveTool`, `defineSearchTools`) now return this narrowed type, so calling `execute`
-  directly still resolves to a plain `Promise`.
-- `defineCachedTool` handles streaming executors: an async-generator `execute` is drained and only its
-  final snapshot is cached and returned (a cache hit cannot replay intermediate snapshots).
+- `defineCachedTool` does not cache streams: eve ≥0.31 lets tool executors be async generators
+  (streaming preliminary output snapshots), but a cache hit could never replay them —
+  `DefineCachedToolConfig` now rejects async-generator executors at the type level (its `execute`
+  must resolve to a value).
 
 `@upstash/agentkit-eve-extension`:
 

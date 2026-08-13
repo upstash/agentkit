@@ -76,14 +76,16 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   conversations. That's lookup-on-demand, not session resume: the same no-round-trip caveat holds.)
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
 - Eve is file-centric, but the tool factories now **call `defineTool` internally** and return the
-  branded definition — users export them directly (no outer `defineTool(...)` wrap). Because of
-  this, **`eve` is a required (non-optional) peer dep** of `packages/eve`. The factories return
-  **`ResolvedToolDefinition<TInput,TOutput>`** (exported from the root): eve ≥0.31 widened
-  `ToolDefinition.execute`'s return to `Promise<TOutput> | TOutput | AsyncIterable<TOutput>` (streaming
-  output snapshots), so this `Omit`-based type re-narrows `execute` to `Promise<TOutput>` for direct
-  callers (a plain intersection does NOT override — TS picks the union signature first).
-- **`defineCachedTool` does not stream:** if the user's `execute` is an async generator, it's drained
-  and only the **final snapshot** is cached and returned (a cache hit can't replay a stream anyway).
+  branded `ToolDefinition` — users export them directly (no outer `defineTool(...)` wrap). Because of
+  this, **`eve` is a required (non-optional) peer dep** of `packages/eve`.
+- **`defineCachedTool` does not cache streams:** eve ≥0.31 lets executors be async generators
+  (preliminary output snapshots), but a cache hit could never replay them — so
+  `DefineCachedToolConfig` narrows the **input** `execute` to `Promise<TOutput> | NonStreaming<TOutput>`
+  and rejects generator executors at the type level. The `NonStreaming` (`[Symbol.asyncIterator]?: never`)
+  intersection is load-bearing: with a plain `Promise<TOutput> | TOutput` union, TS just infers
+  `TOutput` *as* the generator object and the rejection silently fails (guarded by a
+  `@ts-expect-error` test in `tools.test.ts`). Factory **returns** stay plain `ToolDefinition` — direct
+  `execute` callers (tests) narrow the awaited union themselves.
 - Rate limiting in eve = a route-auth gate: `createRateLimitAuth(config)` goes first in
   `eveChannel({ auth: [...] })`; it `.limit()`s, throws `ForbiddenError` (403) over the limit, else
   returns `null` to fall through to the real authenticators (`localDev()`/`vercelOidc()`/…).
@@ -243,7 +245,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   (`agent.send(message, options?)`, not `send({ message })`; eve-demo's `agent-chat.tsx` was updated);
   (b) `SandboxBackendHandle` gained a required **`stop()`** (authored-runtime stop, errors must reject)
   alongside `shutdown()`; (c) tool executors may return **`AsyncIterable<TOutput>`** (streaming output
-  snapshots, 0.31) — `ToolDefinition.execute`'s return type is now a union, see `ResolvedToolDefinition`;
+  snapshots, 0.31) — `ToolDefinition.execute`'s return type is now a union; `defineCachedTool` rejects
+  streaming executors at the type level (see the eve exports section);
   (d) 0.30 changed `localDev()` to grant a deployment-based synthetic principal (runtime `principalId`
   values differ in local dev; our sanitizing `resolveUserId` is unaffected); (e) eve 0.32's `ai` peer is
   `^7.0.58` (drove the repo-wide exact-pin bump). Durable sessions now **complete after 30 days** by

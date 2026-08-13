@@ -46,69 +46,19 @@ describe.skipIf(!hasRedisCreds)("defineCachedTool (live Redis)", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  // eve ≥0.31 lets `execute` be an async generator that streams preliminary output snapshots.
-  // A cached tool drains it: only the final snapshot is returned and cached (`finalSnapshot`).
-  describe("streaming (async generator) execute", () => {
-    it("resolves to the final snapshot, not an intermediate one", async () => {
-      const t = defineCachedTool({
-        description: "stream",
-        inputSchema: z.object({ n: z.number() }),
-        toolName: "stream-final",
-        userId: ns,
-        redis,
-        async *execute({ n }: { n: number }) {
-          yield { progress: "partial", value: n };
-          yield { progress: "partial", value: n * 10 };
-          yield { progress: "done", value: n * 100 };
-        },
-      });
-
-      expect(await t.execute({ n: 3 }, CTX)).toEqual({ progress: "done", value: 300 });
-    });
-
-    it("caches the drained snapshot so the generator runs once", async () => {
-      const runs = vi.fn();
-      const t = defineCachedTool({
-        description: "stream",
-        inputSchema: z.object({ n: z.number() }),
-        toolName: "stream-cached",
-        userId: ns,
-        redis,
-        async *execute({ n }: { n: number }) {
-          runs();
-          yield n;
-          yield n * 2;
-        },
-      });
-
-      expect(await t.execute({ n: 21 }, CTX)).toBe(42);
-      expect(await t.execute({ n: 21 }, CTX)).toBe(42);
-      expect(runs).toHaveBeenCalledTimes(1);
-    });
-
-    it("rejects when the generator yields nothing, without caching the failure", async () => {
-      let broken = true;
-      const runs = vi.fn();
-      const t = defineCachedTool({
-        description: "stream",
-        inputSchema: z.object({}),
-        toolName: "stream-empty",
-        userId: ns,
-        redis,
-        async *execute() {
-          runs();
-          if (!broken) yield "ok";
-        },
-      });
-
-      await expect(t.execute({}, CTX)).rejects.toThrow(/without yielding a result/);
-
-      // The failed call must not have poisoned the cache: once the tool yields, its
-      // result comes from a fresh run (2 executions total), then caches normally.
-      broken = false;
-      expect(await t.execute({}, CTX)).toBe("ok");
-      expect(await t.execute({}, CTX)).toBe("ok");
-      expect(runs).toHaveBeenCalledTimes(2);
+  it("rejects a streaming (async generator) execute at the type level", () => {
+    // A cached tool cannot stream — a cache hit could never replay eve ≥0.31's preliminary
+    // output snapshots — so `DefineCachedToolConfig.execute` only accepts resolving executors.
+    defineCachedTool({
+      description: "stream",
+      inputSchema: z.object({ n: z.number() }),
+      toolName: "stream",
+      userId: ns,
+      redis,
+      // @ts-expect-error — async-generator executors are not cacheable
+      async *execute({ n }: { n: number }) {
+        yield n;
+      },
     });
   });
 });
