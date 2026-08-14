@@ -1,0 +1,23 @@
+# The @upstash/agentkit-deepseek bundle layer: move session persistence off the
+# local disk and into Upstash Redis.
+#
+# Applied after @deepseek-ai/dsh-base, so the row it disables already exists.
+#
+# A row is REPLACED by disabling it and inserting another, never by patching its
+# `name`: the patcher treats a patch's `name` as an assertion about the target
+# and skips the whole patch on a mismatch, so a rename would silently do nothing
+# and leave the JSONL backend running.
+
+# The base bundle's local-disk backend. A serverless or multi-replica deployment
+# has no durable local disk to write it to, and no shared one to read it back.
+- id: session-persistence-jsonl
+  disabled: true
+
+# Credentials are read from the environment (UPSTASH_REDIS_REST_URL /
+# UPSTASH_REDIS_REST_TOKEN), never inlined here. Every other knob takes its
+# schema default; override this row's `config` from your profile's
+# cordis.patch.yml, restating every key it needs — a patch replaces a row's
+# whole config rather than merging into it.
+- insert:
+    - id: session-persistence-redis
+      name: "@upstash/agentkit-deepseek"

@@ -14,6 +14,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
 | [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
+| [`@upstash/agentkit-deepseek`](./packages/deepseek) | Plugins for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Currently a durable **session-persistence backend** — a drop-in replacement for the shipped JSONL/SQLite backends that keeps session transcripts in Redis, so they survive a restart and can be resumed by a different instance. |
 
 ## Core features
 
