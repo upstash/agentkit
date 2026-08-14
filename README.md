@@ -49,13 +49,21 @@ pnpm typecheck  # tsc across packages
 Tests need `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (in a repo-root `.env`); suites that
 hit Redis skip themselves when absent. Some tests use `UPSTASH_BOX_API_KEY` and `OPENAI_API_KEY`.
 
+## Telemetry
+
+Each package reports its name and version to Upstash as a header on the requests made by your redis
+client (e.g. `@upstash/redis@1.38.0,@upstash/agentkit-sdk@0.2.0,@upstash/agentkit-ai-sdk@0.2.0`), so we
+know which SDK versions are in use. No personal data, keys or identifiers are collected. Opt out with
+`enableTelemetry: false` on any feature config, with the same option on the redis client, or by setting
+the `UPSTASH_DISABLE_TELEMETRY` environment variable.
+
 ## Releasing
 
 This repo uses [Changesets](https://github.com/changesets/changesets).
 
 ```bash
 pnpm changeset        # describe a change
-pnpm ci:version       # bump versions + changelogs
+pnpm ci:version       # bump versions + changelogs (also stamps each package's telemetry VERSION constant)
 pnpm ci:publish       # publish to npm
 
 # (`version`/`release` script names are avoided — they collide with pnpm's built-in commands.)

@@ -3,6 +3,7 @@ import { AgentMemory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 import { defineTool } from "eve/tools";
 import type { ToolContext, ToolDefinition } from "eve/tools";
+import { addTelemetry } from "./telemetry.js";
 
 /**
  * The user the memory is read/written under. A string shares all memory across callers (fine for a
@@ -20,10 +21,20 @@ export interface MemoryToolConfig {
   topK?: number;
   /** Minimum relevance score for recall. */
   minScore?: number;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 function resolveMemory(config: MemoryToolConfig): AgentMemory {
-  return new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
+  const redis = config.redis ?? Redis.fromEnv();
+  addTelemetry(redis, config.enableTelemetry);
+  return new AgentMemory({
+    redis,
+    ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
+  });
 }
 
 function resolveUserId(config: MemoryToolConfig, input: Record<string, unknown>, ctx: ToolContext) {

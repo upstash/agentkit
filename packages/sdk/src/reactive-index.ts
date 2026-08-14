@@ -1,4 +1,5 @@
 import type { FlatIndexSchema, NestedIndexSchema, Redis, SearchIndex } from "@upstash/redis";
+import { addTelemetry } from "./telemetry.js";
 
 /** The schema type accepted by `redis.search.index` / `createIndex` (an `s.object({...})`). */
 export type AnySearchSchema = NestedIndexSchema | FlatIndexSchema;
@@ -25,6 +26,11 @@ export interface ReactiveSearchIndexConfig<TSchema extends AnySearchSchema> {
   prefix: string;
   /** The Upstash Redis Search schema (an `s.object({...})`). */
   schema: TSchema;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /**
@@ -47,6 +53,7 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
 
   constructor(config: ReactiveSearchIndexConfig<TSchema>) {
     this.redis = config.redis;
+    addTelemetry(config.redis, { enabled: config.enableTelemetry });
     this.indexName = config.indexName;
     this.prefix = config.prefix;
     this.schema = config.schema;

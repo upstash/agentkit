@@ -1,4 +1,5 @@
 import type { Redis } from "@upstash/redis";
+import { addTelemetry } from "./telemetry.js";
 import { key, stableHash } from "./utils.js";
 
 /**
@@ -22,6 +23,11 @@ export interface ToolCacheConfig {
   prefix?: string;
   /** Default TTL (seconds) for cached results. Omit for no expiry. */
   ttlSeconds?: number;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /** A cached tool result. `null`/`undefined` results are cached too, hence the wrapper object. */
@@ -41,6 +47,7 @@ export class ToolCache {
 
   constructor(config: ToolCacheConfig) {
     this.redis = config.redis;
+    addTelemetry(config.redis, { enabled: config.enableTelemetry });
     this.prefix = config.prefix ?? "agentkit:toolCache";
     this.ttlSeconds = config.ttlSeconds;
   }

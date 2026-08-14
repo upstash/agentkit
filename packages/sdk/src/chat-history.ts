@@ -1,6 +1,7 @@
 import { s } from "@upstash/redis";
 import type { InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex } from "./reactive-index.js";
+import { addTelemetry } from "./telemetry.js";
 import { now } from "./utils.js";
 
 /**
@@ -65,6 +66,11 @@ export interface ChatHistoryConfig<TMessage = unknown> {
    * convention (`{ role, parts: [{ type: "text", text }] }`), so adapters rarely override it.
    */
   extractText?: (messages: TMessage[]) => ExtractedText;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 interface ChatDoc<TMessage> {
@@ -135,6 +141,7 @@ export class ChatHistory<TMessage = unknown> {
 
   constructor(config: ChatHistoryConfig<TMessage>) {
     this.redis = config.redis;
+    addTelemetry(config.redis, { enabled: config.enableTelemetry });
     const prefix = config.prefix ?? "agentkit:chat";
     // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
     const indexName = config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -144,6 +151,7 @@ export class ChatHistory<TMessage = unknown> {
       indexName,
       prefix: this.keyPrefix,
       schema: ChatHistorySchema,
+      ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
     });
     this.ttlSeconds = config.ttlSeconds;
     this.extract = config.extractText ?? (defaultExtract as (m: TMessage[]) => ExtractedText);

@@ -1,6 +1,7 @@
 import { tool, type Tool, type ToolExecutionOptions, type ToolSet } from "ai";
 import { ToolCache } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
+import { addTelemetry } from "./telemetry.js";
 
 /** The user a cache entry is scoped to: a fixed string, or a function of the tool input + options. */
 export type CacheUserId<INPUT> =
@@ -14,6 +15,11 @@ export interface CachedToolsOptions {
   redis?: Redis;
   /** Default per-result TTL (seconds) for every cached tool. */
   ttlSeconds?: number;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /** Wrap an already-built `Tool`'s `execute` with caching, keyed by `userId` + `toolName` + hash. */
@@ -66,7 +72,13 @@ function wrapBuiltTool(
  * ```
  */
 export function cachedTools<T extends ToolSet>(tools: T, options: CachedToolsOptions): T {
-  const cache = new ToolCache({ redis: options.redis ?? Redis.fromEnv() });
+  const { enableTelemetry } = options;
+  const redis = options.redis ?? Redis.fromEnv();
+  addTelemetry(redis, enableTelemetry);
+  const cache = new ToolCache({
+    redis,
+    ...(enableTelemetry !== undefined ? { enableTelemetry } : {}),
+  });
   const out = {} as Record<string, Tool>;
   for (const [name, built] of Object.entries(tools)) {
     out[name] = wrapBuiltTool(cache, name, options.userId, options.ttlSeconds, built);

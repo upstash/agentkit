@@ -23,7 +23,7 @@
     "typecheck": "pnpm --filter @upstash/agentkit-sdk build && pnpm -r --filter \"./packages/*\" typecheck",
     "clean": "pnpm -r --filter \"./packages/*\" clean",
     "changeset": "changeset",
-    "ci:version": "changeset version",
+    "ci:version": "changeset version && node scripts/sync-version.mjs",
     "ci:publish": "changeset publish"
   },
   "devDependencies": {

@@ -201,6 +201,21 @@ await memory.searchIndex.waitIndexing();
 const info = await memory.searchIndex.describe();
 ```
 
+## Telemetry
+
+The SDK reports its name and version to Upstash as a header on the requests made by the redis client
+you provide, so we know which SDK versions are in use. No personal data, keys or identifiers are
+collected. The header looks like `@upstash/redis@1.38.0,@upstash/agentkit-sdk@0.2.0`.
+
+Opt out with `enableTelemetry: false` on any feature:
+
+```ts
+const memory = new AgentMemory({ redis, enableTelemetry: false });
+```
+
+or by setting the `UPSTASH_DISABLE_TELEMETRY` environment variable. Disabling telemetry on the redis
+client itself also disables it here.
+
 ## Testing
 
 Tested against a **real Upstash Redis** instance (no Redis mock); only LLM calls are mocked. Set

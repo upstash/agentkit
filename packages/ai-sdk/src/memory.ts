@@ -2,6 +2,7 @@ import { tool, type ToolExecutionOptions, type ToolSet } from "ai";
 import { z } from "zod";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
+import { addTelemetry } from "./telemetry.js";
 
 /**
  * The user the memory is read/written under. A string shares all memory across callers (fine for a
@@ -25,6 +26,11 @@ export interface CreateMemoryToolsConfig {
   recallToolName?: string;
   /** Override the save tool's key/name. Defaults to `save_memory`. */
   saveToolName?: string;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /**
@@ -38,8 +44,13 @@ export interface CreateMemoryToolsConfig {
  * ```
  */
 export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
-  const { userId, topK, minScore } = config;
-  const memory = new AgentMemory({ redis: config.redis ?? Redis.fromEnv() });
+  const { userId, topK, minScore, enableTelemetry } = config;
+  const redis = config.redis ?? Redis.fromEnv();
+  addTelemetry(redis, enableTelemetry);
+  const memory = new AgentMemory({
+    redis,
+    ...(enableTelemetry !== undefined ? { enableTelemetry } : {}),
+  });
   const recallName = config.recallToolName ?? "recall_memory";
   const saveName = config.saveToolName ?? "save_memory";
 

@@ -54,6 +54,15 @@ export default [
     },
   },
   {
+    // Build scripts run under Node.
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: { process: "readonly", console: "readonly" },
+    },
+  },
+  {
     files: ["**/*.test.ts", "**/test/**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",

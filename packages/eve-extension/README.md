@@ -163,6 +163,21 @@ Box **sandbox backend** and the **rate-limit channel auth** (extensions can't co
 channel config) — or its `defineCachedTool` wrapper for your own tools. The two compose fine in one
 agent.
 
+## Telemetry
+
+The SDK reports its name and version to Upstash as a header on the requests made by the redis client,
+so we know which SDK versions are in use. No personal data, keys or identifiers are collected. The
+header looks like `@upstash/redis@1.38.0,@upstash/agentkit-sdk@0.2.0,@upstash/agentkit-eve-extension@0.5.0`.
+
+Opt out with `enableTelemetry: false` in the mount config:
+
+```ts
+export default agentkit({ enableTelemetry: false });
+```
+
+or by setting the `UPSTASH_DISABLE_TELEMETRY` environment variable. Disabling telemetry on the redis
+client itself also disables it here.
+
 ## Example
 
 [`examples/eve-extension-demo`](../../examples/eve-extension-demo) is a scaffolded eve agent with the

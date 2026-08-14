@@ -21,6 +21,11 @@ export default defineExtension({
     userId: userId.optional(),
     /** Upstash Redis client. Defaults to `Redis.fromEnv()` (`UPSTASH_REDIS_REST_URL`/`_TOKEN`). */
     redis: z.custom<Redis>((value) => typeof value === "object" && value !== null).optional(),
+    /**
+     * Report the sdk name + version to Upstash as a header on the requests made by the redis client.
+     * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+     */
+    enableTelemetry: z.boolean().optional(),
     /** Knobs for the `recall_memory` tool. */
     memory: z
       .object({

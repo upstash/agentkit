@@ -66,6 +66,7 @@ import type {
   SandboxSession,
   SandboxSessionUseFn,
 } from "eve/sandbox";
+import { addTelemetry } from "./telemetry.js";
 
 /** Per-session (and per-bootstrap) options a caller can apply via `use(options)`. */
 export interface UpstashSandboxOptions {
@@ -99,6 +100,12 @@ export type UpstashBackendConfig = Omit<BoxConfig, "networkPolicy"> & {
   redis?: Redis;
   /** Key prefix for the template registry. Defaults to `agentkit:sandbox:template`. */
   templatePrefix?: string;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by the redis client
+   * backing the template registry. Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env
+   * var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
   /**
    * A **base Box snapshot** every fresh session restores from, instead of a bare `Box.create`. Use it
    * to bake heavy, slow-changing setup (browser binaries, ffmpeg, a preinstalled toolchain) into one
@@ -364,7 +371,10 @@ export class UpstashSandboxBackend implements SandboxBackend<
   /** Lazily resolve the Redis client backing the template registry (so envless setups that never use a
    * template don't trip `Redis.fromEnv()`). */
   private redis(): Redis {
-    return (this.redisClient ??= this.config.redis ?? Redis.fromEnv());
+    if (this.redisClient) return this.redisClient;
+    this.redisClient = this.config.redis ?? Redis.fromEnv();
+    addTelemetry(this.redisClient, this.config.enableTelemetry);
+    return this.redisClient;
   }
 
   /** Registry key for a template's snapshot id, namespaced by backend name. */

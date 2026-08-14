@@ -296,6 +296,21 @@ does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`
 Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
 `agent/` files.
 
+## Telemetry
+
+The SDK reports its name and version to Upstash as a header on the requests made by the redis client,
+so we know which SDK versions are in use. No personal data, keys or identifiers are collected. The
+header looks like `@upstash/redis@1.38.0,@upstash/agentkit-sdk@0.2.0,@upstash/agentkit-eve@0.5.0`.
+
+Opt out with `enableTelemetry: false` on any helper:
+
+```ts
+export default defineMemoryRecallTool({ userId: (_, ctx) => ctx.session.id, enableTelemetry: false });
+```
+
+or by setting the `UPSTASH_DISABLE_TELEMETRY` environment variable. Disabling telemetry on the redis
+client itself also disables it here.
+
 ## Testing
 
 Tests run against a **real Upstash Redis** (and a real Box when `UPSTASH_BOX_API_KEY` is set); only LLM

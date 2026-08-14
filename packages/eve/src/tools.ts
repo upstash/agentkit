@@ -2,6 +2,7 @@ import { ToolCache } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 import { defineTool } from "eve/tools";
 import type { ToolContext, ToolDefinition } from "eve/tools";
+import { addTelemetry } from "./telemetry.js";
 
 /** The user a cache entry is scoped to: a fixed string, or a function of the tool input + context. */
 export type CacheUserId<TInput> = string | ((input: TInput, ctx: ToolContext) => string);
@@ -31,6 +32,11 @@ export type DefineCachedToolConfig<TInput, TOutput> = Omit<
   userId: CacheUserId<TInput>;
   /** Per-result TTL (seconds). */
   ttlSeconds?: number;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 };
 
 /**
@@ -56,8 +62,13 @@ export type DefineCachedToolConfig<TInput, TOutput> = Omit<
 export function defineCachedTool<TInput, TOutput>(
   config: DefineCachedToolConfig<TInput, TOutput>,
 ): ToolDefinition<TInput, TOutput> {
-  const { redis, toolName, userId, ttlSeconds, execute, ...rest } = config;
-  const cache = new ToolCache({ redis: redis ?? Redis.fromEnv() });
+  const { redis, toolName, userId, ttlSeconds, enableTelemetry, execute, ...rest } = config;
+  const client = redis ?? Redis.fromEnv();
+  addTelemetry(client, enableTelemetry);
+  const cache = new ToolCache({
+    redis: client,
+    ...(enableTelemetry !== undefined ? { enableTelemetry } : {}),
+  });
 
   return defineTool({
     ...rest,

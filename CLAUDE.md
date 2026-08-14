@@ -187,6 +187,32 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `withIndex` helper is gone.)
 - Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<userId>:<toolName>:<hash>`,
   `agentkit:memory:<userId>:<id>`, `agentkit:chat:<userId>:<sessionId>` (default prefixes shown).
+- **Telemetry** (mirrors `@upstash/ratelimit`): every feature that takes a `redis` client tags it via the
+  client's hidden `addTelemetry` (protected in `@upstash/redis`, so typed structurally), appending to the
+  `Upstash-Telemetry-Sdk` header — e.g.
+  `@upstash/redis@1.38.0,@upstash/agentkit-sdk@0.2.0,@upstash/agentkit-ai-sdk@0.2.0`. Core
+  `packages/sdk/src/telemetry.ts` exports `addTelemetry(redis, { sdk?, enabled? })` + `SDK_TELEMETRY`
+  (both re-exported from the package root); each adapter has its own thin `src/telemetry.ts` passing its
+  package tag, so a client carries **both** the core and adapter tags. Dedup is a
+  `WeakMap<client, Set<sdk>>` — one tag per (client, sdk) pair, since the client *appends* on every call.
+  Opt out: `enableTelemetry: false` on any config (threaded down into the core primitive **and** its
+  `ReactiveSearchIndex`), the redis client's own `enableTelemetry`, or `UPSTASH_DISABLE_TELEMETRY`.
+  **Testing the header is wire-level, not mock-level:** `@upstash/redis` calls the *global* `fetch`, so
+  the `telemetry.test.ts` suites stub `globalThis.fetch`, point a client at a fake URL
+  (`responseEncoding: false`, `retry: false`, **`enableAutoPipelining: false`** — auto-pipelining sends a
+  batch and expects an *array* body, which breaks a naive stub) and assert on the captured
+  `Upstash-Telemetry-Sdk` header; the sdk suite also runs one live-Redis case proving a tagged request is
+  still accepted. The eve-extension suite (`packages/eve-extension/test/`) binds mount config the way eve
+  does — `globalThis[Symbol.for("eve.ext-config-scope")] = "agentkit"` while importing
+  `extension/extension.ts`, then call the mount factory — and tests the **source**, not `dist/`.
+  Failures are swallowed — telemetry must never break the client. **Version constants:** each package has a
+  committed `version.ts` (`packages/*/src`, extension: `extension/lib/`) written by
+  `scripts/sync-version.mjs`, which runs **only at release time** from root `ci:version`
+  (`changeset version && node scripts/sync-version.mjs`) so the constant lands in the release PR next to
+  the package.json bump. **`build`/`dev` must never regenerate it** — no build step may rewrite tracked
+  source (dirty worktrees, watch-mode churn). CI runs the read-only `--check` mode to catch drift. Note the
+  installed `@upstash/ratelimit@2.0.8` has **no** `enableTelemetry` option yet — don't pass one to
+  `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
 - **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.32)

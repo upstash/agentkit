@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { s } from "@upstash/redis";
 import type { InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex } from "./reactive-index.js";
+import { addTelemetry } from "./telemetry.js";
 import { now } from "./utils.js";
 
 /**
@@ -38,6 +39,11 @@ export interface AgentMemoryConfig {
   indexName?: string;
   /** Default relevance floor for {@link AgentMemory.recall} (BM25 score). */
   minScore?: number;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /** One JSON doc per memory: `text` is fuzzy-searchable, `userId` is an exact-match tenant filter. */
@@ -62,6 +68,7 @@ export class AgentMemory {
 
   constructor(config: AgentMemoryConfig) {
     this.redis = config.redis;
+    addTelemetry(config.redis, { enabled: config.enableTelemetry });
     const prefix = config.prefix ?? "agentkit:memory";
     // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
     const indexName = config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -71,6 +78,7 @@ export class AgentMemory {
       indexName,
       prefix: this.keyPrefix,
       schema: MemorySchema,
+      ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
     });
     this.minScore = config.minScore ?? 0;
   }

@@ -35,6 +35,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # Read-only: the telemetry VERSION constants are written by `pnpm ci:version` at release time,
+      # so this only fails if a version was bumped without it.
+      - name: Check version constants
+        run: node scripts/sync-version.mjs --check
+
       - name: Build packages
         run: pnpm build
 

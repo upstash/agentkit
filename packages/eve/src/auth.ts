@@ -1,6 +1,7 @@
 import { createRateLimit, type RateLimitConfig } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 import { ForbiddenError, type AuthFn } from "eve/channels/auth";
+import { addTelemetry } from "./telemetry.js";
 
 /** Configuration for {@link createRateLimitAuth}. */
 export interface RateLimitAuthConfig extends Omit<RateLimitConfig, "redis"> {
@@ -50,7 +51,9 @@ export interface RateLimitAuthConfig extends Omit<RateLimitConfig, "redis"> {
  */
 export function createRateLimitAuth(config: RateLimitAuthConfig): AuthFn<Request> {
   const { identifier, message, redis, ...rest } = config;
-  const ratelimit = createRateLimit({ ...rest, redis: redis ?? Redis.fromEnv() });
+  const client = redis ?? Redis.fromEnv();
+  addTelemetry(client, rest.enableTelemetry);
+  const ratelimit = createRateLimit({ ...rest, redis: client });
 
   return async (request) => {
     // Only throttle the model-invoking message submissions (POST). The follow-up `GET …/stream` (and
