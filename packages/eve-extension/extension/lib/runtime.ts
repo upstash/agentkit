@@ -1,12 +1,17 @@
 import {
   AgentMemory,
   ChatHistory,
+  addTelemetry,
   createSearchToolDefs,
   type SearchToolDefs,
 } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
 import type { SessionContext } from "eve/tools";
 import extension from "../extension";
+import { VERSION } from "./version";
+
+/** This package's telemetry tag; core adds its own `@upstash/agentkit-sdk` tag on the same client. */
+const EXTENSION_TELEMETRY = `@upstash/agentkit-eve-extension@${VERSION}`;
 
 /**
  * `userId` and `sessionId` become Redis key parts, and core key-part validation rejects `:` (the key
@@ -28,7 +33,13 @@ export function resolveUserId(ctx: SessionContext): string {
 let redisClient: Redis | undefined;
 
 export function redis(): Redis {
-  return (redisClient ??= extension.config.redis ?? Redis.fromEnv());
+  if (redisClient) return redisClient;
+  redisClient = extension.config.redis ?? Redis.fromEnv();
+  addTelemetry(redisClient, {
+    sdk: EXTENSION_TELEMETRY,
+    enabled: extension.config.enableTelemetry,
+  });
+  return redisClient;
 }
 
 let agentMemory: AgentMemory | undefined;

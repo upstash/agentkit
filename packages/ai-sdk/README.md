@@ -206,6 +206,21 @@ so you never pass a name yourself.
 
 </details>
 
+## Telemetry
+
+The SDK reports its name and version to Upstash as a header on the requests made by the redis client,
+so we know which SDK versions are in use. No personal data, keys or identifiers are collected. The
+header looks like `@upstash/redis@1.38.0,@upstash/agentkit-sdk@0.2.0,@upstash/agentkit-ai-sdk@0.2.0`.
+
+Opt out with `enableTelemetry: false` on any helper:
+
+```ts
+const tools = createMemoryTools({ userId, enableTelemetry: false });
+```
+
+or by setting the `UPSTASH_DISABLE_TELEMETRY` environment variable. Disabling telemetry on the redis
+client itself also disables it here.
+
 ## Testing
 
 Tests run against a **real Upstash Redis** (only LLM calls are mocked). Set `UPSTASH_REDIS_REST_URL` /

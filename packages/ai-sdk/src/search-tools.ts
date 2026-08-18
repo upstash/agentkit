@@ -5,6 +5,7 @@ import {
   type SearchToolDef,
   type SearchToolDefsConfig,
 } from "@upstash/agentkit-sdk";
+import { addTelemetry } from "./telemetry.js";
 
 export interface CreateSearchToolsConfig extends Omit<SearchToolDefsConfig, "redis"> {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -42,6 +43,8 @@ function wrap(def: SearchToolDef): Tool {
  */
 export function createSearchTools(config: CreateSearchToolsConfig): ToolSet {
   const { redis, ...rest } = config;
-  const defs = createSearchToolDefs({ redis: redis ?? Redis.fromEnv(), ...rest });
+  const client = redis ?? Redis.fromEnv();
+  addTelemetry(client, rest.enableTelemetry);
+  const defs = createSearchToolDefs({ redis: client, ...rest });
   return { search: wrap(defs.search), aggregate: wrap(defs.aggregate), count: wrap(defs.count) };
 }

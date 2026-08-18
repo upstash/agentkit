@@ -1,5 +1,6 @@
 import { Ratelimit, type Duration } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import { addTelemetry } from "./telemetry.js";
 
 // Re-export the `@upstash/ratelimit` surface AgentKit users need so they never have to import from
 // (or install) `@upstash/ratelimit` directly. `Ratelimit` is the class whose static helpers build a
@@ -18,6 +19,11 @@ export interface RateLimitConfig {
   limiter: Limiter;
   /** Key prefix for the limiter. Defaults to `agentkit:rateLimit`; keys are `<prefix>:<identifier>`. */
   prefix?: string;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /**
@@ -32,8 +38,10 @@ export interface RateLimitConfig {
  * ```
  */
 export function createRateLimit(config: RateLimitConfig): Ratelimit {
+  const redis = config.redis ?? Redis.fromEnv();
+  addTelemetry(redis, { enabled: config.enableTelemetry });
   return new Ratelimit({
-    redis: config.redis ?? Redis.fromEnv(),
+    redis,
     limiter: config.limiter,
     prefix: config.prefix ?? "agentkit:rateLimit",
   });

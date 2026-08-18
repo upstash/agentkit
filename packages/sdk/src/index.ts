@@ -1,6 +1,12 @@
 // Utilities
 export { key, now, stableHash, stableStringify } from "./utils.js";
 
+// Telemetry — tags the redis client's `Upstash-Telemetry-Sdk` header. Adapter packages call this
+// with their own `sdk` tag; opt out per feature with `enableTelemetry: false`, on the redis client,
+// or with the `UPSTASH_DISABLE_TELEMETRY` env var.
+export { addTelemetry, SDK_TELEMETRY } from "./telemetry.js";
+export { VERSION } from "./version.js";
+
 // Reactive search index — provisions the Upstash index on first read; the type each feature's
 // `.searchIndex` getter returns.
 export { ReactiveSearchIndex } from "./reactive-index.js";

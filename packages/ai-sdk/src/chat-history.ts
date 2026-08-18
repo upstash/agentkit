@@ -1,6 +1,7 @@
 import type { UIMessage } from "ai";
 import { ChatHistory } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
+import { addTelemetry } from "./telemetry.js";
 
 export interface CreateChatHistoryConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -11,6 +12,11 @@ export interface CreateChatHistoryConfig {
   indexName?: string;
   /** Optional TTL (seconds) per chat. Omit for no expiry. */
   ttlSeconds?: number;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /**
@@ -42,5 +48,7 @@ export interface CreateChatHistoryConfig {
  */
 export function createChatHistory(config: CreateChatHistoryConfig = {}): ChatHistory<UIMessage> {
   const { redis, ...rest } = config;
-  return new ChatHistory<UIMessage>({ redis: redis ?? Redis.fromEnv(), ...rest });
+  const client = redis ?? Redis.fromEnv();
+  addTelemetry(client, rest.enableTelemetry);
+  return new ChatHistory<UIMessage>({ redis: client, ...rest });
 }

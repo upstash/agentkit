@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex, type AnySearchSchema } from "./reactive-index.js";
+import { addTelemetry } from "./telemetry.js";
 
 export interface SearchToolDefsConfig<TSchema extends AnySearchSchema = AnySearchSchema> {
   /** The Upstash Redis Search schema (built with `s` from `@upstash/redis`). */
@@ -13,6 +14,11 @@ export interface SearchToolDefsConfig<TSchema extends AnySearchSchema = AnySearc
   prefix?: string;
   /** Default page size for the `search` tool. Defaults to 10. */
   defaultLimit?: number;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
 }
 
 /** One framework-agnostic search-tool definition (wrap with AI SDK `tool()` or eve `defineTool()`). */
@@ -92,11 +98,18 @@ export function createSearchToolDefs<TSchema extends AnySearchSchema = AnySearch
   config: SearchToolDefsConfig<TSchema>,
 ): SearchToolDefs {
   const { redis, schema } = config;
+  addTelemetry(redis, { enabled: config.enableTelemetry });
   const indexName = config.indexName ?? "agentkit:search";
   const prefix = config.prefix ?? `${indexName}:`;
   const defaultLimit = config.defaultLimit ?? 10;
   // The index is provisioned reactively on first read; writes (your seeding) need no index.
-  const index = new ReactiveSearchIndex({ redis, indexName, prefix, schema });
+  const index = new ReactiveSearchIndex({
+    redis,
+    indexName,
+    prefix,
+    schema,
+    ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
+  });
   // The filter/aggregation objects come from the model (untyped at runtime), so they're cast to the
   // index's real, schema-derived parameter types at the call sites below — not to `never`.
   type Filter = InferFilterFromSchema<TSchema>;
