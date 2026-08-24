@@ -181,4 +181,14 @@ client itself also disables it here.
 ## Example
 
 [`examples/eve-extension-demo`](../../examples/eve-extension-demo) is a scaffolded eve agent with the
-extension mounted: memory + book search + chat capture, end to end.
+extension mounted: memory + book search + chat capture, end to end. It also carries the extension's
+e2e smoke test — an eve eval driven by a deterministic `mockModel`, so it needs Redis credentials but
+no model provider:
+
+```bash
+cd examples/eve-extension-demo
+AGENTKIT_MOCK_MODEL=1 npx eve eval
+```
+
+See the demo's [README](../../examples/eve-extension-demo/README.md#end-to-end-eval-no-model-provider)
+for what it covers and how the fixture works.
