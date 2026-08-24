@@ -1,5 +1,12 @@
 # eve-extension-demo
 
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies [55db7e1]
+  - @upstash/agentkit-eve-extension@0.7.0
+
 ## 0.0.5
 
 ### Patch Changes
