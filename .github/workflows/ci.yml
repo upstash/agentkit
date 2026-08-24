@@ -54,3 +54,20 @@ jobs:
 
       - name: Build example apps
         run: pnpm -r --filter "./examples/*" build
+
+      - name: E2E eval (eve extension, mocked model)
+        # Boots the extension demo's agent with a scripted mockModel (no model provider,
+        # no OPENAI_API_KEY) and asserts the extension's tools execute against real Redis
+        # end to end. Reuses the same Redis secrets as the tests; skipped when they are
+        # absent (e.g. fork PRs, which don't receive secrets).
+        working-directory: examples/eve-extension-demo
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          AGENTKIT_MOCK_MODEL: "1"
+        run: |
+          if [ -z "$UPSTASH_REDIS_REST_URL" ]; then
+            echo "No Redis secrets available — skipping the e2e eval."
+            exit 0
+          fi
+          npx eve eval
