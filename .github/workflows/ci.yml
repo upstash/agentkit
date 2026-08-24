@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly run on main so we notice breakage from upstream changes (Redis, model
+  # providers, unpinned deps) even on days without commits.
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
