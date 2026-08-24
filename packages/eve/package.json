@@ -58,12 +58,12 @@
     "@upstash/redis": "^1.38.0",
     "ai": "7.0.58",
     "dotenv": "^16.4.5",
-    "eve": "^0.32.0"
+    "eve": "^0.44.3"
   },
   "peerDependencies": {
     "@upstash/box": ">=0.5.0",
     "@upstash/redis": ">=1.38.0",
-    "eve": ">=0.24.0"
+    "eve": ">=0.32.0"
   },
   "peerDependenciesMeta": {
     "@upstash/box": {
