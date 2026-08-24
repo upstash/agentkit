@@ -19,7 +19,7 @@
     "@upstash/redis": "^1.38.0",
     "@vercel/connect": "0.2.2",
     "ai": "7.0.58",
-    "eve": "^0.32.0",
+    "eve": "^0.44.3",
     "zod": "4.4.3"
   },
   "devDependencies": {

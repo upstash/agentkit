@@ -97,8 +97,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - Built with `eve extension build` (not tsup), on eve ≥0.25's **dist packaging format**: `package.json`
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
-  `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **wildcard peer**
-  (`"*"`, per the 0.25 scaffold — the manifest, not the range, is the compatibility tie). The old 0.24
+  `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
+  (`">=0.43.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -111,8 +111,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — so a dist built with eve 0.32 (tool 11 / dynamicTool 12 / hook 9) needs consumers
-  on **eve ≥0.32**. The wildcard peer stays `"*"`; the manifest is the real compatibility tie.
+  supported list — a dist built with eve 0.44.3 (formatVersion 2; tool 17 / dynamicTool 18 / hook 14 /
+  instructions 2) needs consumers on **eve ≥0.43** (tool 17 is the binding contract; hook 14 landed in
+  0.40). The `eve` peer is **`">=0.43.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
+  then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
+  the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
+  `dist/extension/_manifest.json` stamps, find the oldest eve whose `EXTENSION_CAPABILITY_CONTRACTS`
+  (in eve's `dist/src/compiler/extension-compatibility.js`) supports them all, and move the peer floor
+  to match.**
 - `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
   Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
   ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
@@ -215,7 +222,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.32)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.44)
   declares `ai` as a **peer** (`^7.0.58`), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.37`, `@ai-sdk/provider` `^4.0.7`, `@ai-sdk/react` `^4.0.62` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
@@ -265,8 +272,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.32.0`** (peer `>=0.24.0` in `packages/eve`; wildcard peer in the extension,
-  but the built dist needs consumers on ≥0.32 — see the eve-extension section). Subpath exports:
+- The repo is on **`eve@0.44.3`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
+  `stop()` contract our backend implements landed; peer `>=0.43.0` in the extension, matching the
+  built dist's manifest — see the eve-extension section). Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
@@ -280,6 +288,23 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   values differ in local dev; our sanitizing `resolveUserId` is unaffected); (e) eve 0.32's `ai` peer is
   `^7.0.58` (drove the repo-wide exact-pin bump). Durable sessions now **complete after 30 days** by
   default (0.28) — strengthens Redis `ChatHistory` as the long-term transcript store.
+- **The 0.32 → 0.44.3 jump (issue #22) needed no source changes** — everything compiled and passed
+  as-is. Why each headline break missed us: hook contract v10 (0.33, "model identity moved from
+  `session.started` runtime metadata to `step.started` call attribution") — our `chat_history` hook
+  only reads `message.received`/`message.completed`, whose shapes (incl. `data.finishReason`) are
+  unchanged; 0.33's `defineDynamic` narrowing ("accepts only `events`") — our dynamic tools already
+  used the events-only form; 0.38 renamed frontend binding `stop()` → `cancel()` — eve-demo never
+  called it (`agent.send(message)` positional survives); 0.44.1 reruns session-scoped dynamic
+  resolvers on resume ("keep them idempotent") — ours are pure factories. The real fix was
+  rebuild + re-stamp the manifest + tighten the peers. `ai` stayed exact-pinned at `7.0.58`
+  (eve 0.44's peer is still `^7.0.58`). **One live-dev gotcha:** a demo's `.eve/` dir holding local
+  workflow state written by ≤0.37 fails to replay on ≥0.38 ("Event id is not slot-numbered" retry
+  loops that wedge new turns — 0.38.2 moved the dev world to slot-numbered event ids). `.eve/` is
+  gitignored dev scratch: after an eve bump, `rm -rf examples/*/.eve` before `eve dev`/`next dev`.
+  Both demos were verified with live turns on 0.44.3 (memory save + fresh-session recall, search
+  count matching seed data, cached weather tool, and the extension's dynamic search + chat-history
+  hook/tools writing and reading real `agentkit:chat:demo-user:*` docs); `gpt-5.4-mini` does exist
+  and responds — the "may 404" caveat in Known issues didn't materialize.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -398,5 +423,6 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
   paused and runs until deleted). **Path bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`,
   so the backend remaps both `resolvePath` (file ops) and raw commands (`find /workspace …` →
   `/workspace/home`, URL-safe via lookbehind) through the exported `toBoxPath`/`rewriteWorkspacePaths`.
-- `gpt-5.4-mini` (demo model) may not exist → demos build fine but can 404 at runtime. Swap if needed.
+- ~~`gpt-5.4-mini` (demo model) may not exist~~ — verified live (2026-08): it exists and responds in
+  both demos. No swap needed.
 - The `19.2.17` `@types/react` may linger as an unpruned orphan in `.pnpm`; harmless (nothing links it).
