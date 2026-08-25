@@ -158,10 +158,10 @@ importable as static definitions.
 ## When to use this vs `@upstash/agentkit-eve`
 
 Use the extension when you want the batteries-included bundle under one mount. Use
-[`@upstash/agentkit-eve`](../eve) when you need the pieces the extension can't carry — the Upstash
-Box **sandbox backend** and the **rate-limit channel auth** (extensions can't contribute sandbox or
-channel config) — or its `defineCachedTool` wrapper for your own tools. The two compose fine in one
-agent.
+[`@upstash/agentkit-eve`](../eve) when you need the pieces this extension doesn't ship — the Upstash
+Box **sandbox backend** (an extension root can't declare a sandbox) and the **rate-limit channel
+auth** (an `AuthFn` you drop into your own channel's `auth` walk) — or its `defineCachedTool` wrapper
+for your own tools. The two compose fine in one agent.
 
 ## Telemetry
 

@@ -14,8 +14,9 @@ your `agent/` tree:
 > **Prefer one mount file over per-tool files?**
 > [`@upstash/agentkit-eve-extension`](../eve-extension) packages the memory + search tools (plus
 > durable chat-history capture) as an [eve extension](https://eve.dev/docs/extensions) — mount it once
-> in `agent/extensions/`. This package remains the home of the sandbox backend, the rate-limit auth
-> gate, and `defineCachedTool`, which extensions can't carry.
+> in `agent/extensions/`. This package remains the home of the sandbox backend (an extension root
+> can't declare a sandbox), the rate-limit auth gate, and `defineCachedTool` — the pieces you wire
+> into your own `agent/` tree.
 
 Start from an eve project. Scaffold one (it installs `eve` and an AI-SDK provider for you):
 

@@ -155,8 +155,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   enable `chatHistory` and `disableTool()` the two history slots). Static memory tools are importable from
   `@upstash/agentkit-eve-extension/tools` for `toolResultFrom`/overrides; the dynamic search and
   chat-history tools are not.
-- What an extension **cannot** contribute (stays in `@upstash/agentkit-eve`): sandbox, channels/auth
-  (rate limiting), schedules, agent config. `defineCachedTool` also stays there (wraps user tools).
+- What an extension **can** contribute (eve ≥0.41, per eve's `docs/extensions.md`): tools, channels,
+  connections, skills, schedules, subagents, instruction fragments, hooks — channels, schedules and
+  subagents **are** allowed, and a contributed subagent may own its own agent config and sandbox.
+  What the extension **root** cannot declare: agent configuration, a sandbox, or nested extensions.
+  What stays in `@upstash/agentkit-eve` is therefore a packaging choice, not a framework limit: the
+  Box sandbox backend (an extension root can't declare a sandbox), the rate-limit `AuthFn` (you drop
+  it into your own channel's `auth` walk), and `defineCachedTool` (wraps user tools).
 
 ## Naming history (so you don't resurrect old names)
 - ai-sdk caching: `cacheTools` → `cachedTool`+`cachedTools` → now **`cachedTools` only** (singular `cachedTool` removed; toolName = map key, `userId` scopes).
@@ -315,8 +320,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `SandboxSession`, `SandboxNetworkPolicy`, etc. (`eve` is a devDep of `packages/eve` for these types.)
 - `ToolDefinition<TInput,TOutput>` = `{ description, inputSchema, execute(input, ctx: ToolContext), … }`.
 - **Extensions** (eve ≥0.24): agent-shaped packages mounted under `agent/extensions/<ns>.ts`; contributions
-  compose as `<ns>__<name>`. They may contribute tools/connections/skills/hooks/instructions — NOT sandbox,
-  channels, schedules, or agent config. Config binds at runtime (mount evaluation), not at discovery.
+  compose as `<ns>__<name>`. They may contribute tools, channels, connections, skills, schedules,
+  subagents, hooks and instruction fragments (eve ≥0.41; channels keep their declared route paths and
+  schedules their cron expressions). The extension **root** cannot declare agent configuration, a
+  sandbox, or nested extensions — but a contributed subagent may own its own config and sandbox.
+  Config binds at runtime (mount evaluation), not at discovery.
   Hooks are observe-only (can't inject context or short-circuit); a thrown hook fails the turn.
 - Stream events for transcripts: `message.received` (`data.message`: flattened user text) and
   `message.completed` (`data.message: string | null`, fires multiple times per turn — interim text before
