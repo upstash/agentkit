@@ -16,11 +16,15 @@ unavailable, use https://eve.dev/docs/extensions as a fallback.
   `eve/extension`. Config is optional; read bound values via the handle's
   `.config` in tools and hooks.
 - Add contributions under `extension/` the same way as in an agent:
-  `tools/`, `connections/`, `skills/`, `hooks/`, and optional instruction
-  fragments. Names come from file paths; the mount supplies the namespace, so
-  name tools for what they do (`search`, not `crm_search`).
-- An extension cannot declare `agent.ts`, `sandbox`, `schedules`, or nested
-  `extensions/` — those belong to the consuming agent.
+  `tools/`, `channels/`, `connections/`, `skills/`, `schedules/`, `subagents/`,
+  `hooks/`, and optional instruction fragments (eve ≥0.41 supports the full set;
+  channels keep their route paths and schedules their cron expressions). Names
+  come from file paths; the mount supplies the namespace, so name tools for what
+  they do (`search`, not `crm_search`).
+- The extension **root** cannot declare agent configuration (`agent.ts`), a
+  `sandbox/`, or nested `extensions/` — those belong to the consuming agent. A
+  subagent contributed under `extension/subagents/<id>/` may still own its own
+  agent config and sandbox.
 
 ## Build and publish
 
