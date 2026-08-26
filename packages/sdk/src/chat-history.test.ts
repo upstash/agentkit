@@ -14,6 +14,22 @@ const msg = (id: string, role: Msg["role"], text: string): Msg => ({
   parts: [{ type: "text", text }],
 });
 
+/**
+ * Re-run `read` until `ready` holds (or the deadline passes) and return the last value, so a caller
+ * asserting on search results doesn't race Upstash's asynchronous indexing. `waitIndexing()` is not
+ * a hard barrier for a doc written moments earlier. On a genuine breakage the predicate never holds
+ * and the caller's own `expect` still reports the original failure.
+ */
+async function pollUntil<T>(read: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 8_000; // well inside vitest's 30s testTimeout
+  let value = await read();
+  while (!ready(value) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    value = await read();
+  }
+  return value;
+}
+
 describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis Search)", () => {
   const redis = testRedis();
   const history = new ChatHistory<Msg>({ redis, prefix: uniquePrefix("chat") });
@@ -110,6 +126,13 @@ describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis Search)", () => {
   });
 
   it("lists a user's chats (filtered by userId in the index)", async () => {
+    // The index is created lazily by the first search read. A doc written while it does not exist
+    // yet can be missed by the create-time backfill *permanently* — verified against live Redis:
+    // c2 never became visible, even after 25s of polling. So force the index to exist first (this
+    // read is itself the reactive create); writes after that are indexed incrementally. c1, written
+    // several tests ago, has long settled and is picked up by the backfill.
+    await history.listChats({ userId: "nobody" });
+
     await history.saveChat({
       userId: user,
       sessionId: "c2",
@@ -118,7 +141,15 @@ describe.skipIf(!hasRedisCreds)("ChatHistory (live Redis Search)", () => {
     });
     await history.searchIndex.waitIndexing();
 
-    const list = await history.listChats({ userId: user });
+    // ...and `waitIndexing()` still isn't a hard barrier, so read until both chats are visible
+    // rather than asserting on the first response. The assertions below are unchanged.
+    const list = await pollUntil(
+      () => history.listChats({ userId: user }),
+      (chats) => {
+        const seen = chats.map((c) => c.sessionId);
+        return seen.includes("c1") && seen.includes("c2");
+      },
+    );
     const ids = list.map((c) => c.sessionId);
     expect(ids).toContain("c1");
     expect(ids).toContain("c2");

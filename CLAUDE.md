@@ -259,21 +259,28 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - vitest: `fileParallelism: false`, `testTimeout: 30_000`.
 - **Upstash DB caps at 10 search indexes** (`ERR Exceeded max index count of 10`). Tests must `drop()` /
   reuse indexes and run sequentially. There is **no** `SEARCH.LIST` command to enumerate them.
-- **Indexing is async.** After writing (`redis.json.set`), call `searchIndex.waitIndexing()` before
-  reading/asserting. Demos do the same.
-- **`waitIndexing()` is not a hard barrier — two suites flake because of it.** A just-written doc can
-  still be missing from the next query even after it returns, so any assertion of the form
-  "write, then immediately expect N search hits" is racy. Two are known-flaky **on `main` as well as
-  on feature branches**, and they red-lit CI on both the 2026-08-26 nightly (`main`, eve 0.44.3) and
-  PR #27 with byte-identical messages:
-  - `packages/sdk/src/chat-history.test.ts` › "lists a user's chats" → `expected [ 'c1' ] to include 'c2'`
-  - `packages/eve/src/search-tools.test.ts` › "search runs a $smart query, creating the index
-    reactively" → `expected 0 to be greater than 0` / `expected 1 to be greater than or equal to 2`
+- **Indexing is async, and visibility needs BOTH halves of a rule.** To assert on a search result you
+  must satisfy *both*, or the docs may never become visible — not "late", **never**:
+  1. **The index must already exist when the doc is written.** A doc written while the index is still
+     missing can be dropped by the create-time backfill permanently. Anything relying on the reactive
+     create (`ReactiveSearchIndex` provisioning on the first read) to pick up docs seeded *just*
+     beforehand is a coin flip.
+  2. **`searchIndex.waitIndexing()` must be called after the write**, on that already-existing index.
 
-  Both pass on re-run with no code change (measured ~1-in-2 to ~1-in-6 locally, on *both* branches).
-  **A red `Test` step on these two is not a regression — re-run the job before investigating**, and
-  don't "fix" it by loosening the assertion. A real fix means polling for the expected result (or
-  vitest `retry`), which nobody has done yet.
+  Measured against live Redis with a 3-way probe — `provision-then-write-then-wait` returned the full
+  result set on the *first* read (0ms); `provision-only` (no post-write wait) and `wait-only` (index
+  created after the writes) both sat at 0 hits for the full 10s probe and never recovered. Waiting
+  longer does not help: a 25s poll on the old ordering still failed. So order is
+  **provision → write → `waitIndexing()` → read**, and `waitIndexing()` on an index that doesn't
+  exist yet is a silent no-op, which is the trap.
+- **This was the cause of the long-running `Test` flake, and it is fixed.** `packages/sdk/src/
+  chat-history.test.ts` ("lists a user's chats" → `expected [ 'c1' ] to include 'c2'`) and
+  `packages/eve/src/search-tools.test.ts` ("search runs a $smart query…" → `expected 0 to be greater
+  than 0` / `expected 1 to be greater than or equal to 2`) red-lit CI repeatedly, including the
+  2026-08-26 nightly on `main` (eve 0.44.3) and three runs of PR #27. Both now provision the index
+  before seeding and keep a small `pollUntil` helper as insurance for residual lag; assertions are
+  unchanged. **10/10 consecutive green each** after the fix (was 4/10 and 4/10). If either goes red
+  again, treat it as a real regression, not noise.
 - **Throwaway DBs from `upstash start-redis` (the `@upstash/cli` command; `npm i -g @upstash/cli`)
   cap at *one* search index**, not 10 — `ERR Exceeded max index count of 1`. A single `pnpm test`
   cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
