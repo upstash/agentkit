@@ -98,7 +98,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
   `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
-  (`">=0.43.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
+  (`">=0.45.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -111,9 +111,10 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — a dist built with eve 0.44.3 (formatVersion 2; tool 17 / dynamicTool 18 / hook 14 /
-  instructions 2) needs consumers on **eve ≥0.43** (tool 17 is the binding contract; hook 14 landed in
-  0.40). The `eve` peer is **`">=0.43.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  supported list — a dist built with eve 0.45.0 (formatVersion 2; tool 18 / dynamicTool 19 / hook 14 /
+  instructions 2) needs consumers on **eve ≥0.45** (tool 18 *and* dynamicTool 19 are both binding —
+  0.45 is the first eve supporting either; every 0.42–0.44.4 tops out at tool 17 / dynamicTool 18).
+  The `eve` peer is **`">=0.45.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -227,7 +228,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.44)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.45)
   declares `ai` as a **peer** (`^7.0.58`), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.37`, `@ai-sdk/provider` `^4.0.7`, `@ai-sdk/react` `^4.0.62` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
@@ -258,8 +259,33 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - vitest: `fileParallelism: false`, `testTimeout: 30_000`.
 - **Upstash DB caps at 10 search indexes** (`ERR Exceeded max index count of 10`). Tests must `drop()` /
   reuse indexes and run sequentially. There is **no** `SEARCH.LIST` command to enumerate them.
-- **Indexing is async.** After writing (`redis.json.set`), call `searchIndex.waitIndexing()` before
-  reading/asserting. Demos do the same.
+- **Indexing is async, and visibility needs BOTH halves of a rule.** To assert on a search result you
+  must satisfy *both*, or the docs may never become visible — not "late", **never**:
+  1. **The index must already exist when the doc is written.** A doc written while the index is still
+     missing can be dropped by the create-time backfill permanently. Anything relying on the reactive
+     create (`ReactiveSearchIndex` provisioning on the first read) to pick up docs seeded *just*
+     beforehand is a coin flip.
+  2. **`searchIndex.waitIndexing()` must be called after the write**, on that already-existing index.
+
+  Measured against live Redis with a 3-way probe — `provision-then-write-then-wait` returned the full
+  result set on the *first* read (0ms); `provision-only` (no post-write wait) and `wait-only` (index
+  created after the writes) both sat at 0 hits for the full 10s probe and never recovered. Waiting
+  longer does not help: a 25s poll on the old ordering still failed. So order is
+  **provision → write → `waitIndexing()` → read**, and `waitIndexing()` on an index that doesn't
+  exist yet is a silent no-op, which is the trap.
+- **This was the cause of the long-running `Test` flake, and it is fixed.** `packages/sdk/src/
+  chat-history.test.ts` ("lists a user's chats" → `expected [ 'c1' ] to include 'c2'`) and
+  `packages/eve/src/search-tools.test.ts` ("search runs a $smart query…" → `expected 0 to be greater
+  than 0` / `expected 1 to be greater than or equal to 2`) red-lit CI repeatedly, including the
+  2026-08-26 nightly on `main` (eve 0.44.3) and three runs of PR #27. Both now provision the index
+  before seeding and keep a small `pollUntil` helper as insurance for residual lag; assertions are
+  unchanged. **10/10 consecutive green each** after the fix (was 4/10 and 4/10). If either goes red
+  again, treat it as a real regression, not noise.
+- **Throwaway DBs from `upstash start-redis` (the `@upstash/cli` command; `npm i -g @upstash/cli`)
+  cap at *one* search index**, not 10 — `ERR Exceeded max index count of 1`. A single `pnpm test`
+  cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
+  between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`; FLUSHDB does drop
+  indexes, and `SEARCH.DROP <name>` is the only other lever — there is no list command).
 - Scores are **BM25 (unbounded)**, not `[0,1]` — `minScore` thresholds are BM25 values.
 - `.env` is gitignored — **never commit creds.** Needs `UPSTASH_REDIS_REST_URL`/`_TOKEN`; optionally
   `OPENAI_API_KEY` and `UPSTASH_BOX_API_KEY`.
@@ -277,9 +303,10 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.44.3`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
-  `stop()` contract our backend implements landed; peer `>=0.43.0` in the extension, matching the
-  built dist's manifest — see the eve-extension section). Subpath exports:
+- The repo is on **`eve@0.45.0`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
+  `stop()` contract our backend implements landed, re-verified by typechecking `packages/eve` against
+  eve 0.32.0; peer `>=0.45.0` in the extension, matching the built dist's manifest — see the
+  eve-extension section). Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
@@ -310,6 +337,20 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   count matching seed data, cached weather tool, and the extension's dynamic search + chat-history
   hook/tools writing and reading real `agentkit:chat:demo-user:*` docs); `gpt-5.4-mini` does exist
   and responds — the "may 404" caveat in Known issues didn't materialize.
+- **The 0.44.3 → 0.45.0 bump also needed no source changes** — build, typecheck, both demo builds and
+  the mocked-model eval all passed unmodified. It was, again, *purely* a manifest/peer-floor move:
+  rebuilding on 0.45.0 re-stamps **tool 17→18** and **dynamicTool 18→19**, and 0.45.0 is the first eve
+  supporting either, so the extension peer floor went `>=0.43.0` → **`>=0.45.0`** (a 0.45-built dist
+  hard-errors at discovery on 0.44.3: *"requires tool contract v18, but this eve supports … v17"*).
+  Note the floor is now equal to the pinned version — 0.45 raised both contracts it stamps, so there
+  is no back-compat window at all this time. Why 0.45's headline breaks missed us: built-in tool
+  definitions moved from `eve/tools/defaults` to per-tool `eve/tools/<name>` subpaths and
+  `defineBashTool`/`defineReadFileTool`/`defineWriteFileTool`/`defineGlobTool`/`defineGrepTool` were
+  **removed** — we import only `defineTool`/`defineDynamic`/`SessionContext`/`ToolContext`/
+  `ToolDefinition` from `eve/tools`, never `eve/tools/defaults` nor any of those factories; and
+  `experimental.subagentPersistentSessions` was removed (subagent contract 1 and 2 are now *dropped*,
+  only 3 is supported) — we contribute no subagents. `ai` stays exact-pinned at `7.0.58` (eve 0.45's
+  peer is still `^7.0.58`).
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
