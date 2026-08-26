@@ -261,6 +261,24 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   reuse indexes and run sequentially. There is **no** `SEARCH.LIST` command to enumerate them.
 - **Indexing is async.** After writing (`redis.json.set`), call `searchIndex.waitIndexing()` before
   reading/asserting. Demos do the same.
+- **`waitIndexing()` is not a hard barrier — two suites flake because of it.** A just-written doc can
+  still be missing from the next query even after it returns, so any assertion of the form
+  "write, then immediately expect N search hits" is racy. Two are known-flaky **on `main` as well as
+  on feature branches**, and they red-lit CI on both the 2026-08-26 nightly (`main`, eve 0.44.3) and
+  PR #27 with byte-identical messages:
+  - `packages/sdk/src/chat-history.test.ts` › "lists a user's chats" → `expected [ 'c1' ] to include 'c2'`
+  - `packages/eve/src/search-tools.test.ts` › "search runs a $smart query, creating the index
+    reactively" → `expected 0 to be greater than 0` / `expected 1 to be greater than or equal to 2`
+
+  Both pass on re-run with no code change (measured ~1-in-2 to ~1-in-6 locally, on *both* branches).
+  **A red `Test` step on these two is not a regression — re-run the job before investigating**, and
+  don't "fix" it by loosening the assertion. A real fix means polling for the expected result (or
+  vitest `retry`), which nobody has done yet.
+- **Throwaway DBs from `upstash start-redis` (the `@upstash/cli` command; `npm i -g @upstash/cli`)
+  cap at *one* search index**, not 10 — `ERR Exceeded max index count of 1`. A single `pnpm test`
+  cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
+  between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`; FLUSHDB does drop
+  indexes, and `SEARCH.DROP <name>` is the only other lever — there is no list command).
 - Scores are **BM25 (unbounded)**, not `[0,1]` — `minScore` thresholds are BM25 values.
 - `.env` is gitignored — **never commit creds.** Needs `UPSTASH_REDIS_REST_URL`/`_TOKEN`; optionally
   `OPENAI_API_KEY` and `UPSTASH_BOX_API_KEY`.
