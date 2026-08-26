@@ -98,7 +98,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
   `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
-  (`">=0.43.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
+  (`">=0.45.0"` — was the scaffold's `"*"` until issue #22, then `">=0.43.0"` until the 0.45 rebuild;
+  see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -111,15 +112,28 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — a dist built with eve 0.44.3 (formatVersion 2; tool 17 / dynamicTool 18 / hook 14 /
-  instructions 2) needs consumers on **eve ≥0.43** (tool 17 is the binding contract; hook 14 landed in
-  0.40). The `eve` peer is **`">=0.43.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  supported list — the current dist is built with eve 0.45.0 (formatVersion 2; tool 18 / dynamicTool 19 /
+  hook 14 / instructions 2) and needs consumers on **eve ≥0.45** (tool 18 + dynamicTool 19 are the
+  binding contracts; hook 14 landed in 0.40). The `eve` peer is a floor, **not `"*"`** — issue #22
+  proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
   `dist/extension/_manifest.json` stamps, find the oldest eve whose `EXTENSION_CAPABILITY_CONTRACTS`
   (in eve's `dist/src/compiler/extension-compatibility.js`) supports them all, and move the peer floor
   to match.**
+  **Contract table by eve version** (read off each release's `extension-compatibility.js`):
+
+  | eve | tool `current` / `supported` | dynamicTool `current` / `supported` | hook | instructions |
+  | --- | --- | --- | --- | --- |
+  | 0.43.0 – 0.44.4 | 17 / …14,16,17 (15 dropped) | 18 / 1–18 | 14 / 10–14 | 2 / 1–2 |
+  | 0.45.0 | **18** / …14,16,17,**18** | **19** / 1–**19** | 14 / 10–14 | 2 / 1–2 |
+
+  The dist rebuilt on **0.45.0** stamps `tool 18 / dynamicTool 19` and only loads on **eve ≥0.45.0** —
+  eve 0.44.4 rejects it at discovery with *"requires tool contract v18, but this eve supports tool
+  contract versions: …v17"*, and the same for *dynamicTool contract v19*. The old `">=0.43.0"` floor
+  went stale the moment the dist was rebuilt on 0.45 (npm/pnpm install cleanly, then `eve build`
+  fails), so it is now `">=0.45.0"`. Keep README + `AGENTS.md` ("eve ≥ 0.45") in sync with it.
 - `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
   Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
   ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
@@ -262,7 +276,17 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   reading/asserting. Demos do the same.
 - Scores are **BM25 (unbounded)**, not `[0,1]` — `minScore` thresholds are BM25 values.
 - `.env` is gitignored — **never commit creds.** Needs `UPSTASH_REDIS_REST_URL`/`_TOKEN`; optionally
-  `OPENAI_API_KEY` and `UPSTASH_BOX_API_KEY`.
+  `OPENAI_API_KEY` and `UPSTASH_BOX_API_KEY`. `examples/eve-demo` and `examples/eve-extension-demo`
+  need their **own** `.env` (eve reads the project dir, not the repo root) — copy the root one.
+- **Throwaway DBs from `curl -X POST https://upstash.com/start-redis` cap at *one* search index**
+  (`ERR Exceeded max index count of 1`), not 10. `pnpm test` in one shot then cascades into bogus
+  create-index failures. Workaround: run **one test file at a time** with a `FLUSHDB` in between
+  (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'` — FLUSHDB does drop indexes;
+  there is no list command, only `SEARCH.DROP <name>`). Per-file, the suite fits in one index.
+- **The `$smart`-recall assertions are genuinely flaky on a cold index** (`packages/sdk/src/memory.test.ts`
+  "stores and fuzzily recalls memories", `packages/{ai-sdk,eve}/src/{memory,search-tools}.test.ts`):
+  they write, `waitIndexing()`, then expect hits, and a freshly created index sometimes still returns
+  0. Every one of them passes on a re-run. Don't read a single red run as a regression — re-run it.
 
 ## Upstash Redis Search quick reference
 - Create: `redis.search.createIndex({ name, dataType: "json", prefix, schema })` (idempotent — catch
@@ -277,9 +301,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.44.3`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
-  `stop()` contract our backend implements landed; peer `>=0.43.0` in the extension, matching the
-  built dist's manifest — see the eve-extension section). Subpath exports:
+- The repo is on **`eve@0.45.0`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
+  `stop()` contract our backend implements landed; peer `>=0.45.0` in the extension, matching the
+  0.45-built dist's manifest — see the eve-extension section). Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
@@ -310,6 +334,16 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   count matching seed data, cached weather tool, and the extension's dynamic search + chat-history
   hook/tools writing and reading real `agentkit:chat:demo-user:*` docs); `gpt-5.4-mini` does exist
   and responds — the "may 404" caveat in Known issues didn't materialize.
+- **The 0.44.3 → 0.45.0 jump needed no source changes either.** Verified end to end: `pnpm build`,
+  `pnpm typecheck`, `pnpm lint`, all three example builds, and the mocked-model eval
+  (`cd examples/eve-extension-demo && AGENTKIT_MOCK_MODEL=1 npx eve eval` → `1 passed, gates 3/3`)
+  all pass on 0.45.0. Every symbol the packages import from eve (`eve/tools` `defineTool`/
+  `defineDynamic`/`disableTool`/`toolResultFrom`, `eve/hooks` `defineHook`, `eve/extension`
+  `defineExtension`, `eve/sandbox` `defineSandbox` + its type set, `eve/channels/auth` `ForbiddenError`/
+  `AuthFn`, `eve/evals` `defineEval`/`defineEvalConfig`/`mockModel`, `eve/evals/expect` `includes`)
+  still exists with a type-compatible signature. **The only fallout was packaging:** the rebuilt
+  manifest jumps to tool 18 / dynamicTool 19, so the extension's peer floor moved `">=0.43.0"` →
+  `">=0.45.0"` (see the eve-extension section).
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -377,9 +411,14 @@ pnpm build        # tsup (ESM + dts) all packages
 pnpm typecheck    # builds the sdk first, then tsc --noEmit across packages
 pnpm lint         # eslint + prettier (*.md is prettier-ignored)
 pnpm test         # vitest run (against real Redis)
-pnpm -r --filter "./examples/*" build   # build both demo apps
+pnpm -r --filter "./examples/*" build   # build all three demo apps
+cd examples/eve-extension-demo && AGENTKIT_MOCK_MODEL=1 npx eve eval   # mocked-model e2e eval
 ```
-- CI: Node 24 + pnpm 11; runs lint → typecheck → build → test → example builds.
+- CI: Node 24 + pnpm 11; runs lint → typecheck → build → test → example builds → the eval.
+- **pnpm bootstrap gotcha:** `packageManager` is `pnpm@11.5.3`, but pnpm's self-manage download can
+  fail in a sandbox (`Failed to switch pnpm to v11.5.3 … ENOENT`) and a global `npm i -g` may be
+  read-only. Fix: `npm config set prefix ~/.npm-global && npm i -g pnpm@11.5.3`, then put
+  `~/.npm-global/bin` first on `PATH`.
 - Releases use **Changesets**: `pnpm changeset`, `pnpm ci:version`, `pnpm ci:publish`. Do **not** use
   `pnpm version`/`pnpm release` (they collide with built-in pnpm commands).
 - Conventional commits; use `!` for breaking changes. Commit at meaningful checkpoints.
