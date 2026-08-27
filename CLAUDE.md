@@ -98,7 +98,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
   `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
-  (`">=0.45.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
+  (`">=0.45.1"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -111,10 +111,17 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — a dist built with eve 0.45.0 (formatVersion 2; tool 18 / dynamicTool 19 / hook 14 /
-  instructions 2) needs consumers on **eve ≥0.45** (tool 18 *and* dynamicTool 19 are both binding —
-  0.45 is the first eve supporting either; every 0.42–0.44.4 tops out at tool 17 / dynamicTool 18).
-  The `eve` peer is **`">=0.45.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  supported list — a dist built with eve **0.45.2** (formatVersion 2; tool **19** / dynamicTool 19 /
+  hook 14 / instructions 2) needs consumers on **eve ≥0.45.1** (tool 19 is the binding one; **0.45.1**
+  is the first eve supporting it — 0.45.0 tops out at tool 18, and every 0.42–0.44.4 at tool 17 /
+  dynamicTool 18). **The tool contract moved inside the 0.45 patch line** (0.45.0 → 18, 0.45.1 → 19),
+  so a patch bump of the eve devDep can re-stamp the manifest and raise the required floor — always
+  re-derive it, never assume the minor is enough. Loading a tool-19 dist on eve 0.45.0 fails
+  `eve build` with the *unhelpful* message `Invalid compiled eve artifact: compiled binding
+  "extensions/agentkit.ts" is not referenced by its node manifest.` — **not** the readable
+  "requires tool contract vN" message older mismatches produced, so don't expect to recognise a
+  contract mismatch from the error text.
+  The `eve` peer is **a real floor, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -281,6 +288,31 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   before seeding and keep a small `pollUntil` helper as insurance for residual lag; assertions are
   unchanged. **10/10 consecutive green each** after the fix (was 4/10 and 4/10). If either goes red
   again, treat it as a real regression, not noise.
+- **Four more suites still carry the *un*-hardened version of that same bug** (they were not part of the
+  fix above). All four share one shape: write docs/memories → `…searchIndex.waitIndexing()` → read —
+  but the index is provisioned reactively on the first **read**, so it does not exist yet at
+  `waitIndexing()` time and the wait is a silent no-op. The read then hits a just-created index whose
+  backfill dropped the writes, and returns nothing:
+  - `packages/sdk/src/memory.test.ts` > "stores and fuzzily recalls memories" —
+    *"the given combination of arguments (undefined and string) is invalid for this assertion"*
+    (`recalled[0]?.text` is `undefined`).
+  - `packages/ai-sdk/src/memory.test.ts` > "save_memory persists and recall_memory retrieves" —
+    *"expected false to be true"*.
+  - `packages/ai-sdk/src/search-tools.test.ts` > the `$smart` search and count cases —
+    *"expected 0 to be greater than 0"* / *"expected 0 to be greater than or equal to 2"*.
+  - `packages/eve/src/memory.test.ts` > "save then recall round-trips through AgentMemory" —
+    *"expected false to be true"* (note its `expect(saved.saved).toBe(true)` **passes**: the write and
+    the eve tool wrapper are fine, only the read comes back empty).
+
+  **Which of the four fails moves from run to run**, so a single red file here is not a signal about the
+  file — re-run before believing it. A **fresh** throwaway DB does not help; `FLUSHDB` between files does
+  not help. Fix is the documented ordering (provision → write → `waitIndexing()` → read) plus the
+  `pollUntil` helper, same as `chat-history.test.ts`.
+  **None of it is an eve regression, and this is provable rather than inferred:** `packages/sdk` and
+  `packages/ai-sdk` declare no `eve` dependency at all (`eve` is not even resolvable from them), and a
+  standalone script that imports only `@upstash/agentkit-sdk` + `@upstash/redis` — no eve anywhere in
+  the process — reproduces the identical empty-read **4 times out of 6**. Reach for that probe before
+  blaming a framework bump for a red search/recall assertion.
 - **Throwaway DBs from `upstash start-redis` (the `@upstash/cli` command; `npm i -g @upstash/cli`)
   cap at *one* search index**, not 10 — `ERR Exceeded max index count of 1`. A single `pnpm test`
   cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
@@ -303,10 +335,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.45.0`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
+- The repo is on **`eve@0.45.2`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
   `stop()` contract our backend implements landed, re-verified by typechecking `packages/eve` against
-  eve 0.32.0; peer `>=0.45.0` in the extension, matching the built dist's manifest — see the
-  eve-extension section). Subpath exports:
+  eve 0.32.0 — do **not** raise it just because the eve devDep moved; the extension declares peer
+  `>=0.45.1`, the derived minimum for its built dist's manifest — see the eve-extension section).
+  Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
@@ -351,6 +384,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `experimental.subagentPersistentSessions` was removed (subagent contract 1 and 2 are now *dropped*,
   only 3 is supported) — we contribute no subagents. `ai` stays exact-pinned at `7.0.58` (eve 0.45's
   peer is still `^7.0.58`).
+- **The 0.45.0 → 0.45.2 bump needed no source changes either** — install, `pnpm build`, `pnpm typecheck`,
+  `pnpm lint`, the per-file test run, all three example builds and the extension demo's mocked-model
+  eval (`AGENTKIT_MOCK_MODEL=1 npx eve eval` → 3/3 gates) were green unmodified. The only consequence
+  is the manifest re-stamp tool 18→19 and the peer floor it implies: the extension's `eve` peer went
+  `>=0.45.0` → **`>=0.45.1`** (verified empirically — a scratch consumer building the rebuilt dist
+  exits 1 on eve 0.45.0 and 0 on both 0.45.1 and 0.45.2). `packages/eve`'s peer **stayed `>=0.32.0`**:
+  nothing in its source needs a newer eve, and the deep floor is deliberate.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
