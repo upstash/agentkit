@@ -15,7 +15,7 @@ no repeated schemas; upgrades come through the package manager.
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
-Start from an eve project (eve ≥ 0.45 — the prebuilt extension's compatibility manifest requires 0.45's contribution formats; the package declares this as its `eve` peer range), then:
+Start from an eve project (eve ≥ 0.47 — the prebuilt extension's compatibility manifest requires 0.47's contribution formats; the package declares this as its `eve` peer range), then:
 
 ```bash
 pnpm add @upstash/agentkit-eve-extension
