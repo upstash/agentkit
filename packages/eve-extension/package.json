@@ -56,10 +56,10 @@
   },
   "devDependencies": {
     "@types/node": "24.x",
-    "eve": "^0.45.2",
+    "eve": "^0.47.3",
     "typescript": "7.0.2"
   },
   "peerDependencies": {
-    "eve": ">=0.45.1"
+    "eve": ">=0.47.0"
   }
 }
