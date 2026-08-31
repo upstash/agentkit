@@ -98,7 +98,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
   `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
-  (`">=0.45.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
+  (`">=0.45.1"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -111,10 +111,12 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — a dist built with eve 0.45.0 (formatVersion 2; tool 18 / dynamicTool 19 / hook 14 /
-  instructions 2) needs consumers on **eve ≥0.45** (tool 18 *and* dynamicTool 19 are both binding —
-  0.45 is the first eve supporting either; every 0.42–0.44.4 tops out at tool 17 / dynamicTool 18).
-  The `eve` peer is **`">=0.45.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  supported list — a dist built with eve 0.45.2 (formatVersion 2; tool 19 / dynamicTool 19 / hook 14 /
+  instructions 2) needs consumers on **eve ≥0.45.1** (tool 19 is binding; 0.45.1 is the first eve
+  supporting it — 0.45.0 tops out at tool 18, every 0.42–0.44.4 at tool 17 / dynamicTool 18).
+  **eve moved the tool contract inside the 0.45 patch line**, so a *patch* bump of the eve devDep can
+  re-stamp the manifest and raise the floor — re-derive it, don't assume the minor is enough.
+  The `eve` peer is **`">=0.45.1"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -303,9 +305,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.45.0`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
+- The repo is on **`eve@0.45.2`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
   `stop()` contract our backend implements landed, re-verified by typechecking `packages/eve` against
-  eve 0.32.0; peer `>=0.45.0` in the extension, matching the built dist's manifest — see the
+  eve 0.32.0; peer `>=0.45.1` in the extension, matching the built dist's manifest — see the
   eve-extension section). Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
@@ -351,6 +353,10 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `experimental.subagentPersistentSessions` was removed (subagent contract 1 and 2 are now *dropped*,
   only 3 is supported) — we contribute no subagents. `ai` stays exact-pinned at `7.0.58` (eve 0.45's
   peer is still `^7.0.58`).
+- **The 0.45.0 → 0.45.2 bump also needed no source changes** — only the manifest re-stamp
+  **tool 18→19**, which moves the extension's peer floor `>=0.45.0` → **`>=0.45.1`** (0.45.1 is the
+  first eve accepting tool 19). Contribution contracts can move in a *patch* release, so re-derive the
+  floor from the freshly built manifest rather than the minor version.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
