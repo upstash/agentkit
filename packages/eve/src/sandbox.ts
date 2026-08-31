@@ -45,6 +45,11 @@
  * (`keepAlive: false`): idle → auto-paused, reattach → resumed, then reaped by Box. (`keepAlive: true`
  * opts into an always-running box you manage yourself.)
  *
+ * **Lifecycle:** `stop()`/`shutdown()` map to Box **`pause`** (compute released, the box stays
+ * reattachable), while `delete()` (eve ≥0.47) maps to Box **`delete`** — a permanent teardown of the
+ * session box. `delete()` leaves the prewarmed template snapshot and its Redis registry entry alone:
+ * that is reusable state, and eve provisions the session's replacement box from it.
+ *
  * Eve roots its sandbox tools at `/workspace`, but a Box session lives in `/workspace/home`; this backend
  * bridges the two (in `resolvePath` and in raw commands), so the agent's file ops and `find`/`grep`
  * commands hit the right directory.
@@ -62,6 +67,7 @@ import type {
   SandboxBackendPrewarmInput,
   SandboxBackendSessionState,
   SandboxBootstrapUseFn,
+  SandboxDeleteOptions,
   SandboxNetworkPolicy,
   SandboxSession,
   SandboxSessionUseFn,
@@ -520,11 +526,35 @@ export class UpstashSandboxBackend implements SandboxBackend<
       },
     });
 
+    // Set once `delete` has destroyed the box: nothing is left to pause, and eve keeps the handle in
+    // its process-wide active-handles map (it only drops its own reference), so `shutdown` would
+    // otherwise pause a box that no longer exists on every server teardown.
+    let deleted = false;
+
+    // Eve calls `delete` when authored code runs `ctx.getSandbox().delete()` (eve ≥0.47): the sandbox
+    // and its *disposable* state must be permanently gone, while *reusable* state — the prewarmed
+    // template (its Box snapshot + our Redis `templateKey → snapshotId` registry entry) — must
+    // survive, because eve provisions the session's replacement box from it on the next
+    // `ctx.getSandbox()`. So this deletes the box and nothing else: no `deleteSnapshot`, no registry
+    // `del`. Box snapshots outlive the box they were taken from (`prewarm` already snapshots a
+    // template box and then deletes it), so dropping a session box never touches the template.
+    // `pause()` — what `stop`/`shutdown` use — is the wrong call here: it only releases compute and
+    // deliberately keeps the box reattachable via `Box.get(boxId)`, which is the opposite of a
+    // permanent delete. `Box#delete()` ("Delete this box permanently") is Box's hard delete.
+    // Errors must reject: eve then preserves the reconnect state so authored code can retry.
+    const deleteSandbox = async (options?: SandboxDeleteOptions): Promise<void> => {
+      if (deleted) return; // already gone — deleting twice must not fail the caller
+      options?.abortSignal?.throwIfAborted(); // Box's API takes no signal; honour it at the boundary
+      await box.delete();
+      deleted = true;
+    };
+
     // Eve calls `stop` when authored code ends sandbox work early (`ctx.getSandbox().stop()`,
     // eve ≥0.32): stop the compute but keep the session reattachable from `captureState`'s `boxId`
     // (`openBox` reattaches via `Box.get`). Pausing does exactly that. Per the contract, provider
     // errors must reject — so no catch here; keep-alive boxes can't be paused and will reject.
     const stop = async (): Promise<void> => {
+      if (deleted) return; // a deleted box has no compute left to stop
       await box.pause();
     };
 
@@ -533,10 +563,11 @@ export class UpstashSandboxBackend implements SandboxBackend<
     // pause as `stop`, except failures are tolerated (keep-alive boxes can't pause; eve collects
     // and logs shutdown failures rather than blocking teardown).
     const shutdown = async (): Promise<void> => {
+      if (deleted) return;
       await box.pause().catch(() => {});
     };
 
-    return { session, useSessionFn, captureState, stop, shutdown };
+    return { session, useSessionFn, captureState, delete: deleteSandbox, stop, shutdown };
   }
 
   async prewarm(

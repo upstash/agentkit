@@ -1,5 +1,5 @@
 import { config } from "dotenv";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Box } from "@upstash/box";
 import { rewriteWorkspacePaths, toBoxNetworkPolicy, toBoxPath, upstash } from "./sandbox.js";
 import { hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
@@ -66,6 +66,59 @@ describe("upstash() backend (offline)", () => {
         allow: { "github.com": [{ transform: [{ headers: { authorization: "Basic x" } }] }] },
       } as never),
     ).toThrow(/attachHeaders/);
+  });
+
+  // The three lifecycle methods eve ≥0.47 requires map onto two DIFFERENT Box primitives:
+  // `stop`/`shutdown` PAUSE (compute released, box still reattachable via `Box.get`), `delete`
+  // DESTROYS the box. Stubbing `Box.create` keeps this offline.
+  it("maps stop/shutdown to Box pause and delete to Box delete", async () => {
+    const calls: string[] = [];
+    const fakeBox = {
+      id: "box_fake",
+      pause: async () => void calls.push("pause"),
+      delete: async () => void calls.push("delete"),
+      updateNetworkPolicy: async () => {},
+    };
+    const spy = vi.spyOn(Box, "create").mockResolvedValue(fakeBox as unknown as Box);
+    try {
+      const handle = await upstash({ runtime: "node" }).create(createInput);
+
+      await handle.stop();
+      await handle.shutdown();
+      expect(calls).toEqual(["pause", "pause"]); // reattachable both times — nothing destroyed
+
+      await handle.delete(); // permanent teardown, not a pause
+      expect(calls).toEqual(["pause", "pause", "delete"]);
+
+      // The box is gone: repeat teardown is a no-op, so eve's server-wide `shutdown()` (it keeps
+      // deleted handles in its active-handles map) can't try to pause a box that no longer exists.
+      await handle.delete();
+      await handle.stop();
+      await handle.shutdown();
+      expect(calls).toEqual(["pause", "pause", "delete"]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Box's API takes no AbortSignal, so the handle honours eve's `SandboxDeleteOptions.abortSignal`
+  // at the boundary: an already-aborted delete rejects without touching the box.
+  it("delete() rejects an already-aborted signal without deleting", async () => {
+    const calls: string[] = [];
+    const fakeBox = {
+      id: "box_fake",
+      pause: async () => void calls.push("pause"),
+      delete: async () => void calls.push("delete"),
+      updateNetworkPolicy: async () => {},
+    };
+    const spy = vi.spyOn(Box, "create").mockResolvedValue(fakeBox as unknown as Box);
+    try {
+      const handle = await upstash({ runtime: "node" }).create(createInput);
+      await expect(handle.delete({ abortSignal: AbortSignal.abort() })).rejects.toThrow();
+      expect(calls).toEqual([]); // the box was left intact — eve keeps the reconnect state on reject
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

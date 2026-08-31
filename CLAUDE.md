@@ -98,7 +98,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
   `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
-  (`">=0.45.1"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
+  (`">=0.47.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -111,12 +111,17 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — a dist built with eve 0.45.2 (formatVersion 2; tool 19 / dynamicTool 19 / hook 14 /
-  instructions 2) needs consumers on **eve ≥0.45.1** (tool 19 is binding; 0.45.1 is the first eve
-  supporting it — 0.45.0 tops out at tool 18, every 0.42–0.44.4 at tool 17 / dynamicTool 18).
+  supported list — the current dist, built with **eve 0.47.3**, stamps formatVersion 2; extension 1 /
+  **tool 21** / **dynamicTool 21** / **hook 16** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.47.0** (0.47.0 is the first eve whose `current` for tool/dynamicTool is 21 and hook 16;
+  0.46.1 tops out at tool 20 / hook 15, 0.45.1–0.46.0 at tool 19 / hook 14). Verified end-to-end, not
+  just from the contract tables: `examples/eve-extension-demo` `eve build`s cleanly on eve 0.47.0 and
+  **fails on 0.46.1** (`Selected module binding "extensions/agentkit.ts" has no compile or runtime
+  usage.` — an incompatible manifest makes the mount contribute nothing, so the error is that obtuse;
+  don't expect the old explicit "requires tool contract vN" wording).
   **eve moved the tool contract inside the 0.45 patch line**, so a *patch* bump of the eve devDep can
   re-stamp the manifest and raise the floor — re-derive it, don't assume the minor is enough.
-  The `eve` peer is **`">=0.45.1"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.47.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -230,7 +235,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.45)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.58`**. `eve` (0.47.3)
   declares `ai` as a **peer** (`^7.0.58`), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.37`, `@ai-sdk/provider` `^4.0.7`, `@ai-sdk/react` `^4.0.62` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
@@ -305,10 +310,14 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.45.2`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
-  `stop()` contract our backend implements landed, re-verified by typechecking `packages/eve` against
-  eve 0.32.0; peer `>=0.45.1` in the extension, matching the built dist's manifest — see the
-  eve-extension section). Subpath exports:
+- The repo is on **`eve@0.47.3`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
+  `examples/eve-extension-demo`). `packages/eve`'s peer stays
+  **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
+  **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
+  unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
+  against the built `dist` on both **eve 0.32.0 and 0.46.1** (both clean). Don't raise the floor without
+  re-running that check; the extension's peer is `>=0.47.0`, matching its built dist's manifest — see the
+  eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
@@ -357,6 +366,16 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   **tool 18→19**, which moves the extension's peer floor `>=0.45.0` → **`>=0.45.1`** (0.45.1 is the
   first eve accepting tool 19). Contribution contracts can move in a *patch* release, so re-derive the
   floor from the freshly built manifest rather than the minor version.
+- **The 0.45.2 → 0.47.3 bump was the first one in a while that needed a real source change.**
+  eve **0.47.0** made `delete(options?: SandboxDeleteOptions)` a *required* member of
+  `SandboxBackendHandle`, so `packages/eve/src/sandbox.ts` failed with `TS2741: Property 'delete' is
+  missing …` until the handle implemented it (`box.delete()`, see the sandbox section). Everything
+  else was mechanical: no other package changed source, both demos build, and the extension only
+  needed a rebuild. The extension manifest went **tool 19→21 / dynamicTool 19→21 / hook 14→16**
+  (instructions 2, config 1, extension 1 unchanged), moving its peer floor `>=0.45.1` → **`>=0.47.0`**
+  — again floor == pinned minor, no back-compat window. 0.46.1 sits in between (tool 20 / hook 15) and
+  is genuinely rejected by the new dist. `packages/eve`'s own peer stayed `>=0.32.0` on purpose (its
+  shipped `dist` names no post-0.32 type — see the version bullet at the top of this section).
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -383,13 +402,23 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `readFile`→stream, `readBinaryFile`, `readTextFile`, `writeFile`/`writeBinaryFile`/`writeTextFile`) plus
   `id`, `resolvePath`, `setNetworkPolicy`, `removePath`. The handle's lifecycle methods are
   **`stop()`** (eve ≥0.32: authored code ends sandbox work early via `ctx.getSandbox().stop()`; must
-  keep the session reattachable and **reject** on provider errors) and **`shutdown()`** (server
-  shutdown; best-effort, failures collected/logged by eve) — the old per-open `dispose()` is gone.
+  keep the session reattachable and **reject** on provider errors), **`shutdown()`** (server
+  shutdown; best-effort, failures collected/logged by eve) and — since **eve 0.47.0** — a required
+  **`delete(options?: SandboxDeleteOptions)`** (authored `ctx.getSandbox().delete()`; permanently
+  destroy the sandbox + its *disposable* state, **preserve reusable/template state**; errors reject and
+  eve then keeps the reconnect state so the caller can retry). The old per-open `dispose()` is gone.
+  `SandboxDeleteOptions` (`{ readonly abortSignal?: AbortSignal }`) is exported from `eve/sandbox`;
+  neither it nor `delete` exists in eve ≤0.46.1, so `packages/eve` **source** now needs eve ≥0.47 to
+  compile. After a successful `delete`, eve drops its own handle reference but leaves the handle in the
+  process-wide active-handles map, so `shutdown()` can still be called on a deleted sandbox.
 
 ## @upstash/box (sandbox backend)
 - Optional peer dep of the eve package. `Box.create({ apiKey | UPSTASH_BOX_API_KEY, runtime, size, … })`;
   `box.exec.command(cmd) → { result, exitCode }`, `box.files.read/write`, `box.getPublicURL(port)`,
-  `box.updateNetworkPolicy(...)`, `box.pause()/delete()`.
+  `box.updateNetworkPolicy(...)`, `box.pause()/delete()`. **`pause()` = release compute, keep the box
+  reattachable via `Box.get(id)`; `delete()` = permanent teardown of the box** — that pair is exactly
+  eve's `stop`/`shutdown` vs `delete` split. Snapshots outlive the box they were taken from (`prewarm`
+  snapshots a template box then deletes it), so deleting a box never touches template snapshots.
 - Snapshots (for eve templates): `box.snapshot()`, `Box.fromSnapshot(id)`, `box.listSnapshots()`,
   `box.deleteSnapshot(id)`. Runtimes: node|python|golang|ruby|rust.
 
@@ -429,6 +458,13 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
 - CI: Node 24 + pnpm 11; runs lint → typecheck → build → test → example builds.
 - Releases use **Changesets**: `pnpm changeset`, `pnpm ci:version`, `pnpm ci:publish`. Do **not** use
   `pnpm version`/`pnpm release` (they collide with built-in pnpm commands).
+  **Keep one pending changeset per package, describing the final state.** `.changeset/` accumulates
+  across PRs, so a bump that supersedes an *unreleased* changeset already on `main` (e.g. an eve
+  version bump re-stamping the extension manifest and floor a second time) must **fold** it in, not sit
+  beside it — two entries with contradictory peer floors would both land in the same CHANGELOG. Write
+  the merged entry against the last **published** version (`npm view <pkg> version peerDependencies`
+  + the package CHANGELOG), not against the intermediate that never shipped. `npx changeset status`
+  shows what the pending set resolves to.
 - Conventional commits; use `!` for breaking changes. Commit at meaningful checkpoints.
 
 ## TODO (current task)
@@ -474,7 +510,13 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
   "3 boxes per turn" bug). Lifecycle: `stop()` (eve ≥0.32, authored `ctx.getSandbox().stop()`)
   `box.pause()`s and **propagates** failures (the contract says provider errors must reject — keep-alive
   boxes can't pause and will reject); `shutdown` (server stop) is the same pause but failure-tolerated.
-  Both leave the box reattachable. `keepAlive` defaults to **false** (pause-based idle; `true` can't be
+  Both leave the box reattachable. **`delete(options?)`** (eve ≥0.47, authored `ctx.getSandbox().delete()`)
+  is the opposite: it calls **`box.delete()`** — Box's permanent teardown — and *nothing else*. It must
+  **not** `deleteSnapshot` or `del` the Redis template registry entry: that's the reusable template state
+  eve provisions the session's replacement box from. Errors reject (eve keeps the reconnect state for a
+  retry); `options.abortSignal` is honoured with `throwIfAborted()` before the call, since Box's API takes
+  no signal. A `deleted` flag makes a second `delete`/`stop`/`shutdown` a no-op — eve keeps deleted
+  handles in its active-handles map and pauses them all at server shutdown. `keepAlive` defaults to **false** (pause-based idle; `true` can't be
   paused and runs until deleted). **Path bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`,
   so the backend remaps both `resolvePath` (file ops) and raw commands (`find /workspace …` →
   `/workspace/home`, URL-safe via lookbehind) through the exported `toBoxPath`/`rewriteWorkspacePaths`.
