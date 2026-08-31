@@ -458,6 +458,13 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
 - CI: Node 24 + pnpm 11; runs lint → typecheck → build → test → example builds.
 - Releases use **Changesets**: `pnpm changeset`, `pnpm ci:version`, `pnpm ci:publish`. Do **not** use
   `pnpm version`/`pnpm release` (they collide with built-in pnpm commands).
+  **Keep one pending changeset per package, describing the final state.** `.changeset/` accumulates
+  across PRs, so a bump that supersedes an *unreleased* changeset already on `main` (e.g. an eve
+  version bump re-stamping the extension manifest and floor a second time) must **fold** it in, not sit
+  beside it — two entries with contradictory peer floors would both land in the same CHANGELOG. Write
+  the merged entry against the last **published** version (`npm view <pkg> version peerDependencies`
+  + the package CHANGELOG), not against the intermediate that never shipped. `npx changeset status`
+  shows what the pending set resolves to.
 - Conventional commits; use `!` for breaking changes. Commit at meaningful checkpoints.
 
 ## TODO (current task)
