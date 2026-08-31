@@ -305,10 +305,14 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.45.2`** (peer `>=0.32.0` in `packages/eve` — 0.32 is where the sandbox
-  `stop()` contract our backend implements landed, re-verified by typechecking `packages/eve` against
-  eve 0.32.0; peer `>=0.45.1` in the extension, matching the built dist's manifest — see the
-  eve-extension section). Subpath exports:
+- `packages/eve` is on **`eve@0.47.3`** (the rest of the repo — eve-extension, both demos — is still on
+  `eve@0.45.2`; bump those separately, the extension's manifest stamps depend on it). Its peer stays
+  **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
+  **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
+  unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
+  against the built `dist` on both **eve 0.32.0 and 0.46.1** (both clean). Don't raise the floor without
+  re-running that check; the extension's peer is `>=0.45.1`, matching its built dist's manifest — see the
+  eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
@@ -383,13 +387,23 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `readFile`→stream, `readBinaryFile`, `readTextFile`, `writeFile`/`writeBinaryFile`/`writeTextFile`) plus
   `id`, `resolvePath`, `setNetworkPolicy`, `removePath`. The handle's lifecycle methods are
   **`stop()`** (eve ≥0.32: authored code ends sandbox work early via `ctx.getSandbox().stop()`; must
-  keep the session reattachable and **reject** on provider errors) and **`shutdown()`** (server
-  shutdown; best-effort, failures collected/logged by eve) — the old per-open `dispose()` is gone.
+  keep the session reattachable and **reject** on provider errors), **`shutdown()`** (server
+  shutdown; best-effort, failures collected/logged by eve) and — since **eve 0.47.0** — a required
+  **`delete(options?: SandboxDeleteOptions)`** (authored `ctx.getSandbox().delete()`; permanently
+  destroy the sandbox + its *disposable* state, **preserve reusable/template state**; errors reject and
+  eve then keeps the reconnect state so the caller can retry). The old per-open `dispose()` is gone.
+  `SandboxDeleteOptions` (`{ readonly abortSignal?: AbortSignal }`) is exported from `eve/sandbox`;
+  neither it nor `delete` exists in eve ≤0.46.1, so `packages/eve` **source** now needs eve ≥0.47 to
+  compile. After a successful `delete`, eve drops its own handle reference but leaves the handle in the
+  process-wide active-handles map, so `shutdown()` can still be called on a deleted sandbox.
 
 ## @upstash/box (sandbox backend)
 - Optional peer dep of the eve package. `Box.create({ apiKey | UPSTASH_BOX_API_KEY, runtime, size, … })`;
   `box.exec.command(cmd) → { result, exitCode }`, `box.files.read/write`, `box.getPublicURL(port)`,
-  `box.updateNetworkPolicy(...)`, `box.pause()/delete()`.
+  `box.updateNetworkPolicy(...)`, `box.pause()/delete()`. **`pause()` = release compute, keep the box
+  reattachable via `Box.get(id)`; `delete()` = permanent teardown of the box** — that pair is exactly
+  eve's `stop`/`shutdown` vs `delete` split. Snapshots outlive the box they were taken from (`prewarm`
+  snapshots a template box then deletes it), so deleting a box never touches template snapshots.
 - Snapshots (for eve templates): `box.snapshot()`, `Box.fromSnapshot(id)`, `box.listSnapshots()`,
   `box.deleteSnapshot(id)`. Runtimes: node|python|golang|ruby|rust.
 
@@ -474,7 +488,13 @@ pnpm -r --filter "./examples/*" build   # build both demo apps
   "3 boxes per turn" bug). Lifecycle: `stop()` (eve ≥0.32, authored `ctx.getSandbox().stop()`)
   `box.pause()`s and **propagates** failures (the contract says provider errors must reject — keep-alive
   boxes can't pause and will reject); `shutdown` (server stop) is the same pause but failure-tolerated.
-  Both leave the box reattachable. `keepAlive` defaults to **false** (pause-based idle; `true` can't be
+  Both leave the box reattachable. **`delete(options?)`** (eve ≥0.47, authored `ctx.getSandbox().delete()`)
+  is the opposite: it calls **`box.delete()`** — Box's permanent teardown — and *nothing else*. It must
+  **not** `deleteSnapshot` or `del` the Redis template registry entry: that's the reusable template state
+  eve provisions the session's replacement box from. Errors reject (eve keeps the reconnect state for a
+  retry); `options.abortSignal` is honoured with `throwIfAborted()` before the call, since Box's API takes
+  no signal. A `deleted` flag makes a second `delete`/`stop`/`shutdown` a no-op — eve keeps deleted
+  handles in its active-handles map and pauses them all at server shutdown. `keepAlive` defaults to **false** (pause-based idle; `true` can't be
   paused and runs until deleted). **Path bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`,
   so the backend remaps both `resolvePath` (file ops) and raw commands (`find /workspace …` →
   `/workspace/home`, URL-safe via lookbehind) through the exported `toBoxPath`/`rewriteWorkspacePaths`.
