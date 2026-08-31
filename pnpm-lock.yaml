@@ -216,13 +216,13 @@ importers:
         version: 1.38.0
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.30(zod@4.4.3))(ai@7.0.58(zod@4.4.3))(eve@0.45.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.30(zod@4.4.3))(ai@7.0.58(zod@4.4.3))(eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
       ai:
         specifier: 7.0.58
         version: 7.0.58(zod@4.4.3)
       eve:
-        specifier: ^0.45.2
-        version: 0.45.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: ^0.47.3
+        version: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -303,8 +303,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: ^0.45.2
-        version: 0.45.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.59(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: ^0.47.3
+        version: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.59(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -3395,6 +3395,26 @@ packages:
 
   eve@0.45.2:
     resolution: {integrity: sha512-VUFDVStaZ12ToqpGlJLeG2MJ/aO/rsG2IT3I/5fbu4nOuvJXscvHgmKscklHRMorJhI1Bb3dlWPIvys5fcpW+g==}
+    engines: {node: '>=24'}
+    hasBin: true
+    peerDependencies:
+      '@opentelemetry/api': ^1.0.0
+      ai: ^7.0.58
+      braintrust: ^3.0.0
+      just-bash: ^3.1.0
+      microsandbox: ^0.5.0
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
+      braintrust:
+        optional: true
+      just-bash:
+        optional: true
+      microsandbox:
+        optional: true
+
+  eve@0.47.3:
+    resolution: {integrity: sha512-CFj/CW+7mg9/r2thFDJ07r9kzy6qxyfHzMDDHOOCDCMGIY/EXkl4EbsmO2Z+4SY/JMJ7Ywh6KELnXf3AQD+z/w==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -7366,6 +7386,14 @@ snapshots:
       ai: 7.0.58(zod@4.4.3)
       eve: 0.45.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
+  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.30(zod@4.4.3))(ai@7.0.58(zod@4.4.3))(eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))':
+    dependencies:
+      '@vercel/oidc': 3.6.1
+    optionalDependencies:
+      '@ai-sdk/mcp': 2.0.30(zod@4.4.3)
+      ai: 7.0.58(zod@4.4.3)
+      eve: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+
   '@vercel/oidc@3.2.0': {}
 
   '@vercel/oidc@3.6.1':
@@ -8031,7 +8059,54 @@ snapshots:
       - xml2js
       - zephyr-agent
 
-  eve@0.45.2(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.59(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+  eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+    dependencies:
+      ai: 7.0.58(zod@4.4.3)
+      nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+      undici: 8.9.0
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.1
+    transitivePeerDependencies:
+      - '@azure/app-configuration'
+      - '@azure/cosmos'
+      - '@azure/data-tables'
+      - '@azure/identity'
+      - '@azure/keyvault-secrets'
+      - '@azure/storage-blob'
+      - '@capacitor/preferences'
+      - '@deno/kv'
+      - '@electric-sql/pglite'
+      - '@libsql/client'
+      - '@netlify/blobs'
+      - '@netlify/runtime'
+      - '@planetscale/database'
+      - '@upstash/redis'
+      - '@vercel/blob'
+      - '@vercel/functions'
+      - '@vercel/kv'
+      - '@vercel/queue'
+      - aws4fetch
+      - better-sqlite3
+      - chokidar
+      - dotenv
+      - drizzle-orm
+      - giget
+      - idb-keyval
+      - ioredis
+      - jiti
+      - lru-cache
+      - miniflare
+      - mongodb
+      - mysql2
+      - rollup
+      - sqlite3
+      - uploadthing
+      - vite
+      - wrangler
+      - xml2js
+      - zephyr-agent
+
+  eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.59(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
       ai: 7.0.59(zod@4.4.3)
       nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
