@@ -14,6 +14,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
 | [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
+| [`@upstash/mcp-tasks`](./packages/mcp-tasks) | A durable [MCP Tasks](https://github.com/modelcontextprotocol/ext-tasks) runtime for the official TypeScript SDK: long-running tools answer with a task handle, the record lives in Redis, and the work runs through QStash. |
 
 ## Core features
 
@@ -28,13 +29,17 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
   Eve's `defineSandbox`.
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
+- **Durable MCP tasks** (`@upstash/mcp-tasks`) — a long-running MCP tool returns a task handle
+  instead of blocking; the task record lives in Redis and the work runs through QStash, so it
+  survives the process that accepted the call.
 
 ## Examples
 
 Runnable demos (real Upstash Redis + a mock/real model) live in [`examples/`](./examples):
-[`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo), and
+[`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo),
 [`eve-extension-demo`](./examples/eve-extension-demo) (an eve agent that mounts
-`@upstash/agentkit-eve-extension`).
+`@upstash/agentkit-eve-extension`), and [`mcp-tasks-demo`](./examples/mcp-tasks-demo) (an MCP server
+whose long-running tool returns a task handle, with the client's wire log on screen).
 
 ## Development
 

@@ -1,0 +1,74 @@
+{
+  "name": "@upstash/mcp-tasks",
+  "version": "0.1.0",
+  "description": "A durable MCP Tasks runtime for the official TypeScript SDK: a pluggable task store and dispatcher, with Upstash Redis and QStash backends.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/mcp-tasks"
+  },
+  "homepage": "https://github.com/upstash/agentkit/tree/main/packages/mcp-tasks",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./upstash": {
+      "types": "./dist/upstash.d.ts",
+      "import": "./dist/upstash.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "upstash",
+    "redis",
+    "qstash",
+    "mcp",
+    "model-context-protocol",
+    "tasks",
+    "durable",
+    "long-running",
+    "ai",
+    "agent"
+  ],
+  "dependencies": {
+    "zod": "^4.2.0"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@upstash/qstash": ">=2.11.0",
+    "@upstash/redis": ">=1.38.0"
+  },
+  "peerDependenciesMeta": {
+    "@upstash/qstash": {
+      "optional": true
+    },
+    "@upstash/redis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@upstash/qstash": "^2.11.3",
+    "@upstash/redis": "^1.38.0",
+    "dotenv": "^16.4.5"
+  }
+}

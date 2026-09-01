@@ -19,8 +19,11 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
 
+| `@upstash/mcp-tasks` (`packages/mcp-tasks`) | A durable **MCP Tasks** runtime for the official `@modelcontextprotocol/server` v2. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
-and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
+`eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-tasks-demo`
+(Next.js; the MCP server plus a browser client that shows the JSON-RPC wire log).
 `langchain` and `tanstack-ai` packages were **removed** — don't reintroduce them.
 
 ### Core SDK exports (`@upstash/agentkit-sdk`)
@@ -308,6 +311,56 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - Filter ops: `$smart`, `$phrase`, `$fuzzy`, `$regex`, `$eq`, `$lt/$lte/$gt/$gte`, `$in`, `$range`,
   `$and/$or/$must/$should/$mustNot`. Aggregations: `$terms`, `$stats`, `$sum`, `$avg`, `$min`, `$max`,
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
+
+## MCP Tasks facts (`packages/mcp-tasks`) — IMPORTANT
+Verified empirically against `@modelcontextprotocol/server@2.0.0`; don't re-derive them from the docs.
+- **The SDK has schemas but no tasks runtime.** v2 ships `Task`/`GetTaskRequest`/`CreateTaskResult`
+  etc. and `isTaskAugmentedRequestParams`, but registers **no** `tasks/*` handler and has no store.
+  v1's experimental task APIs were removed with no migration path. That gap is what this package fills.
+- **`createMcpHandler` cannot serve `tasks/get`/`tasks/cancel`.** It pins the request to the
+  2026-07-28 era from the client's `_meta` protocol-version claim, and that era's dispatch gate
+  returns **`-32601` before the handler is looked up**: those strings are in the SDK's *2025* method
+  registry (so `isSpecRequestMethod` is true) and absent from the *2026* one. A `fallbackRequestHandler`
+  does not help — the gate returns first. Proven: the registered handler never runs, while a
+  namespaced `upstash/tasks.get` on the same server dispatches fine.
+  **So the demo and the docs use `WebStandardStreamableHTTPServerTransport` + `transport.handleRequest`**,
+  which leaves the instance on the 2025 era where `tasks/*` dispatch normally. `createTaskLayer`'s
+  `methods` option is the escape hatch for `createMcpHandler` users.
+- **`supportedProtocolVersions: [TASKS_PROTOCOL_VERSION]` on the `McpServer` is required**, or the
+  transport rejects every 2026-07-28 request with "Unsupported protocol version" (its default list is
+  the 2025 era's). There is no *public* 2026 constant in the SDK — `SUPPORTED_PROTOCOL_VERSIONS` is
+  legacy-only and `LATEST_PROTOCOL_VERSION` is `"2025-11-25"`.
+- **The per-request envelope works on both eras:** `ctx.mcpReq.envelope[CLIENT_CAPABILITIES_META_KEY]`
+  carries the lifted client capabilities. That is the capability check — there is no session to ask.
+- **A tool callback cannot return a JSON-RPC error.** `McpServer` catches everything a tool callback
+  throws — `ProtocolError` and `MissingRequiredClientCapabilityError` included — and flattens it to
+  `{content, isError:true}`, **dropping the code**. So the missing-capability refusal is a structured
+  tool error with `structuredContent: { code: -32021, requiredCapabilities }`, not a thrown error.
+- **`resultType: "task"` from `tools/call` is allowed** (`tools/call` is in the SDK's
+  `EXTENDED_RESULT_TYPE_METHODS`, forwarded verbatim). We return the task **flattened**, not under a
+  `task` key: `"task"` is a hard-coded "foreign family" key that blocks the SDK's contentless-result
+  default, so `{resultType:"task", task:{…}}` without `content` is rejected — the flattened form gets
+  `content: []` filled in automatically.
+- **Design choices that differ from the naive version** (all covered by tests):
+  `TaskStore.settle` is a *guarded, atomic* terminal transition (a Lua script on Redis) so a client's
+  `tasks/cancel` and the executor completing cannot clobber each other — first terminal write wins;
+  the store keeps **one hash field per task property** (not one JSON blob) so a progress `update` and
+  a cancel never overwrite each other's fields; and `executeTask(id, {isFinalAttempt})` keeps a task
+  **`working`** until the dispatcher's last delivery, because settling `failed` on the first error
+  makes it terminal and every retry then no-ops on the redelivery guard.
+- **Redis encoding:** every hash field is written `JSON.stringify`d and read back with **no decode of
+  our own** — `@upstash/redis` auto-`JSON.parse`s responses, so the single parse is the exact inverse.
+  Decoding again turns a `statusMessage` of `"123"` into the number `123` (this actually happened).
+- **QStash retry budget must outlast a restart.** `Upstash-Retried` (count so far, from 0) is the only
+  retry header; there is no max-retries header, so `isFinalQStashAttempt(headers, dispatcher.retries)`
+  takes the configured max. The default `retryDelay` is **exponential** (`"pow(2, retried) * 1000"`):
+  with a flat `"1000"` a kill-9'd server exhausts all retries in ~10s and the task is dead-lettered
+  while still reading `working` — observed, then fixed, then re-verified end to end (kill -9 mid-task →
+  restart → QStash redelivery → `completed`).
+- Tests: `src/core.test.ts` drives a real `McpServer` + real transport over genuine JSON-RPC;
+  `src/upstash.test.ts` hits real Redis. Both run under the root vitest config.
+- **Local dev needs the QStash dev server** (`npx @upstash/qstash-cli dev`) — it prints deterministic
+  creds. `APP_URL` must be reachable *from QStash*.
 
 ## Eve framework facts
 - The repo is on **`eve@0.47.3`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
