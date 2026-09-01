@@ -45,11 +45,11 @@ importers:
   examples/ai-sdk-demo:
     dependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.37
-        version: 4.0.37(zod@4.4.3)
+        specifier: ^4.0.53
+        version: 4.0.53(zod@4.4.3)
       '@ai-sdk/react':
-        specifier: ^4.0.62
-        version: 4.0.62(react@19.2.6)(zod@4.4.3)
+        specifier: ^4.0.90
+        version: 4.0.90(react@19.2.6)(zod@4.4.3)
       '@upstash/agentkit-ai-sdk':
         specifier: workspace:*
         version: link:../../packages/ai-sdk
@@ -60,8 +60,8 @@ importers:
         specifier: ^1.38.0
         version: 1.38.0
       ai:
-        specifier: 7.0.58
-        version: 7.0.58(zod@4.4.3)
+        specifier: 7.0.87
+        version: 7.0.87(zod@4.4.3)
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
@@ -94,8 +94,8 @@ importers:
   examples/eve-demo:
     dependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.37
-        version: 4.0.37(zod@4.4.3)
+        specifier: ^4.0.53
+        version: 4.0.53(zod@4.4.3)
       '@radix-ui/react-use-controllable-state':
         specifier: 1.2.2
         version: 1.2.2(@types/react@19.2.15)(react@19.2.6)
@@ -134,10 +134,10 @@ importers:
         version: 1.38.0
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.30(zod@4.4.3))(ai@7.0.58(zod@4.4.3))(eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
       ai:
-        specifier: 7.0.58
-        version: 7.0.58(zod@4.4.3)
+        specifier: 7.0.87
+        version: 7.0.87(zod@4.4.3)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -148,8 +148,8 @@ importers:
         specifier: 1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       eve:
-        specifier: ^0.47.3
-        version: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: ^0.47.6
+        version: 0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       lucide-react:
         specifier: 1.16.0
         version: 1.16.0(react@19.2.6)
@@ -206,8 +206,8 @@ importers:
   examples/eve-extension-demo:
     dependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.37
-        version: 4.0.37(zod@4.4.3)
+        specifier: ^4.0.53
+        version: 4.0.53(zod@4.4.3)
       '@upstash/agentkit-eve-extension':
         specifier: workspace:*
         version: link:../../packages/eve-extension
@@ -216,13 +216,13 @@ importers:
         version: 1.38.0
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.30(zod@4.4.3))(ai@7.0.58(zod@4.4.3))(eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
       ai:
-        specifier: 7.0.58
-        version: 7.0.58(zod@4.4.3)
+        specifier: 7.0.87
+        version: 7.0.87(zod@4.4.3)
       eve:
-        specifier: ^0.47.3
-        version: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: ^0.47.6
+        version: 0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -247,14 +247,14 @@ importers:
         version: 4.4.3
     devDependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.37
-        version: 4.0.37(zod@4.4.3)
+        specifier: ^4.0.53
+        version: 4.0.53(zod@4.4.3)
       '@ai-sdk/provider':
-        specifier: ^4.0.7
-        version: 4.0.7
+        specifier: ^4.0.9
+        version: 4.0.9
       ai:
-        specifier: 7.0.58
-        version: 7.0.58(zod@4.4.3)
+        specifier: 7.0.87
+        version: 7.0.87(zod@4.4.3)
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
@@ -278,14 +278,14 @@ importers:
         specifier: ^1.38.0
         version: 1.38.0
       ai:
-        specifier: 7.0.58
-        version: 7.0.58(zod@4.4.3)
+        specifier: 7.0.87
+        version: 7.0.87(zod@4.4.3)
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
       eve:
-        specifier: ^0.47.3
-        version: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: ^0.47.6
+        version: 0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   packages/eve-extension:
     dependencies:
@@ -303,8 +303,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: ^0.47.3
-        version: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.59(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: ^0.47.6
+        version: 0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -327,48 +327,36 @@ importers:
 
 packages:
 
-  '@ai-sdk/gateway@4.0.46':
-    resolution: {integrity: sha512-LIAO6kAG8fpXQb9L0iwPk1FIbXftvqnyC56v5NEAzeWTeL8fUsy/Hx86VPBTWEDFdwbVprjWifJOAqS6AOj3mA==}
+  '@ai-sdk/gateway@4.0.70':
+    resolution: {integrity: sha512-0tzAH2vwXOs/kVktAZRS04dATEQJk1hf1QR+VuVfvo9QmW3UPgcjhhJD9QFgP8HZLxkrEGDImwLIQ7sUfQTIsA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/gateway@4.0.47':
-    resolution: {integrity: sha512-BuWWlA8atWEnEJzN4eamCpGZWkoK9V3TCyNaMwgRIazhqkgWkA1Wp36si3j2JeVYzlvlEAOWrJ92dr92j/Vkqg==}
+  '@ai-sdk/mcp@2.0.41':
+    resolution: {integrity: sha512-1u3HJYmgehXl1cz7ipi3NO8HrT6SdozZ7DNEh9MXdQE7knAnq70yhD8DIqfRdk/iZ3Net7QRmECUC+R5ISG0SQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/mcp@2.0.30':
-    resolution: {integrity: sha512-blXjM1TVI6sYER6PuMd8ZM+nTq57LUHq4Cc5gmFw1ub9204rALpew0iiusYKjgyaEtCuUcFr/ybBr6RavqV/2A==}
+  '@ai-sdk/openai@4.0.53':
+    resolution: {integrity: sha512-2hoR6/HVmNZenRGgRcEJqJcT4kq69uqjzMqZMjWj4yT79kbzlcgoGiaX0KaK3mgiEeSOaG7gQ2cVJ/Gtl8KCUA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/openai@4.0.37':
-    resolution: {integrity: sha512-rQIdkvqHaqyu94zMJKkhucRwsyTpYUmI+vrH/Dm1Erc6ypURikOV+9e51Pni6RL8IxFlu2bv6y8hA1ghzCy7Gw==}
+  '@ai-sdk/provider-utils@5.0.34':
+    resolution: {integrity: sha512-tRBdgRcys/4d8wyQdOdyYScq1AxfMdMd0hIlwolxJKVIbBwXUgClZuQT0VIsz4e7pylY8FE6utYCCZ494UAMJQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.25':
-    resolution: {integrity: sha512-xscPPHCSjCHWrdhai25sbHCJeKNLW/3D1uSpUZa4cEtTKXA8OnPQ3+Rfu1SmM5Ea/Mf8Dfn3cllw9zeMzo/zFA==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/provider-utils@5.0.26':
-    resolution: {integrity: sha512-0mqhqx+Dcv+msI84+zkbLXmnCHb/mpkYJ9DU3HBvB1px+UjFQss4lLZqRCSzJ0w3NxwQk4Ishk7cP0r8wEQD5w==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/provider@4.0.7':
-    resolution: {integrity: sha512-6or44XprPzKbr8zkmzosowSE0pxkvJcoojBL+mCZvPUt3kvXp3XSNqeVun9golb1acEfSo6yaEBRT18h2VU+1Q==}
+  '@ai-sdk/provider@4.0.9':
+    resolution: {integrity: sha512-XnGXPWiBIfqjsVEud5pOaVneRByJQOu2sYNwlSVJTPCvakdCDkVuYKKfNuStkIpMUYl7JIkBZGBx+B5YfNeVjA==}
     engines: {node: '>=22'}
 
-  '@ai-sdk/react@4.0.62':
-    resolution: {integrity: sha512-Fe3PZmbSzBBmVDE4+HqHJ3x6mYhZ8riUR+3fyjSY+xiRuAntkVkH/MTh0kylvteeRlpgNA4tDDFOTiZfcLPbgg==}
+  '@ai-sdk/react@4.0.90':
+    resolution: {integrity: sha512-BQQeUaCcPOFk+YVbJ/ghhz9N+TEL6088xkzphxyehTQpWRQr4KH6EqK3FDNlfoKXhtXxpSGLnueR271dv9qreQ==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
@@ -2858,14 +2846,8 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
-  ai@7.0.58:
-    resolution: {integrity: sha512-GfgO90CQQ0yYuoxJAUOeQ6tviyYw1BUIDygSZ1q3Ce6kSc93tYmB5eltKY/NxC0YOouAax7JvDqVnYxvIAr04Q==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  ai@7.0.59:
-    resolution: {integrity: sha512-p10cqg8KvLIZi7Gk+XsQjoYoLENoDdEYvehP0rSo6Wg15nbCmP+nwIy1rOIX+WGIDWGdI+jmhjVx5fXShBVC3w==}
+  ai@7.0.87:
+    resolution: {integrity: sha512-/hrT7toRx8vLIyr/lTKOOPDxCGdxk2tVs5viHDwIPlUsge5FBaLe9h3BhPAr7cOmEAXkN/Cf2+2N8HYGCjJbHg==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -3393,13 +3375,13 @@ packages:
     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
     engines: {node: '>=0.10.0'}
 
-  eve@0.47.3:
-    resolution: {integrity: sha512-CFj/CW+7mg9/r2thFDJ07r9kzy6qxyfHzMDDHOOCDCMGIY/EXkl4EbsmO2Z+4SY/JMJ7Ywh6KELnXf3AQD+z/w==}
+  eve@0.47.6:
+    resolution: {integrity: sha512-k7tXAMBadjOW0LBHeEV3WDoyeufwTzIxAmInuCf7QFVFoh0CrYI0UJcD0zVnVQdDc0X1fVVj79Q76Twwh6QvTw==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
       '@opentelemetry/api': ^1.0.0
-      ai: ^7.0.58
+      ai: ^7.0.82
       braintrust: ^3.0.0
       just-bash: ^3.1.0
       microsandbox: ^0.5.0
@@ -3412,10 +3394,6 @@ packages:
         optional: true
       microsandbox:
         optional: true
-
-  eventsource-parser@3.1.0:
-    resolution: {integrity: sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg==}
-    engines: {node: '>=18.0.0'}
 
   eventsource-parser@3.1.1:
     resolution: {integrity: sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ==}
@@ -5129,61 +5107,46 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/gateway@4.0.46(zod@4.4.3)':
+  '@ai-sdk/gateway@4.0.70(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.25(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.9
+      '@ai-sdk/provider-utils': 5.0.34(zod@4.4.3)
       '@vercel/oidc': 3.2.0
       zod: 4.4.3
 
-  '@ai-sdk/gateway@4.0.47(zod@4.4.3)':
+  '@ai-sdk/mcp@2.0.41(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.26(zod@4.4.3)
-      '@vercel/oidc': 3.2.0
-      zod: 4.4.3
-
-  '@ai-sdk/mcp@2.0.30(zod@4.4.3)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.26(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.9
+      '@ai-sdk/provider-utils': 5.0.34(zod@4.4.3)
+      cross-spawn: 7.0.6
       pkce-challenge: 5.0.1
       zod: 4.4.3
 
-  '@ai-sdk/openai@4.0.37(zod@4.4.3)':
+  '@ai-sdk/openai@4.0.53(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.26(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.9
+      '@ai-sdk/provider-utils': 5.0.34(zod@4.4.3)
       zod: 4.4.3
 
-  '@ai-sdk/provider-utils@5.0.25(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.34(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.7
-      '@standard-schema/spec': 1.1.0
-      '@workflow/serde': 4.1.0
-      eventsource-parser: 3.1.0
-      undici: 7.29.0
-      zod: 4.4.3
-
-  '@ai-sdk/provider-utils@5.0.26(zod@4.4.3)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider': 4.0.9
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.29.0
       zod: 4.4.3
 
-  '@ai-sdk/provider@4.0.7':
+  '@ai-sdk/provider@4.0.9':
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@4.0.62(react@19.2.6)(zod@4.4.3)':
+  '@ai-sdk/react@4.0.90(react@19.2.6)(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/mcp': 2.0.30(zod@4.4.3)
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.26(zod@4.4.3)
-      ai: 7.0.59(zod@4.4.3)
+      '@ai-sdk/mcp': 2.0.41(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.9
+      '@ai-sdk/provider-utils': 5.0.34(zod@4.4.3)
+      ai: 7.0.87(zod@4.4.3)
       react: 19.2.6
       swr: 2.4.1(react@19.2.6)
       throttleit: 2.1.0
@@ -7358,13 +7321,13 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.30(zod@4.4.3))(ai@7.0.58(zod@4.4.3))(eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))':
+  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))':
     dependencies:
       '@vercel/oidc': 3.6.1
     optionalDependencies:
-      '@ai-sdk/mcp': 2.0.30(zod@4.4.3)
-      ai: 7.0.58(zod@4.4.3)
-      eve: 0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+      '@ai-sdk/mcp': 2.0.41(zod@4.4.3)
+      ai: 7.0.87(zod@4.4.3)
+      eve: 0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -7422,18 +7385,11 @@ snapshots:
 
   acorn@8.17.0: {}
 
-  ai@7.0.58(zod@4.4.3):
+  ai@7.0.87(zod@4.4.3):
     dependencies:
-      '@ai-sdk/gateway': 4.0.46(zod@4.4.3)
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.25(zod@4.4.3)
-      zod: 4.4.3
-
-  ai@7.0.59(zod@4.4.3):
-    dependencies:
-      '@ai-sdk/gateway': 4.0.47(zod@4.4.3)
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.26(zod@4.4.3)
+      '@ai-sdk/gateway': 4.0.70(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.9
+      '@ai-sdk/provider-utils': 5.0.34(zod@4.4.3)
       zod: 4.4.3
 
   ajv@6.15.0:
@@ -7984,9 +7940,9 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.58(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+  eve@0.47.6(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.87(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
-      ai: 7.0.58(zod@4.4.3)
+      ai: 7.0.87(zod@4.4.3)
       nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       undici: 8.9.0
     optionalDependencies:
@@ -8030,55 +7986,6 @@ snapshots:
       - wrangler
       - xml2js
       - zephyr-agent
-
-  eve@0.47.3(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.0)(ai@7.0.59(zod@4.4.3))(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
-    dependencies:
-      ai: 7.0.59(zod@4.4.3)
-      nitro: 3.0.260610-beta(@upstash/redis@1.38.0)(chokidar@4.0.3)(dotenv@16.6.1)(jiti@2.7.0)(rollup@4.62.0)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
-      undici: 8.9.0
-    optionalDependencies:
-      '@opentelemetry/api': 1.9.1
-    transitivePeerDependencies:
-      - '@azure/app-configuration'
-      - '@azure/cosmos'
-      - '@azure/data-tables'
-      - '@azure/identity'
-      - '@azure/keyvault-secrets'
-      - '@azure/storage-blob'
-      - '@capacitor/preferences'
-      - '@deno/kv'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@netlify/blobs'
-      - '@netlify/runtime'
-      - '@planetscale/database'
-      - '@upstash/redis'
-      - '@vercel/blob'
-      - '@vercel/functions'
-      - '@vercel/kv'
-      - '@vercel/queue'
-      - aws4fetch
-      - better-sqlite3
-      - chokidar
-      - dotenv
-      - drizzle-orm
-      - giget
-      - idb-keyval
-      - ioredis
-      - jiti
-      - lru-cache
-      - miniflare
-      - mongodb
-      - mysql2
-      - rollup
-      - sqlite3
-      - uploadthing
-      - vite
-      - wrangler
-      - xml2js
-      - zephyr-agent
-
-  eventsource-parser@3.1.0: {}
 
   eventsource-parser@3.1.1: {}
 
