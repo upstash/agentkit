@@ -369,14 +369,21 @@ Verified empirically against `@modelcontextprotocol/server@2.0.0`; don't re-deri
   either), **500** only when the task threw and QStash still has attempts. Verification uses the
   **published** `url`, not `request.url`, because behind a proxy the incoming URL is the internal one
   while QStash signed the public destination.
-- **Ecosystem context (verified 2026-09):** among *official* MCP SDKs, only **C#** ships a pluggable
-  task store (`IMcpTaskStore`, 7 methods); Rust's `TaskManager` is a concrete in-memory struct with no
-  trait; Python/Java have store interfaces only in unmerged PRs; Go/Kotlin/Swift/Ruby have none. **No
-  official SDK in any language abstracts execution** — all of them `Task.Run`/`tokio::spawn`/
-  `.subscribe()` in-process, i.e. durable record, non-durable work. Only unofficial FastMCP splits
-  execution durably (Docket queue + out-of-process workers), and it has no store seam because Docket
-  is both. So this package's `TaskStore` + `TaskDispatcher` split is not a port of prior art —
-  the closest analogue is Vercel Workflow's `World = Storage + Queue + Streamer`.
+- **Ecosystem context (verified 2026-09).** Keep two axes apart when reading this — *is there an
+  interface you can implement* is not *does Redis work today*, and the answers invert.
+  Among *official* MCP SDKs, only **C#** ships a store interface you can implement (`IMcpTaskStore`,
+  7 methods) — but the only in-box implementation is `InMemoryMcpTaskStore`, so Redis is homework.
+  Rust's `TaskManager` is a concrete in-memory struct with no trait; Python/Java have store
+  interfaces only in unmerged PRs; Go/Kotlin/Swift/Ruby have none.
+  Unofficial **FastMCP** is the mirror image: no implementable seam (Docket is both queue and store,
+  and you pick a backend by URL scheme — `memory://` or `redis://`, nothing else), but Redis works
+  out of the box with one URL, and it is the only tasks implementation anywhere that makes the
+  *work* durable (Docket queue plus `worker_cli` workers out of process; the memory backend is
+  single-process).
+  **No official SDK in any language abstracts execution** — all of them `Task.Run`/`tokio::spawn`/
+  `.subscribe()` in-process, i.e. durable record, non-durable work. So this package's
+  `TaskStore` + `TaskDispatcher` split is not a port of prior MCP art — the closest analogue is
+  Vercel Workflow's `World = Storage + Queue + Streamer`.
 - Tests: `src/core.test.ts` drives a real `McpServer` + real transport over genuine JSON-RPC;
   `src/upstash.test.ts` hits real Redis. Both run under the root vitest config.
 - **Local dev needs the QStash dev server** (`npx @upstash/qstash-cli dev`) — it prints deterministic
