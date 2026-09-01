@@ -6,13 +6,14 @@
  * a BullMQ dispatcher drops in without the core noticing.
  */
 import { Redis } from "@upstash/redis";
-import { Client as QStashClient } from "@upstash/qstash";
+import { Client as QStashClient, Receiver } from "@upstash/qstash";
 import {
   TERMINAL_STATUSES,
   UnknownTaskError,
   type Task,
   type TaskDispatcher,
   type TaskPatch,
+  type TaskRunner,
   type TaskStore,
   type TerminalTaskPatch,
 } from "./types.js";
@@ -21,8 +22,27 @@ import { addTelemetry } from "./telemetry.js";
 /** Default key prefix for task hashes: `mcp:task:<taskId>`. */
 export const DEFAULT_TASK_PREFIX = "mcp:task:";
 
-/** Exponential backoff — 1s, 2s, 4s, 8s, 16s across the default five retries. */
-export const DEFAULT_RETRY_DELAY = "pow(2, retried) * 1000";
+/**
+ * Backoff between delivery attempts: 1s, 3s, 9s, 27s, 81s — about two minutes across the default
+ * {@link DEFAULT_RETRIES} attempts, capped so a longer budget cannot drift into hours.
+ *
+ * The steep base is doing real work. What the retry budget has to outlast is whatever killed the
+ * process — a deploy, a crash loop, a cold start. When it does not, the record survives in Redis
+ * but nothing ever finishes the job, and the task sits at `working` until its TTL expires: exactly
+ * the failure durable execution exists to prevent. A flat one-second delay spends every attempt
+ * inside ten seconds, which no restart fits into.
+ */
+export const DEFAULT_RETRY_DELAY = "min(pow(3, retried) * 1000, 300000)";
+
+/**
+ * Delivery attempts before QStash dead-letters a task.
+ *
+ * **QStash caps this per plan** — the local dev server and the free tier reject anything above 5
+ * with `quota maxRetries exceeded`, so 5 is the highest value that works everywhere and the budget
+ * is bought with {@link DEFAULT_RETRY_DELAY} instead. Raise it if your plan allows; Vercel's own
+ * QStash-backed Workflow world defaults to 47.
+ */
+export const DEFAULT_RETRIES = 5;
 
 export type RedisTaskStoreConfig = {
   /** The Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -165,21 +185,28 @@ export type QStashDispatcherConfig = {
    * `{ taskId }` from the body and calls `executeTask(taskId)`.
    */
   url: string;
-  /** Delivery attempts before QStash gives up. Defaults to 5. */
+  /**
+   * Delivery attempts before QStash gives up and dead-letters the message. Defaults to
+   * {@link DEFAULT_RETRIES}.
+   */
   retries?: number;
   /**
    * Backoff between attempts, as a QStash delay expression. Defaults to exponential —
-   * `"pow(2, retried) * 1000"`, so 1s, 2s, 4s, 8s, 16s.
+   * {@link DEFAULT_RETRY_DELAY}.
    *
    * The retry budget is what has to outlast a restart, and it is easy to get wrong: a flat
-   * `"1000"` with the default 5 retries burns every attempt within about five seconds, so a
-   * process killed mid-task exhausts its redeliveries before it is back up and the task is
-   * dead-lettered while still reading `working`. Exponential backoff spans ~31s instead. Size it
-   * against how long your deploys actually take.
+   * `"1000"` with a handful of retries burns every attempt within seconds, so a process killed
+   * mid-task exhausts its redeliveries before it is back up and the task is dead-lettered while
+   * still reading `working`. Size the budget against how long your deploys actually take.
    */
   retryDelay?: string;
   /** Extra headers to send with the delivery. */
   headers?: Record<string, string>;
+  /**
+   * Verifies the signature on incoming deliveries in {@link QStashDispatcher.createExecuteHandler}.
+   * Defaults to a `Receiver` built from `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`.
+   */
+  receiver?: Receiver;
 };
 
 /**
@@ -195,19 +222,27 @@ export class QStashDispatcher implements TaskDispatcher {
   private readonly headers: Record<string, string> | undefined;
   private readonly resolveQStash: () => QStashClient;
   private client: QStashClient | undefined;
+  private readonly resolveReceiver: () => Receiver;
+  private verifier: Receiver | undefined;
 
   constructor(config: QStashDispatcherConfig) {
     this.url = config.url;
-    this.retries = config.retries ?? 5;
+    this.retries = config.retries ?? DEFAULT_RETRIES;
     this.retryDelay = config.retryDelay ?? DEFAULT_RETRY_DELAY;
     this.headers = config.headers;
     this.resolveQStash = () => config.qstash ?? qstashFromEnv();
+    this.resolveReceiver = () => config.receiver ?? receiverFromEnv();
   }
 
   /** Resolved on first use, for the same reason as {@link RedisTaskStore}'s client. */
   private get qstash(): QStashClient {
     if (!this.client) this.client = this.resolveQStash();
     return this.client;
+  }
+
+  private get receiver(): Receiver {
+    if (!this.verifier) this.verifier = this.resolveReceiver();
+    return this.verifier;
   }
 
   async dispatch(taskId: string): Promise<string | undefined> {
@@ -226,6 +261,58 @@ export class QStashDispatcher implements TaskDispatcher {
 
   async cancel(dispatchId: string): Promise<void> {
     await this.qstash.messages.cancel(dispatchId);
+  }
+
+  /**
+   * The delivery endpoint, as a fetch handler: `export const POST = tasks.createExecuteHandler()`.
+   *
+   * It owns the four things the application would otherwise have to get right by hand — verifying
+   * the signature, reading the task id, counting the attempt, and choosing the status code that
+   * tells QStash whether to try again.
+   *
+   * Status codes are the retry contract:
+   * - **200** — the task ran, or was already terminal, or was redelivered after finishing. Done.
+   * - **401** — the signature did not verify. Deliberately terminal: a retry cannot fix a bad
+   *   signature, and answering 500 would make QStash replay an unauthenticated request.
+   * - **400** — the body carried no task id. Also terminal, for the same reason.
+   * - **500** — the handler threw and QStash still has attempts left. This is the one that asks
+   *   for a redelivery.
+   */
+  createExecuteHandler(run: TaskRunner): (request: Request) => Promise<Response> {
+    return async (request: Request): Promise<Response> => {
+      const body = await request.text();
+
+      try {
+        // Verified against the URL we published to, not `request.url`: behind a proxy the
+        // incoming URL is the internal one, while QStash signed the public destination.
+        await this.receiver.verify({
+          signature: request.headers.get("upstash-signature") ?? "",
+          body,
+          url: this.url,
+        });
+      } catch {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      let taskId: string | undefined;
+      try {
+        taskId = (JSON.parse(body) as { taskId?: string }).taskId;
+      } catch {
+        return new Response("malformed body", { status: 400 });
+      }
+      if (!taskId) return new Response("missing taskId", { status: 400 });
+
+      try {
+        await run(taskId, {
+          isFinalAttempt: isFinalQStashAttempt(request.headers, this.retries),
+        });
+        return new Response("ok");
+      } catch {
+        // The task's own failure is already recorded by `executeTask`; the non-2xx is purely how
+        // you ask QStash for another delivery.
+        return new Response("retry", { status: 500 });
+      }
+    };
   }
 }
 
@@ -312,6 +399,17 @@ function redisFromEnv(): Redis {
     );
   }
   return new Redis({ url, token });
+}
+
+function receiverFromEnv(): Receiver {
+  const currentSigningKey = process.env.QSTASH_CURRENT_SIGNING_KEY;
+  const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY;
+  if (!currentSigningKey || !nextSigningKey) {
+    throw new Error(
+      "createExecuteHandler needs signing keys: pass `receiver`, or set QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY.",
+    );
+  }
+  return new Receiver({ currentSigningKey, nextSigningKey });
 }
 
 function qstashFromEnv(): QStashClient {

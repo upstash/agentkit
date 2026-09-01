@@ -47,7 +47,7 @@ const tasks = createTaskLayer({
   store: new RedisTaskStore(), //           optional: { redis, prefix, enableTelemetry }
   dispatcher: new QStashDispatcher({
     url: `${process.env.APP_URL}/api/execute`, // where QStash delivers the task
-    retries: 3, //                               optional: attempts before giving up
+    // retries / retryDelay default to a budget that outlives a restart — see below
   }),
   defaults: { ttlMs: 300_000, pollIntervalMs: 2_000 }, // optional
 });
@@ -95,25 +95,18 @@ return transport.handleRequest(request);
 ```
 
 ```ts
-// POST /api/execute
-import { Receiver } from "@upstash/qstash";
-import { isFinalQStashAttempt } from "@upstash/mcp-tasks/upstash";
-
-const body = await request.text();
-await receiver.verify({ signature: request.headers.get("upstash-signature")!, body, url: EXECUTE_URL });
-
-try {
-  await tasks.executeTask(JSON.parse(body).taskId, {
-    isFinalAttempt: isFinalQStashAttempt(request.headers, dispatcher.retries),
-  });
-  return new Response("ok");
-} catch {
-  return new Response("retry", { status: 500 }); // non-2xx asks QStash to retry
-}
+// app/api/execute/route.ts
+export const POST = tasks.createExecuteHandler();
 ```
 
-The `Receiver` check is not optional in production: without it anyone who can reach the route can
-run tasks.
+That second one is deliberately not yours to write. Verifying the QStash signature, reading the
+task id, counting which attempt this is and picking the status code that decides whether QStash
+tries again are all facts about the transport, and the dispatcher already knows them — so it hands
+you the endpoint instead of a checklist. Skipping the signature check would let anyone who can
+reach the route run tasks; here you cannot skip it.
+
+If you would rather wire it yourself, the pieces are still exported — `executeTask`,
+`isFinalQStashAttempt(headers, dispatcher.retries)` and `@upstash/qstash`'s `Receiver`.
 
 ## What the client sees
 
@@ -133,7 +126,7 @@ three are terminal and never change again.
 
 ## Design notes
 
-Four things here are deliberate, and three of them differ from the obvious implementation.
+Five things here are deliberate, and most of them differ from the obvious implementation.
 
 **The record is written before the handle goes out.** The spec requires it: the client may
 `tasks/get` the id against another instance the moment it has it. So `registerTask` creates, then
@@ -155,6 +148,15 @@ that from the `Upstash-Retried` header.
 
 **Redelivery is expected, not exceptional.** At-least-once is the strongest thing a queue promises,
 so `executeTask` returns early on an already-terminal task.
+
+**The retry budget has to outlast a restart.** This is the one default most likely to bite you. A
+task is only as durable as the number of redeliveries left when the process died — run out, and the
+record survives in Redis while nothing ever finishes the work, leaving `working` until the TTL
+expires. QStash caps `retries` per plan (the local dev server and the free tier reject anything
+above **5** with `quota maxRetries exceeded`), so the budget is bought with backoff instead: the
+default delay is `min(pow(3, retried) * 1000, 300000)` — 1s, 3s, 9s, 27s, 81s, about two minutes
+across five attempts. Raise `retries` if your plan allows; for comparison, Vercel's QStash-backed
+Workflow world defaults to 47.
 
 ## Two gotchas in the official SDK
 
@@ -202,13 +204,13 @@ is exactly the failure this package is about.
 
 | Export | What it is |
 | --- | --- |
-| `createTaskLayer(options)` | The runtime: `{ registerTask, executeTask, getTask, store, dispatcher }` |
-| `TaskStore`, `TaskDispatcher`, `TaskContext` | The two seams and what a handler is handed |
+| `createTaskLayer(options)` | The runtime: `{ registerTask, executeTask, createExecuteHandler, getTask, store, dispatcher }` |
+| `TaskStore`, `TaskDispatcher`, `TaskContext`, `TaskRunner` | The two seams, what a handler is handed, and what a delivery endpoint calls |
 | `Task`, `WireTask`, `TaskStatus`, `TaskError` | The record, and the subset that goes on the wire |
 | `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type |
 | `TASKS_EXTENSION`, `TASKS_PROTOCOL_VERSION`, `TASK_METHODS` | The extension id, `"2026-07-28"`, the method names |
 | `MemoryTaskStore`, `InlineTaskDispatcher` | Non-durable backends for tests |
-| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `isFinalQStashAttempt` |
+| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `isFinalQStashAttempt`, `DEFAULT_RETRIES`, `DEFAULT_RETRY_DELAY` |
 
 ## Not implemented
 

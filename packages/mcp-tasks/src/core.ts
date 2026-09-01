@@ -151,6 +151,19 @@ export type TaskLayer = {
   ): void;
   /** Runs a dispatched task. Call this from the endpoint your dispatcher delivers to. */
   executeTask(taskId: string, options?: ExecuteTaskOptions): Promise<Task | null>;
+  /**
+   * The delivery endpoint as a fetch handler, when the dispatcher provides one:
+   *
+   * ```ts
+   * // app/api/execute/route.ts
+   * export const POST = tasks.createExecuteHandler();
+   * ```
+   *
+   * The transport owns authentication, the attempt count and the retry status codes, so the
+   * application does not have to re-derive them — and cannot forget to verify a signature.
+   * Throws if the dispatcher runs work in-process and has no endpoint to serve.
+   */
+  createExecuteHandler(): (request: Request) => Promise<Response>;
   /** Reads a task record server-side, bypassing the protocol. */
   getTask(taskId: string): Promise<Task | null>;
   /** The store this layer was built on. */
@@ -356,7 +369,26 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
     return task;
   }
 
-  return { registerTask, executeTask, getTask: (taskId) => store.get(taskId), store, dispatcher };
+  function createExecuteHandler(): (request: Request) => Promise<Response> {
+    if (!dispatcher.createExecuteHandler) {
+      throw new Error(
+        "This dispatcher has no delivery endpoint to serve — it runs tasks in the current " +
+          "process. Use a transport-backed dispatcher (e.g. QStashDispatcher) to expose one.",
+      );
+    }
+    return dispatcher.createExecuteHandler((taskId, { isFinalAttempt }) =>
+      executeTask(taskId, { isFinalAttempt }),
+    );
+  }
+
+  return {
+    registerTask,
+    executeTask,
+    createExecuteHandler,
+    getTask: (taskId) => store.get(taskId),
+    store,
+    dispatcher,
+  };
 }
 
 /**

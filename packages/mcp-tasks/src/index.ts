@@ -27,6 +27,7 @@ export {
   type TaskDispatcher,
   type TaskError,
   type TaskPatch,
+  type TaskRunner,
   type TaskStatus,
   type TaskStore,
   type TerminalTaskPatch,

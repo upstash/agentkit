@@ -14,7 +14,7 @@ tasks, so you can watch the protocol rather than just the result.
 | --- | --- |
 | `app/lib/tasks.ts` | The whole server wiring: `RedisTaskStore`, `QStashDispatcher`, and the `generate_report` task tool |
 | `app/api/mcp/route.ts` | The MCP endpoint, over `WebStandardStreamableHTTPServerTransport` |
-| `app/api/execute/route.ts` | Where QStash delivers a task — verifies the signature, then runs it |
+| `app/api/execute/route.ts` | Where QStash delivers a task. One line: the dispatcher owns the endpoint |
 | `app/page.tsx` | The client: call the tool, poll, cancel, and the wire log |
 | `scripts/smoke.mjs` | Drives the same flow from the terminal and asserts on it |
 
@@ -70,9 +70,10 @@ fire-and-forget promise and the same test leaves a permanently `working` task in
 One caveat this demo learned the hard way: the retry budget has to outlast your restart. QStash
 retries on its configured schedule and dead-letters the message when they run out, so with a flat
 one-second delay every attempt is spent within a few seconds — long before a dev server is back up,
-leaving a task that reads `working` forever. The dispatcher defaults to exponential backoff
-(1s, 2s, 4s, 8s, 16s) for that reason. If a task ends up dead-lettered anyway, it is in the QStash
-DLQ, not lost.
+leaving a task that reads `working` forever. The dispatcher's defaults spread five attempts over
+about two minutes (1s, 3s, 9s, 27s, 81s) for that reason; five is also the ceiling the local dev
+server and the free tier allow, so raising `retries` needs a plan that permits it. If a task does
+get dead-lettered, it is in the QStash DLQ, not lost.
 
 ## Notes
 

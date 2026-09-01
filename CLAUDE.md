@@ -353,10 +353,30 @@ Verified empirically against `@modelcontextprotocol/server@2.0.0`; don't re-deri
   Decoding again turns a `statusMessage` of `"123"` into the number `123` (this actually happened).
 - **QStash retry budget must outlast a restart.** `Upstash-Retried` (count so far, from 0) is the only
   retry header; there is no max-retries header, so `isFinalQStashAttempt(headers, dispatcher.retries)`
-  takes the configured max. The default `retryDelay` is **exponential** (`"pow(2, retried) * 1000"`):
-  with a flat `"1000"` a kill-9'd server exhausts all retries in ~10s and the task is dead-lettered
-  while still reading `working` — observed, then fixed, then re-verified end to end (kill -9 mid-task →
-  restart → QStash redelivery → `completed`).
+  takes the configured max. With a flat `"1000"` delay a kill-9'd server exhausts all retries in ~10s
+  and the task is dead-lettered while still reading `working` — observed, then fixed, then re-verified
+  end to end (kill -9 mid-task → restart → QStash redelivery → `completed`).
+  **`retries` is plan-capped:** the local dev server and the free tier reject anything above **5**
+  with `quota maxRetries exceeded` (this bit a `DEFAULT_RETRIES = 12` attempt — the tool call comes
+  back as an `isError` result carrying that message, not as a thrown error). So the budget is bought
+  with backoff instead: `DEFAULT_RETRIES = 5` and
+  `DEFAULT_RETRY_DELAY = "min(pow(3, retried) * 1000, 300000)"` ≈ 2 minutes over five attempts.
+- **The dispatcher owns its delivery endpoint** (`TaskDispatcher.createExecuteHandler?(run)`, surfaced
+  as `tasks.createExecuteHandler()`): signature verification, task-id parsing, attempt counting and
+  the retry status codes live in the transport, so an app route is one line and cannot forget
+  `Receiver.verify`. Modelled on Vercel Workflow's `Queue.createQueueHandler` (see below). Status
+  contract: **200** ack, **401** bad signature, **400** no task id (both terminal — a retry cannot fix
+  either), **500** only when the task threw and QStash still has attempts. Verification uses the
+  **published** `url`, not `request.url`, because behind a proxy the incoming URL is the internal one
+  while QStash signed the public destination.
+- **Ecosystem context (verified 2026-09):** among *official* MCP SDKs, only **C#** ships a pluggable
+  task store (`IMcpTaskStore`, 7 methods); Rust's `TaskManager` is a concrete in-memory struct with no
+  trait; Python/Java have store interfaces only in unmerged PRs; Go/Kotlin/Swift/Ruby have none. **No
+  official SDK in any language abstracts execution** — all of them `Task.Run`/`tokio::spawn`/
+  `.subscribe()` in-process, i.e. durable record, non-durable work. Only unofficial FastMCP splits
+  execution durably (Docket queue + out-of-process workers), and it has no store seam because Docket
+  is both. So this package's `TaskStore` + `TaskDispatcher` split is not a port of prior art —
+  the closest analogue is Vercel Workflow's `World = Storage + Queue + Streamer`.
 - Tests: `src/core.test.ts` drives a real `McpServer` + real transport over genuine JSON-RPC;
   `src/upstash.test.ts` hits real Redis. Both run under the root vitest config.
 - **Local dev needs the QStash dev server** (`npx @upstash/qstash-cli dev`) — it prints deterministic

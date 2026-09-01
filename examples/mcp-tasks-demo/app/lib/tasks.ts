@@ -12,7 +12,9 @@ import * as z from "zod";
 /** Where QStash delivers a task. It has to be reachable *from QStash*, not just from your browser. */
 export const EXECUTE_URL = `${process.env.APP_URL ?? "http://127.0.0.1:3000"}/api/execute`;
 
-export const dispatcher = new QStashDispatcher({ url: EXECUTE_URL, retries: 5 });
+// `retries` and `retryDelay` are left at their defaults — a generous budget with exponential
+// backoff, so a task outlives a restart rather than dead-lettering while it still reads `working`.
+export const dispatcher = new QStashDispatcher({ url: EXECUTE_URL });
 
 export const tasks = createTaskLayer({
   // Both default to `fromEnv()`, so there is no client to thread through.

@@ -162,6 +162,111 @@ describe("constructing without credentials", () => {
   });
 });
 
+describe("QStashDispatcher.createExecuteHandler", () => {
+  /** A Receiver stand-in: the real one needs live signing keys, and we are testing our own gate. */
+  const receiver = (accept: boolean) =>
+    ({
+      verify: async () => {
+        if (!accept) throw new Error("bad signature");
+        return true;
+      },
+    }) as unknown as ConstructorParameters<typeof QStashDispatcher>[0]["receiver"];
+
+  const dispatcher = (accept = true, retries = 3) =>
+    new QStashDispatcher({
+      url: "https://example.com/api/execute",
+      retries,
+      receiver: receiver(accept),
+    });
+
+  const deliver = (body: unknown, headers: Record<string, string> = {}) =>
+    new Request("https://internal.example/api/execute", {
+      method: "POST",
+      headers: { "upstash-signature": "sig", ...headers },
+      body: JSON.stringify(body),
+    });
+
+  it("runs the task and acknowledges with 200", async () => {
+    const ran: { taskId: string; isFinalAttempt: boolean }[] = [];
+    const handler = dispatcher().createExecuteHandler(async (taskId, options) => {
+      ran.push({ taskId, ...options });
+    });
+
+    const response = await handler(deliver({ taskId: "t1" }, { "upstash-retried": "0" }));
+    expect(response.status).toBe(200);
+    expect(ran).toEqual([{ taskId: "t1", isFinalAttempt: false }]);
+  });
+
+  it("tells the runner when QStash is out of retries", async () => {
+    const seen: boolean[] = [];
+    const handler = dispatcher(true, 3).createExecuteHandler(
+      async (_taskId, { isFinalAttempt }) => {
+        seen.push(isFinalAttempt);
+      },
+    );
+
+    await handler(deliver({ taskId: "t1" }, { "upstash-retried": "2" }));
+    await handler(deliver({ taskId: "t1" }, { "upstash-retried": "3" }));
+    expect(seen).toEqual([false, true]);
+  });
+
+  it("answers 500 so QStash retries when the task throws", async () => {
+    const handler = dispatcher().createExecuteHandler(async () => {
+      throw new Error("boom");
+    });
+    const response = await handler(deliver({ taskId: "t1" }));
+    expect(response.status).toBe(500);
+  });
+
+  it("rejects an unsigned delivery with 401 and never runs the task", async () => {
+    let ran = false;
+    const handler = dispatcher(false).createExecuteHandler(async () => {
+      ran = true;
+    });
+
+    const response = await handler(deliver({ taskId: "t1" }));
+    // 401 rather than 500 on purpose: a retry cannot fix a bad signature, and answering 500 would
+    // make QStash replay an unauthenticated request.
+    expect(response.status).toBe(401);
+    expect(ran).toBe(false);
+  });
+
+  it("rejects a body with no task id, without asking for a retry", async () => {
+    const handler = dispatcher().createExecuteHandler(async () => undefined);
+    expect((await handler(deliver({}))).status).toBe(400);
+    expect(
+      (
+        await handler(
+          new Request("https://internal.example/api/execute", {
+            method: "POST",
+            headers: { "upstash-signature": "sig" },
+            body: "not json",
+          }),
+        )
+      ).status,
+    ).toBe(400);
+  });
+
+  it("verifies against the published URL, not the incoming one", async () => {
+    // Behind a proxy the incoming URL is internal, while QStash signed the public destination.
+    const urls: string[] = [];
+    const spy = {
+      verify: async ({ url }: { url: string }) => {
+        urls.push(url);
+        return true;
+      },
+    } as unknown as ConstructorParameters<typeof QStashDispatcher>[0]["receiver"];
+
+    const handler = new QStashDispatcher({
+      url: "https://public.example.com/api/execute",
+      receiver: spy,
+    }).createExecuteHandler(async () => undefined);
+
+    await handler(deliver({ taskId: "t1" }));
+    expect(urls).toEqual(["https://public.example.com/api/execute"]);
+  });
+});
+
 describe("isFinalQStashAttempt", () => {
   it("is false while retries remain", () => {
     expect(isFinalQStashAttempt(new Headers({ "upstash-retried": "0" }), 3)).toBe(false);

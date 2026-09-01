@@ -143,7 +143,26 @@ export interface TaskDispatcher {
 
   /** Idempotently stops a pending delivery and its future retries, when the transport can. */
   cancel(dispatchId: string): Promise<void>;
+
+  /**
+   * Optionally, the transport's own delivery endpoint.
+   *
+   * A dispatcher that delivers over HTTP knows things the application should not have to: how the
+   * request is authenticated, where the task id sits in the body, which attempt this is, and which
+   * status code means "retry me". Implementing this keeps all of that inside the transport, so the
+   * application's route is `export const POST = tasks.createExecuteHandler()` rather than a
+   * hand-written endpoint that has to remember to verify a signature.
+   *
+   * Dispatchers that run work in-process have nothing to serve and leave it undefined.
+   */
+  createExecuteHandler?(run: TaskRunner): (request: Request) => Promise<Response>;
 }
+
+/**
+ * What a delivery endpoint calls to run a task — `executeTask`, with the attempt's finality
+ * already worked out by the transport that knows how to count its own retries.
+ */
+export type TaskRunner = (taskId: string, options: { isFinalAttempt: boolean }) => Promise<unknown>;
 
 /** What a task handler is handed alongside its arguments. */
 export type TaskContext = {
