@@ -4,6 +4,7 @@ coverage
 *.log
 .DS_Store
 .turbo
+.vercel
 .env
 .env.*
 !.env.example
