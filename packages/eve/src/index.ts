@@ -21,3 +21,7 @@ export { createRateLimit, Ratelimit } from "@upstash/agentkit-sdk";
 export type { RateLimitConfig, Duration } from "@upstash/agentkit-sdk";
 
 // Code-execution sandbox (Upstash Box backend) lives at "@upstash/agentkit-eve/sandbox".
+// Backends for eve's native memory slots (`agent/memory/*.ts`) live at
+// "@upstash/agentkit-eve/memory": `redisDocuments()` (storage for eve's `fileMemory()`) and
+// `redisMemory()` (a full MemoryProvider with ranked recall + automatic capture). That entry point
+// needs eve >= 0.45.2; the tools above have no such floor, which is why it is a separate subpath.
