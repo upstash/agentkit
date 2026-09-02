@@ -157,7 +157,9 @@ with its id. A memory tagged `conversation=<id>` came from an earlier conversati
 `recall__read_conversation` with that id to read it in full.
 
 a1b2c3d4e5f6: The user prefers dark mode (you saved this, conversation=wrun_01ABC…)
-9f8e7d6c5b4a: I ride a Brompton (the user said this)
+9f8e7d6c5b4a: I ride a Brompton (the user said this, conversation=wrun_01ABC…)
+5c4b3a2f1e0d: Folding bikes are great on trains (you said this, conversation=wrun_01DEF…)
+7e6d5c4b3a29: My favourite colour is teal (the user said this)
 ```
 
 Three kinds of thing can be in that list, depending on config:
@@ -180,8 +182,9 @@ way it arrived, keeping the last write's metadata. And records written before `m
 or by the standalone [memory tools](#memory-tools), which share this store — carry no source and
 get no note rather than a guessed one.
 
-The `conversation=<id>` tag is present only when `conversations` is enabled, and only on records
-written while it was — turning it on later does not backfill earlier memories. The id is the eve
+Every record written while `conversations` is enabled carries the tag, whatever its source — the
+last line above has none because it predates the setting being turned on. Enabling it later does not
+backfill. The id is the eve
 session id, and `<slot>__read_conversation` expands it into the stored transcript, which is the
 point: a remembered *question* can lead the model to the answer that followed it.
 
