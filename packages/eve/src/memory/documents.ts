@@ -21,6 +21,9 @@
  * under `eve dev`, to Vercel Blob on Vercel, and **errors everywhere else**. Recall behavior and the
  * `save_memory`/`remove_memory` tools are eve's own and unchanged — only the storage moves.
  *
+ * See `./provider.ts` for the other integration, `redisMemory()`, and `./index.ts` for
+ * how the two differ and which to pick.
+ *
  * ## Optimistic concurrency without WATCH/MULTI (verified, not assumed)
  *
  * `MemoryDocumentBackend.write()` is a conditional replace: it must throw eve's

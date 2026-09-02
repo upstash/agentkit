@@ -24,6 +24,13 @@ export interface MemoryRecord {
   id: string;
   text: string;
   createdAt: number;
+  /**
+   * Optional pointer to the conversation this memory came from. Stored but **not indexed** (like
+   * {@link MemoryRecord.createdAt}), so it costs no schema change: it rides along in the JSON doc
+   * and comes back on recall. Callers that also keep transcripts (e.g. {@link ChatHistory}) can use
+   * it to expand a matched memory into the surrounding conversation.
+   */
+  conversationId?: string;
 }
 
 export interface RecalledMemory extends MemoryRecord {
@@ -96,15 +103,27 @@ export class AgentMemory {
    * Store a memory for `userId` (required, non-empty — unique per user). Returns the persisted record.
    * Key: `<prefix>:<userId>:<id>`. Writes go straight to Redis; the index is created on first recall.
    */
-  async add(params: { text: string; userId: string; id?: string }): Promise<MemoryRecord> {
+  async add(params: {
+    text: string;
+    userId: string;
+    id?: string;
+    conversationId?: string;
+  }): Promise<MemoryRecord> {
     const { text, userId } = params;
     assertUserId(userId);
-    const record: MemoryRecord = { id: params.id ?? randomUUID(), text, createdAt: now() };
-    // `createdAt` is stored but not in the schema, so it rides along unindexed.
+    const record: MemoryRecord = {
+      id: params.id ?? randomUUID(),
+      text,
+      createdAt: now(),
+      ...(params.conversationId !== undefined ? { conversationId: params.conversationId } : {}),
+    };
+    // `createdAt` and `conversationId` are stored but not in the schema, so they ride along
+    // unindexed — no index change, and both come back on the `query` row.
     await this.redis.json.set(this.keyFor(userId, record.id), "$", {
       text,
       userId,
       createdAt: record.createdAt,
+      ...(record.conversationId !== undefined ? { conversationId: record.conversationId } : {}),
     });
     return record;
   }
@@ -142,6 +161,7 @@ export class AgentMemory {
       id: h.key.startsWith(idPrefix) ? h.key.slice(idPrefix.length) : h.key,
       text: h.text,
       createdAt: h.createdAt,
+      ...(h.conversationId !== undefined ? { conversationId: h.conversationId } : {}),
       score: h.score,
     }));
   }
@@ -151,7 +171,9 @@ export class AgentMemory {
     userId: string,
     query: string | undefined,
     topK: number,
-  ): Promise<{ key: string; text: string; createdAt: number; score: number }[]> {
+  ): Promise<
+    { key: string; text: string; createdAt: number; conversationId?: string; score: number }[]
+  > {
     const filter: Record<string, unknown> = { userId: { $eq: userId } };
     if (query && query.trim()) filter.text = { $smart: query };
     // `query` returns the indexed fields plus the unindexed `createdAt`, so cast the result.
@@ -161,12 +183,15 @@ export class AgentMemory {
     })) as unknown as {
       key: string;
       score: number;
-      data?: { text?: string; createdAt?: number };
+      data?: { text?: string; createdAt?: number; conversationId?: string };
     }[];
     return rows.map((r) => ({
       key: r.key,
       text: typeof r.data?.text === "string" ? r.data.text : "",
       createdAt: typeof r.data?.createdAt === "number" ? r.data.createdAt : 0,
+      ...(typeof r.data?.conversationId === "string"
+        ? { conversationId: r.data.conversationId }
+        : {}),
       score: r.score,
     }));
   }

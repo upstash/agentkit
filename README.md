@@ -27,7 +27,8 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Rate limiting** — a configured Upstash Ratelimit factory (`createRateLimit`) you call before the model.
 - **Eve memory slots** (Eve only) — Upstash Redis behind Eve's native
   [memory](https://eve.dev/docs/memory) feature: `redisDocuments()` stores Eve's own `fileMemory()`
-  documents, so that feature works off Vercel.
+  documents (so they work off Vercel), and `redisMemory()` is a full provider with ranked recall and
+  automatic capture.
 - **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
   Eve's `defineSandbox`.
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.

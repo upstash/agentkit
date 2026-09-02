@@ -1,34 +1,29 @@
 /**
- * `redisDocuments()` — Upstash Redis storage for **eve**'s native memory feature
- * (`eve/memory`, https://eve.dev/docs/memory).
+ * Memory backends for **eve**'s native memory feature (`eve/memory`, https://eve.dev/docs/memory),
+ * powered by **Upstash Redis**. Two integrations live behind this entry point, because eve's memory
+ * API has two genuinely different seams and Redis is the right answer at both:
  *
- * eve's built-in `fileMemory()` provider keeps a small, model-curated list of durable facts and
- * replays the whole document before every turn. What it does *not* ship is somewhere to put that
- * document outside Vercel: with no `backend` it resolves to in-memory storage under `eve dev`, to
- * Vercel Blob on Vercel, and **errors everywhere else**. `redisDocuments()` is that backend, on the
- * Redis you already have:
+ * | | {@link redisDocuments} (`./documents.ts`) | {@link redisMemory} (`./provider.ts`) |
+ * | --- | --- | --- |
+ * | eve seam | `MemoryDocumentBackend` (storage only) | `MemoryProvider` (recall/capture/tools) |
+ * | Recall | eve's: the **whole** document, every turn | ours: **top-K BM25** for the turn's query |
+ * | Capture | none — the model calls `save_memory` | opt-in `autoCapture` (plus a save tool) |
+ * | Deletion | eve's `remove_memory` (by index) | our `forget_memory` (by id) |
+ * | Size | bounded: 4,000 recalled chars / 64 KiB stored | unbounded store, bounded recall |
+ * | Redis shape | one hash per scope key | one JSON doc per memory + a Redis Search index |
  *
- * ```ts
- * // agent/memory/profile.ts
- * import { defineMemory } from "eve/memory";
- * import { byPrincipal } from "eve/memory/scope";
- * import { fileMemory } from "eve/memory/file";
- * import { redisDocuments } from "@upstash/agentkit-eve/memory";
+ * Pick `fileMemory({ backend: redisDocuments() })` when you want eve's own semantics — a small,
+ * model-curated list of durable facts — but need it to survive outside Vercel Blob. This is the
+ * narrow, faithful fix for eve's documented gap: with no `backend`, `fileMemory()` resolves to
+ * in-memory storage under `eve dev`, to Vercel Blob on Vercel, and **errors everywhere else**.
+ * Pick `redisMemory()` when the memory should grow past what fits in a 4,000-character preamble and
+ * should be *retrieved* rather than replayed wholesale, or when you want conversation-aware recall.
  *
- * export default defineMemory({
- *   description: "Remember stable facts and preferences about the caller.",
- *   provider: fileMemory({ backend: redisDocuments() }),
- *   scope: byPrincipal,
- * });
- * ```
+ * They compose: nothing stops an agent from declaring both slots (see `examples/eve-demo`).
  *
- * Recall behaviour and the `save_memory` / `remove_memory` tools stay eve's own and unchanged —
- * only the storage moves. See `./documents.ts` for how the compare-and-swap and the byte-exact
- * round trip are implemented.
- *
- * This does not replace `defineMemoryRecallTool` / `defineMemorySaveTool` from the package root.
- * Those are plain eve tools you drop into `agent/tools/*.ts`: they work on any eve version, need no
- * memory slot, and are the right thing when you want memory to be purely model-driven.
+ * Neither replaces `defineMemoryRecallTool`/`defineMemorySaveTool` from the package root. Those are
+ * plain eve tools you drop into `agent/tools/*.ts` — they work on any eve version, need no memory
+ * slot, and are the right thing when you want memory to be purely model-driven.
  *
  * ## eve version
  *
@@ -40,3 +35,12 @@
  */
 export { RedisMemoryDocumentBackend, redisDocuments } from "./documents.js";
 export type { RedisDocumentsConfig } from "./documents.js";
+
+export { redisMemory } from "./provider.js";
+export type {
+  AutoCapture,
+  RedisMemoryCaptureContext,
+  RedisMemoryConfig,
+  RedisMemoryConversationsConfig,
+  RedisMemoryRecallContext,
+} from "./provider.js";

@@ -8,8 +8,9 @@ real Upstash Redis. It's a real `eve` CLI scaffold (a workspace member) — see
 
 - **Memory tools** — `recall_memory` / `save_memory` (`defineMemoryRecallTool` / `defineMemorySaveTool`).
 - **Memory slots** — eve's native [memory](https://eve.dev/docs/memory) on Upstash Redis
-  (`agent/memory/`): `profile` uses eve's own `fileMemory()` with `redisDocuments()` as its storage
-  backend. Unlike the tools above, eve recalls it before every turn without the model asking.
+  (`agent/memory/`): `recall` uses `redisMemory()` (ranked recall + automatic capture) and
+  `profile` uses eve's own `fileMemory()` with `redisDocuments()` as its storage backend. Unlike the
+  tools above, eve recalls these before every turn without the model asking.
 - **Search tools** — `search_books` / `aggregate_books` / `count_books` over a seeded **books** index
   (`defineSearchTools`). The books are seeded once into Redis when the page loads.
 - **Cached tool** — `get_weather`, memoized in Redis (`defineCachedTool`).

@@ -75,11 +75,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   them back as **tools** — `search_chat_history`/`read_chat_history` — so the model can look up past
   conversations. That's lookup-on-demand, not session resume: the same no-round-trip caveat holds.)
 - `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
-- `./memory` → **eve's native memory feature** (`agent/memory/<slot>.ts`), on Redis. One export:
-  `redisDocuments()`, a `MemoryDocumentBackend` for eve's own `fileMemory()` (storage only —
-  replaces Vercel Blob, which is the documented gap: `fileMemory()` with no `backend` errors outside
-  `eve dev`/Vercel-with-Blob). See the **eve memory slots** section below, which also records the
-  full `MemoryProvider` that was built here and dropped before release, and why.
+- `./memory` → **eve's native memory feature** (`agent/memory/<slot>.ts`), on Redis. Two exports,
+  both shipped because they sit at *different* eve seams: `redisDocuments()` is a
+  `MemoryDocumentBackend` for eve's own `fileMemory()` (storage only — replaces Vercel Blob, which is
+  the documented gap: `fileMemory()` with no `backend` errors outside `eve dev`/Vercel-with-Blob), and
+  `redisMemory()` is a **full `MemoryProvider`** over core `AgentMemory` (ranked BM25 recall at
+  `turn.started`/`compaction.completed`, automatic capture at `turn.completed`/`compaction.requested`,
+  plus `save_memory`/`forget_memory` tools). See the **eve memory slots** section below.
   This is *additive*: `defineMemoryRecallTool`/`defineMemorySaveTool`, ai-sdk `createMemoryTools` and
   the extension's `recall_memory`/`save_memory` are untouched and still the answer for
   purely model-driven memory with no slot and no eve-version floor.
@@ -183,33 +185,19 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 
 ## eve memory slots (`@upstash/agentkit-eve/memory`, `packages/eve/src/memory/`)
 
-- **Layout**: `index.ts` is the barrel + docs and the tsup entry for the `./memory` subpath;
-  `documents.ts` is `redisDocuments()`; `memory.test.ts` covers it. Note the sibling
-  **`memory-tools.ts`** (renamed from `memory.ts` when this directory landed, so `./memory.js` and
-  `./memory/` can't be confused) — that's `defineMemoryRecallTool`/`defineMemorySaveTool`, the
-  package-**root** exports, a different feature from the memory slots.
-- **Only `redisDocuments()` ships.** It is a `MemoryDocumentBackend` for eve's own `fileMemory()`
-  (storage only — replaces Vercel Blob, which is the documented gap: `fileMemory()` with no
-  `backend` resolves to an in-process `Map` under `eve dev`, Vercel Blob on Vercel, and **errors**
-  everywhere else). Recall and the `save_memory`/`remove_memory` tools stay eve's own.
-- **A full `MemoryProvider` (`redisMemory()`) was built and then dropped before release** — ranked
-  BM25 recall, opt-in capture, `conversations`/`read_conversation` small-to-big retrieval, ~640
-  lines and ~25 tests, all green. It is in git history, not in the tree: restore with
-  `git show <sha>:packages/eve/src/memory/provider.ts` (see the commit that removed it). Two reasons
-  it did not ship, both worth remembering before resurrecting it: (a) its API moved three times in a
-  single session — capture default, six renames, conversations — which is exactly the churn this
-  repo's naming history is a museum of; and (b) once `autoCapture` had to default **off**, its
-  differentiator narrowed to "the store can exceed eve's 64 KiB / 4,000-char ceiling", which is real
-  but much narrower than the docs then claimed. **Ship it only for a caller whose memory genuinely
-  does not fit that ceiling.** Everything else it offered is already covered by
-  `defineMemoryRecallTool`/`defineMemorySaveTool`, ai-sdk `createMemoryTools`, and the extension's
-  `recall_memory`/`save_memory`, all on the same `AgentMemory` store with no eve version floor.
-- **Why `autoCapture` had to default off** (the measurement that killed it, keep this): captured
-  utterances and curated facts share one BM25 ranking and the utterances win, because recall builds
-  its query from the user's current message. Measured live — a captured *"What do you remember?"*
-  scored **50.9** against the next *"What do you remember?"*, while `User likes cucumber.`, saved
-  deliberately, was cut from the top 5. Asking an agent what it remembers degraded what it
-  remembered. Any future auto-capture design has to answer this.
+- **Layout** (`packages/eve/src/memory/`): `index.ts` is the barrel + the "two seams, which to pick"
+  overview and the tsup entry for the `./memory` subpath; `documents.ts` is `redisDocuments()`;
+  `provider.ts` is `redisMemory()`; `memory.test.ts` covers both. The two halves share no code, so
+  each file carries only the design notes that belong to it. Note the sibling **`memory-tools.ts`**
+  (renamed from `memory.ts` when this directory landed, so `./memory.js` and `./memory/` can't be
+  confused) — that's `defineMemoryRecallTool`/`defineMemorySaveTool`, the package-**root** exports,
+  which are a different feature from the memory slots.
+
+- **Both designs shipped, on purpose.** They are different eve seams, not competing implementations:
+  `redisDocuments()` = storage under eve's `fileMemory()` (whole-document recall, model-curated,
+  bounded to 4,000 recalled chars / 64 KiB stored); `redisMemory()` = a whole provider (top-K BM25
+  recall of *relevant* memories, automatic capture, `forget_memory` by id, unbounded store). The
+  demo declares both slots.
 - **`EVAL` works on Upstash Redis over REST — verified live, not assumed** (2026-09, an
   `upstash start-redis` DB). `redis.eval(script, keys, args)` from `@upstash/redis` is accepted with
   auto-pipelining on (the default), a Lua table return round-trips as a JSON array, and
@@ -225,39 +213,94 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   (`123`, `{"a":1}`) comes back as a number/object — measured. Documents are therefore stored with an
   `eve-memory-document-v1:` marker prefix (stripped on read) that makes every value unparseable as
   JSON, guaranteeing a byte-exact round trip. Layout: one hash per scope key at
-  `agentkit:memoryFile:<scopeKey>` with `content` + `version` fields. The prefix is deliberately
-  *outside* `agentkit:memory:` — that one is the `AgentMemory` index's, and a document written under
-  it would be indexed as a malformed memory doc.
+  `agentkit:memoryFile:<scopeKey>` with `content` + `version` fields.
+- **Upstash Search indexing lag is minutes, not seconds, without `waitIndexing()`.** Measured
+  end-to-end: a fact captured at `turn.completed` was still invisible to recall 8 turns / 10s later
+  and only appeared minutes afterwards. So `redisMemory()`'s capture ends with
+  `searchIndex.waitIndexing()` (`waitForIndexing`, default `true`) — free, because eve runs capture
+  *after* the response is delivered — and that is what makes the e2e eval pass on the very next turn.
+  Recall stays wait-free.
 - **`read()` does not trust a single "absent" answer for a key it wrote.** `@upstash/redis@1.38.0`
-  sends its read-your-writes sync token one request late (see **Testing**, and the upstream fix in
-  `upstash/redis-js` DX-2995), so an `HMGET` straight after the `EVAL` write can be served by a
-  replica that hasn't caught up and report the document missing. eve's `fileMemory()` would then
-  start a *fresh* document and take a conflict + retry. The backend keeps a bounded FIFO set of
-  scope keys it has written and re-reads (up to twice) before returning `null` for one of them; a
-  genuinely absent document — a new scope, or a `ttlSeconds` expiry — still resolves to `null` on
-  the first read, so the common path costs nothing extra. Regression-tested offline with a scripted
-  lagging client, which reproduces the CI error exactly.
-- **`memory.scope.key` is the partition key** (eve locks it before calling the provider), and it is
-  a digest of **namespace + scope**, not scope alone. eve's `defaultNamespace()` hashes the runtime
-  `appRoot`, and under `eve dev` that is a *per-reload snapshot dir*
-  (`.eve/dev-runtime/snapshots/<id>/source/...`) — so every restart mints a new partition and memory
-  saved before it is stranded, with no error. Reading is a `turn.started` hook, not a tool, so a key
-  that was never written just recalls nothing. **Pin `namespace` in `defineMemory()` for anything
-  backed by durable storage.** Production is unaffected (on Vercel the default keys off the project
-  id + target env), but preview deployments partition per git branch.
+  sends its read-your-writes sync token one request late (see **Testing**), so an `HMGET` straight
+  after the `EVAL` write can be served by a replica that hasn't caught up and report the document
+  missing. eve's `fileMemory()` would then start a *fresh* document and take a conflict + retry. The
+  backend keeps a bounded FIFO set of scope keys it has written and re-reads (up to twice) before
+  returning `null` for one of them; a genuinely absent document — a new scope, or a `ttlSeconds`
+  expiry — still resolves to `null` on the first read, so the common path costs nothing extra.
+  Regression-tested offline with a scripted lagging client, which reproduces the CI error exactly.
+- **Recall must be replay-stable.** eve stores a digest per `operationId` and throws
+  *"Memory recall operation … replayed with a different result"* if a durable replay returns
+  something else. A live ranked query is not naturally stable, so the rendered block is cached at
+  `agentkit:memoryRecall:<userId>:<operationId>` (`replayCacheTtlSeconds`, default 3600, `0` disables).
+- **Recall is returned as ONE keyed message** (`id: "agentkit-redis-memory"`), like eve's own
+  `file-memory-document`: eve supersedes a record when the same id comes back with different
+  content, and omitting an item does **not** delete it — so per-memory ids would accumulate and a
+  forgotten memory would linger in context.
+- **eve requires provider tools be `defineTool()`-branded** (`isBrandedToolEntry` in
+  `context/memory-tools.js` throws otherwise), and it re-invokes `provider.tools()` from a durable
+  closure on every execute — so the factory must be pure. Tool names are `<slot>__<key>`.
+- **`memory.scope.key` is the partition key** (eve locks it before calling the provider). It is
+  sanitized `:` → `_` for `AgentMemory`'s `userId`, which rejects the key separator. `forget_memory`
+  validates the model-supplied id against `/^[A-Za-z0-9_-]{1,64}$/` — it becomes a Redis key part.
+- **Default prefix stays `agentkit:memory`** so slots share the memory tools' Redis Search index
+  (the DB caps at 10 indexes; a slot must not mint its own). `agentkit:memoryFile` is deliberately
+  *outside* `agentkit:memory:` — that prefix is the AgentMemory index's, and a document written under
+  it would be indexed as a malformed memory doc.
+- **`autoCapture` defaults to `true`, and the hazard below is real — keep it documented.** Captured
+  utterances and curated facts share one BM25 ranking, and the utterances win: recall builds its
+  query from the user's current message, so a stored *"What do you remember?"* scores near-perfectly
+  against the next *"What do you remember?"*. Measured on a live index — captured question **50.9**,
+  while `User likes cucumber.` (saved deliberately via `save_memory`) was cut from the top 5
+  entirely. Asking the agent what it remembers is what degrades what it remembers; `autoCapture:
+  false` is the model-curated escape hatch. (This default was flipped off and then back on: off was
+  the measured-safest, on is the product call. Don't silently re-flip it either way.) `autoCapture`
+  is a union: `true` (default)/`"fromUser"` | `"fromModel"` | `"all"` | `false`. **No function
+  form** — an extractor can't be passed, so `capture: false` + a live `extract` is not expressible
+  and `defaultExtractMemories` is internal. `"fromModel"`/`"all"` are worse
+  than `"fromUser"` (the assistant's text is derived from the recalled block, so the agent
+  re-memorizes its own restatements). `"fromUser"` reads `turn.input` — the turn's own
+  delivery, kept separate from projected history, so recalled records can't be re-captured; and
+  every memory's id is `stableHash(text).slice(0,12)`, so identical text collapses onto one key and
+  capture is idempotent across turns and replays.
+- **`conversations` (default `false`) is small-to-big retrieval.** On, it stores each turn's
+  transcript through core `ChatHistory` keyed by the eve session id, stamps that id as
+  `conversationId` on every memory captured or saved that turn, tags recalled memories
+  `conversation=<id>`, and contributes `read_conversation`. Memories stay ranked individually (what
+  BM25 is good at) and the model expands a match into the exchange **on demand** — so a remembered
+  question can lead to the answer that followed it, without transcripts in every prompt. The
+  recalled block is stripped before storing (`RECALL_HEADING_PREFIX`), or recall output would
+  round-trip into the transcript recall later expands. `conversationId` rides **unindexed** on the
+  memory doc like `createdAt` — no schema change, no re-index. The pointer is not a snapshot: the
+  transcript keeps growing after the memory is written. Note it needs `context.session.id`, which is
+  read *only* when `conversations` is on, so the common path never depends on a session.
+- **Config names carry the phase** (the object is flat, so they have to): `maxRecallCharacters`
+  (recalled block) vs `maxMemoryCharacters` (one stored memory), `buildRecallQuery`, `autoCapture`.
+  Renamed pre-release from `maxCharacters`/`maxEntryCharacters`/`query`/`capture`+`extract`.
+  **There is no `memoryTools` knob** — `save_memory`/`forget_memory` are always contributed, since a
+  slot with no way to save or forget is a strange thing to declare. **`./memory` had never shipped**
+  (published `@upstash/agentkit-eve@0.8.0` exports only `.` and `./sandbox`), so this cost nothing —
+  check that before assuming a rename here is breaking.
 - **eve floor for this subpath is `>=0.45.2`, verified against the built `dist`** the same way the
   sandbox floor is: `pnpm pack` the package into a throwaway consumer that calls `defineMemory` with
-  the backend, then `tsc` per eve version. **0.45.0** fails (`Cannot find module 'eve/memory'` *and*
+  both providers, then `tsc` per eve version. **0.45.0** fails (`Cannot find module 'eve/memory'` *and*
   `'eve/memory/file'`), **0.45.1** fails on `eve/memory/file` alone, and **0.45.2 / 0.46.1 / 0.47.6 /
   0.49.0** are all clean; the runtime import throws `ERR_PACKAGE_PATH_NOT_EXPORTED` below the floor.
-- **E2E proof:** `examples/eve-demo` declares the slot (`agent/memory/profile.ts`) and
-  `evals/memory.eval.ts` drives it with eve's `mockModel` (`AGENTKIT_MOCK_MODEL=1`, no OpenAI key).
-  The mock echoes the memory block eve injected into its *prompt*, which is what proves automatic
-  recall. CI runs it next to the extension eval. **An eval file can talk to Redis itself** —
-  `Redis.fromEnv()` resolves inside the eval runner (it loads the project `.env`), so an eval can
-  assert on *persisted state* and not just on the reply; `memory.eval.ts` tags its fact with a
-  per-run nonce and scans `agentkit:memoryFile:*` for it, so a document left by an earlier run can't
-  make the gate pass.
+  `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.49.0 (`eve/memory`'s
+  `index.d.ts` and `eve/memory/file`'s `backend.d.ts` `diff` clean between 0.47.6 and 0.49.0), so
+  nothing here is version-fragile.
+- **What the tests pin down** (a PR review flagged that only the `profile` tools were covered):
+  `memory/memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
+  scripts the search index, so it asserts recall/capture actually *fire* at **all four** lifecycle
+  hooks and with what — the exact `{userId, topK, query, minScore}`, the `agentkit_memory` index
+  name, the `{userId:{$eq}, text:{$smart}}` filter, the unfiltered fallback query, and that a
+  replayed `operationId` re-queries **zero** times. The live suite then asserts the JSON documents
+  in Redis (key = `stableHash(text).slice(0,12)`, value = `{text,userId,createdAt}`) and round-trips
+  them back through recall, including the `compaction.requested` → `compaction.completed` pair.
+  All of it is mutation-checked: removing a hook or the `memory.add` call turns 10 tests red.
+- **E2E proof:** `examples/eve-demo` declares both slots (`agent/memory/profile.ts`,
+  `agent/memory/recall.ts`) and `evals/memory.eval.ts` drives them with eve's `mockModel`
+  (`AGENTKIT_MOCK_MODEL=1`, no OpenAI key). The mock echoes the memory blocks eve injected into its
+  *prompt*, which is what proves automatic recall. CI runs it next to the extension eval.
 
 ## Naming history (so you don't resurrect old names)
 - ai-sdk caching: `cacheTools` → `cachedTool`+`cachedTools` → now **`cachedTools` only** (singular `cachedTool` removed; toolName = map key, `userId` scopes).
@@ -294,7 +337,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `createSearchToolDefs`; it's the type each feature's `.searchIndex` getter returns. (The old
   `withIndex` helper is gone.)
 - Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<userId>:<toolName>:<hash>`,
-  `agentkit:memory:<userId>:<id>`, `agentkit:chat:<userId>:<sessionId>`,
+  `agentkit:memory:<userId>:<id>` (+ optional unindexed `conversationId` → a `ChatHistory`
+  `sessionId`), `agentkit:chat:<userId>:<sessionId>`,
   `agentkit:memoryFile:<scopeKey>` (eve memory-document backend — a **hash**, not JSON),
   `agentkit:memoryRecall:<userId>:<operationId>` (eve recall replay cache),
   `agentkit:sandbox:template:<name>:<templateKey>` (default prefixes shown).
@@ -598,11 +642,12 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `UPSTASH_BOX_API_KEY` is needed. CI runs it. **An eval file can talk to Redis itself** —
   `Redis.fromEnv()` resolves inside the eval runner (it loads the project `.env`), so an eval can
   assert on *persisted state* and not just on the reply; `memory.eval.ts` tags its fact with a
-  per-run nonce and scans `agentkit:memoryFile:*` for it, so a document left by an earlier run can't
+  per-run nonce and scans `agentkit:memory:*` for it, so a document left by an earlier run can't
   make the gate pass.
-- **One eve memory slot lives in `agent/memory/`** (`profile.ts` = `fileMemory({ backend:
-  redisDocuments() })`), scoped to `ctx.session.auth.current?.principalId ?? ctx.session.id`. Slots
-  are agent-owned — an extension cannot contribute them.
+- **Two eve memory slots live in `agent/memory/`** (`profile.ts` = `fileMemory({ backend:
+  redisDocuments() })`, `recall.ts` = `redisMemory()`), both scoped to
+  `ctx.session.auth.current?.principalId ?? ctx.session.id`. Slots are agent-owned — an extension
+  cannot contribute them.
 - Its `AGENTS.md` says: **read `node_modules/eve/docs/` before writing eve agent code.**
 - **Every `agent/` file must be self-contained.** eve's dev-runtime snapshot resolves only **package**
   imports from each tool/channel/hook file — it does **not** include shared `agent/`-source modules
