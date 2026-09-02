@@ -662,9 +662,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   per-run nonce and scans `agentkit:memory:*` for it, so a document left by an earlier run can't
   make the gate pass.
 - **Two eve memory slots live in `agent/memory/`** (`profile.ts` = `fileMemory({ backend:
-  redisDocuments() })`, `recall.ts` = `redisMemory()`), both scoped to
-  `ctx.session.auth.current?.principalId ?? ctx.session.id`. Slots are agent-owned — an extension
-  cannot contribute them.
+  redisDocuments() })`, `recall.ts` = `redisMemory()`), both `scope: byPrincipal`. Slots are
+  agent-owned — an extension cannot contribute them. **`byPrincipal` fails closed** (null for
+  anonymous/runtime → slot disabled) where the old `?? ctx.session.id` fallback failed open into a
+  per-session partition. It still keeps alice/bob separate because `demoUserAuth` runs **before**
+  `localDev()` in `agent/channels/eve.ts`, so the UI's `x-user-id` header supplies the principal;
+  the eve TUI sends no header and lands on the shared `local-dev` principal. That header is
+  demo-only — anyone can set it, so it is not a real tenant boundary.
 - Its `AGENTS.md` says: **read `node_modules/eve/docs/` before writing eve agent code.**
 - **Every `agent/` file must be self-contained.** eve's dev-runtime snapshot resolves only **package**
   imports from each tool/channel/hook file — it does **not** include shared `agent/`-source modules
