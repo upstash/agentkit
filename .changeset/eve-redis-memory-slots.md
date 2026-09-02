@@ -37,6 +37,12 @@ Implementation notes worth knowing:
   the response is delivered, so this costs the caller nothing.
 - Recall is returned as one keyed message and cached per eve `operationId`, so a durable replay
   cannot trip eve's "recall operation replayed with a different result" check.
+- `read()` does not trust a single "document absent" answer for a scope key it has written.
+  `@upstash/redis@1.38.0` sends its read-your-writes `upstash-sync-token` one request behind, so an
+  `HMGET` immediately after the `EVAL` write can be served by a replica that hasn't caught up — and
+  `fileMemory()` would react by starting a fresh document and taking a conflict. A bounded set of
+  written keys turns that into a confirming re-read; genuinely absent documents (a new scope, a
+  `ttlSeconds` expiry) still resolve to `null` on the first read.
 
 The `./memory` entry point imports `eve/memory` and `eve/memory/file`, added in eve **0.45.1** and
 **0.45.2**, so it needs **eve ≥ 0.45.2**. The package's `eve` peer range stays `">=0.32.0"`: the root

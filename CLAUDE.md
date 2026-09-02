@@ -212,6 +212,14 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `searchIndex.waitIndexing()` (`waitForIndexing`, default `true`) — free, because eve runs capture
   *after* the response is delivered — and that is what makes the e2e eval pass on the very next turn.
   Recall stays wait-free.
+- **`read()` does not trust a single "absent" answer for a key it wrote.** `@upstash/redis@1.38.0`
+  sends its read-your-writes sync token one request late (see **Testing**), so an `HMGET` straight
+  after the `EVAL` write can be served by a replica that hasn't caught up and report the document
+  missing. eve's `fileMemory()` would then start a *fresh* document and take a conflict + retry. The
+  backend keeps a bounded FIFO set of scope keys it has written and re-reads (up to twice) before
+  returning `null` for one of them; a genuinely absent document — a new scope, or a `ttlSeconds`
+  expiry — still resolves to `null` on the first read, so the common path costs nothing extra.
+  Regression-tested offline with a scripted lagging client, which reproduces the CI error exactly.
 - **Recall must be replay-stable.** eve stores a digest per `operationId` and throws
   *"Memory recall operation … replayed with a different result"* if a durable replay returns
   something else. A live ranked query is not naturally stable, so the rendered block is cached at
@@ -393,6 +401,19 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
   between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`; FLUSHDB does drop
   indexes, and `SEARCH.DROP <name>` is the only other lever — there is no list command).
+- **A read issued immediately after a write can miss it — and it is a race, so it only ever shows up
+  as a rare CI red.** Upstash databases replicate, and `@upstash/redis`'s read-your-writes guarantee
+  rides an `upstash-sync-token` header that **lags one request behind** in **1.38.0**:
+  `HttpClient.request()` builds `requestHeaders` from `this.headers` and only *then* copies
+  `this.upstashSyncToken` into `this.headers`, so every request is sent with the token from one
+  response ago. The replica is normally current well within a round trip, so write→read usually
+  works — until it doesn't. This is **not** the search-index lag documented above; it hits plain
+  `GET`/`HMGET`/`TTL` on ordinary keys. It cost PR #33 a CI red (`eve-memory.test.ts`, "creates with
+  expectedVersion null, then round-trips through read" — `expected null to deeply equal {…}` — while
+  every later read in the same file passed, because by then the token had caught up). **Any extra
+  request flushes the correct token**, so one re-read fixes it. Treat write-then-assert-the-read as
+  something to poll (`pollUntil`) in tests, and design production reads not to trust a single
+  "absent" answer for a key you know you wrote (see `RedisMemoryDocumentBackend.read`).
 - Scores are **BM25 (unbounded)**, not `[0,1]` — `minScore` thresholds are BM25 values.
 - `.env` is gitignored — **never commit creds.** Needs `UPSTASH_REDIS_REST_URL`/`_TOKEN`; optionally
   `OPENAI_API_KEY` and `UPSTASH_BOX_API_KEY`.

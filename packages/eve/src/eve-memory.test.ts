@@ -140,6 +140,71 @@ describe("eve memory integration (offline)", () => {
     ]);
   });
 
+  // Regression for the CI failure that a single-region dev database could never reproduce: an
+  // Upstash database replicates, and `@upstash/redis@1.38.0` sends its read-your-writes
+  // `upstash-sync-token` one request late, so a read issued straight after a write can miss it and
+  // report the document absent. `read()` confirms an "absent" answer for any key this instance has
+  // written. Driven here through a scripted client so it is deterministic, not a race.
+  it("confirms an 'absent' answer for a document it just wrote", async () => {
+    const store = new Map<string, { content: string; version: string }>();
+    let hmgets = 0;
+    let lagging = true;
+    const laggyRedis = {
+      search: { index: () => ({}) },
+      eval: (_script: string, keys: string[], args: string[]) => {
+        store.set(keys[0]!, { content: args[0]!, version: args[2]! });
+        return Promise.resolve([1, args[2]!]);
+      },
+      hmget: (key: string) => {
+        hmgets += 1;
+        // The first read after the write is served by a replica that hasn't caught up.
+        if (lagging) {
+          lagging = false;
+          return Promise.resolve(null);
+        }
+        return Promise.resolve(store.get(key) ?? null);
+      },
+    } as never;
+
+    const backend = new RedisMemoryDocumentBackend({ redis: laggyRedis });
+    const written = await backend.write({
+      key: "k",
+      content: "doc",
+      expectedVersion: null,
+      signal,
+    });
+    expect(await backend.read({ key: "k", signal })).toEqual({
+      content: "doc",
+      version: written.version,
+    });
+    expect(hmgets).toBe(2); // one lagging read, one confirming re-read
+
+    // A key this instance never wrote is reported absent on the FIRST read — no wasted round trip
+    // on the common "no document yet" path.
+    expect(await backend.read({ key: "unwritten", signal })).toBeNull();
+    expect(hmgets).toBe(3);
+  });
+
+  it("still reports a document as absent when it is really gone", async () => {
+    let hmgets = 0;
+    const emptyRedis = {
+      search: { index: () => ({}) },
+      eval: (_script: string, _keys: string[], args: string[]) => Promise.resolve([1, args[2]!]),
+      hmget: () => {
+        hmgets += 1;
+        return Promise.resolve(null);
+      },
+    } as never;
+
+    const backend = new RedisMemoryDocumentBackend({ redis: emptyRedis });
+    await backend.write({ key: "gone", content: "x", expectedVersion: null, signal });
+    // e.g. `ttlSeconds` expired it: the confirming re-reads agree, so `null` is the answer.
+    expect(await backend.read({ key: "gone", signal })).toBeNull();
+    expect(hmgets).toBe(3); // the read plus its two confirmations, then it stops second-guessing
+    expect(await backend.read({ key: "gone", signal })).toBeNull();
+    expect(hmgets).toBe(4); // the key was forgotten, so no more confirmations
+  });
+
   it("default capture stores nothing when a compaction has no active turn", () => {
     // `compaction.requested` can arrive with `turn: null` (standalone compaction).
     expect(defaultExtract({ turn: null, messages: [] } as never)).toEqual([]);
@@ -255,7 +320,12 @@ describe.skipIf(!hasRedisCreds)("redisDocuments() — MemoryDocumentBackend (liv
   it("applies ttlSeconds inside the same write", async () => {
     const ttlBackend = new RedisMemoryDocumentBackend({ redis, prefix, ttlSeconds: 120 });
     await ttlBackend.write({ key: "scope-ttl", content: "x", expectedVersion: null, signal });
-    const ttl = await redis.ttl(ttlBackend.keyFor("scope-ttl"));
+    // `ttl` is a raw metadata read, so it can't lean on `read()`'s confirming re-read; poll it
+    // instead (see that method for why a read straight after a write can miss on a replica).
+    const ttl = await pollUntil(
+      () => redis.ttl(ttlBackend.keyFor("scope-ttl")),
+      (value) => value > 0,
+    );
     expect(ttl).toBeGreaterThan(0);
     expect(ttl).toBeLessThanOrEqual(120);
   });
