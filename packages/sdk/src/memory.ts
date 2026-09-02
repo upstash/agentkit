@@ -20,20 +20,26 @@ function assertUserId(userId: string | undefined): asserts userId is string {
   }
 }
 
-export interface MemoryRecord {
+export interface MemoryRecord<TMetadata = Record<string, unknown>> {
   id: string;
   text: string;
   createdAt: number;
   /**
-   * Optional pointer to the conversation this memory came from. Stored but **not indexed** (like
-   * {@link MemoryRecord.createdAt}), so it costs no schema change: it rides along in the JSON doc
-   * and comes back on recall. Callers that also keep transcripts (e.g. {@link ChatHistory}) can use
-   * it to expand a matched memory into the surrounding conversation.
+   * Anything the caller wants to keep alongside the text — where the memory came from, which
+   * conversation produced it, a confidence score. Stored but **not indexed** (like
+   * {@link MemoryRecord.createdAt}), so it costs no schema change and no re-index: it rides along
+   * in the JSON doc and comes back on {@link AgentMemory.recall}.
+   *
+   * Because it is unindexed it cannot be filtered or searched on — a query still matches `text`
+   * only. Anything you need to filter by has to go in the schema instead, which does mean
+   * re-creating the index.
    */
-  conversationId?: string;
+  metadata?: TMetadata;
 }
 
-export interface RecalledMemory extends MemoryRecord {
+export interface RecalledMemory<
+  TMetadata = Record<string, unknown>,
+> extends MemoryRecord<TMetadata> {
   score: number;
 }
 
@@ -67,7 +73,7 @@ const MemorySchema = s.object({
  * Each memory is one JSON doc at `<prefix>:<userId>:<id>`. Memories are scoped per user via the
  * exact-match `userId` filter, and recalled with the `$smart` operator (phrase/term/fuzzy/prefix).
  */
-export class AgentMemory {
+export class AgentMemory<TMetadata = Record<string, unknown>> {
   private redis: Redis;
   private keyPrefix: string;
   private index: ReactiveSearchIndex<typeof MemorySchema>;
@@ -107,23 +113,23 @@ export class AgentMemory {
     text: string;
     userId: string;
     id?: string;
-    conversationId?: string;
-  }): Promise<MemoryRecord> {
+    metadata?: TMetadata;
+  }): Promise<MemoryRecord<TMetadata>> {
     const { text, userId } = params;
     assertUserId(userId);
-    const record: MemoryRecord = {
+    const record: MemoryRecord<TMetadata> = {
       id: params.id ?? randomUUID(),
       text,
       createdAt: now(),
-      ...(params.conversationId !== undefined ? { conversationId: params.conversationId } : {}),
+      ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
     };
-    // `createdAt` and `conversationId` are stored but not in the schema, so they ride along
-    // unindexed — no index change, and both come back on the `query` row.
+    // `createdAt` and `metadata` are stored but not in the schema, so they ride along unindexed —
+    // no index change, and both come back on the `query` row.
     await this.redis.json.set(this.keyFor(userId, record.id), "$", {
       text,
       userId,
       createdAt: record.createdAt,
-      ...(record.conversationId !== undefined ? { conversationId: record.conversationId } : {}),
+      ...(record.metadata !== undefined ? { metadata: record.metadata } : {}),
     });
     return record;
   }
@@ -140,7 +146,7 @@ export class AgentMemory {
     query?: string;
     topK?: number;
     minScore?: number;
-  }): Promise<RecalledMemory[]> {
+  }): Promise<RecalledMemory<TMetadata>[]> {
     const { userId, query } = params;
     assertUserId(userId);
     const topK = params.topK ?? 5;
@@ -161,7 +167,7 @@ export class AgentMemory {
       id: h.key.startsWith(idPrefix) ? h.key.slice(idPrefix.length) : h.key,
       text: h.text,
       createdAt: h.createdAt,
-      ...(h.conversationId !== undefined ? { conversationId: h.conversationId } : {}),
+      ...(h.metadata !== undefined ? { metadata: h.metadata } : {}),
       score: h.score,
     }));
   }
@@ -172,7 +178,7 @@ export class AgentMemory {
     query: string | undefined,
     topK: number,
   ): Promise<
-    { key: string; text: string; createdAt: number; conversationId?: string; score: number }[]
+    { key: string; text: string; createdAt: number; metadata?: TMetadata; score: number }[]
   > {
     const filter: Record<string, unknown> = { userId: { $eq: userId } };
     if (query && query.trim()) filter.text = { $smart: query };
@@ -183,15 +189,13 @@ export class AgentMemory {
     })) as unknown as {
       key: string;
       score: number;
-      data?: { text?: string; createdAt?: number; conversationId?: string };
+      data?: { text?: string; createdAt?: number; metadata?: TMetadata };
     }[];
     return rows.map((r) => ({
       key: r.key,
       text: typeof r.data?.text === "string" ? r.data.text : "",
       createdAt: typeof r.data?.createdAt === "number" ? r.data.createdAt : 0,
-      ...(typeof r.data?.conversationId === "string"
-        ? { conversationId: r.data.conversationId }
-        : {}),
+      ...(r.data?.metadata !== undefined ? { metadata: r.data.metadata } : {}),
       score: r.score,
     }));
   }

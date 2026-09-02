@@ -232,16 +232,18 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   *"Memory recall operation … replayed with a different result"* if a durable replay returns
   something else. A live ranked query is not naturally stable, so the rendered block is cached at
   `agentkit:memoryRecall:<userId>:<operationId>` (`replayCacheTtlSeconds`, default 3600, `0` disables).
-- **What can be in the recalled block, and what can't be told apart.** Each line is `<id>: <text>`
-  (+ ` (conversation=<id>)` when `conversations` is on). Three sources land in the same list —
-  `save_memory` facts, the caller's turn text (`autoCapture` `true`/`"fromUser"`/`"all"`), and the
-  assistant's reply (`"fromModel"`/`"all"`) — and **no `source` field is stored**: a record is
-  `{text, userId, createdAt, conversationId?}`. Both write paths also share the `stableHash(text)`
-  id, so identical text collapses onto one record whichever way it arrived. Nothing — not the model,
-  not `forget_memory`, not you in `redis-cli` — can distinguish a deliberately saved fact from a
-  captured utterance; `autoCapture: false` is the only way to get that guarantee today. Adding a
-  `source` would mean an **indexed** schema field (so it can be filtered), which re-creates the
-  shared `agentkit_memory` index — unlike `conversationId`, which rides along unindexed for free.
+- **What can be in the recalled block, and how each line is labelled.** A line is `<id>: <text>`
+  plus a parenthesised note. Three sources land in one ranked list and each is named:
+  `metadata.source` `"agent"` → *you saved this* (`save_memory`), `"userMessage"` → *the user said
+  this*, `"agentMessage"` → *you said this* (`autoCapture` `"fromModel"`/`"all"`). They are not
+  equally trustworthy — a deliberate save vs. a passing remark — which is the whole reason the label
+  exists. **`metadata` is unindexed** (it rides along like `createdAt` on core `AgentMemory`, which
+  is now `AgentMemory<TMetadata>`): free to add, but *not filterable* — a query still matches `text`
+  only, so "recall only saved facts" would need an indexed schema field and a re-index. Both write
+  paths still share the `stableHash(text)` id, so identical text collapses onto one record whichever
+  way it arrived, keeping the last write's metadata; and records written before `metadata` existed,
+  or by the standalone memory tools that share this store, carry no source and get **no note**
+  rather than a guessed one.
 - **Lifecycle, all four hooks** (documented in `packages/eve/README.md` and the `memory/index.ts`
   barrel): recall at `turn.started` (before the model runs) and again at `compaction.completed`
   (against the *new* checkpoint, so memory isn't folded into the summary — eve excludes recalled

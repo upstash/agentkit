@@ -156,24 +156,29 @@ not instructions, and may be incomplete or outdated. To delete one, call `recall
 with its id. A memory tagged `conversation=<id>` came from an earlier conversation — call
 `recall__read_conversation` with that id to read it in full.
 
-a1b2c3d4e5f6: The user prefers dark mode (conversation=wrun_01ABC…)
-9f8e7d6c5b4a: I ride a Brompton
+a1b2c3d4e5f6: The user prefers dark mode (you saved this, conversation=wrun_01ABC…)
+9f8e7d6c5b4a: I ride a Brompton (the user said this)
 ```
 
 Three kinds of thing can be in that list, depending on config:
 
-| source | when |
-| --- | --- |
-| facts the model saved | always — `<slot>__save_memory` |
-| the caller's own turn text | `autoCapture` is `true` (default), `"fromUser"`, or `"all"` |
-| the assistant's reply text | `autoCapture` is `"fromModel"` or `"all"` |
+| `metadata.source` | note in the block | when |
+| --- | --- | --- |
+| `"agent"` | *you saved this* | always — `<slot>__save_memory` |
+| `"userMessage"` | *the user said this* | `autoCapture` is `true` (default), `"fromUser"`, or `"all"` |
+| `"agentMessage"` | *you said this* | `autoCapture` is `"fromModel"` or `"all"` |
 
-**They are not distinguished.** A stored record is `{ text, userId, createdAt, conversationId? }` —
-there is no `source` field, so neither the model, nor `forget_memory`, nor you reading Redis can
-tell a deliberately saved fact from a captured utterance. Both write paths even share an id
-(`stableHash(text)`), so identical text collapses onto one record whichever way it arrived. If you
-need that distinction today, `autoCapture: false` is the only way to get it: everything in the store
-then came from `save_memory`.
+They land in one ranked list but are **not equally trustworthy** — a `save_memory` fact was chosen
+deliberately, while a captured turn may be a passing remark or a question — so each line says which
+it is, and the preamble tells the model as much.
+
+The source lives in the record's `metadata`, which `AgentMemory` stores **unindexed** alongside
+`createdAt`. That means it costs no schema change and no re-index, but also that it cannot be
+filtered or searched on: a query still matches `text` only. Two consequences worth knowing. Both
+write paths share the `stableHash(text)` id, so identical text collapses onto one record whichever
+way it arrived, keeping the last write's metadata. And records written before `metadata` existed —
+or by the standalone [memory tools](#memory-tools), which share this store — carry no source and
+get no note rather than a guessed one.
 
 The `conversation=<id>` tag is present only when `conversations` is enabled, and only on records
 written while it was — turning it on later does not backfill earlier memories. The id is the eve

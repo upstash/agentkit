@@ -529,11 +529,14 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       text: "I prefer dark mode",
       userId: USER_ID,
       id: expect.stringMatching(/^[0-9a-f]{12}$/),
+      // `conversations` is off here, so the metadata is the source alone.
+      metadata: { source: "userMessage" },
     });
     expect(add).toHaveBeenNthCalledWith(2, {
       text: "I live in Berlin",
       userId: USER_ID,
       id: expect.stringMatching(/^[0-9a-f]{12}$/),
+      metadata: { source: "userMessage" },
     });
     // Without this the memory stays invisible to the next turn's recall for far longer than a turn.
     expect(script.waitIndexingCalls()).toBe(1);
@@ -556,6 +559,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       text: "I ride a Brompton",
       userId: USER_ID,
       id: expect.stringMatching(/^[0-9a-f]{12}$/),
+      metadata: { source: "userMessage" },
     });
   });
 
@@ -577,10 +581,67 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       text: "I prefer dark mode",
       userId: USER_ID,
       createdAt: expect.any(Number),
+      metadata: { source: "userMessage" },
     });
   });
 
-  it("autoCapture selects what gets stored: fromUser / fromModel / all / a function", async () => {
+  it("stamps a source on every write, and a deliberate save is a third one", async () => {
+    const add = vi
+      .spyOn(AgentMemory.prototype, "add")
+      .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
+    const context = operationContext({
+      scopeKey: SCOPE,
+      input: [userMessage("I ride a Brompton")],
+      messages: [userMessage("I ride a Brompton"), { role: "assistant", content: "Noted." }],
+    });
+
+    // "all" captures both halves of the turn, and they are tagged differently.
+    await captureAt(
+      redisMemory({ redis: scriptedRedis().redis, autoCapture: "all" }),
+      "turn.completed",
+      context,
+    );
+    expect(add.mock.calls.map((c) => (c[0] as { metadata: unknown }).metadata)).toEqual([
+      { source: "userMessage" },
+      { source: "agentMessage" },
+    ]);
+
+    // A save_memory call is the third source, so the model can weigh it differently on recall.
+    add.mockClear();
+    const tools = await redisMemory({ redis: scriptedRedis().redis }).tools!({
+      ...context,
+      turn: { id: "t", input: [], sequence: 1 },
+    } as never);
+    await callTool(tools, "save_memory", { text: "The user commutes by bike" });
+    expect((add.mock.calls[0]![0] as { metadata: unknown }).metadata).toEqual({ source: "agent" });
+  });
+
+  it("recall labels each line with its source, and omits it for pre-metadata records", async () => {
+    const row = (id: string, text: string, score: number, metadata?: Record<string, unknown>) => ({
+      key: `agentkit:memory:${USER_ID}:${id}`,
+      score,
+      data: { text, createdAt: 0, ...(metadata ? { metadata } : {}) },
+    });
+    const script = scriptedRedis([
+      row("aaaaaaaaaaaa", "saved fact", 9, { source: "agent" }),
+      row("bbbbbbbbbbbb", "user said", 8, { source: "userMessage" }),
+      row("cccccccccccc", "model said", 7, { source: "agentMessage" }),
+      row("dddddddddddd", "legacy row", 6), // written before `metadata` existed
+    ]);
+
+    const content = await recallContent(
+      redisMemory({ redis: script.redis, replayCacheTtlSeconds: 0 }),
+      operationContext({ scopeKey: SCOPE, input: [userMessage("what do you know?")] }),
+    );
+
+    expect(content).toContain("aaaaaaaaaaaa: saved fact (you saved this)");
+    expect(content).toContain("bbbbbbbbbbbb: user said (the user said this)");
+    expect(content).toContain("cccccccccccc: model said (you said this)");
+    // No metadata → no note, rather than a guessed one.
+    expect(content).toMatch(/^dddddddddddd: legacy row$/m);
+  });
+
+  it("autoCapture selects what gets stored: fromUser / fromModel / all", async () => {
     const add = vi
       .spyOn(AgentMemory.prototype, "add")
       .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
@@ -889,8 +950,11 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
       (c) => c.includes("dark mode"),
     );
     expect(content).toContain("dark mode");
-    // Each line is `<id>: <text>` so the model can call forget_memory with the id.
-    expect(content).toMatch(/^[0-9a-f]{12}: I prefer dark mode in every editor$/m);
+    // Each line is `<id>: <text> (<notes>)` so the model can call forget_memory with the id and
+    // knows the memory was captured rather than deliberately saved.
+    expect(content).toMatch(
+      /^[0-9a-f]{12}: I prefer dark mode in every editor \(the user said this\)$/m,
+    );
     expect(content).toContain("recall__forget_memory");
   });
 
@@ -1032,6 +1096,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         text,
         userId: scope,
         createdAt: expect.any(Number),
+        metadata: { source: "userMessage" },
       });
     }
     // The assistant message was never written.
@@ -1084,6 +1149,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
       text,
       userId: scope,
       createdAt: expect.any(Number),
+      metadata: { source: "userMessage" },
     });
 
     await index.waitIndexing();
@@ -1127,11 +1193,11 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
 
     await captureTurn(withConversations, context);
 
-    // The memory carries the pointer, stored unindexed alongside `createdAt`.
+    // The memory carries the pointer and its source, stored unindexed alongside `createdAt`.
     const keys = await redis.keys(`agentkit:memory:${isolated}:*`);
     expect(keys).toHaveLength(1);
     const doc = await redis.json.get<Record<string, unknown>[]>(keys[0]!, "$");
-    expect(doc![0]!.conversationId).toBe(sessionId);
+    expect(doc![0]!.metadata).toEqual({ source: "userMessage", conversationId: sessionId });
 
     // Recall advertises the pointer so the model knows read_conversation is worth calling.
     const content = await recallContent(withConversations, context);
