@@ -6,7 +6,7 @@ your `agent/` tree:
 | Import | Feature |
 | --- | --- |
 | `defineMemoryRecallTool` / `defineMemorySaveTool` | Long-term memory tools the model reads and writes. |
-| `redisDocuments` / `redisMemory` (`@upstash/agentkit-eve/memory`) | Upstash Redis behind eve's native [memory slots](https://eve.dev/docs/memory) — storage for `fileMemory()`, or a full ranked/auto-capturing provider. |
+| `redisDocuments` (`@upstash/agentkit-eve/memory`) | Upstash Redis storage behind eve's native [memory slots](https://eve.dev/docs/memory) — a backend for `fileMemory()`. |
 | `defineSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimitAuth` | A rate-limit gate for your channel's `auth` walk. |
 | `upstash` (`@upstash/agentkit-eve/sandbox`) | Upstash Box sandbox backend for `defineSandbox`. |
@@ -92,35 +92,15 @@ export default defineMemory({
 });
 ```
 
-```ts
-// agent/memory/recall.ts — AgentKit's own provider: ranked recall + automatic capture
-import { redisMemory } from "@upstash/agentkit-eve/memory";
-import { defineMemory } from "eve/memory";
+Use it when you want eve's exact semantics — a small, model-curated list of durable facts recalled
+in full before every turn — but need them to survive **off Vercel**: with no `backend`,
+`fileMemory()` only resolves storage under `eve dev` (process-local) and on Vercel with a Blob store
+attached, and errors everywhere else. Recall behaviour and the `<slot>__save_memory` /
+`<slot>__remove_memory` tools stay eve's own; only the storage moves. It is bounded by eve's own
+limits — 4,000 recalled characters, 64 KiB stored per scope.
 
-export default defineMemory({
-  description: "Everything the caller has told this agent before.",
-  provider: redisMemory({ topK: 5 }),
-  scope: (ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-|  | `fileMemory({ backend: redisDocuments() })` | `redisMemory()` |
-| --- | --- | --- |
-| eve seam | `MemoryDocumentBackend` — storage only | `MemoryProvider` — recall + capture + tools |
-| Recall | eve's: the **whole** document, every turn | **top-K BM25** for what the caller just said |
-| Capture | none — the model calls `save_memory` | **automatic**, every turn |
-| Deletion | `<slot>__remove_memory` (by index) | `<slot>__forget_memory` (by id) |
-| Size | bounded (4,000 recalled chars / 64 KiB stored) | unbounded store, bounded recall |
-
-Use the first when you want eve's exact semantics — a small, model-curated list of durable facts —
-but need them to survive **off Vercel**: with no `backend`, `fileMemory()` only resolves storage under
-`eve dev` (process-local) and on Vercel with a Blob store attached, and errors everywhere else. Use
-the second when memory should outgrow a 4,000-character preamble, should be *retrieved* by relevance,
-or should not depend on the model remembering to save. Declaring both slots is fine — they never
-merge their context or tools.
-
-Neither replaces the [memory tools](#memory-tools) above: those need no memory slot, work on any eve
-version, and stay the right choice for purely model-driven memory.
+This does not replace the [memory tools](#memory-tools) above: those need no memory slot, work on
+any eve version, and stay the right choice for purely model-driven memory.
 
 <details>
 <summary>Options</summary>
@@ -129,13 +109,6 @@ version, and stay the right choice for purely model-driven memory.
 (`agentkit:memoryFile`), `ttlSeconds`, `enableTelemetry`. One Redis hash per scope key; the
 conditional write eve requires is a Lua `EVAL` compare-and-set, because the Upstash REST API has no
 `WATCH`/`MULTI`.
-
-`redisMemory({ … })` — `redis`, `prefix` / `indexName` (defaults to the same `agentkit:memory` store
-and index the memory tools use, so slots cost no extra Redis Search index), `topK` (5), `minScore`,
-`maxCharacters` (4,000 — the recalled block's budget), `maxEntryCharacters` (2,048),
-`capture` (`false` disables automatic capture), `tools` (`false` drops `save_memory`/`forget_memory`),
-`extract` (swap in your own, e.g. LLM-based, fact extraction), `query` (override the recall query),
-`waitForIndexing`, `replayCacheTtlSeconds`, `enableTelemetry`.
 
 **Scope is the tenant boundary.** eve locks it before calling the provider and hands over an opaque
 `scope.key` that is used as the storage partition. Derive it from verified session auth, never from
