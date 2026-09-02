@@ -122,7 +122,8 @@ merge their context or tools.
 Neither replaces the [memory tools](#memory-tools) above: those need no memory slot, work on any eve
 version, and stay the right choice for purely model-driven memory.
 
-### When each hook runs
+<details>
+<summary>When each hook runs (the four lifecycle points)</summary>
 
 eve drives a memory slot at four points. Both integrations recall at the same two; only
 `redisMemory()` writes.
@@ -144,7 +145,10 @@ Recall is also cached per eve `operationId` (1h). eve requires providers to trea
 idempotency key — *"replaying a recall with a different result is an error"* — and a live ranked
 query is not naturally stable, so the rendered block is cached to keep durable replays identical.
 
-### What ends up in the recalled block
+</details>
+
+<details>
+<summary>What ends up in the recalled block, and the <code>source</code> of each line</summary>
 
 `redisMemory()` returns a single keyed message that looks like this:
 
@@ -184,12 +188,14 @@ get no note rather than a guessed one.
 
 Every record written while `rememberSessions` is enabled carries the tag, whatever its source — the
 last line above has none because it predates the setting being turned on. Enabling it later does not
-backfill. The id is the eve
-session id, and `<slot>__read_session` expands it into the stored transcript, which is the
-point: a remembered *question* can lead the model to the answer that followed it.
+backfill. The id is the eve session id, and `<slot>__read_session` expands it into the stored
+transcript, which is the point: a remembered *question* can lead the model to the answer that
+followed it.
+
+</details>
 
 <details>
-<summary>Options</summary>
+<summary>Options for <code>redisDocuments()</code> and <code>redisMemory()</code></summary>
 
 `redisDocuments({ … })` — `redis` (defaults to `Redis.fromEnv()`), `prefix`
 (`agentkit:memoryFile`), `ttlSeconds`, `enableTelemetry`. One Redis hash per scope key; the
