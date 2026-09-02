@@ -21,6 +21,23 @@
  *
  * They compose: nothing stops an agent from declaring both slots (see `examples/eve-demo`).
  *
+ * ## Lifecycle
+ *
+ * eve drives a slot at four points. Both integrations recall at the same two; only
+ * {@link redisMemory} writes.
+ *
+ * | phase | `fileMemory({ backend: redisDocuments() })` | {@link redisMemory} |
+ * | --- | --- | --- |
+ * | `turn.started` | read the document, inject it whole | ranked recall → one keyed message, before the model runs |
+ * | `turn.completed` | — | save the transcript (`conversations`), write captures (`autoCapture`), wait for indexing |
+ * | `compaction.requested` | — | same capture, before history is summarized; `turn` may be `null` |
+ * | `compaction.completed` | read and inject against the new checkpoint | recall again against the new checkpoint |
+ *
+ * Capture runs *after* the response is delivered, which is what makes the `waitIndexing()` there
+ * free. Recall runs a second time at `compaction.completed` so memory is re-injected against the
+ * fresh checkpoint instead of being folded into the summary, and is cached per eve `operationId`
+ * because eve treats that id as an idempotency key and rejects a replay that differs.
+ *
  * Neither replaces `defineMemoryRecallTool`/`defineMemorySaveTool` from the package root. Those are
  * plain eve tools you drop into `agent/tools/*.ts` — they work on any eve version, need no memory
  * slot, and are the right thing when you want memory to be purely model-driven.

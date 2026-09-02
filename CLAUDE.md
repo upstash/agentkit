@@ -232,6 +232,23 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   *"Memory recall operation … replayed with a different result"* if a durable replay returns
   something else. A live ranked query is not naturally stable, so the rendered block is cached at
   `agentkit:memoryRecall:<userId>:<operationId>` (`replayCacheTtlSeconds`, default 3600, `0` disables).
+- **What can be in the recalled block, and what can't be told apart.** Each line is `<id>: <text>`
+  (+ ` (conversation=<id>)` when `conversations` is on). Three sources land in the same list —
+  `save_memory` facts, the caller's turn text (`autoCapture` `true`/`"fromUser"`/`"all"`), and the
+  assistant's reply (`"fromModel"`/`"all"`) — and **no `source` field is stored**: a record is
+  `{text, userId, createdAt, conversationId?}`. Both write paths also share the `stableHash(text)`
+  id, so identical text collapses onto one record whichever way it arrived. Nothing — not the model,
+  not `forget_memory`, not you in `redis-cli` — can distinguish a deliberately saved fact from a
+  captured utterance; `autoCapture: false` is the only way to get that guarantee today. Adding a
+  `source` would mean an **indexed** schema field (so it can be filtered), which re-creates the
+  shared `agentkit_memory` index — unlike `conversationId`, which rides along unindexed for free.
+- **Lifecycle, all four hooks** (documented in `packages/eve/README.md` and the `memory/index.ts`
+  barrel): recall at `turn.started` (before the model runs) and again at `compaction.completed`
+  (against the *new* checkpoint, so memory isn't folded into the summary — eve excludes recalled
+  records from the summarizer); capture at `turn.completed` (after the response is delivered, which
+  is what makes the `waitIndexing()` free) and at `compaction.requested` (last look at the history
+  about to be summarized; `turn` can be `null` there). `redisDocuments()` under `fileMemory()` only
+  ever sees the two recall points — eve reads the document and injects it whole.
 - **Recall is returned as ONE keyed message** (`id: "agentkit-redis-memory"`), like eve's own
   `file-memory-document`: eve supersedes a record when the same id comes back with different
   content, and omitting an item does **not** delete it — so per-memory ids would accumulate and a

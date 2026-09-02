@@ -330,7 +330,20 @@ function conversationMessages(messages: readonly ContextMessage[]): Conversation
   return out;
 }
 
-/** Render the recalled memories as the single keyed message eve injects into model context. */
+/**
+ * Render the recalled memories as the single keyed message eve injects into model context.
+ *
+ * Each line is `<id>: <text>`, optionally followed by ` (conversation=<id>)`. Three kinds of record
+ * can appear, and **nothing distinguishes them**: facts the model saved through `save_memory`, the
+ * caller's own turn text (`autoCapture` `true`/`"fromUser"`/`"all"`), and the assistant's reply
+ * (`"fromModel"`/`"all"`). A stored record is `{text, userId, createdAt, conversationId?}` with no
+ * `source` field, and both write paths share the `stableHash(text)` id — so identical text collapses
+ * onto one record whichever way it arrived. `autoCapture: false` is the only way to guarantee every
+ * memory here was deliberately saved.
+ *
+ * The `conversation=` tag appears only when `conversations` is on *and* the record carries an id —
+ * enabling it later does not backfill earlier memories.
+ */
 function formatRecall(
   memories: readonly { id: string; text: string; conversationId?: string }[],
   slot: string,
