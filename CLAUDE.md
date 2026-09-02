@@ -98,7 +98,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
   `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
-  (`">=0.47.5"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
+  (`">=0.48.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -111,17 +111,19 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.47.6**, stamps formatVersion 2; extension 1 /
-  **tool 22** / **dynamicTool 21** / **hook 16** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.47.5** (0.47.5 is the first eve whose supported list includes tool 22; 0.47.0–0.47.3 top out
-  at tool 21 and 0.47.4 was never published to npm; 0.46.1 at tool 20 / hook 15, 0.45.1–0.46.0 at tool
-  19 / hook 14). Verified end-to-end, not just from the contract tables: the rebuilt extension,
-  `pnpm pack`ed into a real eve app, builds on eve 0.47.5/0.47.6 and **fails on 0.47.3**
+  supported list — the current dist, built with **eve 0.49.0**, stamps formatVersion 2; extension 1 /
+  **tool 24** / **dynamicTool 21** / **hook 16** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.48.0** (0.48.0 is the first eve whose supported list includes tool 24; 0.47.7 tops out at
+  tool 23, 0.47.5/0.47.6 at tool 22, 0.47.0–0.47.3 at tool 21 and 0.47.4 was never published to npm;
+  0.46.1 at tool 20 / hook 15, 0.45.1–0.46.0 at tool 19 / hook 14). Verified end-to-end, not just from
+  the contract tables: the rebuilt extension, `pnpm pack`ed into a real eve app, builds on eve
+  0.48.0/0.49.0 and **fails on 0.47.5, 0.47.6 and 0.47.7**
   (`Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.` — an incompatible manifest makes the mount contribute nothing, so the error is that obtuse;
   don't expect the old explicit "requires tool contract vN" wording).
-  **eve moved the tool contract inside the 0.45 patch line**, so a *patch* bump of the eve devDep can
-  re-stamp the manifest and raise the floor — re-derive it, don't assume the minor is enough.
-  The `eve` peer is **`">=0.47.5"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  **eve moved the tool contract inside the 0.45 patch line and again twice across 0.47.7 → 0.48.0**,
+  so a *patch* bump of the eve devDep can re-stamp the manifest and raise the floor — re-derive it,
+  don't assume the minor is enough, and don't assume one release's worth of headroom.
+  The `eve` peer is **`">=0.48.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -235,8 +237,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.47.6)
-  declares `ai` as a **peer** (`^7.0.82`), so the apps/packages provide the single copy. Providers:
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.49.0)
+  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — the 0.47.6 → 0.49.0 bump did **not**
+  move it), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.53`, `@ai-sdk/provider` `^4.0.9`, `@ai-sdk/react` `^4.0.90` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
   second, older `ai` copy via its peer resolution, which is exactly the two-copy breakage to avoid).
@@ -327,14 +330,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.47.6`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
+- The repo is on **`eve@0.49.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
   `examples/eve-extension-demo`). `packages/eve`'s peer stays
   **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
   **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
   unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
   against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
-  the 0.47.6 bump). Don't raise the floor without re-running that check; the extension's peer is
-  `>=0.47.5`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  the 0.49.0 bump across 0.32.0/0.44.3/0.45.2/0.47.0/0.47.3/0.47.6/0.47.7/0.48.0/0.49.0, also all clean).
+  Don't raise the floor without re-running that check; the extension's peer is
+  `>=0.48.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, …
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
@@ -408,6 +412,23 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   source-only and fully erased from the artifact. Unlike the extension, `packages/eve` has **no
   generated manifest** (plain tsup) and its `dist` is byte-identical whether built against 0.47.3 or
   0.47.6, so an eve bump can never silently move its floor.
+- **The 0.47.6 → 0.49.0 bump needed no source change, and moved only the extension's floor.** The
+  extension rebuild re-stamped **tool 22→24** only (dynamicTool 21, hook 16, instructions 2, config 1,
+  extension 1 all unchanged), moving its peer floor `>=0.47.5` → **`>=0.48.0`**. The important lesson:
+  **the tool contract moved twice inside three releases** — 22→23 in **0.47.7** and 23→24 in
+  **0.48.0** — so "the next patch is probably fine" is wrong; 0.47.7 is rejected by the 0.49.0-built
+  dist just like 0.47.5/0.47.6 are. Proven by `pnpm pack`ing the rebuilt dist into a real eve consumer:
+  0.47.5 / 0.47.6 / 0.47.7 install cleanly (the old `>=0.47.5` peer admits all three) and then fail
+  `eve build` with the same obtuse *"has no compile or runtime usage"* message; 0.48.0 and 0.49.0 build
+  and mount every contribution. Note this **supersedes the unreleased 0.47.6 rebuild** (PR #31/#32,
+  `.changeset/eve-extension-0476-rebuild.md`, tool 22 / floor `>=0.47.5`): that changeset was folded
+  into `.changeset/eve-extension-0490-rebuild.md` rather than sitting beside it, and the merged entry
+  is written against the last **published** state — `0.8.0`, built with eve 0.47.3, tool 21, peer
+  `>=0.47.0`. eve's `ai` peer stayed `^7.0.82` and its `nitro` dep stayed `3.0.260610-beta`, so the
+  repo-wide `ai` 7.0.87 pin did not move. `packages/eve`'s peer stayed **`>=0.32.0`**, re-verified by
+  typechecking its built `dist` against 0.32.0/0.44.3/0.45.2/0.47.0/0.47.3/0.47.6/0.47.7/0.48.0/0.49.0
+  (all clean); eve's `dist/src/shared/sandbox-backend.d.ts` is **byte-identical** between 0.47.6 and
+  0.49.0, so `SandboxBackendHandle` gained no new required member.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -480,6 +501,25 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   unauthenticated local agent (the default derivation would fall back to the per-session id).
 
 ## Commands
+- **Setup gotcha — use pnpm 11.5.3, matching the `packageManager` pin.** Root `package.json` pins
+  `"packageManager": "pnpm@11.5.3"`. On a box whose global pnpm is a different version (and no
+  corepack), *every* pnpm command dies with
+  `ERROR Failed to switch pnpm to v11.5.3. Looks like pnpm CLI is missing at ".../pnpm/11.5.3/bin" …
+  spawnSync … ENOENT`. **Install the pinned version rather than working around it:**
+  ```bash
+  npm i -g pnpm@11.5.3                  # or, to a local prefix: npm i -g pnpm@11.5.3 --prefix /tmp/pnpm11
+  ```
+  The escape hatch `pnpm config set manage-package-manager-versions false --global` *does* let an older
+  pnpm run, but **don't ship a lockfile written by it**: pnpm 10.x rewrites `pnpm-lock.yaml` dropping
+  ~51 `libc: [glibc|musl]` fields (huge spurious diff, and CI's `--frozen-lockfile` on pnpm 11 will
+  disagree) and it ignores `pnpm-workspace.yaml`'s `allowBuilds`, printing
+  `Ignored build scripts: esbuild, sharp.`
+- Non-interactive shells: `pnpm install` can abort with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`
+  when it wants to purge `node_modules`. Prefix with `CI=true` — but note `CI=true` also implies
+  `--frozen-lockfile`, so a *deliberate* dependency bump needs
+  `CI=true pnpm install --no-frozen-lockfile`.
+- Node also warns `Unsupported engine: wanted {"node":"24.x"}` on newer Node — harmless, everything
+  builds and tests fine.
 ```bash
 pnpm build        # tsup (ESM + dts) all packages
 pnpm typecheck    # builds the sdk first, then tsc --noEmit across packages
