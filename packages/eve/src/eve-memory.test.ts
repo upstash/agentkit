@@ -545,7 +545,14 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
 
     // forget_memory is the capability eve's own file memory can only approximate by index.
     await callTool(tools, "forget_memory", { id: saved.id });
-    expect(await redis.exists(`agentkit:memory:${scopeKey}:${saved.id}`)).toBe(0);
+    // `exists` straight after the `del` is a raw read that can be answered by a replica that hasn't
+    // caught up yet (see `RedisMemoryDocumentBackend.read` for the mechanism) — poll it.
+    expect(
+      await pollUntil(
+        () => redis.exists(`agentkit:memory:${scopeKey}:${saved.id}`),
+        (value) => value === 0,
+      ),
+    ).toBe(0);
   });
 
   it("rejects a model-supplied memory id that could address another scope's key", async () => {
