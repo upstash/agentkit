@@ -166,7 +166,15 @@ export class RedisMemoryDocumentBackend implements MemoryDocumentBackend {
     return `${this.prefix}:${scopeKey}`;
   }
 
-  /** One `HMGET` of the document hash, normalized to eve's {@link MemoryDocument} or `null`. */
+  /**
+   * One `HMGET` of the document hash, normalized to eve's {@link MemoryDocument} or `null`.
+   *
+   * The fields are typed `unknown` on purpose — do not "tighten" them to `string`. `@upstash/redis`
+   * auto-deserializes replies, so a value that parses as JSON comes back as a number/object even
+   * though a string was written. {@link CONTENT_MARKER} makes that impossible for `content`, but
+   * the type has to describe what the client can actually return, and the `typeof` guards below
+   * are what turn it back into a document.
+   */
   private async load(key: string): Promise<MemoryDocument | null> {
     const stored = await this.redis.hmget<{ content?: unknown; version?: unknown }>(
       this.keyFor(key),

@@ -230,25 +230,33 @@ function normalizeText(text: string): string {
   return text.trim().replaceAll(/\s+/g, " ");
 }
 
-/** Pull the plain text out of an AI SDK `ModelMessage` content (string or a parts array). */
-function messageText(message: unknown): string {
-  const content = (message as { content?: unknown } | null)?.content;
+/**
+ * One message as eve hands it to a provider — the AI SDK `ModelMessage`. Derived from eve's own
+ * context type rather than imported from `ai` directly: `ai` is only a devDependency here, and
+ * deriving it means the helpers below track whatever eve declares without a second source of truth.
+ */
+type ContextMessage = MemoryOperationContext["messages"][number];
+
+/** Pull the plain text out of a `ModelMessage`'s content (a string, or a parts array). */
+function messageText(message: ContextMessage): string {
+  const { content } = message;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is { type: string; text: string } => {
-      const p = part as { type?: unknown; text?: unknown };
-      return p?.type === "text" && typeof p.text === "string";
-    })
-    .map((part) => part.text)
-    .join("\n");
+  const texts: string[] = [];
+  // A discriminated union: only text parts carry `text`. Reasoning parts have one too, but they
+  // are a different `type` and are deliberately not memory material.
+  for (const part of content) if (part.type === "text") texts.push(part.text);
+  return texts.join("\n");
 }
 
 /** The text of every message with `role`, normalized and de-blanked. */
-function textsWithRole(messages: readonly unknown[], role: string): string[] {
+function textsWithRole(
+  messages: readonly ContextMessage[],
+  role: ContextMessage["role"],
+): string[] {
   const out: string[] = [];
   for (const message of messages) {
-    if ((message as { role?: unknown } | null)?.role !== role) continue;
+    if (message.role !== role) continue;
     const text = normalizeText(messageText(message));
     if (text.length > 0) out.push(text);
   }
@@ -256,7 +264,7 @@ function textsWithRole(messages: readonly unknown[], role: string): string[] {
 }
 
 /** The user-authored text of a list of messages. */
-function userTexts(messages: readonly unknown[]): string[] {
+function userTexts(messages: readonly ContextMessage[]): string[] {
   return textsWithRole(messages, "user");
 }
 
@@ -266,10 +274,9 @@ function userTexts(messages: readonly unknown[]): string[] {
  * last user message is what separates this turn's reply from every earlier one. (Re-capturing an
  * older reply would be harmless — ids are content hashes — but it would waste writes.)
  */
-function latestModelTexts(messages: readonly unknown[]): string[] {
+function latestModelTexts(messages: readonly ContextMessage[]): string[] {
   let start = messages.length;
-  while (start > 0 && (messages[start - 1] as { role?: unknown } | null)?.role !== "user")
-    start -= 1;
+  while (start > 0 && messages[start - 1]?.role !== "user") start -= 1;
   return textsWithRole(messages.slice(start), "assistant");
 }
 
@@ -311,7 +318,7 @@ function defaultRecallQuery(context: RedisMemoryRecallContext): string | undefin
 
 /** One transcript message as stored by {@link ChatHistory}. */
 interface ConversationMessage {
-  role: string;
+  role: ContextMessage["role"];
   content: string;
 }
 
@@ -320,14 +327,12 @@ interface ConversationMessage {
  * themselves, so storing it would round-trip recall output back into the transcript that recall
  * later expands — and `searchChats` would match on it.
  */
-function conversationMessages(messages: readonly unknown[]): ConversationMessage[] {
+function conversationMessages(messages: readonly ContextMessage[]): ConversationMessage[] {
   const out: ConversationMessage[] = [];
   for (const message of messages) {
-    const role = (message as { role?: unknown } | null)?.role;
-    if (typeof role !== "string") continue;
     const content = messageText(message).trim();
     if (content.length === 0 || content.startsWith(RECALL_HEADING_PREFIX)) continue;
-    out.push({ role, content });
+    out.push({ role: message.role, content });
   }
   return out;
 }
@@ -520,7 +525,10 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
   const tools = async (context: MemoryToolsContext): Promise<MemoryToolSet | null> => {
     const userId = toKeyPart(context.memory.scope.key);
     const slot = context.memory.slot;
-    const set: Record<string, unknown> = {};
+    // eve's own `MemoryToolDefinition`, so the map is checked as it is built rather than at the
+    // `return`. Each `defineTool(...)` still needs its argument cast (below) because eve types a
+    // provider tool's `execute` input as `never`, which no concrete input type satisfies.
+    const set: Record<string, MemoryToolSet[string]> = {};
 
     if (config.memoryTools !== false) {
       set.save_memory = defineTool({
@@ -616,7 +624,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
       } as Parameters<typeof defineTool>[0]);
     }
 
-    return Object.keys(set).length === 0 ? null : (set as unknown as MemoryToolSet);
+    return Object.keys(set).length === 0 ? null : set;
   };
 
   // `defineMemoryProvider` from `eve/memory` is an identity function, so the provider is built as a
