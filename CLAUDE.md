@@ -238,11 +238,36 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   (the DB caps at 10 indexes; a slot must not mint its own). `agentkit:memoryFile` is deliberately
   *outside* `agentkit:memory:` — that prefix is the AgentMemory index's, and a document written under
   it would be indexed as a malformed memory doc.
-- **Default capture = the user-authored text of `turn.input`** (never model/tool output). `turn.input`
-  is the turn's own delivery, which eve keeps separate from projected history, so recalled records
-  can't be re-captured; and every memory's id is `stableHash(text).slice(0,12)`, so identical text
-  collapses onto one key and capture is idempotent across turns and replays. Pass `extract` for
-  LLM-based fact extraction.
+- **`autoCapture` is OFF by default, and that is load-bearing.** Captured utterances and curated
+  facts share one BM25 ranking, and the utterances win: recall builds its query from the user's
+  current message, so a stored *"What do you remember?"* scores near-perfectly against the next
+  *"What do you remember?"*. Measured on a live index — captured question **50.9**, while
+  `User likes cucumber.` (saved deliberately via `save_memory`) was cut from the top 5 entirely.
+  Asking the agent what it remembers is what degrades what it remembers. `autoCapture` is a union:
+  `false` (default) | `true`/`"fromUser"` | `"fromModel"` | `"all"` | an extractor fn — one field,
+  so `capture: false` + a live `extract` is no longer expressible. `"fromModel"`/`"all"` are worse
+  than `"fromUser"` (the assistant's text is derived from the recalled block, so the agent
+  re-memorizes its own restatements). When on, `"fromUser"` reads `turn.input` — the turn's own
+  delivery, kept separate from projected history, so recalled records can't be re-captured; and
+  every memory's id is `stableHash(text).slice(0,12)`, so identical text collapses onto one key and
+  capture is idempotent across turns and replays.
+- **`conversations` (default `false`) is small-to-big retrieval.** On, it stores each turn's
+  transcript through core `ChatHistory` keyed by the eve session id, stamps that id as
+  `conversationId` on every memory captured or saved that turn, tags recalled memories
+  `conversation=<id>`, and contributes `read_conversation`. Memories stay ranked individually (what
+  BM25 is good at) and the model expands a match into the exchange **on demand** — so a remembered
+  question can lead to the answer that followed it, without transcripts in every prompt. The
+  recalled block is stripped before storing (`RECALL_HEADING_PREFIX`), or recall output would
+  round-trip into the transcript recall later expands. `conversationId` rides **unindexed** on the
+  memory doc like `createdAt` — no schema change, no re-index. The pointer is not a snapshot: the
+  transcript keeps growing after the memory is written. Note it needs `context.session.id`, which is
+  read *only* when `conversations` is on, so the common path never depends on a session.
+- **Config names carry the phase** (the object is flat, so they have to): `maxRecallCharacters`
+  (recalled block) vs `maxMemoryCharacters` (one stored memory), `buildRecallQuery`, `memoryTools`,
+  `autoCapture`. Renamed pre-release from `maxCharacters`/`maxEntryCharacters`/`query`/`tools`/
+  `capture`+`extract`; `defaultExtract` → `defaultExtractMemories`. **`./memory` had never shipped**
+  (published `@upstash/agentkit-eve@0.8.0` exports only `.` and `./sandbox`), so this cost nothing —
+  check that before assuming a rename here is breaking.
 - **eve floor for this subpath is `>=0.45.2`, verified against the built `dist`** the same way the
   sandbox floor is: `pnpm pack` the package into a throwaway consumer that calls `defineMemory` with
   both providers, then `tsc` per eve version. **0.45.0** fails (`Cannot find module 'eve/memory'` *and*
@@ -299,7 +324,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `createSearchToolDefs`; it's the type each feature's `.searchIndex` getter returns. (The old
   `withIndex` helper is gone.)
 - Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<userId>:<toolName>:<hash>`,
-  `agentkit:memory:<userId>:<id>`, `agentkit:chat:<userId>:<sessionId>`,
+  `agentkit:memory:<userId>:<id>` (+ optional unindexed `conversationId` → a `ChatHistory`
+  `sessionId`), `agentkit:chat:<userId>:<sessionId>`,
   `agentkit:memoryFile:<scopeKey>` (eve memory-document backend — a **hash**, not JSON),
   `agentkit:memoryRecall:<userId>:<operationId>` (eve recall replay cache),
   `agentkit:sandbox:template:<name>:<templateKey>` (default prefixes shown).

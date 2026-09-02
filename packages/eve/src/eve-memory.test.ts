@@ -4,10 +4,11 @@ import type { MemoryProvider } from "eve/memory";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   RedisMemoryDocumentBackend,
-  defaultExtract,
+  defaultExtractMemories,
   redisDocuments,
   redisMemory,
 } from "./eve-memory.js";
+import type { RedisMemoryConfig } from "./eve-memory.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "./test-support.js";
 
 const signal = new AbortController().signal;
@@ -45,9 +46,12 @@ function operationContext(options: {
   operationId?: string;
   input?: unknown[];
   messages?: unknown[];
+  sessionId?: string;
 }) {
   return {
     abortSignal: signal,
+    // eve's real contexts extend SessionContext; `conversations` is the only feature that reads it.
+    session: { id: options.sessionId ?? "session-1", auth: { current: null } },
     memory: {
       scope: {
         key: options.scopeKey,
@@ -205,7 +209,7 @@ describe("eve memory integration (offline)", () => {
   });
 
   it("redisMemory() implements eve's MemoryProvider surface", () => {
-    const provider = redisMemory({ redis: offlineRedis });
+    const provider = redisMemory({ redis: offlineRedis, autoCapture: true });
     // eve requires `recall["turn.started"]`; the other three handlers are optional but we register
     // all of them, which is what makes recall and capture automatic.
     expect(typeof provider.recall["turn.started"]).toBe("function");
@@ -215,8 +219,17 @@ describe("eve memory integration (offline)", () => {
     expect(typeof provider.tools).toBe("function");
   });
 
+  it("autoCapture is OFF by default — no capture handlers, recall and tools still there", () => {
+    // Captured utterances and curated facts share one BM25 ranking and the utterances win, so
+    // automatic capture is opt-in. Registering no handler is what makes it genuinely inert.
+    const provider = redisMemory({ redis: offlineRedis });
+    expect(provider.capture).toBeUndefined();
+    expect(typeof provider.recall["turn.started"]).toBe("function");
+    expect(typeof provider.tools).toBe("function");
+  });
+
   it("capture and tools can be turned off", () => {
-    const provider = redisMemory({ redis: offlineRedis, capture: false, tools: false });
+    const provider = redisMemory({ redis: offlineRedis, autoCapture: false, memoryTools: false });
     expect(provider.capture).toBeUndefined();
     expect(provider.tools).toBeUndefined();
     // Recall stays — eve requires it.
@@ -234,7 +247,7 @@ describe("eve memory integration (offline)", () => {
       ],
     });
     // Assistant output is never captured; whitespace is normalized; blanks are dropped.
-    expect(defaultExtract(context as never)).toEqual([
+    expect(defaultExtractMemories(context as never)).toEqual([
       "I prefer dark mode",
       "and I live in Berlin",
     ]);
@@ -307,7 +320,7 @@ describe("eve memory integration (offline)", () => {
 
   it("default capture stores nothing when a compaction has no active turn", () => {
     // `compaction.requested` can arrive with `turn: null` (standalone compaction).
-    expect(defaultExtract({ turn: null, messages: [] } as never)).toEqual([]);
+    expect(defaultExtractMemories({ turn: null, messages: [] } as never)).toEqual([]);
   });
 });
 
@@ -443,7 +456,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
         data: { text: "The user prefers dark mode", createdAt: 1 },
       },
     ]);
-    const provider = redisMemory({ redis: script.redis });
+    const provider = redisMemory({ redis: script.redis, autoCapture: true });
     const context = operationContext({
       scopeKey: SCOPE,
       operationId: "op-replay-1",
@@ -495,7 +508,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       .spyOn(AgentMemory.prototype, "add")
       .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
     const script = scriptedRedis();
-    const provider = redisMemory({ redis: script.redis });
+    const provider = redisMemory({ redis: script.redis, autoCapture: true });
 
     await captureAt(
       provider,
@@ -529,7 +542,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     const add = vi
       .spyOn(AgentMemory.prototype, "add")
       .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
-    const provider = redisMemory({ redis: scriptedRedis().redis });
+    const provider = redisMemory({ redis: scriptedRedis().redis, autoCapture: true });
 
     await captureAt(
       provider,
@@ -548,7 +561,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
   it("writes reach Redis as one JSON document per memory under the scope's key prefix", async () => {
     // The real AgentMemory again: this is the exact `json.set` a live capture performs.
     const script = scriptedRedis();
-    const provider = redisMemory({ redis: script.redis });
+    const provider = redisMemory({ redis: script.redis, autoCapture: true });
 
     await captureAt(
       provider,
@@ -564,6 +577,58 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       userId: USER_ID,
       createdAt: expect.any(Number),
     });
+  });
+
+  it("autoCapture selects what gets stored: fromUser / fromModel / all / a function", async () => {
+    const add = vi
+      .spyOn(AgentMemory.prototype, "add")
+      .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
+    // A settled turn: the user asked, the model answered. `latestModelTexts` anchors on the last
+    // user message, so only *this* turn's reply is eligible — not every assistant message ever.
+    const context = () =>
+      operationContext({
+        scopeKey: SCOPE,
+        input: [userMessage("I ride a Brompton")],
+        messages: [userMessage("I ride a Brompton"), { role: "assistant", content: "Noted." }],
+      });
+    const captured = async (autoCapture: RedisMemoryConfig["autoCapture"]) => {
+      add.mockClear();
+      await captureAt(
+        redisMemory({ redis: scriptedRedis().redis, autoCapture }),
+        "turn.completed",
+        context(),
+      );
+      return add.mock.calls.map((call) => (call[0] as { text: string }).text);
+    };
+
+    expect(await captured("fromUser")).toEqual(["I ride a Brompton"]);
+    expect(await captured(true)).toEqual(["I ride a Brompton"]); // `true` === "fromUser"
+    expect(await captured("fromModel")).toEqual(["Noted."]);
+    expect(await captured("all")).toEqual(["I ride a Brompton", "Noted."]);
+    expect(await captured(() => ["a distilled fact"])).toEqual(["a distilled fact"]);
+  });
+
+  it("conversations: off by default, and contributes read_conversation when on", async () => {
+    const plain = redisMemory({ redis: offlineRedis });
+    const withConversations = redisMemory({ redis: offlineRedis, conversations: true });
+    const context = {
+      ...operationContext({ scopeKey: SCOPE }),
+      turn: { id: "t", input: [], sequence: 1 },
+    };
+
+    expect(Object.keys((await plain.tools!(context as never))!).sort()).toEqual([
+      "forget_memory",
+      "save_memory",
+    ]);
+    expect(Object.keys((await withConversations.tools!(context as never))!).sort()).toEqual([
+      "forget_memory",
+      "read_conversation",
+      "save_memory",
+    ]);
+
+    // Transcripts need `turn.completed` even with autoCapture off, so the handler comes back.
+    expect(plain.capture).toBeUndefined();
+    expect(typeof withConversations.capture?.["turn.completed"]).toBe("function");
   });
 });
 
@@ -764,7 +829,9 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     return scope;
   };
   const scopeKey = newScope("shared");
-  const provider = redisMemory({ redis, topK: 5 });
+  /** Scopes that also wrote a transcript, so the chat keys get cleaned up too. */
+  const chatScopes: string[] = [];
+  const provider = redisMemory({ redis, topK: 5, autoCapture: true });
   // A throwaway handle on the same default index, to provision it and wait for indexing.
   const index = new AgentMemory({ redis }).searchIndex;
 
@@ -778,6 +845,9 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     for (const scope of scopes) {
       await cleanupKeys(redis, `agentkit:memory:${scope}`);
       await cleanupKeys(redis, `agentkit:memoryRecall:${scope}`);
+    }
+    for (const scope of chatScopes) {
+      await cleanupKeys(redis, `agentkit:chat:${scope}`);
     }
   });
 
@@ -844,7 +914,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
 
   it("skips over-long turns rather than truncating them", async () => {
     const isolated = newScope("long");
-    const small = redisMemory({ redis, maxEntryCharacters: 20 });
+    const small = redisMemory({ redis, maxMemoryCharacters: 20, autoCapture: true });
     await captureTurn(
       small,
       operationContext({
@@ -1029,5 +1099,84 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     await expect(callTool(tools, "forget_memory", { id: "../../other:key" })).rejects.toThrow(
       /not a valid memory id/,
     );
+  });
+
+  it("conversations: stamps conversationId, stores the transcript, and reads it back", async () => {
+    const isolated = newScope("conv");
+    // Default `agentkit:chat` prefix on purpose: a per-test prefix would mint a new search index,
+    // and an Upstash database caps at 10.
+    const withConversations = redisMemory({ redis, autoCapture: true, conversations: true });
+    const sessionId = "conv-session-1";
+    const context = operationContext({
+      scopeKey: isolated,
+      sessionId,
+      input: [userMessage("I ride a Brompton")],
+      messages: [
+        userMessage("I ride a Brompton"),
+        { role: "assistant", content: "Nice — folding bikes are great on trains." },
+      ],
+    });
+    chatScopes.push(isolated);
+
+    await captureTurn(withConversations, context);
+
+    // The memory carries the pointer, stored unindexed alongside `createdAt`.
+    const keys = await redis.keys(`agentkit:memory:${isolated}:*`);
+    expect(keys).toHaveLength(1);
+    const doc = await redis.json.get<Record<string, unknown>[]>(keys[0]!, "$");
+    expect(doc![0]!.conversationId).toBe(sessionId);
+
+    // Recall advertises the pointer so the model knows read_conversation is worth calling.
+    const content = await recallContent(withConversations, context);
+    expect(content).toContain(`conversation=${sessionId}`);
+    expect(content).toContain("read_conversation");
+
+    // And the tool expands it into the full exchange — including the model's reply, which is the
+    // whole point: the memory matched the question, the answer is what the caller wanted.
+    const tools = await withConversations.tools!({
+      ...context,
+      turn: { id: "t", input: [], sequence: 1 },
+    } as never);
+    const read = await callTool<{
+      found: boolean;
+      truncated: boolean;
+      messages: { role: string; content: string }[];
+    }>(tools, "read_conversation", { conversationId: sessionId });
+    expect(read.found).toBe(true);
+    expect(read.truncated).toBe(false);
+    expect(read.messages).toEqual([
+      { role: "user", content: "I ride a Brompton" },
+      { role: "assistant", content: "Nice — folding bikes are great on trains." },
+    ]);
+  });
+
+  it("conversations: the recalled block is never written into the transcript it points at", async () => {
+    const isolated = newScope("convclean");
+    const withConversations = redisMemory({ redis, autoCapture: true, conversations: true });
+    const sessionId = "conv-session-2";
+    chatScopes.push(isolated);
+    // A projected history that already contains an injected recall block, as eve hands it to us.
+    await captureTurn(
+      withConversations,
+      operationContext({
+        scopeKey: isolated,
+        sessionId,
+        input: [userMessage("what do you know?")],
+        messages: [
+          { role: "user", content: "# Recalled memories for recall\n\nabc123: I ride a Brompton" },
+          userMessage("what do you know?"),
+          { role: "assistant", content: "You ride a Brompton." },
+        ],
+      }),
+    );
+
+    const chat = await redis.json.get<Record<string, unknown>[]>(
+      `agentkit:chat:${isolated}:${sessionId}`,
+      "$",
+    );
+    const messages = chat![0]!.messages as { content: string }[];
+    // Storing it would round-trip recall output back into the transcript recall later expands.
+    expect(messages.some((m) => m.content.startsWith("# Recalled memories for"))).toBe(false);
+    expect(messages).toHaveLength(2);
   });
 });

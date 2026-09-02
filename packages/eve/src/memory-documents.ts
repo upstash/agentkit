@@ -1,8 +1,66 @@
 /**
  * `redisDocuments()` — an Upstash Redis **storage backend** for eve's built-in `fileMemory()`
- * provider (`eve/memory/file`). See `./eve-memory.ts` for how this and {@link redisMemory} differ
- * and which to pick; the design notes that belong to this half (the `EVAL` compare-and-swap, the
- * content marker, the hash layout) live below and in `./eve-memory.ts`.
+ * provider (`eve/memory/file`). Drop-in replacement for the default (Vercel Blob / in-memory)
+ * backend, exactly like `vercelBlob()`:
+ *
+ * ```ts
+ * // agent/memory/profile.ts
+ * import { defineMemory } from "eve/memory";
+ * import { byPrincipal } from "eve/memory/scope";
+ * import { fileMemory } from "eve/memory/file";
+ * import { redisDocuments } from "@upstash/agentkit-eve/memory";
+ *
+ * export default defineMemory({
+ *   description: "Remember stable facts and preferences about the caller.",
+ *   provider: fileMemory({ backend: redisDocuments() }),
+ *   scope: byPrincipal,
+ * });
+ * ```
+ *
+ * This closes eve's documented gap: with no `backend`, `fileMemory()` resolves to in-memory storage
+ * under `eve dev`, to Vercel Blob on Vercel, and **errors everywhere else**. Recall behavior and the
+ * `save_memory`/`remove_memory` tools are eve's own and unchanged — only the storage moves.
+ *
+ * See `./memory-provider.ts` for the other integration, `redisMemory()`, and `./eve-memory.ts` for
+ * how the two differ and which to pick.
+ *
+ * ## Optimistic concurrency without WATCH/MULTI (verified, not assumed)
+ *
+ * `MemoryDocumentBackend.write()` is a conditional replace: it must throw eve's
+ * `MemoryDocumentConflictError` when the caller's `expectedVersion` no longer matches the stored
+ * one (`fileMemory()` catches it, re-reads, and retries up to 8 times). `@upstash/redis` speaks the
+ * **REST** API, which is stateless and therefore has no `WATCH`/`MULTI` — so the compare and the
+ * swap have to happen inside a single server-side command.
+ *
+ * That command is `EVAL`. **Verified live against an Upstash Redis instance** (2026-09, an
+ * `upstash start-redis` database on the current REST API), not assumed:
+ * - `EVAL` is accepted over the REST API and through `@upstash/redis`'s `redis.eval(script, keys,
+ *   args)`, including with auto-pipelining enabled (the default);
+ * - a Lua table return (`{0, currentVersion}` / `{1, newVersion}`) round-trips as a JSON array, so
+ *   the script can report *why* it refused and what the current version is;
+ * - `HGET`/`HSET`/`EXPIRE` inside the script behave normally, and `SCRIPT LOAD` works too.
+ *
+ * The script ({@link CAS_SCRIPT}) is sent with every write rather than cached as a SHA + `EVALSHA`:
+ * it is ~300 bytes, writes are rare (one per `save_memory`/`remove_memory` call), and `EVALSHA`
+ * would need a `NOSCRIPT` fallback path for no measurable gain.
+ *
+ * ## Storage layout
+ *
+ * One Redis **hash** per eve scope key at `agentkit:memoryFile:<scopeKey>`, with two fields,
+ * `content` and `version`. A hash (rather than a JSON string) keeps the Lua script trivial: it
+ * compares one field and writes two.
+ *
+ * The stored `content` carries a short {@link CONTENT_MARKER} prefix, stripped on read. This is not
+ * decoration: `@upstash/redis` **auto-deserializes** replies, so a document whose text happens to
+ * be valid JSON (`123`, `{"a":1}`) comes back as a `number`/`object` instead of the exact string
+ * that was written — measured, not theorized. The marker makes every stored value un-parseable as
+ * JSON, which guarantees `read()` returns the document byte-for-byte as `write()` received it.
+ * eve's own document format starts with an HTML comment today, but the backend contract is "any
+ * UTF-8 string" and a corrupted round-trip would surface as an opaque
+ * "Memory backend returned an invalid versioned memory document." much later.
+ *
+ * The prefix is deliberately *outside* `agentkit:memory:` — that one belongs to `AgentMemory`'s
+ * search index, and a document written under it would be indexed as a malformed memory doc.
  */
 import { Redis } from "@upstash/redis";
 import { MemoryDocumentConflictError } from "eve/memory/file";

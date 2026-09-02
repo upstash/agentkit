@@ -54,6 +54,43 @@ scripts the search index to assert that recall and capture fire at all four life
 right scope, ranking knobs and Redis Search filter; a live suite asserts the JSON documents that
 land in Redis and recalls them back, including through the compaction hooks.
 
+### `redisMemory()` configuration
+
+Automatic capture is **off by default**, and the config names say which phase they belong to:
+
+| option | default | notes |
+| --- | --- | --- |
+| `autoCapture` | `false` | `false` \| `true`/`"fromUser"` \| `"fromModel"` \| `"all"` \| an extractor function |
+| `memoryTools` | `true` | contributes `save_memory` + `forget_memory` |
+| `conversations` | `false` | `true` or `{ prefix, indexName, ttlSeconds, maxReadMessages }` |
+| `maxRecallCharacters` | `4000` | budget for the recalled block |
+| `maxMemoryCharacters` | `2048` | longest single stored memory |
+| `buildRecallQuery` | user text of the turn | builds the BM25 query |
+
+`autoCapture` defaults to `false` because captured utterances and curated facts share one BM25
+ranking, and the utterances win. Recall queries with the user's current message, so a stored
+*"What do you remember?"* scores near-perfectly against the next *"What do you remember?"* and
+pushes real facts out of `topK`. Measured against a live index: a captured question scored **50.9**
+while `User likes cucumber.` — saved deliberately through `save_memory` — was cut from the top 5
+entirely. Asking the agent what it remembers is what degraded what it remembered. `"fromModel"` and
+`"all"` are worse still (the assistant's text is derived from the recalled block, so the agent
+re-memorizes its own restatements) and their JSDoc says so.
+
+The single `autoCapture` union replaces the old `capture: boolean` + `extract` pair, which allowed
+the illegal state `capture: false` alongside an `extract` function that silently never ran.
+
+### Conversations
+
+`conversations: true` also stores each turn's transcript through core `ChatHistory` (keyed by the
+eve session id), stamps that id on every memory captured or saved in the turn, tags recalled
+memories `conversation=<id>`, and contributes a `read_conversation` tool. That is small-to-big
+retrieval: individual memories stay individually ranked, and the model expands a match into the
+surrounding exchange **on demand** instead of transcripts being injected into every prompt — so a
+remembered *question* can lead to the answer that followed it. The recalled block is filtered out of
+what gets stored, so recall output never round-trips into the transcript recall later expands. The
+pointer is not a snapshot: a memory captured mid-conversation points at a transcript that keeps
+growing.
+
 `examples/eve-demo` now declares both slots and ships a mocked-model e2e eval
 (`AGENTKIT_MOCK_MODEL=1 npx eve eval`) that exercises them against real Redis in CI — including a
 gate that reads the captured memory straight out of Redis, tagged with a per-run nonce.
