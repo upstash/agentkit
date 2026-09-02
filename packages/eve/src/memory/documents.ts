@@ -74,25 +74,35 @@ import { addTelemetry } from "../telemetry.js";
 
 /** Configuration for {@link redisDocuments}. */
 export interface RedisDocumentsConfig {
-  /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
+  /**
+   * Upstash Redis client.
+   *
+   * @default Redis.fromEnv()
+   */
   redis?: Redis;
   /**
-   * Key prefix for the per-scope document hashes. Defaults to `agentkit:memoryFile`.
+   * Key prefix for the per-scope document hashes.
    *
    * Deliberately **not** under `agentkit:memory:` — that prefix is {@link AgentMemory}'s Redis
    * Search index prefix, and a document written under it would be picked up by that index as a
    * malformed memory doc.
+   *
+   * @default "agentkit:memoryFile"
    */
   prefix?: string;
   /**
-   * Optional expiry, refreshed on every successful write. Omit (the default) for durable memory;
-   * set it for scopes that should age out (a per-conversation or per-ticket slot, say). Applied
-   * inside the same Lua script as the write, so it can never outlive a failed compare-and-set.
+   * Optional expiry, refreshed on every successful write. Omit for durable memory; set it for
+   * scopes that should age out (a per-conversation or per-ticket slot, say). Applied inside the
+   * same Lua script as the write, so it can never outlive a failed compare-and-set.
+   *
+   * @default undefined — documents are kept indefinitely
    */
   ttlSeconds?: number;
   /**
    * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
-   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var.
+   *
+   * @default true
    */
   enableTelemetry?: boolean;
 }

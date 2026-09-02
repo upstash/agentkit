@@ -60,29 +60,30 @@ The config names say which phase they belong to:
 
 | option | default | notes |
 | --- | --- | --- |
-| `autoCapture` | `true` | `true`/`"fromUser"` \| `"fromModel"` \| `"all"` \| `false` |
-| `conversations` | `false` | `true` or `{ prefix, indexName, ttlSeconds, maxReadMessages }` |
+| `rememberMessages` | `true` (= `"all"`) | `"fromUser"` \| `"fromModel"` \| `false` |
+| `rememberSessions` | `true` | `false`, or `{ prefix, indexName, ttlSeconds, maxReadMessages }` |
 | `maxRecallCharacters` | `4000` | budget for the recalled block |
 | `maxMemoryCharacters` | `2048` | longest single stored memory |
-| `buildRecallQuery` | user text of the turn | builds the BM25 query |
 
-`save_memory` / `forget_memory` are always contributed — a memory slot with no way to save or
-forget would be a strange thing to declare.
+`save_memory`, `search_memory` and `forget_memory` are always contributed, joined by
+`read_session` when transcripts are on — a memory slot with no way to save, search or forget
+would be a strange thing to declare. `search_memory` is the manual counterpart to automatic recall,
+which only ever surfaces what is relevant to the *current* message.
 
-**Know the trade-off on `autoCapture` before leaving it on.** Captured utterances and curated facts
+**Know the trade-off on `rememberMessages` before leaving it on.** Captured utterances and curated facts
 share one BM25 ranking, and recall queries with the user's current message — so a stored
 *"What do you remember?"* scores near-perfectly against the next *"What do you remember?"* and
 pushes real facts out of `topK`. Measured against a live index: a captured question scored **50.9**
 while `User likes cucumber.`, saved deliberately through `save_memory`, was cut from the top 5
-entirely. Set `autoCapture: false` for a model-curated slot. `"fromModel"` and `"all"` are worse
+entirely. Set `rememberMessages: false` for a model-curated slot. `"fromModel"` and `"all"` are worse
 still (the assistant's text is derived from the recalled block, so the agent re-memorizes its own
 restatements) and their JSDoc says so.
 
 ### Conversations
 
-`conversations: true` also stores each turn's transcript through core `ChatHistory` (keyed by the
+`rememberSessions: true` also stores each turn's transcript through core `ChatHistory` (keyed by the
 eve session id), stamps that id on every memory captured or saved in the turn, tags recalled
-memories `conversation=<id>`, and contributes a `read_conversation` tool. That is small-to-big
+memories `session=<id>`, and contributes a `read_session` tool. That is small-to-big
 retrieval: individual memories stay individually ranked, and the model expands a match into the
 surrounding exchange **on demand** instead of transcripts being injected into every prompt — so a
 remembered *question* can lead to the answer that followed it. The recalled block is filtered out of

@@ -235,7 +235,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - **What can be in the recalled block, and how each line is labelled.** A line is `<id>: <text>`
   plus a parenthesised note. Three sources land in one ranked list and each is named:
   `metadata.source` `"agent"` → *you saved this* (`save_memory`), `"userMessage"` → *the user said
-  this*, `"agentMessage"` → *you said this* (`autoCapture` `"fromModel"`/`"all"`). They are not
+  this*, `"agentMessage"` → *you said this* (`rememberMessages` `"fromModel"`/`"all"`). They are not
   equally trustworthy — a deliberate save vs. a passing remark — which is the whole reason the label
   exists. **`metadata` is unindexed** (it rides along like `createdAt` on core `AgentMemory`, which
   is now `AgentMemory<TMetadata>`): free to add, but *not filterable* — a query still matches `text`
@@ -265,38 +265,43 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   (the DB caps at 10 indexes; a slot must not mint its own). `agentkit:memoryFile` is deliberately
   *outside* `agentkit:memory:` — that prefix is the AgentMemory index's, and a document written under
   it would be indexed as a malformed memory doc.
-- **`autoCapture` defaults to `true`, and the hazard below is real — keep it documented.** Captured
+- **`rememberMessages` defaults to `true`, and the hazard below is real — keep it documented.** Captured
   utterances and curated facts share one BM25 ranking, and the utterances win: recall builds its
   query from the user's current message, so a stored *"What do you remember?"* scores near-perfectly
   against the next *"What do you remember?"*. Measured on a live index — captured question **50.9**,
   while `User likes cucumber.` (saved deliberately via `save_memory`) was cut from the top 5
-  entirely. Asking the agent what it remembers is what degrades what it remembers; `autoCapture:
+  entirely. Asking the agent what it remembers is what degrades what it remembers; `rememberMessages:
   false` is the model-curated escape hatch. (This default was flipped off and then back on: off was
-  the measured-safest, on is the product call. Don't silently re-flip it either way.) `autoCapture`
-  is a union: `true` (default)/`"fromUser"` | `"fromModel"` | `"all"` | `false`. **No function
-  form** — an extractor can't be passed, so `capture: false` + a live `extract` is not expressible
+  the measured-safest, on is the product call. Don't silently re-flip it either way.) `rememberMessages`
+  is a union: `true` (default, and it means **`"all"`** — both halves of the turn) | `"fromUser"` |
+  `"fromModel"` | `false`. **No function form** — an extractor can't be passed, so `capture: false` + a live `extract` is not expressible
   and `defaultExtractMemories` is internal. `"fromModel"`/`"all"` are worse
   than `"fromUser"` (the assistant's text is derived from the recalled block, so the agent
   re-memorizes its own restatements). `"fromUser"` reads `turn.input` — the turn's own
   delivery, kept separate from projected history, so recalled records can't be re-captured; and
   every memory's id is `stableHash(text).slice(0,12)`, so identical text collapses onto one key and
   capture is idempotent across turns and replays.
-- **`conversations` (default `false`) is small-to-big retrieval.** On, it stores each turn's
+- **`rememberSessions` (default `true`) is small-to-big retrieval.** On, it stores each turn's
   transcript through core `ChatHistory` keyed by the eve session id, stamps that id as
-  `conversationId` on every memory captured or saved that turn, tags recalled memories
-  `conversation=<id>`, and contributes `read_conversation`. Memories stay ranked individually (what
+  `sessionId` on every memory captured or saved that turn, tags recalled memories
+  `session=<id>`, and contributes `read_session`. Memories stay ranked individually (what
   BM25 is good at) and the model expands a match into the exchange **on demand** — so a remembered
   question can lead to the answer that followed it, without transcripts in every prompt. The
   recalled block is stripped before storing (`RECALL_HEADING_PREFIX`), or recall output would
-  round-trip into the transcript recall later expands. `conversationId` rides **unindexed** on the
+  round-trip into the transcript recall later expands. `sessionId` rides **unindexed** on the
   memory doc like `createdAt` — no schema change, no re-index. The pointer is not a snapshot: the
   transcript keeps growing after the memory is written. Note it needs `context.session.id`, which is
-  read *only* when `conversations` is on, so the common path never depends on a session.
+  read *only* when `rememberSessions` is on, so the common path never depends on a session.
 - **Config names carry the phase** (the object is flat, so they have to): `maxRecallCharacters`
-  (recalled block) vs `maxMemoryCharacters` (one stored memory), `buildRecallQuery`, `autoCapture`.
-  Renamed pre-release from `maxCharacters`/`maxEntryCharacters`/`query`/`capture`+`extract`.
-  **There is no `memoryTools` knob** — `save_memory`/`forget_memory` are always contributed, since a
-  slot with no way to save or forget is a strange thing to declare. **`./memory` had never shipped**
+  (recalled block) vs `maxMemoryCharacters` (one stored memory), `rememberMessages`. Renamed pre-release
+  from `maxCharacters`/`maxEntryCharacters`/`capture`+`extract`; `query`/`buildRecallQuery` was
+  removed outright (the recall query is always the turn's user text). Every optional field carries a
+  JSDoc **`@default`** tag — keep that up when adding one.
+  **There is no `memoryTools` knob** — `save_memory`/`search_memory`/`forget_memory` are always
+  contributed (plus `read_session` when transcripts are on), since a slot with no way to save,
+  search or forget is a strange thing to declare. **`search_memory`** is the manual counterpart to
+  automatic recall: recall only surfaces what matches the *current* message, so the model needs a
+  way to look up an older fact after a topic change. **`./memory` had never shipped**
   (published `@upstash/agentkit-eve@0.8.0` exports only `.` and `./sandbox`), so this cost nothing —
   check that before assuming a rename here is breaking.
 - **eve floor for this subpath is `>=0.45.2`, verified against the built `dist`** the same way the
@@ -356,7 +361,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `createSearchToolDefs`; it's the type each feature's `.searchIndex` getter returns. (The old
   `withIndex` helper is gone.)
 - Key naming: `agentkit:rateLimit:<identifier>`, `agentkit:toolCache:<userId>:<toolName>:<hash>`,
-  `agentkit:memory:<userId>:<id>` (+ optional unindexed `conversationId` → a `ChatHistory`
+  `agentkit:memory:<userId>:<id>` (+ optional unindexed `sessionId` → a `ChatHistory`
   `sessionId`), `agentkit:chat:<userId>:<sessionId>`,
   `agentkit:memoryFile:<scopeKey>` (eve memory-document backend — a **hash**, not JSON),
   `agentkit:memoryRecall:<userId>:<operationId>` (eve recall replay cache),

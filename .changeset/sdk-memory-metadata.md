@@ -14,4 +14,4 @@ The trade-off that buys: unindexed means it cannot be filtered or searched on. A
 re-creating the index.
 
 `@upstash/agentkit-eve`'s `redisMemory()` is the first consumer, storing
-`{ source, conversationId? }` — where a memory came from, and which conversation produced it.
+`{ source, sessionId? }` — where a memory came from, and which eve session produced it.

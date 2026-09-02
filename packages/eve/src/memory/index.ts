@@ -7,7 +7,7 @@
  * | --- | --- | --- |
  * | eve seam | `MemoryDocumentBackend` (storage only) | `MemoryProvider` (recall/capture/tools) |
  * | Recall | eve's: the **whole** document, every turn | ours: **top-K BM25** for the turn's query |
- * | Capture | none — the model calls `save_memory` | opt-in `autoCapture` (plus a save tool) |
+ * | Capture | none — the model calls `save_memory` | opt-in `rememberMessages` (plus a save tool) |
  * | Deletion | eve's `remove_memory` (by index) | our `forget_memory` (by id) |
  * | Size | bounded: 4,000 recalled chars / 64 KiB stored | unbounded store, bounded recall |
  * | Redis shape | one hash per scope key | one JSON doc per memory + a Redis Search index |
@@ -29,7 +29,7 @@
  * | phase | `fileMemory({ backend: redisDocuments() })` | {@link redisMemory} |
  * | --- | --- | --- |
  * | `turn.started` | read the document, inject it whole | ranked recall → one keyed message, before the model runs |
- * | `turn.completed` | — | save the transcript (`conversations`), write captures (`autoCapture`), wait for indexing |
+ * | `turn.completed` | — | save the transcript (`rememberSessions`), write captures (`rememberMessages`), wait for indexing |
  * | `compaction.requested` | — | same capture, before history is summarized; `turn` may be `null` |
  * | `compaction.completed` | read and inject against the new checkpoint | recall again against the new checkpoint |
  *
@@ -55,9 +55,9 @@ export type { RedisDocumentsConfig } from "./documents.js";
 
 export { redisMemory } from "./provider.js";
 export type {
-  AutoCapture,
+  RememberMessages,
   RedisMemoryCaptureContext,
   RedisMemoryConfig,
-  RedisMemoryConversationsConfig,
+  RememberSessionsConfig,
   RedisMemoryRecallContext,
 } from "./provider.js";

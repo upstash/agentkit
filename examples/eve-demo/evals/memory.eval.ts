@@ -9,8 +9,8 @@ import { includes } from "eve/evals/expect";
 // real database.
 //
 //   - `recall`  → redisMemory():    the model saves through `recall__save_memory`, then eve recalls
-//                                   the top-K relevant memories at turn.started. (Automatic capture
-//                                   is opt-in and off here — see `autoCapture` in agent/memory/.)
+//                                   the top-K relevant memories at turn.started. (`rememberMessages`
+//                                   also captures each turn automatically — see agent/memory/.)
 //   - `profile` → fileMemory({ backend: redisDocuments() }): eve's own provider, our storage.
 
 /** Tags this run's memory so the assertions can't pass on a document an earlier run left behind. */

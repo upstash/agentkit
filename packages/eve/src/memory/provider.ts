@@ -15,9 +15,9 @@
  * });
  * ```
  *
- * BM25 (`$smart`) recall at `turn.started` / `compaction.completed`, `save_memory` /
- * `forget_memory` tools bound to the slot's locked scope, and — both opt-in — automatic capture and
- * conversation capture. Nothing new is stored: this is `AgentMemory` (one JSON doc per memory at
+ * BM25 (`$smart`) recall at `turn.started` / `compaction.completed`, plus `save_memory` /
+ * `search_memory` / `forget_memory` tools bound to the slot's locked scope. Automatic capture is on
+ * by default; conversation capture is opt-in. Nothing new is stored: this is `AgentMemory` (one JSON doc per memory at
  * `agentkit:memory:<userId>:<id>`, one shared Redis Search index) keyed by eve's scope key, so
  * adding memory slots doesn't move an Upstash database toward its 10-index cap, and the store is
  * the same one `defineMemorySaveTool` writes to.
@@ -59,32 +59,98 @@ export type RedisMemoryCaptureContext =
   | MemoryCompactionRequestedContext;
 
 /**
- * What {@link RedisMemoryConfig.autoCapture} may be set to.
+ * What {@link RedisMemoryConfig.rememberMessages} may be set to.
  *
- * - `true` (the default) / `"fromUser"` — the user-authored text of the settled turn.
- * - `"fromModel"` / `"all"` — also store the assistant's reply. **Read the warning on
- *   {@link RedisMemoryConfig.autoCapture} before enabling either.**
+ * - `true` (the default) / `"all"` — both halves of the settled turn: the caller's text and the
+ *   assistant's reply.
+ * - `"fromUser"` — only the caller's text.
+ * - `"fromModel"` — only the assistant's reply.
  * - `false` — nothing is captured automatically; the model curates memory through `save_memory`,
  *   exactly like eve's own `fileMemory()`.
  */
-export type AutoCapture = boolean | "fromUser" | "fromModel" | "all";
+export type RememberMessages = boolean | "fromUser" | "fromModel" | "all";
 
-/** Conversation capture + the `read_conversation` tool. See {@link RedisMemoryConfig.conversations}. */
-export interface RedisMemoryConversationsConfig {
-  /** Key prefix for stored transcripts. Defaults to `agentkit:chat` — core `ChatHistory`'s own. */
+/** Session-transcript capture + the `read_session` tool. See {@link RedisMemoryConfig.rememberSessions}. */
+export interface RememberSessionsConfig {
+  /**
+   * Key prefix for stored transcripts — core `ChatHistory`'s own store.
+   *
+   * @default "agentkit:chat"
+   */
   prefix?: string;
-  /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
+  /**
+   * Redis Search index name.
+   *
+   * @default the identifier-safe form of `prefix`
+   */
   indexName?: string;
-  /** TTL for a stored transcript, in seconds. Defaults to none (kept indefinitely). */
+  /**
+   * TTL for a stored transcript, in seconds.
+   *
+   * @default undefined — transcripts are kept indefinitely
+   */
   ttlSeconds?: number;
-  /** Max messages one `read_conversation` call may pull into context. Defaults to 50. */
+  /**
+   * Max messages one `read_session` call may pull into context.
+   *
+   * @default 50
+   */
   maxReadMessages?: number;
 }
 
 /** Configuration for {@link redisMemory}. */
 export interface RedisMemoryConfig {
-  /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
+  /**
+   * Upstash Redis client.
+   *
+   * @default Redis.fromEnv()
+   */
   redis?: Redis;
+
+  // The two knobs that decide what this slot actually does. Everything below is tuning.
+
+  /**
+   * Write memories automatically at `turn.completed` / `compaction.requested`, with no tool call
+   * from the model. **Defaults to `true`, which means `"all"`** — both the caller's text and the
+   * assistant's reply from each settled turn. Narrow it with `"fromUser"` / `"fromModel"`, or turn
+   * it off with `false` for a recall-only slot the model curates itself through `save_memory`,
+   * exactly like eve's `fileMemory()`.
+   *
+   * Know the trade-off before leaving it on, because it is measured rather than theoretical.
+   * Captured turns and curated facts share one BM25 ranking, and recall builds its query from the
+   * caller's current message — so a stored *"What do you remember?"* scores near-perfectly against
+   * the next *"What do you remember?"* and pushes real facts out of `topK`. Against a live index a
+   * captured question scored 50.9 while `User likes cucumber.`, saved deliberately through
+   * `save_memory`, was cut from the top 5 entirely: asking the agent what it remembers is what
+   * degrades what it remembers.
+   *
+   * Capturing the assistant's reply compounds that, which is why it is worth knowing it is on by
+   * default: the reply is *derived from the recalled block*, so the agent re-memorizes its own
+   * restatements and those can outrank the original fact. `{@link MemorySource}` is stamped on
+   * every record so recall can at least tell the model which is which, and `search_memory` lets it
+   * go looking for a specific fact when ranking buries one.
+   *
+   * @default true — the same as `"all"`
+   */
+  rememberMessages?: RememberMessages;
+
+  /**
+   * Also store each turn's transcript, keyed by the eve session id, and contribute a
+   * `read_session` tool. Pass `false` to store no transcripts and drop the tool.
+   *
+   * This is small-to-big retrieval: memories stay individually ranked (which is what BM25 is good
+   * at), each one carries the `sessionId` it came from, and the model expands a match into the
+   * surrounding conversation *on demand* rather than having transcripts injected into every prompt.
+   * Transcripts go to core `ChatHistory` at `<prefix>:<userId>:<sessionId>` — the same store the
+   * eve **extension**'s chat-history tools read.
+   *
+   * Note the pointer is not a snapshot: a memory captured mid-conversation points at a transcript
+   * that keeps growing, so a later read returns turns that came after the moment it matched.
+   *
+   * @default true
+   */
+  rememberSessions?: boolean | RememberSessionsConfig;
+
   /**
    * Base key prefix for stored memories. Defaults to `agentkit:memory` — the same store
    * {@link defineMemorySaveTool} writes to, so slots and tools share one Redis Search index
@@ -92,62 +158,47 @@ export interface RedisMemoryConfig {
    * scope key, which no tool-based `userId` can collide with.
    */
   prefix?: string;
-  /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
+
+  /**
+   * Redis Search index name.
+   *
+   * @default the identifier-safe form of `prefix`
+   */
   indexName?: string;
-  /** Max memories recalled per turn. Defaults to 5. */
+
+  /**
+   * Max memories recalled per turn.
+   *
+   * @default 5
+   */
   topK?: number;
-  /** Minimum BM25 relevance for a recalled memory. Defaults to `AgentMemory`'s (0). */
+
+  /**
+   * Minimum BM25 relevance for a recalled memory. Scores are unbounded, not `[0,1]`.
+   *
+   * @default 0 — `AgentMemory`'s own default
+   */
   minScore?: number;
+
   /**
    * Character budget for the **recalled block**, including its heading. Defaults to 4,000 — the same
    * default as eve's `fileMemory()`. Lowest-ranked memories are dropped to fit (rather than the
    * text being cut mid-entry, or the recall throwing as `fileMemory()` does: this store is
    * unbounded and rank-ordered, so dropping the tail is the meaningful behavior).
+   *
+   * @default 4000
    */
   maxRecallCharacters?: number;
+
   /**
    * Longest single **stored memory**, in characters. Defaults to 2,048 — matching eve's per-entry
    * cap. Longer texts (pasted logs, a whole file) are skipped, not truncated: a truncated paste is
    * noise in a BM25 index, and dropping it keeps recall useful.
+   *
+   * @default 2048
    */
   maxMemoryCharacters?: number;
-  /**
-   * Write memories automatically at `turn.completed` / `compaction.requested`, with no tool call
-   * from the model. **Defaults to `true`** — the user-authored text of each settled turn.
-   *
-   * Know the trade-off before leaving it on. Captured utterances and curated facts share one BM25
-   * ranking, and recall builds its query from the user's current message — so a stored
-   * *"What do you remember?"* scores near-perfectly against the next *"What do you remember?"* and
-   * pushes real facts out of `topK`. Measured against a live index: a captured question scored
-   * 50.9 while `User likes cucumber.`, saved deliberately through `save_memory`, was cut from the
-   * top 5 entirely. Asking the agent what it remembers is what degrades what it remembers. Set
-   * `false` for a recall-only slot the model curates itself, exactly like eve's `fileMemory()`.
-   *
-   * `"fromModel"` and `"all"` are worse still and exist only for callers who have a reason: the
-   * assistant's text is *derived from the recalled block*, so the agent re-memorizes its own
-   * restatements and those outrank the original fact.
-   */
-  autoCapture?: AutoCapture;
-  /**
-   * Also store each turn's transcript, keyed by the eve session id, and contribute a
-   * `read_conversation` tool. Defaults to `false`.
-   *
-   * This is small-to-big retrieval: memories stay individually ranked (which is what BM25 is good
-   * at), each one carries the `conversationId` it came from, and the model expands a match into the
-   * surrounding conversation *on demand* rather than having transcripts injected into every prompt.
-   * Transcripts go to core `ChatHistory` at `<prefix>:<userId>:<sessionId>` — the same store the
-   * eve **extension**'s chat-history tools read.
-   *
-   * Note the pointer is not a snapshot: a memory captured mid-conversation points at a transcript
-   * that keeps growing, so a later read returns turns that came after the moment it matched.
-   */
-  conversations?: boolean | RedisMemoryConversationsConfig;
-  /**
-   * Override the recall query. The default is the user-authored text of the turn being started
-   * (falling back to the last user message in history). Return `undefined` to recall the scope's
-   * memories unranked.
-   */
-  buildRecallQuery?: (context: RedisMemoryRecallContext) => string | undefined;
+
   /**
    * TTL, in seconds, of the per-`operationId` recall replay cache. Defaults to 3,600; `0` disables
    * it. eve stores a digest of each recall result and **throws** if the same `operationId` is
@@ -155,10 +206,18 @@ export interface RedisMemoryConfig {
    * result"). Recall here is a live ranked query, so a concurrent write between the original run
    * and a durable replay would change it. Caching the rendered block under the `operationId` eve
    * hands us makes replay return exactly what it returned the first time.
+   *
+   * @default 3600
    */
   replayCacheTtlSeconds?: number;
-  /** Key prefix for the replay cache. Defaults to `agentkit:memoryRecall`. */
+
+  /**
+   * Key prefix for the replay cache.
+   *
+   * @default "agentkit:memoryRecall"
+   */
   replayCachePrefix?: string;
+
   /**
    * Block on `waitIndexing()` after a capture writes, so the memory is recallable on the **next**
    * turn. Defaults to `true`.
@@ -170,11 +229,16 @@ export interface RedisMemoryConfig {
    * has been delivered, waiting there costs the user nothing and is what makes "tell the agent
    * something, ask about it next turn" actually work. Set `false` only if your writes are hot
    * enough that you would rather trade freshness for fewer round-trips.
+   *
+   * @default true
    */
   waitForIndexing?: boolean;
+
   /**
    * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
    * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   *
+   * @default true
    */
   enableTelemetry?: boolean;
 }
@@ -189,10 +253,13 @@ export interface RedisMemoryConfig {
  */
 const RECALL_ITEM_ID = "agentkit-redis-memory";
 
-/** Heading of the recalled block. Also how {@link conversationMessages} keeps it out of transcripts. */
+/** Heading of the recalled block. Also how {@link sessionMessages} keeps it out of transcripts. */
 const RECALL_HEADING_PREFIX = "# Recalled memories for ";
 
-/** Default cap on the messages one `read_conversation` call may return. */
+/** Default cap on the memories one `search_memory` call may return. */
+const MAX_SEARCH_RESULTS = 25;
+
+/** Default cap on the messages one `read_session` call may return. */
 const DEFAULT_MAX_READ_MESSAGES = 50;
 
 /** Short, deterministic, key-safe id for a memory. Identical text always collapses to one record. */
@@ -290,7 +357,7 @@ interface Captured {
   source: MemorySource;
 }
 
-/** One extractor per {@link AutoCapture} mode; `null` when capture is off. */
+/** One extractor per {@link RememberMessages} mode; `null` when capture is off. */
 type Extractor = (context: RedisMemoryCaptureContext) => readonly Captured[];
 
 const fromUser = (context: RedisMemoryCaptureContext): Captured[] =>
@@ -299,13 +366,13 @@ const fromUser = (context: RedisMemoryCaptureContext): Captured[] =>
 const fromModel = (context: RedisMemoryCaptureContext): Captured[] =>
   latestModelTexts(context.messages).map((text) => ({ text, source: "agentMessage" }));
 
-/** Resolve {@link RedisMemoryConfig.autoCapture} into an extractor, or `null` when it is off. */
-function resolveAutoCapture(value: AutoCapture | undefined): Extractor | null {
+/** Resolve {@link RedisMemoryConfig.rememberMessages} into an extractor, or `null` when it is off. */
+function resolveRememberMessages(value: RememberMessages | undefined): Extractor | null {
   if (value === false) return null;
+  if (value === "fromUser") return fromUser;
   if (value === "fromModel") return fromModel;
-  if (value === "all") return (context) => [...fromUser(context), ...fromModel(context)];
-  // `undefined` (the default), `true` and `"fromUser"` all mean the same thing.
-  return fromUser;
+  // `undefined` (the default), `true` and `"all"` all mean the same thing.
+  return (context) => [...fromUser(context), ...fromModel(context)];
 }
 
 /** Default recall query: what the caller just said. */
@@ -322,15 +389,15 @@ function defaultRecallQuery(context: RedisMemoryRecallContext): string | undefin
  *
  * - `"agent"` — the model chose to remember it, through `save_memory`.
  * - `"userMessage"` — captured from the caller's own turn text.
- * - `"agentMessage"` — captured from the assistant's reply (`autoCapture: "fromModel"`/`"all"`).
+ * - `"agentMessage"` — captured from the assistant's reply (`rememberMessages: "fromModel"`/`"all"`).
  */
 export type MemorySource = "agent" | "userMessage" | "agentMessage";
 
 /** What {@link redisMemory} stores in each record's unindexed `metadata`. */
 export interface RedisMemoryMetadata extends Record<string, unknown> {
   source: MemorySource;
-  /** The eve session this memory came from — only when `conversations` is enabled. */
-  conversationId?: string;
+  /** The eve session this memory came from — only when `rememberSessions` is enabled. */
+  sessionId?: string;
 }
 
 /** One transcript message as stored by {@link ChatHistory}. */
@@ -344,7 +411,7 @@ interface ConversationMessage {
  * themselves, so storing it would round-trip recall output back into the transcript that recall
  * later expands — and `searchChats` would match on it.
  */
-function conversationMessages(messages: readonly ContextMessage[]): ConversationMessage[] {
+function sessionMessages(messages: readonly ContextMessage[]): ConversationMessage[] {
   const out: ConversationMessage[] = [];
   for (const message of messages) {
     const content = messageText(message).trim();
@@ -366,7 +433,7 @@ const SOURCE_LABEL: Record<MemorySource, string> = {
  *
  * Each line is `<id>: <text>`, followed by a parenthesised note listing whatever is known about the
  * record: its {@link MemorySource} ("you saved this" / "the user said this" / "you said this") and,
- * when `conversations` is on, `conversation=<id>`.
+ * when `rememberSessions` is on, `session=<id>`.
  *
  * The source matters because all three kinds land in one ranked list, and they are not equally
  * trustworthy: a `save_memory` fact was chosen deliberately, while a captured turn may be a passing
@@ -375,14 +442,14 @@ const SOURCE_LABEL: Record<MemorySource, string> = {
  * the last write.
  *
  * Records written before `metadata` existed, or by the standalone memory tools, carry no source and
- * simply get no note rather than a guessed one. The `conversation=` tag likewise appears only when
- * `conversations` is on *and* the record carries an id — enabling it later does not backfill.
+ * simply get no note rather than a guessed one. The `session=` tag likewise appears only when
+ * `rememberSessions` is on *and* the record carries an id — enabling it later does not backfill.
  */
 function formatRecall(
   memories: readonly { id: string; text: string; metadata?: RedisMemoryMetadata }[],
   slot: string,
   maxCharacters: number,
-  conversationsEnabled: boolean,
+  sessionsEnabled: boolean,
 ): string {
   const heading = `${RECALL_HEADING_PREFIX}${slot}`;
   if (memories.length === 0) {
@@ -396,9 +463,9 @@ function formatRecall(
       `says where it came from — "you saved this" is a fact you chose to keep, the others are ` +
       `captured turns and may be casual or off-hand. To delete one, call ` +
       `\`${slot}__forget_memory\` with its id.` +
-      (conversationsEnabled
-        ? ` A memory tagged \`conversation=<id>\` came from an earlier conversation — call ` +
-          `\`${slot}__read_conversation\` with that id to read it in full.`
+      (sessionsEnabled
+        ? ` A memory tagged \`session=<id>\` came from an earlier conversation — call ` +
+          `\`${slot}__read_session\` with that id to read it in full.`
         : ""),
     "",
   ].join("\n");
@@ -409,8 +476,8 @@ function formatRecall(
   for (const memory of memories) {
     const notes = [
       memory.metadata?.source === undefined ? undefined : SOURCE_LABEL[memory.metadata.source],
-      conversationsEnabled && memory.metadata?.conversationId !== undefined
-        ? `conversation=${memory.metadata.conversationId}`
+      sessionsEnabled && memory.metadata?.sessionId !== undefined
+        ? `session=${memory.metadata.sessionId}`
         : undefined,
     ].filter((note): note is string => note !== undefined);
     const line = `${memory.id}: ${memory.text}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`;
@@ -424,7 +491,7 @@ function formatRecall(
 /**
  * A full eve {@link MemoryProvider} backed by AgentKit's {@link AgentMemory} on Upstash Redis:
  * ranked (BM25 `$smart`) recall at `turn.started` and `compaction.completed`, plus
- * `save_memory`/`forget_memory` tools bound to the slot's locked scope. Automatic capture and
+ * `save_memory`/`search_memory`/`forget_memory` tools bound to the slot's locked scope. Automatic capture and
  * conversation capture are both opt-in.
  *
  * ```ts
@@ -457,32 +524,29 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
   const topK = config.topK ?? 5;
   const maxRecallCharacters = config.maxRecallCharacters ?? 4_000;
   const maxMemoryCharacters = config.maxMemoryCharacters ?? 2_048;
-  const extract = resolveAutoCapture(config.autoCapture);
-  const buildRecallQuery = config.buildRecallQuery ?? defaultRecallQuery;
+  const extract = resolveRememberMessages(config.rememberMessages);
   const replayTtl = config.replayCacheTtlSeconds ?? 3_600;
   const replayPrefix = config.replayCachePrefix ?? "agentkit:memoryRecall";
 
-  const conversationsConfig =
-    config.conversations === true
-      ? {}
-      : config.conversations === false || config.conversations === undefined
-        ? null
-        : config.conversations;
-  const maxReadMessages = conversationsConfig?.maxReadMessages ?? DEFAULT_MAX_READ_MESSAGES;
+  const sessionsConfig =
+    config.rememberSessions === false
+      ? null
+      : config.rememberSessions === true || config.rememberSessions === undefined
+        ? {}
+        : config.rememberSessions;
+  const maxReadMessages = sessionsConfig?.maxReadMessages ?? DEFAULT_MAX_READ_MESSAGES;
   // Built once and shared: it owns a reactive index, so one instance keeps one provisioning check.
-  const conversations =
-    conversationsConfig === null
+  const sessions =
+    sessionsConfig === null
       ? null
       : new ChatHistory<ConversationMessage>({
           redis,
-          ...(conversationsConfig.prefix !== undefined
-            ? { prefix: conversationsConfig.prefix }
+          ...(sessionsConfig.prefix !== undefined ? { prefix: sessionsConfig.prefix } : {}),
+          ...(sessionsConfig.indexName !== undefined
+            ? { indexName: sessionsConfig.indexName }
             : {}),
-          ...(conversationsConfig.indexName !== undefined
-            ? { indexName: conversationsConfig.indexName }
-            : {}),
-          ...(conversationsConfig.ttlSeconds !== undefined
-            ? { ttlSeconds: conversationsConfig.ttlSeconds }
+          ...(sessionsConfig.ttlSeconds !== undefined
+            ? { ttlSeconds: sessionsConfig.ttlSeconds }
             : {}),
           ...(config.enableTelemetry !== undefined
             ? { enableTelemetry: config.enableTelemetry }
@@ -505,20 +569,14 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
       }
     }
 
-    // Resolve the query once — a caller-supplied `buildRecallQuery` is not required to be pure.
-    const text = buildRecallQuery(context);
+    const text = defaultRecallQuery(context);
     const hits = await memory.recall({
       userId,
       topK,
       ...(text !== undefined ? { query: text } : {}),
       ...(config.minScore !== undefined ? { minScore: config.minScore } : {}),
     });
-    const content = formatRecall(
-      hits,
-      context.memory.slot,
-      maxRecallCharacters,
-      conversations !== null,
-    );
+    const content = formatRecall(hits, context.memory.slot, maxRecallCharacters, sessions !== null);
     if (replayTtl > 0) {
       await redis.set(replayKey(context), content, { ex: replayTtl });
     }
@@ -528,18 +586,16 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
   const capture = async (context: RedisMemoryCaptureContext): Promise<void> => {
     context.abortSignal.throwIfAborted();
     const userId = toKeyPart(context.memory.scope.key);
-    // Only read the session when transcripts are on: `conversations` is the sole reason this
+    // Only read the session when transcripts are on: `rememberSessions` is the sole reason this
     // provider needs a session id at all, and the common path shouldn't depend on it.
-    const conversationId = conversations === null ? undefined : toKeyPart(context.session.id);
+    const sessionId = sessions === null ? undefined : toKeyPart(context.session.id);
 
-    // Transcript first: a memory's `conversationId` should never point at a chat that isn't there.
+    // Transcript first: a memory's `sessionId` should never point at a chat that isn't there.
     // Best-effort — a transcript write must not turn a delivered response into a capture failure.
-    if (conversations !== null && conversationId !== undefined) {
-      const messages = conversationMessages(context.messages);
+    if (sessions !== null && sessionId !== undefined) {
+      const messages = sessionMessages(context.messages);
       if (messages.length > 0) {
-        await conversations
-          .saveChat({ userId, sessionId: conversationId, messages })
-          .catch(() => {});
+        await sessions.saveChat({ userId, sessionId: sessionId, messages }).catch(() => {});
       }
     }
 
@@ -557,7 +613,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
         id: memoryIdFor(text),
         metadata: {
           source: captured.source,
-          ...(conversationId !== undefined ? { conversationId } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
         },
       });
     }
@@ -599,7 +655,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
             id: memoryIdFor(normalized),
             metadata: {
               source: "agent",
-              ...(conversations !== null ? { conversationId: toKeyPart(context.session.id) } : {}),
+              ...(sessions !== null ? { sessionId: toKeyPart(context.session.id) } : {}),
             },
           });
           // Same reason capture waits: Upstash Search indexes asynchronously and the lag after a
@@ -610,6 +666,49 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
             await memory.searchIndex.waitIndexing().catch(() => {});
           }
           return { id: record.id, saved: true };
+        },
+      } as Parameters<typeof defineTool>[0]);
+
+      set.search_memory = defineTool({
+        description:
+          "Search this caller's long-term memory for something specific. Automatic recall already " +
+          "puts the memories relevant to the current message in context — use this when you need " +
+          "something it did not surface, such as a detail from an older topic the caller has just " +
+          "changed to. Matching is fuzzy over the memory text.",
+        inputSchema: z.object({
+          query: z
+            .string()
+            .min(1)
+            .describe("What to look for. Words from the fact itself match best."),
+          limit: z
+            .number()
+            .int()
+            .positive()
+            .max(MAX_SEARCH_RESULTS)
+            .optional()
+            .describe(`Max memories to return. Defaults to ${topK}.`),
+        }),
+        execute: async ({ query, limit }: { query: string; limit?: number }) => {
+          // `userId` is this slot's locked scope, so a crafted query can only ever reach the
+          // caller's own memories — the same boundary recall runs under.
+          const hits = await memory.recall({
+            userId,
+            topK: Math.min(limit ?? topK, MAX_SEARCH_RESULTS),
+            query,
+            ...(config.minScore !== undefined ? { minScore: config.minScore } : {}),
+          });
+          return {
+            query,
+            memories: hits.map((hit) => ({
+              id: hit.id,
+              text: hit.text,
+              score: hit.score,
+              ...(hit.metadata?.source !== undefined ? { source: hit.metadata.source } : {}),
+              ...(sessions !== null && hit.metadata?.sessionId !== undefined
+                ? { sessionId: hit.metadata.sessionId }
+                : {}),
+            })),
+          };
         },
       } as Parameters<typeof defineTool>[0]);
 
@@ -632,17 +731,17 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
       } as Parameters<typeof defineTool>[0]);
     }
 
-    if (conversations !== null) {
-      set.read_conversation = defineTool({
+    if (sessions !== null) {
+      set.read_session = defineTool({
         description:
-          "Read an earlier conversation in full, by the id shown as `conversation=<id>` next to a " +
+          "Read an earlier conversation in full, by the id shown as `session=<id>` next to a " +
           "recalled memory. Use it when a memory matched but you need the surrounding exchange — " +
           "for example the answer that followed a question you remembered. Newest messages last.",
         inputSchema: z.object({
-          conversationId: z
+          sessionId: z
             .string()
             .min(1)
-            .describe("The id from a recalled memory's `conversation=<id>` tag."),
+            .describe("The id from a recalled memory's `session=<id>` tag."),
           limit: z
             .number()
             .int()
@@ -651,19 +750,19 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
             .optional()
             .describe(`Max messages, counting back from the end. Defaults to ${maxReadMessages}.`),
         }),
-        execute: async ({ conversationId, limit }: { conversationId: string; limit?: number }) => {
+        execute: async ({ sessionId, limit }: { sessionId: string; limit?: number }) => {
           // `userId` is pinned to this slot's locked scope, so a crafted id can only ever address
           // this caller's own transcripts — the key is `<prefix>:<userId>:<sessionId>`.
-          const chat = await conversations.getChat({
+          const chat = await sessions.getChat({
             userId,
-            sessionId: toKeyPart(conversationId),
+            sessionId: toKeyPart(sessionId),
           });
-          if (!chat) return { found: false as const, conversationId };
+          if (!chat) return { found: false as const, sessionId };
           const take = Math.min(limit ?? maxReadMessages, maxReadMessages);
           const messages = chat.messages.slice(-take);
           return {
             found: true as const,
-            conversationId: chat.sessionId,
+            sessionId: chat.sessionId,
             updatedAt: new Date(chat.updatedAt).toISOString(),
             messageCount: chat.messageCount,
             // Flagged so the model knows the transcript is partial rather than the whole chat.
@@ -683,8 +782,8 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
   // `defineTool`, which eve requires provider tools be branded with) as the only runtime imports.
   //
   // Capture handlers are registered when *either* memories or transcripts are being captured —
-  // conversation capture needs `turn.completed` even with `autoCapture` off.
-  const capturesAnything = extract !== null || conversations !== null;
+  // conversation capture needs `turn.completed` even with `rememberMessages` off.
+  const capturesAnything = extract !== null || sessions !== null;
   return {
     recall: {
       "turn.started": recall,
