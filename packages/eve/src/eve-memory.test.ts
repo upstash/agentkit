@@ -1,7 +1,7 @@
-import { AgentMemory } from "@upstash/agentkit-sdk";
+import { AgentMemory, stableHash } from "@upstash/agentkit-sdk";
 import { MemoryDocumentConflictError, fileMemory } from "eve/memory/file";
 import type { MemoryProvider } from "eve/memory";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   RedisMemoryDocumentBackend,
   defaultExtract,
@@ -65,14 +65,36 @@ function operationContext(options: {
 type Recall = NonNullable<MemoryProvider["recall"]["turn.started"]>;
 type Capture = NonNullable<NonNullable<MemoryProvider["capture"]>["turn.completed"]>;
 
+/** The two lifecycle points eve can ask a provider to recall at. */
+type RecallHook = "turn.started" | "compaction.completed";
+/** The two lifecycle points eve can ask a provider to capture at. */
+type CaptureHook = "turn.completed" | "compaction.requested";
+
+/**
+ * Run a provider's recall at `hook` and return the single keyed message's content. Both hooks go
+ * through here so `compaction.completed` — the one eve only reaches after a compaction checkpoint,
+ * and so the easiest to leave wired-but-broken — is exercised exactly like `turn.started`.
+ */
+async function recallAt(
+  provider: MemoryProvider,
+  hook: RecallHook,
+  context: ReturnType<typeof operationContext>,
+): Promise<string> {
+  const handler = provider.recall[hook] as Recall | undefined;
+  if (!handler) throw new Error("no recall handler for " + hook);
+  const result = await handler(context as never);
+  expect(result?.messages).toHaveLength(1);
+  // eve keys the whole block so a later recall supersedes it rather than stacking.
+  expect(result!.messages[0]!.id).toBe("agentkit-redis-memory");
+  return result!.messages[0]!.content;
+}
+
 /** Run a provider's `turn.started` recall and return the single keyed message's content. */
-async function recallContent(
+function recallContent(
   provider: MemoryProvider,
   context: ReturnType<typeof operationContext>,
 ): Promise<string> {
-  const result = await (provider.recall["turn.started"] as Recall)(context as never);
-  expect(result?.messages).toHaveLength(1);
-  return result!.messages[0]!.content;
+  return recallAt(provider, "turn.started", context);
 }
 
 /** Call a memory-provider tool's executor. eve types provider tool input as `never`, so tests
@@ -85,11 +107,89 @@ function callTool<R>(tools: unknown, name: string, input: unknown): Promise<R> {
   ) as Promise<R>;
 }
 
-async function captureTurn(
+/** Run a provider's capture at `hook`. */
+async function captureAt(
+  provider: MemoryProvider,
+  hook: CaptureHook,
+  context: ReturnType<typeof operationContext>,
+): Promise<void> {
+  const handler = provider.capture?.[hook] as Capture | undefined;
+  if (!handler) throw new Error("no capture handler for " + hook);
+  await handler(context as never);
+}
+
+function captureTurn(
   provider: MemoryProvider,
   context: ReturnType<typeof operationContext>,
 ): Promise<void> {
-  await (provider.capture!["turn.completed"] as Capture)(context as never);
+  return captureAt(provider, "turn.completed", context);
+}
+
+/** One row as `AgentMemory` reads them back off the Redis Search index. */
+interface ScriptedRow {
+  key: string;
+  score: number;
+  data: { text: string; createdAt: number };
+}
+
+/**
+ * A scripted stand-in for the Redis client that records what `redisMemory()` actually asks Redis
+ * for. Where the live suites prove the round trip, this proves the *shape* of it — which index,
+ * which filter, how many queries, which documents — with no dependence on BM25 scoring or on
+ * Upstash's asynchronous indexing.
+ */
+function scriptedRedis(initialRows: ScriptedRow[] = []) {
+  let rows = initialRows;
+  const indexOptions: { name?: string }[] = [];
+  const queries: { filter: Record<string, unknown>; limit: number }[] = [];
+  const documents = new Map<string, unknown>();
+  const kv = new Map<string, unknown>();
+  let waitIndexingCalls = 0;
+
+  const index = {
+    query: (options: { filter: Record<string, unknown>; limit: number }) => {
+      queries.push(options);
+      return Promise.resolve(rows);
+    },
+    waitIndexing: () => {
+      waitIndexingCalls += 1;
+      return Promise.resolve();
+    },
+  };
+
+  const redis = {
+    search: {
+      index: (options: { name?: string }) => {
+        indexOptions.push(options);
+        return index;
+      },
+      createIndex: () => Promise.resolve(),
+    },
+    json: {
+      set: (key: string, _path: string, value: unknown) => {
+        documents.set(key, value);
+        return Promise.resolve("OK");
+      },
+    },
+    get: (key: string) => Promise.resolve(kv.get(key) ?? null),
+    set: (key: string, value: unknown) => {
+      kv.set(key, value);
+      return Promise.resolve("OK");
+    },
+    del: (key: string) => Promise.resolve(documents.delete(key) ? 1 : 0),
+  };
+
+  return {
+    redis: redis as never,
+    indexOptions,
+    queries,
+    documents,
+    kv,
+    setRows: (next: ScriptedRow[]) => {
+      rows = next;
+    },
+    waitIndexingCalls: () => waitIndexingCalls,
+  };
 }
 
 // -------------------------------------------------------------------------------------------
@@ -208,6 +308,262 @@ describe("eve memory integration (offline)", () => {
   it("default capture stores nothing when a compaction has no active turn", () => {
     // `compaction.requested` can arrive with `turn: null` (standalone compaction).
     expect(defaultExtract({ turn: null, messages: [] } as never)).toEqual([]);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// redisMemory() — recall/capture actually firing, and what they ask Redis for
+//
+// The live suite below proves the round trip end to end, but it cannot prove *which* calls
+// happened: a provider that recalled from an in-process cache, queried the wrong index, or never
+// wired `compaction.completed` at all could still satisfy it. These do that part deterministically
+// — no network, no BM25, no indexing lag.
+// -------------------------------------------------------------------------------------------
+
+describe("redisMemory() — recall and capture invocation (offline)", () => {
+  // eve hands over an opaque, colon-bearing scope digest; AgentMemory rejects ':' in a userId.
+  const SCOPE = "memscope1:AbC-123";
+  const USER_ID = "memscope1_AbC-123";
+  const memoryKey = (id: string) => "agentkit:memory:" + USER_ID + ":" + id;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("recall['turn.started'] calls AgentMemory.recall with the locked scope, topK and the turn's text", async () => {
+    const recall = vi.spyOn(AgentMemory.prototype, "recall").mockResolvedValue([]);
+    const provider = redisMemory({
+      redis: scriptedRedis().redis,
+      topK: 3,
+      minScore: 0.25,
+      replayCacheTtlSeconds: 0,
+    });
+
+    await recallAt(
+      provider,
+      "turn.started",
+      operationContext({ scopeKey: SCOPE, input: [userMessage("what theme do I like?")] }),
+    );
+
+    // The point of the test: the handler delegates to AgentMemory — once — with the scope eve
+    // locked (sanitized), the configured ranking knobs, and the caller's own words as the query.
+    expect(recall).toHaveBeenCalledTimes(1);
+    expect(recall).toHaveBeenCalledWith({
+      userId: USER_ID,
+      topK: 3,
+      query: "what theme do I like?",
+      minScore: 0.25,
+    });
+  });
+
+  it("recall['compaction.completed'] runs the same recall against the same locked scope", async () => {
+    const recall = vi.spyOn(AgentMemory.prototype, "recall").mockResolvedValue([]);
+    const provider = redisMemory({
+      redis: scriptedRedis().redis,
+      topK: 3,
+      minScore: 0.25,
+      replayCacheTtlSeconds: 0,
+    });
+
+    // eve only reaches this hook after a compaction checkpoint, so nothing else in the suite would
+    // notice if it were registered but broken.
+    const content = await recallAt(
+      provider,
+      "compaction.completed",
+      operationContext({ scopeKey: SCOPE, input: [userMessage("what theme do I like?")] }),
+    );
+
+    expect(recall).toHaveBeenCalledTimes(1);
+    expect(recall).toHaveBeenCalledWith({
+      userId: USER_ID,
+      topK: 3,
+      query: "what theme do I like?",
+      minScore: 0.25,
+    });
+    expect(content).toContain("# Recalled memories for recall");
+  });
+
+  it("recall reaches Redis as a userId-scoped $smart query on the shared agentkit:memory index", async () => {
+    // No spy this time — the real AgentMemory runs, so this asserts the query that would actually
+    // hit Upstash Redis Search. One row, so the $smart query "matches" and AgentMemory does not
+    // fall back to its unfiltered second query (covered separately below).
+    const script = scriptedRedis([
+      { key: memoryKey("aaaaaaaaaaaa"), score: 2, data: { text: "dark mode", createdAt: 1 } },
+    ]);
+    const provider = redisMemory({ redis: script.redis, topK: 4, replayCacheTtlSeconds: 0 });
+
+    await recallAt(
+      provider,
+      "turn.started",
+      operationContext({ scopeKey: SCOPE, input: [userMessage("what theme do I like?")] }),
+    );
+
+    // The default prefix means memory slots share the memory tools' index instead of minting one
+    // (an Upstash database caps at 10 search indexes).
+    expect(script.indexOptions[0]?.name).toBe("agentkit_memory");
+    expect(script.queries).toHaveLength(1);
+    expect(script.queries[0]).toEqual({
+      filter: { userId: { $eq: USER_ID }, text: { $smart: "what theme do I like?" } },
+      limit: 4,
+    });
+  });
+
+  it("recall renders the rows the index returned into the model-facing block", async () => {
+    const script = scriptedRedis([
+      {
+        key: memoryKey("aaaaaaaaaaaa"),
+        score: 3.5,
+        data: { text: "The user prefers dark mode", createdAt: 1 },
+      },
+      {
+        key: memoryKey("bbbbbbbbbbbb"),
+        score: 1.2,
+        data: { text: "The user lives in Berlin", createdAt: 2 },
+      },
+    ]);
+    const provider = redisMemory({ redis: script.redis, replayCacheTtlSeconds: 0 });
+
+    const content = await recallAt(
+      provider,
+      "turn.started",
+      operationContext({ scopeKey: SCOPE, slot: "profile", input: [userMessage("tell me")] }),
+    );
+
+    // What the index returned is what the model sees, id-first so forget_memory can address it.
+    expect(content).toContain("aaaaaaaaaaaa: The user prefers dark mode");
+    expect(content).toContain("bbbbbbbbbbbb: The user lives in Berlin");
+    expect(content).toContain("profile__forget_memory");
+  });
+
+  it("a replayed operationId is served from the cache without re-querying the index", async () => {
+    const script = scriptedRedis([
+      {
+        key: memoryKey("aaaaaaaaaaaa"),
+        score: 3.5,
+        data: { text: "The user prefers dark mode", createdAt: 1 },
+      },
+    ]);
+    const provider = redisMemory({ redis: script.redis });
+    const context = operationContext({
+      scopeKey: SCOPE,
+      operationId: "op-replay-1",
+      input: [userMessage("tell me")],
+    });
+
+    const first = await recallAt(provider, "turn.started", context);
+    expect(script.queries).toHaveLength(1);
+
+    // The store changes underneath, exactly as it can between a run and its durable replay.
+    script.setRows([
+      { key: memoryKey("cccccccccccc"), score: 9, data: { text: "Something new", createdAt: 3 } },
+    ]);
+
+    const replay = await recallAt(provider, "turn.started", context);
+    // Byte-identical AND no second query — eve throws if a replayed operationId returns anything
+    // else, so the cache has to short-circuit the search itself, not just the formatting.
+    expect(replay).toBe(first);
+    expect(script.queries).toHaveLength(1);
+
+    // A different operation does query again, and sees the new state.
+    const fresh = await recallAt(
+      provider,
+      "turn.started",
+      operationContext({ scopeKey: SCOPE, input: [userMessage("tell me")] }),
+    );
+    expect(script.queries).toHaveLength(2);
+    expect(fresh).toContain("Something new");
+  });
+
+  it("recall falls back to the scope's memories when the text matches nothing", async () => {
+    const script = scriptedRedis([]); // the $smart query matches nothing
+    const provider = redisMemory({ redis: script.redis, replayCacheTtlSeconds: 0 });
+
+    await recallAt(
+      provider,
+      "turn.started",
+      operationContext({ scopeKey: SCOPE, input: [userMessage("zzzz")] }),
+    );
+
+    // AgentMemory retries filter-only, so a turn whose words match nothing still recalls the scope.
+    expect(script.queries).toHaveLength(2);
+    expect(script.queries[0]?.filter).toHaveProperty("text");
+    expect(script.queries[1]?.filter).toEqual({ userId: { $eq: USER_ID } });
+  });
+
+  it("capture['turn.completed'] adds every user message through AgentMemory.add, then waits for indexing", async () => {
+    const add = vi
+      .spyOn(AgentMemory.prototype, "add")
+      .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
+    const script = scriptedRedis();
+    const provider = redisMemory({ redis: script.redis });
+
+    await captureAt(
+      provider,
+      "turn.completed",
+      operationContext({
+        scopeKey: SCOPE,
+        input: [
+          userMessage("I prefer dark mode"),
+          { role: "assistant", content: "Noted." },
+          userMessage("I live in Berlin"),
+        ],
+      }),
+    );
+
+    expect(add).toHaveBeenCalledTimes(2); // the assistant turn is never captured
+    expect(add).toHaveBeenNthCalledWith(1, {
+      text: "I prefer dark mode",
+      userId: USER_ID,
+      id: expect.stringMatching(/^[0-9a-f]{12}$/),
+    });
+    expect(add).toHaveBeenNthCalledWith(2, {
+      text: "I live in Berlin",
+      userId: USER_ID,
+      id: expect.stringMatching(/^[0-9a-f]{12}$/),
+    });
+    // Without this the memory stays invisible to the next turn's recall for far longer than a turn.
+    expect(script.waitIndexingCalls()).toBe(1);
+  });
+
+  it("capture['compaction.requested'] captures through the same path", async () => {
+    const add = vi
+      .spyOn(AgentMemory.prototype, "add")
+      .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
+    const provider = redisMemory({ redis: scriptedRedis().redis });
+
+    await captureAt(
+      provider,
+      "compaction.requested",
+      operationContext({ scopeKey: SCOPE, input: [userMessage("I ride a Brompton")] }),
+    );
+
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(add).toHaveBeenCalledWith({
+      text: "I ride a Brompton",
+      userId: USER_ID,
+      id: expect.stringMatching(/^[0-9a-f]{12}$/),
+    });
+  });
+
+  it("writes reach Redis as one JSON document per memory under the scope's key prefix", async () => {
+    // The real AgentMemory again: this is the exact `json.set` a live capture performs.
+    const script = scriptedRedis();
+    const provider = redisMemory({ redis: script.redis });
+
+    await captureAt(
+      provider,
+      "turn.completed",
+      operationContext({ scopeKey: SCOPE, input: [userMessage("I prefer dark mode")] }),
+    );
+
+    const keys = [...script.documents.keys()];
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(new RegExp("^agentkit:memory:" + USER_ID + ":[0-9a-f]{12}$"));
+    expect([...script.documents.values()][0]).toEqual({
+      text: "I prefer dark mode",
+      userId: USER_ID,
+      createdAt: expect.any(Number),
+    });
   });
 });
 
@@ -400,7 +756,14 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
   const redis = testRedis();
   // Reuse the default `agentkit:memory` prefix (and therefore its shared search index) — an Upstash
   // database caps at 10 indexes, so a memory slot must not mint its own. Isolation is by scope key.
-  const scopeKey = uniqueUserId("eve-slot");
+  const scopes: string[] = [];
+  /** A fresh, collision-proof scope key, registered for cleanup. */
+  const newScope = (label: string): string => {
+    const scope = uniqueUserId(`eve-slot-${label}`);
+    scopes.push(scope);
+    return scope;
+  };
+  const scopeKey = newScope("shared");
   const provider = redisMemory({ redis, topK: 5 });
   // A throwaway handle on the same default index, to provision it and wait for indexing.
   const index = new AgentMemory({ redis }).searchIndex;
@@ -412,8 +775,10 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
   });
 
   afterAll(async () => {
-    await cleanupKeys(redis, `agentkit:memory:${scopeKey}`);
-    await cleanupKeys(redis, `agentkit:memoryRecall:${scopeKey}`);
+    for (const scope of scopes) {
+      await cleanupKeys(redis, `agentkit:memory:${scope}`);
+      await cleanupKeys(redis, `agentkit:memoryRecall:${scope}`);
+    }
   });
 
   it("recalls an explicit empty block for a scope with no memories", async () => {
@@ -463,7 +828,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
   });
 
   it("never captures assistant or tool output", async () => {
-    const isolated = uniqueUserId("eve-slot-assistant");
+    const isolated = newScope("assistant");
     await captureTurn(
       provider,
       operationContext({
@@ -478,7 +843,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
   });
 
   it("skips over-long turns rather than truncating them", async () => {
-    const isolated = uniqueUserId("eve-slot-long");
+    const isolated = newScope("long");
     const small = redisMemory({ redis, maxEntryCharacters: 20 });
     await captureTurn(
       small,
@@ -553,6 +918,110 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         (value) => value === 0,
       ),
     ).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // Persistence: what capture wrote is really in Redis, and recall gets it back
+  // ---------------------------------------------------------------------------------------
+
+  it("capture persists one JSON document per memory to Redis", async () => {
+    const scope = newScope("persist");
+    await captureAt(
+      provider,
+      "turn.completed",
+      operationContext({
+        scopeKey: scope,
+        input: [
+          userMessage("My cat is called Ada"),
+          { role: "assistant", content: "Lovely name." },
+          userMessage("I commute on a Brompton"),
+        ],
+      }),
+    );
+
+    // Assert against real Redis, not against "no error was thrown": both memories exist, at the
+    // content-addressed keys the provider derives, with the exact stored document shape.
+    const expected = new Map(
+      ["My cat is called Ada", "I commute on a Brompton"].map((text) => [
+        `agentkit:memory:${scope}:${stableHash(text).slice(0, 12)}`,
+        text,
+      ]),
+    );
+    const keys = await redis.keys(`agentkit:memory:${scope}:*`);
+    expect(keys.sort()).toEqual([...expected.keys()].sort());
+
+    for (const [key, text] of expected) {
+      expect(await redis.json.get(key)).toEqual({
+        text,
+        userId: scope,
+        createdAt: expect.any(Number),
+      });
+    }
+    // The assistant message was never written.
+    expect(keys).toHaveLength(2);
+  });
+
+  it("round-trips: recall returns exactly the memories Redis is holding", async () => {
+    const scope = newScope("roundtrip");
+    const text = "I always deploy on Fridays";
+    await captureAt(
+      provider,
+      "turn.completed",
+      operationContext({ scopeKey: scope, input: [userMessage(text)] }),
+    );
+
+    // Take the id and text from REDIS, so the recall assertion below is tied to persisted state
+    // rather than to a value hardcoded in the test.
+    const [key] = await redis.keys(`agentkit:memory:${scope}:*`);
+    expect(key).toBeDefined();
+    const stored = (await redis.json.get(key!)) as { text: string };
+    const id = key!.slice(`agentkit:memory:${scope}:`.length);
+
+    await index.waitIndexing();
+    const content = await pollUntil(
+      () =>
+        recallAt(
+          provider,
+          "turn.started",
+          operationContext({ scopeKey: scope, input: [userMessage("when do I ship?")] }),
+        ),
+      (c) => c.includes(stored.text),
+    );
+    // `<id>: <text>` — the id the model would hand back to forget_memory is the Redis key part.
+    expect(content).toContain(`${id}: ${stored.text}`);
+  });
+
+  it("round-trips through the compaction hooks too (capture on requested, recall on completed)", async () => {
+    const scope = newScope("compaction");
+    const text = "My deploy target is Vercel";
+
+    // eve calls this one before a compaction checkpoint; nothing else in the suite reaches it.
+    await captureAt(
+      provider,
+      "compaction.requested",
+      operationContext({ scopeKey: scope, input: [userMessage(text)] }),
+    );
+
+    const key = `agentkit:memory:${scope}:${stableHash(text).slice(0, 12)}`;
+    expect(await redis.json.get(key)).toEqual({
+      text,
+      userId: scope,
+      createdAt: expect.any(Number),
+    });
+
+    await index.waitIndexing();
+    // ...and this one after it. Both halves of the compaction lifecycle, against real Redis.
+    const content = await pollUntil(
+      () =>
+        recallAt(
+          provider,
+          "compaction.completed",
+          operationContext({ scopeKey: scope, input: [userMessage("where do I deploy?")] }),
+        ),
+      (c) => c.includes(text),
+    );
+    expect(content).toContain("# Recalled memories for recall");
+    expect(content).toContain(text);
   });
 
   it("rejects a model-supplied memory id that could address another scope's key", async () => {

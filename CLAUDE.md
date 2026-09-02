@@ -250,6 +250,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   0.49.0** are all clean; the runtime import throws `ERR_PACKAGE_PATH_NOT_EXPORTED` below the floor.
   `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.47.6, so nothing here is
   version-fragile.
+- **What the tests pin down** (a PR review flagged that only the `profile` tools were covered):
+  `eve-memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
+  scripts the search index, so it asserts recall/capture actually *fire* at **all four** lifecycle
+  hooks and with what — the exact `{userId, topK, query, minScore}`, the `agentkit_memory` index
+  name, the `{userId:{$eq}, text:{$smart}}` filter, the unfiltered fallback query, and that a
+  replayed `operationId` re-queries **zero** times. The live suite then asserts the JSON documents
+  in Redis (key = `stableHash(text).slice(0,12)`, value = `{text,userId,createdAt}`) and round-trips
+  them back through recall, including the `compaction.requested` → `compaction.completed` pair.
+  All of it is mutation-checked: removing a hook or the `memory.add` call turns 10 tests red.
 - **E2E proof:** `examples/eve-demo` declares both slots (`agent/memory/profile.ts`,
   `agent/memory/recall.ts`) and `evals/memory.eval.ts` drives them with eve's `mockModel`
   (`AGENTKIT_MOCK_MODEL=1`, no OpenAI key). The mock echoes the memory blocks eve injected into its
@@ -591,7 +600,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   how the eval asserts on **automatic** memory recall. Watch out: `toolResults` lists every tool
   result in the prompt, not just this turn's — script against a count, not `length > 0`.
   `eve eval` works fine in this demo despite its sandbox: nothing opens a Box during an eval, so no
-  `UPSTASH_BOX_API_KEY` is needed. CI runs it.
+  `UPSTASH_BOX_API_KEY` is needed. CI runs it. **An eval file can talk to Redis itself** —
+  `Redis.fromEnv()` resolves inside the eval runner (it loads the project `.env`), so an eval can
+  assert on *persisted state* and not just on the reply; `memory.eval.ts` tags its fact with a
+  per-run nonce and scans `agentkit:memory:*` for it, so a document left by an earlier run can't
+  make the gate pass.
 - **Two eve memory slots live in `agent/memory/`** (`profile.ts` = `fileMemory({ backend:
   redisDocuments() })`, `recall.ts` = `redisMemory()`), both scoped to
   `ctx.session.auth.current?.principalId ?? ctx.session.id`. Slots are agent-owned — an extension

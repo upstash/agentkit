@@ -49,5 +49,11 @@ The `./memory` entry point imports `eve/memory` and `eve/memory/file`, added in 
 and `./sandbox` entry points still work all the way down, and only this subpath names the newer
 modules.
 
+`redisMemory()` is covered at both ends: an offline suite spies `AgentMemory`'s `recall`/`add` and
+scripts the search index to assert that recall and capture fire at all four lifecycle hooks with the
+right scope, ranking knobs and Redis Search filter; a live suite asserts the JSON documents that
+land in Redis and recalls them back, including through the compaction hooks.
+
 `examples/eve-demo` now declares both slots and ships a mocked-model e2e eval
-(`AGENTKIT_MOCK_MODEL=1 npx eve eval`) that exercises them against real Redis in CI.
+(`AGENTKIT_MOCK_MODEL=1 npx eve eval`) that exercises them against real Redis in CI — including a
+gate that reads the captured memory straight out of Redis, tagged with a per-run nonce.
