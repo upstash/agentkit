@@ -1,6 +1,6 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { afterAll, describe, expect, it } from "vitest";
-import { defineMemoryRecallTool, defineMemorySaveTool } from "./memory.js";
+import { defineMemoryRecallTool, defineMemorySaveTool } from "./memory-tools.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "./test-support.js";
 
 const CTX = {} as never;

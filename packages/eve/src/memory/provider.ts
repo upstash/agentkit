@@ -22,7 +22,7 @@
  * adding memory slots doesn't move an Upstash database toward its 10-index cap, and the store is
  * the same one `defineMemorySaveTool` writes to.
  *
- * See `./memory-documents.ts` for the other integration, `redisDocuments()`, and `./eve-memory.ts`
+ * See `./documents.ts` for the other integration, `redisDocuments()`, and `./index.ts`
  * for how the two differ and which to pick.
  *
  * ## Indexing lag on the capture path
@@ -49,7 +49,7 @@ import type {
 } from "eve/memory";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /** Context shared by every recall handler this provider registers. */
 export type RedisMemoryRecallContext = MemoryTurnStartedContext | MemoryCompactionCompletedContext;

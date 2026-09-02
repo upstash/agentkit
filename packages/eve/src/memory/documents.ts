@@ -21,7 +21,7 @@
  * under `eve dev`, to Vercel Blob on Vercel, and **errors everywhere else**. Recall behavior and the
  * `save_memory`/`remove_memory` tools are eve's own and unchanged — only the storage moves.
  *
- * See `./memory-provider.ts` for the other integration, `redisMemory()`, and `./eve-memory.ts` for
+ * See `./provider.ts` for the other integration, `redisMemory()`, and `./index.ts` for
  * how the two differ and which to pick.
  *
  * ## Optimistic concurrency without WATCH/MULTI (verified, not assumed)
@@ -70,7 +70,7 @@ import type {
   MemoryDocumentReadInput,
   MemoryDocumentWriteInput,
 } from "eve/memory/file";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /** Configuration for {@link redisDocuments}. */
 export interface RedisDocumentsConfig {

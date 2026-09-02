@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { SDK_TELEMETRY } from "@upstash/agentkit-sdk";
 import { Redis, s } from "@upstash/redis";
-import { defineMemoryRecallTool } from "./memory.js";
+import { defineMemoryRecallTool } from "./memory-tools.js";
 import { EVE_TELEMETRY } from "./telemetry.js";
 import { VERSION } from "./version.js";
 

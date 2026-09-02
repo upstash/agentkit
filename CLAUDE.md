@@ -183,7 +183,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   Box sandbox backend (an extension root can't declare a sandbox), the rate-limit `AuthFn` (you drop
   it into your own channel's `auth` walk), and `defineCachedTool` (wraps user tools).
 
-## eve memory slots (`@upstash/agentkit-eve/memory`, `packages/eve/src/eve-memory.ts`)
+## eve memory slots (`@upstash/agentkit-eve/memory`, `packages/eve/src/memory/`)
+
+- **Layout** (`packages/eve/src/memory/`): `index.ts` is the barrel + the "two seams, which to pick"
+  overview and the tsup entry for the `./memory` subpath; `documents.ts` is `redisDocuments()`;
+  `provider.ts` is `redisMemory()`; `memory.test.ts` covers both. The two halves share no code, so
+  each file carries only the design notes that belong to it. Note the sibling **`memory-tools.ts`**
+  (renamed from `memory.ts` when this directory landed, so `./memory.js` and `./memory/` can't be
+  confused) — that's `defineMemoryRecallTool`/`defineMemorySaveTool`, the package-**root** exports,
+  which are a different feature from the memory slots.
 
 - **Both designs shipped, on purpose.** They are different eve seams, not competing implementations:
   `redisDocuments()` = storage under eve's `fileMemory()` (whole-document recall, model-curated,
@@ -276,7 +284,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.47.6, so nothing here is
   version-fragile.
 - **What the tests pin down** (a PR review flagged that only the `profile` tools were covered):
-  `eve-memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
+  `memory/memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
   scripts the search index, so it asserts recall/capture actually *fire* at **all four** lifecycle
   hooks and with what — the exact `{userId, topK, query, minScore}`, the `agentkit_memory` index
   name, the `{userId:{$eq}, text:{$smart}}` filter, the unfiltered fallback query, and that a
@@ -443,7 +451,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `this.upstashSyncToken` into `this.headers`, so every request is sent with the token from one
   response ago. The replica is normally current well within a round trip, so write→read usually
   works — until it doesn't. This is **not** the search-index lag documented above; it hits plain
-  `GET`/`HMGET`/`TTL` on ordinary keys. It cost PR #33 a CI red (`eve-memory.test.ts`, "creates with
+  `GET`/`HMGET`/`TTL` on ordinary keys. It cost PR #33 a CI red (`memory/memory.test.ts`, "creates with
   expectedVersion null, then round-trips through read" — `expected null to deeply equal {…}` — while
   every later read in the same file passed, because by then the token had caught up). **Any extra
   request flushes the correct token**, so one re-read fixes it. Treat write-then-assert-the-read as

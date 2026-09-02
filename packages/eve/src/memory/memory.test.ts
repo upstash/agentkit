@@ -7,9 +7,9 @@ import {
   defaultExtractMemories,
   redisDocuments,
   redisMemory,
-} from "./eve-memory.js";
-import type { RedisMemoryConfig } from "./eve-memory.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "./test-support.js";
+} from "./index.js";
+import type { RedisMemoryConfig } from "./index.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "../test-support.js";
 
 const signal = new AbortController().signal;
 

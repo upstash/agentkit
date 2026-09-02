@@ -3,7 +3,7 @@
  * powered by **Upstash Redis**. Two integrations live behind this entry point, because eve's memory
  * API has two genuinely different seams and Redis is the right answer at both:
  *
- * | | {@link redisDocuments} (`./memory-documents.ts`) | {@link redisMemory} (`./memory-provider.ts`) |
+ * | | {@link redisDocuments} (`./documents.ts`) | {@link redisMemory} (`./provider.ts`) |
  * | --- | --- | --- |
  * | eve seam | `MemoryDocumentBackend` (storage only) | `MemoryProvider` (recall/capture/tools) |
  * | Recall | eve's: the **whole** document, every turn | ours: **top-K BM25** for the turn's query |
@@ -33,10 +33,10 @@
  * older eve fails at module load with an unresolved-subpath error. The peer range is deliberately
  * not raised for this: the other entry points still work all the way down to eve 0.32.
  */
-export { RedisMemoryDocumentBackend, redisDocuments } from "./memory-documents.js";
-export type { RedisDocumentsConfig } from "./memory-documents.js";
+export { RedisMemoryDocumentBackend, redisDocuments } from "./documents.js";
+export type { RedisDocumentsConfig } from "./documents.js";
 
-export { defaultExtractMemories, redisMemory } from "./memory-provider.js";
+export { defaultExtractMemories, redisMemory } from "./provider.js";
 export type {
   AutoCapture,
   ExtractMemories,
@@ -44,4 +44,4 @@ export type {
   RedisMemoryConfig,
   RedisMemoryConversationsConfig,
   RedisMemoryRecallContext,
-} from "./memory-provider.js";
+} from "./provider.js";
