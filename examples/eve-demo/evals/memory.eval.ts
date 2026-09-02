@@ -8,8 +8,9 @@ import { includes } from "eve/evals/expect";
 // put their recalled context into the model prompt, and left the memory in Redis — all against a
 // real database.
 //
-//   - `recall`  → redisMemory():    automatic capture at turn.completed, ranked recall at
-//                                   turn.started. Nothing calls a tool to save it.
+//   - `recall`  → redisMemory():    the model saves through `recall__save_memory`, then eve recalls
+//                                   the top-K relevant memories at turn.started. (Automatic capture
+//                                   is opt-in and off here — see `autoCapture` in agent/memory/.)
 //   - `profile` → fileMemory({ backend: redisDocuments() }): eve's own provider, our storage.
 
 /** Tags this run's memory so the assertions can't pass on a document an earlier run left behind. */
@@ -44,18 +45,19 @@ export default defineEval({
   async test(t) {
     const redis = Redis.fromEnv();
 
-    // 1. Automatic capture. The model is never asked to save anything here; the `recall` slot
-    //    captures the user's message itself when the turn completes.
-    await t.send(FACT);
+    // 1. Capture through the slot's own tool: eve resolves the scope, binds `recall__save_memory`
+    //    to it, and the write lands in AgentMemory under that scope's key.
+    await t.send(`NOTE: ${FACT}`);
     t.succeeded();
+    t.calledTool("recall__save_memory");
 
     // 2. The capture really reached Redis — read the stored document straight out of the database
     //    rather than trusting that the turn didn't throw. The nonce pins it to THIS run.
     t.check(await findPersistedMemory(redis), includes(NONCE));
 
-    // 3. Automatic recall — normally on the very next turn: redisMemory()'s capture ends with
-    //    waitIndexing(), so what it just stored is queryable straight away. The retry is insurance
-    //    only (each t.send is a fresh turn, i.e. a fresh recall).
+    // 3. Automatic recall — no tool call involved: eve runs the provider's `turn.started` handler
+    //    and injects the ranked block before the model sees anything. The retry is insurance
+    //    against Redis Search indexing lag (each t.send is a fresh turn, i.e. a fresh recall).
     let recalled = "";
     for (let attempt = 0; attempt < 4; attempt += 1) {
       await t.send("What colour do I like?");

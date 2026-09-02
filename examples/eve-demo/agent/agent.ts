@@ -8,25 +8,31 @@ import { mockModel } from "eve/evals";
 //
 // The script is prompt-aware: eve injects each memory slot's recalled context as messages *before*
 // the model call, so echoing what arrived in the prompt is what proves automatic recall works end
-// to end. A "REMEMBER: <fact>" turn additionally exercises `profile__save_memory` — eve's own
-// file-memory tool, backed here by Upstash Redis.
+// to end. Two prefixes drive the save tools, one per slot — both slots are model-curated, since
+// `redisMemory()`'s automatic capture is opt-in (captured utterances outrank curated facts in the
+// shared BM25 ranking, so it is off by default):
+//
+//   "REMEMBER: <fact>" → `profile__save_memory` (eve's own file memory, our Redis storage)
+//   "NOTE: <fact>"     → `recall__save_memory`  (our MemoryProvider)
 //
 // Note `toolResults` lists every tool result in the *prompt*, not just this turn's, so the script
 // counts requests against completed saves rather than testing for "any tool result".
 export default defineAgent({
   model: process.env.AGENTKIT_MOCK_MODEL
     ? mockModel(({ messages, toolResults, userMessages }) => {
-        const asked = userMessages.filter((m) => m.startsWith("REMEMBER:"));
-        const saved = toolResults.filter((r) => r.name === "profile__save_memory");
-        if (asked.length > saved.length) {
-          return {
-            toolCalls: [
-              {
-                name: "profile__save_memory",
-                input: { text: asked[asked.length - 1]!.slice("REMEMBER:".length).trim() },
-              },
-            ],
-          };
+        for (const [prefix, tool] of [
+          ["REMEMBER:", "profile__save_memory"],
+          ["NOTE:", "recall__save_memory"],
+        ] as const) {
+          const asked = userMessages.filter((m) => m.startsWith(prefix));
+          const saved = toolResults.filter((r) => r.name === tool);
+          if (asked.length > saved.length) {
+            return {
+              toolCalls: [
+                { name: tool, input: { text: asked[asked.length - 1]!.slice(prefix.length).trim() } },
+              ],
+            };
+          }
         }
         // Echo the recalled memory blocks eve put in the prompt so the eval can assert on them.
         const recalled = messages
