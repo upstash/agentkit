@@ -1,11 +1,36 @@
 import { s } from "@upstash/redis";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AgentMemory } from "./memory.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+
+/**
+ * Create the index *before* anything is seeded into its keyspace. A doc written while the index is
+ * still missing can be dropped by the create-time backfill **permanently** (not just late), and
+ * `waitIndexing()` on an index that does not exist yet is a silent no-op — so seeding first and
+ * letting the first read provision reactively is a coin flip. Any read provisions: `count` returns
+ * the `{count: -1}` sentinel on a missing index, which makes the reactive wrapper create it, wait
+ * for indexing, and retry.
+ */
+async function provision<TMetadata>(memory: AgentMemory<TMetadata>) {
+  await memory.count({ userId: "provision-probe" });
+}
+
+/** Poll a read until it reflects a just-written doc — insurance for residual indexing lag. */
+async function pollUntil<T>(read: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 8_000; // well inside vitest's 30s testTimeout
+  let value = await read();
+  while (!ready(value) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    value = await read();
+  }
+  return value;
+}
 
 describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
   const prefix = uniquePrefix("memory");
   const memory = new AgentMemory({ redis: testRedis(), prefix });
+
+  beforeAll(() => provision(memory));
 
   afterAll(async () => {
     try {
@@ -20,7 +45,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     await memory.add({ text: "The user is allergic to peanuts", userId: "recall" });
     await memory.searchIndex.waitIndexing();
 
-    const recalled = await memory.recall({ query: "hiking mountains", userId: "recall", topK: 1 });
+    const recalled = await pollUntil(
+      () => memory.recall({ query: "hiking mountains", userId: "recall", topK: 1 }),
+      (hits) => hits.length > 0,
+    );
     expect(recalled[0]?.text).toContain("hiking");
     expect(recalled[0]?.score).toBeGreaterThan(0);
   });
@@ -28,7 +56,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
   it("tolerates typos via fuzzy matching", async () => {
     await memory.add({ text: "The user prefers TypeScript", userId: "typo" });
     await memory.searchIndex.waitIndexing();
-    const recalled = await memory.recall({ query: "typescrpt", userId: "typo", topK: 1 });
+    const recalled = await pollUntil(
+      () => memory.recall({ query: "typescrpt", userId: "typo", topK: 1 }),
+      (hits) => hits.length > 0,
+    );
     expect(recalled[0]?.text).toContain("TypeScript");
   });
 
@@ -37,7 +68,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     await memory.add({ text: "bob likes black coffee", userId: "bob" });
     await memory.searchIndex.waitIndexing();
 
-    const aliceHits = await memory.recall({ query: "likes drink", userId: "alice", topK: 5 });
+    const aliceHits = await pollUntil(
+      () => memory.recall({ query: "likes drink", userId: "alice", topK: 5 }),
+      (hits) => hits.length > 0,
+    );
     expect(aliceHits.length).toBeGreaterThan(0);
     expect(aliceHits.every((h) => h.text.includes("alice"))).toBe(true);
   });
@@ -59,7 +93,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     await memory.searchIndex.waitIndexing();
 
     // No query → filter-only fetch; minScore is ignored, so a high floor still returns them.
-    const hits = await memory.recall({ userId: "all", topK: 10, minScore: 1e9 });
+    const hits = await pollUntil(
+      () => memory.recall({ userId: "all", topK: 10, minScore: 1e9 }),
+      (found) => found.length >= 2,
+    );
     expect(hits.length).toBeGreaterThanOrEqual(2);
     expect(hits.every((h) => h.text.includes("noteless"))).toBe(true);
     // Scoped: another user sees none of them.
@@ -69,27 +106,37 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
   it("returns nothing when a query matches nothing", async () => {
     await memory.add({ text: "the user lives in Berlin", userId: "fb" });
     await memory.searchIndex.waitIndexing();
+    // Establish that the doc is visible *first*, so the miss below is a real miss and not just a
+    // doc that hasn't been indexed yet — otherwise this test passes for the wrong reason.
+    const all = await pollUntil(
+      () => memory.recall({ userId: "fb", topK: 10 }),
+      (hits) => hits.some((h) => h.text.includes("Berlin")),
+    );
+    expect(all.some((h) => h.text.includes("Berlin"))).toBe(true);
     // No fallback to "everything for the user": a miss answered with unrelated memories is
     // indistinguishable from a hit to whoever asked.
     expect(
       await memory.recall({ query: "zzqqxx nonexistent topic", userId: "fb", topK: 10 }),
     ).toEqual([]);
-    // Omitting the query is still how you ask for the whole set.
-    const all = await memory.recall({ userId: "fb", topK: 10 });
-    expect(all.some((h) => h.text.includes("Berlin"))).toBe(true);
   });
 
   it("forgets a memory", async () => {
     const rec = await memory.add({ text: "ephemeral note to forget", userId: "forget" });
     await memory.searchIndex.waitIndexing();
     expect(
-      await memory.recall({ query: "ephemeral note", userId: "forget", topK: 5 }),
+      await pollUntil(
+        () => memory.recall({ query: "ephemeral note", userId: "forget", topK: 5 }),
+        (hits) => hits.length > 0,
+      ),
     ).not.toHaveLength(0);
 
     await memory.forget(rec.id, { userId: "forget" });
     await memory.searchIndex.waitIndexing();
     expect(
-      await memory.recall({ query: "ephemeral note", userId: "forget", topK: 5 }),
+      await pollUntil(
+        () => memory.recall({ query: "ephemeral note", userId: "forget", topK: 5 }),
+        (hits) => hits.length === 0,
+      ),
     ).toHaveLength(0);
   });
 
@@ -114,7 +161,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
   it("round-trips createdAt", async () => {
     await memory.add({ text: "a dated fact", userId: "meta" });
     await memory.searchIndex.waitIndexing();
-    const [hit] = await memory.recall({ query: "dated fact", userId: "meta", topK: 1 });
+    const [hit] = await pollUntil(
+      () => memory.recall({ query: "dated fact", userId: "meta", topK: 1 }),
+      (hits) => hits.length > 0,
+    );
     expect(hit?.createdAt).toBeGreaterThan(0);
   });
 });
@@ -137,6 +187,8 @@ describe.skipIf(!hasRedisCreds)("AgentMemory with metadataSchema (live Redis)", 
     },
   });
 
+  beforeAll(() => provision(memory));
+
   afterAll(async () => {
     try {
       await memory.searchIndex.drop();
@@ -154,7 +206,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory with metadataSchema (live Redis)", 
     });
     await memory.searchIndex.waitIndexing();
 
-    const [hit] = await memory.recall({ query: "folding bike", userId: "meta", topK: 5 });
+    const [hit] = await pollUntil(
+      () => memory.recall({ query: "folding bike", userId: "meta", topK: 5 }),
+      (hits) => hits.length > 0,
+    );
     expect(hit?.text).toContain("folding bike");
     // Declared fields come back typed, with their values intact — including a non-string one.
     expect(hit?.metadata).toEqual({ source: "agent", deleted: false, slot: 3 });
@@ -173,7 +228,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory with metadataSchema (live Redis)", 
     });
     await memory.searchIndex.waitIndexing();
 
-    const all = await memory.recall({ query: "review pull requests", userId: "filter", topK: 10 });
+    const all = await pollUntil(
+      () => memory.recall({ query: "review pull requests", userId: "filter", topK: 10 }),
+      (hits) => hits.length === 2,
+    );
     expect(all.length).toBe(2);
 
     // The point of indexing metadata: one kind can be retrieved without the other competing for
@@ -197,10 +255,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory with metadataSchema (live Redis)", 
     }
     await memory.searchIndex.waitIndexing();
 
-    const messages = await memory.list({
-      userId: "listing",
-      filter: { source: { $eq: "userMessage" } },
-    });
+    const messages = await pollUntil(
+      () => memory.list({ userId: "listing", filter: { source: { $eq: "userMessage" } } }),
+      (hits) => hits.length === 2,
+    );
     expect(messages).toHaveLength(2);
     // Unranked: `list` is the filter-first read, so every hit scores the same.
     expect(messages.every((m) => m.metadata?.source === "userMessage")).toBe(true);
@@ -219,7 +277,12 @@ describe.skipIf(!hasRedisCreds)("AgentMemory with metadataSchema (live Redis)", 
     await memory.searchIndex.waitIndexing();
 
     // Visible on its own...
-    expect(await memory.list({ userId: "legacy" })).toHaveLength(1);
+    expect(
+      await pollUntil(
+        () => memory.list({ userId: "legacy" }),
+        (hits) => hits.length === 1,
+      ),
+    ).toHaveLength(1);
     // ...and invisible to any filter naming a field it does not carry. Upstash Search does not
     // match a missing field against `{$eq: …}` and has no `$ne`, so there is no filter-level
     // workaround: this is the whole reason an extended schema must not cover a keyspace that
@@ -234,6 +297,8 @@ describe.skipIf(!hasRedisCreds)("AgentMemory without metadataSchema is unchanged
   const redis = testRedis();
   const prefix = uniquePrefix("memory-plain");
   const memory = new AgentMemory({ redis, prefix });
+
+  beforeAll(() => provision(memory));
 
   afterAll(async () => {
     try {
@@ -256,7 +321,10 @@ describe.skipIf(!hasRedisCreds)("AgentMemory without metadataSchema is unchanged
 
     // Both are recallable: an unextended store declares the same two indexed fields it always did,
     // so nothing already in its keyspace falls out of scope.
-    const hits = await memory.recall({ userId: "plain", topK: 10 });
+    const hits = await pollUntil(
+      () => memory.recall({ userId: "plain", topK: 10 }),
+      (found) => found.length === 2,
+    );
     expect(hits.map((h) => h.text).sort()).toEqual([
       "the user lives in Berlin",
       "the user works in Munich",
