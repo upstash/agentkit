@@ -171,8 +171,8 @@ Three kinds of thing can be in that list, depending on config:
 | `source` | where it came from | when |
 | --- | --- | --- |
 | `"agent"` | a fact the model saved | `<slot>__save_memory` |
-| `"userMessage"` | the caller's own turn text | `rememberMessages` is `true`/`"all"` (default) or `"fromUser"` |
-| `"agentMessage"` | the assistant's reply | `rememberMessages` is `true`/`"all"` or `"fromModel"` |
+| `"userMessage"` | the caller's own turn text | `rememberMessages` is `true`/`"fromUser"` (default) or `"all"` |
+| `"agentMessage"` | the assistant's reply | `rememberMessages` is `"all"` or `"fromModel"` |
 
 Only `"agent"` records reach the recalled block. The other two are reachable on
 demand through `search_memory` and `read_session`, which is what keeps a passing remark or a
@@ -202,9 +202,16 @@ conditional write eve requires is a Lua `EVAL` compare-and-set, because the Upst
 
 `redisMemory({ … })` — `redis`, `prefix` (`agentkit:memorySlot`) / `indexName`, `topK` (5),
 `minScore`, `maxRecallCharacters` (4,000 — the recalled block's budget), `maxMemoryCharacters`
-(2,048), `rememberMessages` (`true` by default, meaning `"all"` — both halves of each settled turn;
-narrow with `"fromUser"` / `"fromModel"`, or `false` for a model-curated slot), `waitForIndexing`,
-`replayCacheTtlSeconds`, `enableTelemetry`.
+(2,048), `rememberMessages` (`true` by default, meaning `"fromUser"` — the caller's own text; `"all"` adds
+the assistant's reply, `"fromModel"` captures only that, `false` turns capture off),
+`waitForIndexing`, `replayCacheTtlSeconds`, `enableTelemetry`.
+
+**`"all"` and `"fromModel"` remove `<slot>__forget_memory`.** Those modes store the assistant's
+replies, and confirming an erasure records the erased text — so deletion cannot be honoured and a
+tool reporting success would be lying. Measured over 18 black-box conversations: after one forget,
+the fact itself was correctly redacted but the phrase survived in three other records, every one of
+them an assistant reply *about* the deletion. `search_memory` and `read_session` still reach
+everything; only the claim to remove goes away.
 
 Its records live in **their own keyspace and index**, not the `agentkit:memory` one the
 [memory tools](#memory-tools) share. The slot needs extra indexed fields (`sessionId`, `source`,
@@ -213,8 +220,8 @@ without them: Upstash Search does not match a missing field against `{$eq: …}`
 older records would become permanently unreachable. One extra index (a database caps at 10) buys a
 store where every record has the same shape.
 
-The model always gets four tools — `<slot>__save_memory`, `<slot>__search_memory`,
-`<slot>__forget_memory` and `<slot>__read_session`. `search_memory`
+The model gets `<slot>__save_memory`, `<slot>__search_memory` and `<slot>__read_session`, plus
+`<slot>__forget_memory` unless `rememberMessages` stores the assistant's replies (see above). `search_memory`
 is the manual counterpart to automatic recall: recall only ever surfaces what is relevant to the
 *current* message, so a fuzzy search lets the model go looking for an older fact when the
 conversation changes topic.

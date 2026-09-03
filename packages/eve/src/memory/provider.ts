@@ -61,12 +61,14 @@ export type RedisMemoryCaptureContext =
 /**
  * What {@link RedisMemoryConfig.rememberMessages} may be set to.
  *
- * - `true` (the default) / `"all"` — both halves of the settled turn: the caller's text and the
- *   assistant's reply.
- * - `"fromUser"` — only the caller's text.
+ * - `true` (the default) / `"fromUser"` — the caller's own turn text.
+ * - `"all"` — the caller's text *and* the assistant's reply.
  * - `"fromModel"` — only the assistant's reply.
  * - `false` — nothing is captured automatically; the model curates memory through `save_memory`,
  *   exactly like eve's own `fileMemory()`.
+ *
+ * The two modes that capture the assistant's reply — `"all"` and `"fromModel"` — drop the
+ * `forget_memory` tool. See {@link RedisMemoryConfig.rememberMessages} for why.
  */
 export type RememberMessages = boolean | "fromUser" | "fromModel" | "all";
 
@@ -82,27 +84,36 @@ export interface RedisMemoryConfig {
   // The two knobs that decide what this slot actually does. Everything below is tuning.
 
   /**
-   * Write memories automatically at `turn.completed` / `compaction.requested`, with no tool call
-   * from the model. **Defaults to `true`, which means `"all"`** — both the caller's text and the
-   * assistant's reply from each settled turn. Narrow it with `"fromUser"` / `"fromModel"`, or turn
-   * it off with `false` for a recall-only slot the model curates itself through `save_memory`,
-   * exactly like eve's `fileMemory()`.
+   * Write memories automatically at the end of each settled turn, with no tool call from the model.
+   * **Defaults to `true`, which means `"fromUser"`** — the caller's own text. `"all"` adds the
+   * assistant's reply, `"fromModel"` captures only that, and `false` turns capture off entirely so
+   * the model curates memory through `save_memory`, exactly like eve's `fileMemory()`.
    *
-   * Know the trade-off before leaving it on, because it is measured rather than theoretical.
-   * Captured turns and curated facts share one BM25 ranking, and recall builds its query from the
-   * caller's current message — so a stored *"What do you remember?"* scores near-perfectly against
-   * the next *"What do you remember?"* and pushes real facts out of `topK`. Against a live index a
-   * captured question scored 50.9 while `User likes cucumber.`, saved deliberately through
-   * `save_memory`, was cut from the top 5 entirely: asking the agent what it remembers is what
-   * degrades what it remembers.
+   * ## `"all"` and `"fromModel"` remove `forget_memory`
    *
-   * Capturing the assistant's reply compounds that, which is why it is worth knowing it is on by
-   * default: the reply is *derived from the recalled block*, so the agent re-memorizes its own
-   * restatements and those can outrank the original fact. `{@link MemorySource}` is stamped on
-   * every record so recall can at least tell the model which is which, and `search_memory` lets it
-   * go looking for a specific fact when ranking buries one.
+   * Not a safety rail bolted on — those modes make deletion undeliverable, so the tool would be
+   * lying. Measured over 18 black-box conversations against this provider: after the model was asked
+   * to forget one fact, the fact itself was correctly redacted, but the phrase survived in **three**
+   * other records, and all three were `agentMessage` — the assistant's own replies *about* the
+   * deletion. Confirming an erasure records the erased text. Deleting more would write more.
    *
-   * @default true — the same as `"all"`
+   * So a slot that stores the assistant's replies cannot honour "forget this", and offering a tool
+   * that reports success is worse than offering none: a caller told "I permanently deleted every
+   * stored item that mentioned it" reasonably believes it. `search_memory` and `read_session` still
+   * work, so nothing becomes unreachable — it just stops claiming to be removable.
+   *
+   * ## Why the default is the caller's text only
+   *
+   * Beyond deletion: the assistant's reply is *derived from the recalled block*, so capturing it
+   * re-memorizes the agent's own restatements, and those can outrank the fact they restate. In the
+   * same test run agent replies were 18 of 41 records — half the store, and the entire source of the
+   * deletion leak.
+   *
+   * Automatic recall injects only `save_memory` facts either way, so captured turns never compete
+   * with curated ones for `topK`; they are reached deliberately through `search_memory` and
+   * `read_session`.
+   *
+   * @default true — the same as `"fromUser"`
    */
   rememberMessages?: RememberMessages;
 
@@ -343,10 +354,18 @@ const fromModel = (context: RedisMemoryCaptureContext): Captured[] =>
 /** Resolve {@link RedisMemoryConfig.rememberMessages} into an extractor, or `null` when it is off. */
 function resolveRememberMessages(value: RememberMessages | undefined): Extractor | null {
   if (value === false) return null;
-  if (value === "fromUser") return fromUser;
   if (value === "fromModel") return fromModel;
-  // `undefined` (the default), `true` and `"all"` all mean the same thing.
-  return (context) => [...fromUser(context), ...fromModel(context)];
+  if (value === "all") return (context) => [...fromUser(context), ...fromModel(context)];
+  // `undefined` (the default), `true` and `"fromUser"` all mean the same thing.
+  return fromUser;
+}
+
+/**
+ * Whether this mode stores the assistant's replies — which is what makes deletion undeliverable.
+ * See {@link RedisMemoryConfig.rememberMessages}.
+ */
+function capturesAgentMessages(value: RememberMessages | undefined): boolean {
+  return value === "all" || value === "fromModel";
 }
 
 /** Default recall query: what the caller just said. */
@@ -670,49 +689,51 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
         },
       } as Parameters<typeof defineTool>[0]);
 
-      set.forget_memory = defineTool({
-        description:
-          `Permanently redact one entry by id — from recalled memories, \`${slot}__search_memory\` ` +
-          `or \`${slot}__read_session\`. Its text is erased and it stops being recalled or ` +
-          "searchable; reading the session it came from will show that something was removed. " +
-          "This affects only the entry you name. If the user asks you to forget a topic rather " +
-          `than one entry, search first and redact every match.`,
-        inputSchema: z.object({
-          id: z.string().min(1).describe("The id shown before the memory text."),
-        }),
-        execute: async ({ id }: { id: string }) => {
-          // The id becomes a Redis key part, so never trust the model's string shape: a `:` would
-          // let a crafted id address another scope's memory key.
-          if (!MEMORY_ID_PATTERN.test(id)) {
-            throw new TypeError(`"${id}" is not a valid memory id.`);
-          }
-          // Redact rather than delete: the record stays so a session still reads back in order
-          // with a visible gap, which stops the model treating a removal as "never said". Core
-          // `AgentMemory.forget` is a real delete and stays that way for its other callers; here an
-          // overwrite is the update, because `add` writes the whole document.
-          const [existing] = await memory
-            .list({
-              userId,
-              filter: { deleted: { $eq: false } },
-              limit: MAX_SESSION_ENTRIES,
-            })
-            .then((rows) => rows.filter((r) => r.id === id));
-          const existed = existing !== undefined;
-          if (existing !== undefined) {
-            await memory.add({
-              text: "",
-              userId,
-              id,
-              metadata: { ...(existing.metadata as RedisMemoryMetadata), deleted: true },
-            });
-          }
-          // Say what actually happened: one entry, not "everything about X". A model told only
-          // `{forgotten: true}` reports blanket deletion it did not perform.
-          return existed
-            ? { id, redacted: true as const, scope: "this entry only" as const }
-            : { id, redacted: false as const, reason: "no entry with that id" as const };
-        },
-      } as Parameters<typeof defineTool>[0]);
+      if (!capturesAgentMessages(config.rememberMessages)) {
+        set.forget_memory = defineTool({
+          description:
+            `Permanently redact one entry by id — from recalled memories, \`${slot}__search_memory\` ` +
+            `or \`${slot}__read_session\`. Its text is erased and it stops being recalled or ` +
+            "searchable; reading the session it came from will show that something was removed. " +
+            "This affects only the entry you name. If the user asks you to forget a topic rather " +
+            `than one entry, search first and redact every match.`,
+          inputSchema: z.object({
+            id: z.string().min(1).describe("The id shown before the memory text."),
+          }),
+          execute: async ({ id }: { id: string }) => {
+            // The id becomes a Redis key part, so never trust the model's string shape: a `:` would
+            // let a crafted id address another scope's memory key.
+            if (!MEMORY_ID_PATTERN.test(id)) {
+              throw new TypeError(`"${id}" is not a valid memory id.`);
+            }
+            // Redact rather than delete: the record stays so a session still reads back in order
+            // with a visible gap, which stops the model treating a removal as "never said". Core
+            // `AgentMemory.forget` is a real delete and stays that way for its other callers; here an
+            // overwrite is the update, because `add` writes the whole document.
+            const [existing] = await memory
+              .list({
+                userId,
+                filter: { deleted: { $eq: false } },
+                limit: MAX_SESSION_ENTRIES,
+              })
+              .then((rows) => rows.filter((r) => r.id === id));
+            const existed = existing !== undefined;
+            if (existing !== undefined) {
+              await memory.add({
+                text: "",
+                userId,
+                id,
+                metadata: { ...(existing.metadata as RedisMemoryMetadata), deleted: true },
+              });
+            }
+            // Say what actually happened: one entry, not "everything about X". A model told only
+            // `{forgotten: true}` reports blanket deletion it did not perform.
+            return existed
+              ? { id, redacted: true as const, scope: "this entry only" as const }
+              : { id, redacted: false as const, reason: "no entry with that id" as const };
+          },
+        } as Parameters<typeof defineTool>[0]);
+      }
     }
 
     {

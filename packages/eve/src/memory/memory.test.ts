@@ -675,10 +675,36 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     };
 
     expect(await captured("fromUser")).toEqual(["I ride a Brompton"]);
-    expect(await captured(true)).toEqual(["I ride a Brompton", "Noted."]); // `true` === "all"
+    expect(await captured(true)).toEqual(["I ride a Brompton"]); // `true` === "fromUser"
     expect(await captured("fromModel")).toEqual(["Noted."]);
     expect(await captured("all")).toEqual(["I ride a Brompton", "Noted."]);
-    expect(await captured(undefined)).toEqual(["I ride a Brompton", "Noted."]); // the default
+    expect(await captured(undefined)).toEqual(["I ride a Brompton"]); // the default
+  });
+
+  it("drops forget_memory in the modes that store the assistant's replies", async () => {
+    const context = {
+      ...operationContext({ scopeKey: SCOPE }),
+      turn: { id: "t", input: [], sequence: 1 },
+    };
+    // Capturing the assistant's replies makes deletion undeliverable: confirming an erasure records
+    // the erased text, so a tool reporting success would be lying. Measured — after one forget, the
+    // phrase survived in three records, all of them assistant replies about the deletion.
+    for (const rememberMessages of ["all", "fromModel"] as const) {
+      const keys = Object.keys(
+        (await redisMemory({ redis: offlineRedis, rememberMessages }).tools!(context as never))!,
+      ).sort();
+      expect(keys).toEqual(["read_session", "save_memory", "search_memory"]);
+    }
+    // The modes that do not store replies keep it.
+    for (const rememberMessages of [undefined, true, "fromUser", false] as const) {
+      const keys = Object.keys(
+        (await redisMemory({
+          redis: offlineRedis,
+          ...(rememberMessages !== undefined ? { rememberMessages } : {}),
+        }).tools!(context as never))!,
+      ).sort();
+      expect(keys).toContain("forget_memory");
+    }
   });
 
   it("always contributes all four tools, and captures only when rememberMessages is on", async () => {
@@ -1212,14 +1238,16 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         { role: "assistant", content: "Nice — folding bikes are great on trains." },
       ],
     });
-    const tools = await provider.tools!({
+    const both = redisMemory({ redis, rememberMessages: "all" });
+    const tools = await both.tools!({
       ...context,
       turn: { id: "t", input: [], sequence: 1 },
     } as never);
 
-    // A curated fact saved mid-turn, then both halves of the turn captured at turn end.
+    // A curated fact saved mid-turn, then both halves of the turn captured at turn end —
+    // `"all"` is needed for the assistant's reply, which the default no longer stores.
     await callTool(tools, "save_memory", { text: "The user commutes by folding bike" });
-    await captureTurn(provider, context);
+    await captureTurn(both, context);
     await index.waitIndexing();
 
     const read = await pollUntil(
@@ -1237,7 +1265,13 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
 
     // Redaction is visible rather than silent, so the model cannot mistake it for "never said".
     const fact = read.entries.find((e) => e.source === "agent")!;
-    await callTool(tools, "forget_memory", { id: fact.id });
+    // `both` captures the assistant's reply and therefore has no forget tool — the default
+    // provider does, and they share a store, so the id is the same record.
+    const defaultTools = await provider.tools!({
+      ...context,
+      turn: { id: "t", input: [], sequence: 1 },
+    } as never);
+    await callTool(defaultTools, "forget_memory", { id: fact.id });
     await index.waitIndexing();
 
     const after = await pollUntil(

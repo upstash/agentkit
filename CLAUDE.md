@@ -273,7 +273,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   entirely. Asking the agent what it remembers is what degrades what it remembers; `rememberMessages:
   false` is the model-curated escape hatch. (This default was flipped off and then back on: off was
   the measured-safest, on is the product call. Don't silently re-flip it either way.) `rememberMessages`
-  is a union: `true` (default, and it means **`"all"`** — both halves of the turn) | `"fromUser"` |
+  is a union: `true` (default, and it means **`"fromUser"`** — the caller's text only) | `"all"` |
   `"fromModel"` | `false`. **No function form** — an extractor can't be passed, so `capture: false` + a live `extract` is not expressible
   and `defaultExtractMemories` is internal. `"fromModel"`/`"all"` are worse
   than `"fromUser"` (the assistant's text is derived from the recalled block, so the agent
@@ -305,6 +305,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   mistake removal for "never said". Core `AgentMemory.forget` is still a real `DEL` for its other
   callers — the provider redacts by calling `add()` with the same id, since `add` writes the whole
   document.
+- **`"all"`/`"fromModel"` drop `forget_memory`, and this is load-bearing.** Those modes store the
+  assistant's replies, and the assistant's reply *confirming a deletion quotes the deleted text* — so
+  erasure writes a fresh copy of what it erased. Measured over 18 black-box conversations on the
+  rebuilt provider: the curated fact was correctly redacted, and the phrase survived in **three**
+  other records, all `agentMessage`, all replies about the deletion (a fourth was the tester's own
+  search query). Agent replies were 18 of 41 records — half the store and the whole leak. A tool that
+  reports "permanently deleted" while that happens is worse than no tool, so those modes contribute
+  `save_memory`/`search_memory`/`read_session` only. Don't "restore the missing tool for
+  consistency" — it was removed because it cannot tell the truth there.
 - **Config names carry the phase** (the object is flat, so they have to): `maxRecallCharacters`
   (recalled block) vs `maxMemoryCharacters` (one stored memory), `rememberMessages`. Renamed pre-release
   from `maxCharacters`/`maxEntryCharacters`/`capture`+`extract`; `query`/`buildRecallQuery` was

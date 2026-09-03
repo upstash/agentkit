@@ -60,7 +60,7 @@ The config names say which phase they belong to:
 
 | option | default | notes |
 | --- | --- | --- |
-| `rememberMessages` | `true` (= `"all"`) | `"fromUser"` \| `"fromModel"` \| `false` |
+| `rememberMessages` | `true` (= `"fromUser"`) | `"all"` \| `"fromModel"` \| `false` |
 | `maxRecallCharacters` | `4000` | budget for the recalled block |
 | `maxMemoryCharacters` | `2048` | longest single stored memory |
 
@@ -117,3 +117,17 @@ kept apart:
 
 `compaction.requested` capture is gone: messages are stored as they happen, so the summarizer takes
 nothing with it, and it was the only context where the ordering `sequence` could be null.
+
+### `"all"` and `"fromModel"` do not get `forget_memory`
+
+Those modes store the assistant's replies, and an assistant reply confirming a deletion quotes the
+text it just deleted — so erasing something writes a fresh copy of it. Measured over 18 black-box
+conversations: after the model was asked to forget one fact, the curated fact was correctly redacted
+and the phrase survived in three other records, every one an assistant reply *about* the deletion.
+
+A tool that reports "permanently deleted every stored item that mentioned it" while that happens is
+worse than no tool, so those two modes contribute `save_memory`, `search_memory` and `read_session`
+only. Nothing becomes unreachable — deletion just stops claiming to be possible where it is not.
+
+This is also why the default is `"fromUser"` rather than `"all"`: in the same run, assistant replies
+were 18 of 41 stored records — half the store, and the entire source of the leak.
