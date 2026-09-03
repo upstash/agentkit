@@ -1,7 +1,18 @@
 import { AgentMemory } from "@upstash/agentkit-sdk";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMemoryTools } from "./memory.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "./test-support.js";
+
+/** Poll a read until it reflects a just-written doc — insurance for residual indexing lag. */
+async function pollUntil<T>(read: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 8_000; // well inside vitest's 30s testTimeout
+  let value = await read();
+  while (!ready(value) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    value = await read();
+  }
+  return value;
+}
 
 const TOOL_OPTS = { toolCallId: "t", messages: [] } as never;
 function call<R>(execute: unknown, input: unknown): Promise<R> {
@@ -15,6 +26,13 @@ describe.skipIf(!hasRedisCreds)("createMemoryTools (live Redis)", () => {
   const tools = createMemoryTools({ redis, userId: ns });
   // A throwaway handle on the same default index, just to wait for indexing before recall.
   const index = new AgentMemory({ redis }).searchIndex;
+
+  // Make sure the index exists before anything is written into its keyspace: `waitIndexing()` on a
+  // missing index is a silent no-op, so a save followed by a recall would otherwise race the
+  // reactive create. A recall on a missing index returns the `null` sentinel and provisions it.
+  beforeAll(async () => {
+    await call(tools.recall_memory!.execute, { query: "provisioning probe" });
+  });
 
   afterAll(async () => {
     await cleanupKeys(redis, `agentkit:memory:${ns}`);
@@ -32,9 +50,11 @@ describe.skipIf(!hasRedisCreds)("createMemoryTools (live Redis)", () => {
     expect(saved.saved).toBe(true);
     await index.waitIndexing();
 
-    const recalled = await call<{ text: string }[]>(tools.recall_memory!.execute, {
-      query: "ui theme preference",
-    });
+    const recalled = await pollUntil(
+      () =>
+        call<{ text: string }[]>(tools.recall_memory!.execute, { query: "ui theme preference" }),
+      (found) => found.some((m) => m.text.includes("dark mode")),
+    );
     expect(recalled.some((m) => m.text.includes("dark mode"))).toBe(true);
   });
 });
