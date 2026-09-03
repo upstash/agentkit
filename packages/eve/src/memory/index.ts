@@ -54,10 +54,10 @@ export { RedisMemoryDocumentBackend, redisDocuments } from "./documents.js";
 export type { RedisDocumentsConfig } from "./documents.js";
 
 export { redisMemory } from "./provider.js";
+export type { MemorySource } from "./provider.js";
 export type {
   RememberMessages,
   RedisMemoryCaptureContext,
   RedisMemoryConfig,
-  RememberSessionsConfig,
   RedisMemoryRecallContext,
 } from "./provider.js";

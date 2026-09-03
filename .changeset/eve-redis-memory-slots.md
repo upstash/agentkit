@@ -61,12 +61,10 @@ The config names say which phase they belong to:
 | option | default | notes |
 | --- | --- | --- |
 | `rememberMessages` | `true` (= `"all"`) | `"fromUser"` \| `"fromModel"` \| `false` |
-| `rememberSessions` | `true` | `false`, or `{ prefix, indexName, ttlSeconds, maxReadMessages }` |
 | `maxRecallCharacters` | `4000` | budget for the recalled block |
 | `maxMemoryCharacters` | `2048` | longest single stored memory |
 
-`save_memory`, `search_memory` and `forget_memory` are always contributed, joined by
-`read_session` when transcripts are on — a memory slot with no way to save, search or forget
+`save_memory`, `search_memory`, `forget_memory` and `read_session` are always contributed — a memory slot with no way to save, search or forget
 would be a strange thing to declare. `search_memory` is the manual counterpart to automatic recall,
 which only ever surfaces what is relevant to the *current* message.
 
@@ -94,3 +92,28 @@ growing.
 `examples/eve-demo` now declares both slots and ships a mocked-model e2e eval
 (`AGENTKIT_MOCK_MODEL=1 npx eve eval`) that exercises them against real Redis in CI — including a
 gate that reads the captured memory straight out of Redis, tagged with a per-run nonce.
+
+### One store, indexed by session and source
+
+Everything the slot keeps — facts the model saved and the turns it captured — lives in one keyspace
+of its own (`agentkit:memorySlot`), with `sessionId`, `source` and `deleted` as indexed fields. There
+is no separate transcript store, so there is nothing to fall out of sync with.
+
+That shape buys three things black-box testing showed were broken when facts and transcripts were
+kept apart:
+
+- **Automatic recall injects only `source: "agent"`** — facts the model deliberately saved. Captured
+  turns share the store but not the ranking, so a stored *"What do you remember?"* can no longer
+  outrank a real fact on the next identical question. Measured on a live index before the change: the
+  captured question scored **50.9** while `User likes cucumber.` was cut from the top 5 entirely.
+- **`forget_memory` redacts rather than deletes.** The text is erased and `deleted` set, so the entry
+  can never be recalled or searched again, but it stays in place and `read_session` renders it as
+  `[redacted]` — a reader that saw a silent gap could reasonably re-derive or re-ask the very thing
+  that was removed. Previously deletion could not be honest at all: the same value survived in a
+  transcript nothing ever deleted from, and 5 of 29 records still contained a value the agent
+  reported it had permanently erased.
+- **`read_session` replays a session in order** — `(sequence, source, subIndex)`, so the caller's
+  message, the fact saved mid-turn, and the reply come back the way they happened.
+
+`compaction.requested` capture is gone: messages are stored as they happen, so the summarizer takes
+nothing with it, and it was the only context where the ordering `sequence` could be null.

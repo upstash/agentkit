@@ -18,7 +18,10 @@ const NONCE = `run-${Date.now().toString(36)}`;
 const FACT = `My favourite colour is teal, I commute on a Brompton, and my tag is ${NONCE}.`;
 
 /**
- * Scan the memory key space for the document this run captured and return its text. eve derives the
+ * Scan the slot's own key space for the document this run captured and return its text. The slot
+ * stores under `agentkit:memorySlot:` rather than the shared `agentkit:memory:` — its schema carries
+ * extra indexed fields, and such a schema must not cover a keyspace holding records written without
+ * them. eve derives the
  * scope key itself (an opaque digest of namespace + principal), so the eval can't address the key
  * directly — it looks for its own nonce instead, which is what makes this an assertion about
  * persisted state rather than about the reply.
@@ -27,7 +30,7 @@ async function findPersistedMemory(redis: Redis): Promise<string> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     let cursor = "0";
     do {
-      const [next, keys] = await redis.scan(cursor, { match: "agentkit:memory:*", count: 500 });
+      const [next, keys] = await redis.scan(cursor, { match: "agentkit:memorySlot:*", count: 500 });
       cursor = next;
       for (const key of keys) {
         const document = (await redis.json.get(key)) as { text?: unknown } | null;

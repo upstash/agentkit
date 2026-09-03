@@ -11,18 +11,13 @@ export default defineMemory({
     // `redis` omitted → Redis.fromEnv() inside the package.
     topK: 5, // optional: max memories recalled per turn (default 5)
     minScore: 0.1, // optional: minimum BM25 relevance (default 0 — BM25 scores are unbounded)
-    // Defaults worth knowing, both on:
-    //   rememberMessages: true    — stores both halves of each turn ("all"). Narrow with "fromUser" /
-    //                          "fromModel", or `false` for a slot the model curates itself:
-    //                          captured turns outrank saved facts on a BM25 query built from the
-    //                          caller's own words (see the JSDoc).
-    //   rememberSessions: true  — also stores each turn's transcript and adds
-    //                          `recall__read_session`, so a remembered *question* can lead the
-    //                          model to the answer that followed it.
+    // rememberMessages defaults to true, meaning "all" — both halves of each turn are stored.
+    // Narrow with "fromUser" / "fromModel", or `false` for a slot the model curates itself.
+    // Automatic recall only ever injects facts saved with `recall__save_memory`; captured turns are
+    // reached on demand with `recall__search_memory` and `recall__read_session`, so a passing
+    // remark can never outrank something the model deliberately kept.
     // maxRecallCharacters: 4_000,  // optional: budget for the recalled block (default 4,000)
     // maxMemoryCharacters: 2_048,  // optional: longest single stored memory (default 2,048)
-    // The model also gets `recall__search_memory` to look something up mid-turn, when automatic
-    // recall did not surface what it needs.
   }),
   // Scope memory to the authenticated principal. `byPrincipal` fails **closed**: it returns null
   // for anonymous/runtime callers, which disables the slot rather than pooling everyone into one

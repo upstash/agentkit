@@ -281,17 +281,30 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   delivery, kept separate from projected history, so recalled records can't be re-captured; and
   every memory's id is `stableHash(text).slice(0,12)`, so identical text collapses onto one key and
   capture is idempotent across turns and replays.
-- **`rememberSessions` (default `true`) is small-to-big retrieval.** On, it stores each turn's
-  transcript through core `ChatHistory` keyed by the eve session id, stamps that id as
-  `sessionId` on every memory captured or saved that turn, tags recalled memories
-  `session=<id>`, and contributes `read_session`. Memories stay ranked individually (what
-  BM25 is good at) and the model expands a match into the exchange **on demand** — so a remembered
-  question can lead to the answer that followed it, without transcripts in every prompt. The
-  recalled block is stripped before storing (`RECALL_HEADING_PREFIX`), or recall output would
-  round-trip into the transcript recall later expands. `sessionId` rides **unindexed** on the
-  memory doc like `createdAt` — no schema change, no re-index. The pointer is not a snapshot: the
-  transcript keeps growing after the memory is written. Note it needs `context.session.id`, which is
-  read *only* when `rememberSessions` is on, so the common path never depends on a session.
+- **One store, in its own keyspace — this is the load-bearing decision.** Facts and captured turns
+  both live at `agentkit:memorySlot:<userId>:<id>`, with `sessionId`/`source`/`deleted` as **indexed**
+  fields (plus unindexed `sequence`/`subIndex` for ordering). There is no `ChatHistory` in this path
+  any more and no option; `read_session` is always contributed and reads the same
+  records back, sorted `(sequence, sourceRank, subIndex)` where `source` doubles as the intra-turn
+  ordinal (`userMessage` → `agent` → `agentMessage`).
+- **Why its own prefix, and never `agentkit:memory`.** A schema describes an index and an index
+  covers a keyspace. Upstash Search does **not** match a missing field against `{$eq: …}` and has no
+  `$ne` — verified live: a doc written without `deleted` is returned by `{userId}` alone and by
+  nothing that also filters `deleted:{$eq:false}`. So pointing the slot's stricter schema at the
+  shared keyspace would make every record written by published `@upstash/agentkit-sdk@0.6.0`
+  silently unreachable. Its own prefix means nothing older is in scope. Costs one of the DB's 10
+  indexes; do not "optimise" it back into the shared store.
+- **Recall injects `source: "agent"` only.** Captured turns share the store but not the ranking —
+  that is the structural fix for the measured poisoning (captured question **50.9** vs a
+  deliberately saved `User likes cucumber.` cut from the top 5). The block ends with a live `count`
+  of non-fact records pointing at `search_memory`, because black-box testing showed the model does
+  not use a tool it is merely offered: across 32 conversations it called `read_session` **zero**
+  times.
+- **`forget_memory` redacts, it does not delete.** Text → `""`, `deleted` → `true`; every read but
+  `read_session` filters tombstones out, and `read_session` renders `[redacted]` so a reader cannot
+  mistake removal for "never said". Core `AgentMemory.forget` is still a real `DEL` for its other
+  callers — the provider redacts by calling `add()` with the same id, since `add` writes the whole
+  document.
 - **Config names carry the phase** (the object is flat, so they have to): `maxRecallCharacters`
   (recalled block) vs `maxMemoryCharacters` (one stored memory), `rememberMessages`. Renamed pre-release
   from `maxCharacters`/`maxEntryCharacters`/`capture`+`extract`; `query`/`buildRecallQuery` was

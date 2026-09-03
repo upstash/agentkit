@@ -1,4 +1,5 @@
 import { AgentMemory, stableHash } from "@upstash/agentkit-sdk";
+import { s } from "@upstash/redis";
 import { MemoryDocumentConflictError, fileMemory } from "eve/memory/file";
 import type { MemoryProvider } from "eve/memory";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -141,6 +142,7 @@ function scriptedRedis(initialRows: ScriptedRow[] = []) {
   let rows = initialRows;
   const indexOptions: { name?: string }[] = [];
   const queries: { filter: Record<string, unknown>; limit: number }[] = [];
+  const counts: { filter: Record<string, unknown> }[] = [];
   const documents = new Map<string, unknown>();
   const kv = new Map<string, unknown>();
   let waitIndexingCalls = 0;
@@ -153,6 +155,10 @@ function scriptedRedis(initialRows: ScriptedRow[] = []) {
     waitIndexing: () => {
       waitIndexingCalls += 1;
       return Promise.resolve();
+    },
+    count: (options: { filter: Record<string, unknown> }) => {
+      counts.push(options);
+      return Promise.resolve({ count: rows.length });
     },
   };
 
@@ -182,6 +188,7 @@ function scriptedRedis(initialRows: ScriptedRow[] = []) {
     redis: redis as never,
     indexOptions,
     queries,
+    counts,
     documents,
     kv,
     setRows: (next: ScriptedRow[]) => {
@@ -210,29 +217,20 @@ describe("eve memory integration (offline)", () => {
     expect(typeof provider.recall["turn.started"]).toBe("function");
     expect(typeof provider.recall["compaction.completed"]).toBe("function");
     expect(typeof provider.capture?.["turn.completed"]).toBe("function");
-    expect(typeof provider.capture?.["compaction.requested"]).toBe("function");
+    // No `compaction.requested` — messages are stored as they happen, so nothing is lost to the
+    // summarizer, and it was the only context where the ordering `sequence` could be null.
+    expect(provider.capture?.["compaction.requested"]).toBeUndefined();
     expect(typeof provider.tools).toBe("function");
   });
 
   it("rememberMessages can be turned off; recall and the tools stay either way", () => {
-    // With transcripts also off there is nothing left to capture, so no handler is registered at
-    // all — that is what makes `false` genuinely inert. `tools` is not configurable: a slot with no
-    // way to save or forget would be a strange thing to declare.
-    const provider = redisMemory({
-      redis: offlineRedis,
-      rememberMessages: false,
-      rememberSessions: false,
-    });
+    // Nothing left to capture, so no handler is registered at all — that is what makes `false`
+    // genuinely inert. `tools` is not configurable: a slot with no way to save, search, forget or
+    // read back would be a strange thing to declare.
+    const provider = redisMemory({ redis: offlineRedis, rememberMessages: false });
     expect(provider.capture).toBeUndefined();
     expect(typeof provider.recall["turn.started"]).toBe("function");
     expect(typeof provider.tools).toBe("function");
-
-    // Transcripts alone still need `turn.completed`, so the handler comes back.
-    expect(
-      typeof redisMemory({ redis: offlineRedis, rememberMessages: false }).capture?.[
-        "turn.completed"
-      ],
-    ).toBe("function");
   });
 
   it("default capture reads only user-authored text of the settled turn", async () => {
@@ -323,18 +321,6 @@ describe("eve memory integration (offline)", () => {
     expect(await backend.read({ key: "gone", signal })).toBeNull();
     expect(hmgets).toBe(4); // the key was forgotten, so no more confirmations
   });
-
-  it("default capture stores nothing when a compaction has no active turn", async () => {
-    const add = vi
-      .spyOn(AgentMemory.prototype, "add")
-      .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
-    // `compaction.requested` can arrive with `turn: null` (standalone compaction).
-    await captureAt(redisMemory({ redis: scriptedRedis().redis }), "compaction.requested", {
-      ...operationContext({ scopeKey: "scope" }),
-      turn: null,
-    } as never);
-    expect(add).not.toHaveBeenCalled();
-  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -350,7 +336,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
   // eve hands over an opaque, colon-bearing scope digest; AgentMemory rejects ':' in a userId.
   const SCOPE = "memscope1:AbC-123";
   const USER_ID = "memscope1_AbC-123";
-  const memoryKey = (id: string) => "agentkit:memory:" + USER_ID + ":" + id;
+  const memoryKey = (id: string) => "agentkit:memorySlot:" + USER_ID + ":" + id;
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -379,6 +365,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       topK: 3,
       query: "what theme do I like?",
       minScore: 0.25,
+      filter: { source: { $eq: "agent" }, deleted: { $eq: false } },
     });
   });
 
@@ -405,14 +392,14 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       topK: 3,
       query: "what theme do I like?",
       minScore: 0.25,
+      filter: { source: { $eq: "agent" }, deleted: { $eq: false } },
     });
     expect(content).toContain("# Recalled memories for recall");
   });
 
   it("recall reaches Redis as a userId-scoped $smart query on the shared agentkit:memory index", async () => {
     // No spy this time — the real AgentMemory runs, so this asserts the query that would actually
-    // hit Upstash Redis Search. One row, so the $smart query "matches" and AgentMemory does not
-    // fall back to its unfiltered second query (covered separately below).
+    // hit Upstash Redis Search.
     const script = scriptedRedis([
       { key: memoryKey("aaaaaaaaaaaa"), score: 2, data: { text: "dark mode", createdAt: 1 } },
     ]);
@@ -426,10 +413,17 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
 
     // The default prefix means memory slots share the memory tools' index instead of minting one
     // (an Upstash database caps at 10 search indexes).
-    expect(script.indexOptions[0]?.name).toBe("agentkit_memory");
+    expect(script.indexOptions[0]?.name).toBe("agentkit_memorySlot");
     expect(script.queries).toHaveLength(1);
+    // Narrowed to curated facts and to live records: captured turns share this index but must not
+    // compete for the same `topK`, and a redacted entry must never come back.
     expect(script.queries[0]).toEqual({
-      filter: { userId: { $eq: USER_ID }, text: { $smart: "what theme do I like?" } },
+      filter: {
+        userId: { $eq: USER_ID },
+        text: { $smart: "what theme do I like?" },
+        source: { $eq: "agent" },
+        deleted: { $eq: false },
+      },
       limit: 4,
     });
   });
@@ -500,20 +494,23 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     expect(fresh).toContain("Something new");
   });
 
-  it("recall falls back to the scope's memories when the text matches nothing", async () => {
+  it("recall queries once and reports a miss when the text matches nothing", async () => {
     const script = scriptedRedis([]); // the $smart query matches nothing
     const provider = redisMemory({ redis: script.redis, replayCacheTtlSeconds: 0 });
 
-    await recallAt(
+    const content = await recallAt(
       provider,
       "turn.started",
       operationContext({ scopeKey: SCOPE, input: [userMessage("zzzz")] }),
     );
 
-    // AgentMemory retries filter-only, so a turn whose words match nothing still recalls the scope.
-    expect(script.queries).toHaveLength(2);
+    // One query, and no unfiltered second one: `AgentMemory` has no "everything for the user"
+    // fallback, so a miss stays a miss instead of surfacing unrelated memories as if they matched.
+    expect(script.queries).toHaveLength(1);
     expect(script.queries[0]?.filter).toHaveProperty("text");
-    expect(script.queries[1]?.filter).toEqual({ userId: { $eq: USER_ID } });
+    // The block has to say "nothing matched", not "nothing is stored" — the store may be full.
+    expect(content).toContain("Nothing you have saved matched this turn");
+    expect(content).toContain("search_memory");
   });
 
   it("capture['turn.completed'] adds every user message through AgentMemory.add, then waits for indexing", async () => {
@@ -537,42 +534,34 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     );
 
     expect(add).toHaveBeenCalledTimes(2); // the assistant turn is never captured
+    // Flat, indexed fields — and a `subIndex` that counts per source, so the two halves of a turn
+    // each start at zero and still sort correctly against each other.
     expect(add).toHaveBeenNthCalledWith(1, {
       text: "I prefer dark mode",
       userId: USER_ID,
       id: expect.stringMatching(/^[0-9a-f]{12}$/),
-      // `rememberSessions` is off here, so the metadata is the source alone.
-      metadata: { source: "userMessage", sessionId: "session-1" },
+      metadata: {
+        sessionId: "session-1",
+        source: "userMessage",
+        deleted: false,
+        sequence: 1,
+        subIndex: 0,
+      },
     });
     expect(add).toHaveBeenNthCalledWith(2, {
       text: "I live in Berlin",
       userId: USER_ID,
       id: expect.stringMatching(/^[0-9a-f]{12}$/),
-      metadata: { source: "userMessage", sessionId: "session-1" },
+      metadata: {
+        sessionId: "session-1",
+        source: "userMessage",
+        deleted: false,
+        sequence: 1,
+        subIndex: 1,
+      },
     });
     // Without this the memory stays invisible to the next turn's recall for far longer than a turn.
     expect(script.waitIndexingCalls()).toBe(1);
-  });
-
-  it("capture['compaction.requested'] captures through the same path", async () => {
-    const add = vi
-      .spyOn(AgentMemory.prototype, "add")
-      .mockResolvedValue({ id: "x", text: "x", createdAt: 0 });
-    const provider = redisMemory({ redis: scriptedRedis().redis, rememberMessages: true });
-
-    await captureAt(
-      provider,
-      "compaction.requested",
-      operationContext({ scopeKey: SCOPE, input: [userMessage("I ride a Brompton")] }),
-    );
-
-    expect(add).toHaveBeenCalledTimes(1);
-    expect(add).toHaveBeenCalledWith({
-      text: "I ride a Brompton",
-      userId: USER_ID,
-      id: expect.stringMatching(/^[0-9a-f]{12}$/),
-      metadata: { source: "userMessage", sessionId: "session-1" },
-    });
   });
 
   it("writes reach Redis as one JSON document per memory under the scope's key prefix", async () => {
@@ -588,12 +577,16 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
 
     const keys = [...script.documents.keys()];
     expect(keys).toHaveLength(1);
-    expect(keys[0]).toMatch(new RegExp("^agentkit:memory:" + USER_ID + ":[0-9a-f]{12}$"));
+    expect(keys[0]).toMatch(new RegExp("^agentkit:memorySlot:" + USER_ID + ":[0-9a-f]{12}$"));
     expect([...script.documents.values()][0]).toEqual({
       text: "I prefer dark mode",
       userId: USER_ID,
       createdAt: expect.any(Number),
-      metadata: { source: "userMessage", sessionId: "session-1" },
+      sessionId: "session-1",
+      source: "userMessage",
+      deleted: false,
+      sequence: 1,
+      subIndex: 0,
     });
   });
 
@@ -613,7 +606,12 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       "turn.completed",
       context,
     );
-    expect(add.mock.calls.map((c) => (c[0] as { metadata: unknown }).metadata)).toEqual([
+    expect(
+      add.mock.calls.map((c) => {
+        const a = c[0] as { metadata?: { source?: string; sessionId?: string } };
+        return { source: a.metadata?.source, sessionId: a.metadata?.sessionId };
+      }),
+    ).toEqual([
       { source: "userMessage", sessionId: "session-1" },
       { source: "agentMessage", sessionId: "session-1" },
     ]);
@@ -625,23 +623,22 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       turn: { id: "t", input: [], sequence: 1 },
     } as never);
     await callTool(tools, "save_memory", { text: "The user commutes by bike" });
-    expect((add.mock.calls[0]![0] as { metadata: unknown }).metadata).toEqual({
-      source: "agent",
-      sessionId: "session-1",
-    });
+    const saved = add.mock.calls[0]![0] as { metadata?: { source?: string; sessionId?: string } };
+    expect(saved.metadata?.source).toBe("agent");
+    expect(saved.metadata?.sessionId).toBe("session-1");
   });
 
-  it("recall labels each line with its source, and omits it for pre-metadata records", async () => {
-    const row = (id: string, text: string, score: number, metadata?: Record<string, unknown>) => ({
-      key: `agentkit:memory:${USER_ID}:${id}`,
+  it("recall renders only curated facts, tagged with the session they were saved in", async () => {
+    const row = (id: string, text: string, score: number, extra: Record<string, unknown>) => ({
+      key: `agentkit:memorySlot:${USER_ID}:${id}`,
       score,
-      data: { text, createdAt: 0, ...(metadata ? { metadata } : {}) },
+      data: { text, createdAt: 0, ...extra },
     });
+    // The index only ever returns agent rows for this query (the filter is asserted elsewhere), so
+    // this pins what the block does with them.
     const script = scriptedRedis([
-      row("aaaaaaaaaaaa", "saved fact", 9, { source: "agent" }),
-      row("bbbbbbbbbbbb", "user said", 8, { source: "userMessage" }),
-      row("cccccccccccc", "model said", 7, { source: "agentMessage" }),
-      row("dddddddddddd", "legacy row", 6), // written before `metadata` existed
+      row("aaaaaaaaaaaa", "saved fact", 9, { source: "agent", sessionId: "sess-9" }),
+      row("bbbbbbbbbbbb", "older fact", 8, { source: "agent" }),
     ]);
 
     const content = await recallContent(
@@ -649,11 +646,10 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
       operationContext({ scopeKey: SCOPE, input: [userMessage("what do you know?")] }),
     );
 
-    expect(content).toContain("aaaaaaaaaaaa: saved fact (you saved this)");
-    expect(content).toContain("bbbbbbbbbbbb: user said (the user said this)");
-    expect(content).toContain("cccccccccccc: model said (you said this)");
-    // No metadata → no note, rather than a guessed one.
-    expect(content).toMatch(/^dddddddddddd: legacy row$/m);
+    expect(content).toContain("aaaaaaaaaaaa: saved fact (session=sess-9)");
+    // No session recorded → no tag, rather than a guessed one.
+    expect(content).toMatch(/^bbbbbbbbbbbb: older fact$/m);
+    expect(content).toContain("recall__read_session");
   });
 
   it("rememberMessages selects what gets stored: fromUser / fromModel / all", async () => {
@@ -685,37 +681,34 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     expect(await captured(undefined)).toEqual(["I ride a Brompton", "Noted."]); // the default
   });
 
-  it("conversations: on by default, and read_session goes away when disabled", async () => {
-    const plain = redisMemory({ redis: offlineRedis, rememberSessions: false });
-    const withConversations = redisMemory({ redis: offlineRedis });
+  it("always contributes all four tools, and captures only when rememberMessages is on", async () => {
     const context = {
       ...operationContext({ scopeKey: SCOPE }),
       turn: { id: "t", input: [], sequence: 1 },
     };
 
-    expect(Object.keys((await plain.tools!(context as never))!).sort()).toEqual([
-      "forget_memory",
-      "save_memory",
-      "search_memory",
-    ]);
-    // The default contributes the transcript reader as well.
-    expect(Object.keys((await withConversations.tools!(context as never))!).sort()).toEqual([
-      "forget_memory",
-      "read_session",
-      "save_memory",
-      "search_memory",
-    ]);
+    // `read_session` is unconditional now — a session is whatever was stored from it, so there is
+    // no separate storage decision to gate the reader on.
+    for (const provider of [
+      redisMemory({ redis: offlineRedis }),
+      redisMemory({ redis: offlineRedis, rememberMessages: false }),
+    ]) {
+      expect(Object.keys((await provider.tools!(context as never))!).sort()).toEqual([
+        "forget_memory",
+        "read_session",
+        "save_memory",
+        "search_memory",
+      ]);
+    }
 
-    // Transcripts need `turn.completed`, so the handler is registered even with rememberMessages off.
-    expect(typeof withConversations.capture?.["turn.completed"]).toBe("function");
-    expect(
-      redisMemory({ redis: offlineRedis, rememberMessages: false }).capture?.["turn.completed"],
-    ).toBeTypeOf("function");
-    // ...and with neither, there is nothing to capture at all.
-    expect(
-      redisMemory({ redis: offlineRedis, rememberMessages: false, rememberSessions: false })
-        .capture,
-    ).toBeUndefined();
+    // Capture exists only when there are messages to capture — nothing else writes at turn end.
+    expect(typeof redisMemory({ redis: offlineRedis }).capture?.["turn.completed"]).toBe(
+      "function",
+    );
+    expect(redisMemory({ redis: offlineRedis, rememberMessages: false }).capture).toBeUndefined();
+    // `compaction.requested` is gone: messages are stored as they happen, so nothing is lost to
+    // the summarizer, and it was the only context where `turn` could be null.
+    expect(redisMemory({ redis: offlineRedis }).capture?.["compaction.requested"]).toBeUndefined();
   });
 });
 
@@ -919,8 +912,20 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
   /** Scopes that also wrote a transcript, so the chat keys get cleaned up too. */
   const chatScopes: string[] = [];
   const provider = redisMemory({ redis, topK: 5, rememberMessages: true });
-  // A throwaway handle on the same default index, to provision it and wait for indexing.
-  const index = new AgentMemory({ redis }).searchIndex;
+  // A throwaway handle on the slot's own index — the provider no longer shares `agentkit:memory`
+  // with the standalone memory tools, because a schema with extra required fields must not cover a
+  // keyspace that already holds records written without them.
+  const index = new AgentMemory({
+    redis,
+    prefix: "agentkit:memorySlot",
+    metadataSchema: {
+      sessionId: s.string().noTokenize(),
+      source: s.string().noTokenize(),
+      deleted: s.boolean(),
+      sequence: s.number(),
+      subIndex: s.number(),
+    },
+  }).searchIndex;
 
   beforeAll(async () => {
     // Provision BEFORE any write: a doc written while the index is still missing can be dropped by
@@ -930,7 +935,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
 
   afterAll(async () => {
     for (const scope of scopes) {
-      await cleanupKeys(redis, `agentkit:memory:${scope}`);
+      await cleanupKeys(redis, `agentkit:memorySlot:${scope}`);
       await cleanupKeys(redis, `agentkit:memoryRecall:${scope}`);
     }
     for (const scope of chatScopes) {
@@ -944,46 +949,48 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
       operationContext({ scopeKey, input: [userMessage("hi")] }),
     );
     expect(content).toContain("# Recalled memories for recall");
-    expect(content).toContain("No memories are stored");
+    expect(content).toContain("Nothing you have saved matched this turn");
   });
 
-  it("captures the turn's user text and recalls it on a later turn", async () => {
+  it("captures the turn's text but keeps it out of the recalled block", async () => {
     await captureTurn(
       provider,
       operationContext({
         scopeKey,
-        input: [
-          userMessage("I prefer dark mode in every editor"),
-          { role: "assistant", content: "Got it." },
-        ],
+        input: [userMessage("I prefer dark mode in every editor")],
       }),
     );
     await index.waitIndexing();
 
-    const content = await pollUntil(
+    // Captured turns are stored, and searchable...
+    const tools = await provider.tools!(operationContext({ scopeKey, slot: "recall" }) as never);
+    const found = await pollUntil(
       () =>
-        recallContent(
-          provider,
-          operationContext({ scopeKey, input: [userMessage("what theme do I like?")] }),
-        ),
-      (c) => c.includes("dark mode"),
+        callTool<{ memories: { text: string; source?: string }[] }>(tools, "search_memory", {
+          query: "dark mode editor",
+        }),
+      (r) => r.memories.some((m) => m.text.includes("dark mode")),
     );
-    expect(content).toContain("dark mode");
-    // Each line is `<id>: <text> (<notes>)` so the model can call forget_memory with the id and
-    // knows the memory was captured rather than deliberately saved.
-    expect(content).toMatch(
-      /^[0-9a-f]{12}: I prefer dark mode in every editor \(the user said this, session=[^)]+\)$/m,
+    expect(found.memories.some((m) => m.source === "userMessage")).toBe(true);
+
+    // ...but recall injects curated facts only, so a captured turn can never crowd one out.
+    const content = await recallContent(
+      provider,
+      operationContext({ scopeKey, input: [userMessage("what theme do I like?")] }),
     );
-    expect(content).toContain("recall__forget_memory");
+    expect(content).not.toContain("dark mode");
+    // Instead it says how much is reachable, so the model has a reason to go looking.
+    expect(content).toMatch(/stored messages? from earlier conversations/);
+    expect(content).toContain("recall__search_memory");
   });
 
   it("is idempotent: capturing the same text twice stores one memory", async () => {
-    const before = await redis.keys(`agentkit:memory:${scopeKey}:*`);
+    const before = await redis.keys(`agentkit:memorySlot:${scopeKey}:*`);
     await captureTurn(
       provider,
       operationContext({ scopeKey, input: [userMessage("I prefer dark mode in every editor")] }),
     );
-    const after = await redis.keys(`agentkit:memory:${scopeKey}:*`);
+    const after = await redis.keys(`agentkit:memorySlot:${scopeKey}:*`);
     expect(after.sort()).toEqual(before.sort());
   });
 
@@ -999,7 +1006,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         ],
       }),
     );
-    expect(await redis.keys(`agentkit:memory:${isolated}:*`)).toEqual([]);
+    expect(await redis.keys(`agentkit:memorySlot:${isolated}:*`)).toEqual([]);
   });
 
   it("skips over-long turns rather than truncating them", async () => {
@@ -1012,7 +1019,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         input: [userMessage("this message is definitely longer than twenty characters")],
       }),
     );
-    expect(await redis.keys(`agentkit:memory:${isolated}:*`)).toEqual([]);
+    expect(await redis.keys(`agentkit:memorySlot:${isolated}:*`)).toEqual([]);
   });
 
   // eve records a digest of each recall and throws if the same operationId replays differently.
@@ -1024,10 +1031,8 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     );
 
     // Something else writes to the same scope between the original run and the replay.
-    await captureTurn(
-      provider,
-      operationContext({ scopeKey, input: [userMessage("I also use a mechanical keyboard")] }),
-    );
+    const tools = await provider.tools!(operationContext({ scopeKey, slot: "recall" }) as never);
+    await callTool(tools, "save_memory", { text: "The user types on a mechanical keyboard" });
     await index.waitIndexing();
 
     const replay = await recallContent(
@@ -1041,7 +1046,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
       () =>
         recallContent(
           provider,
-          operationContext({ scopeKey, input: [userMessage("what do I type on?")] }),
+          operationContext({ scopeKey, input: [userMessage("mechanical keyboard")] }),
         ),
       (c) => c.includes("mechanical keyboard"),
     );
@@ -1073,16 +1078,18 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     );
     expect(content).toContain(`${saved.id}: The user's cat is called Ada`);
 
-    // forget_memory is the capability eve's own file memory can only approximate by index.
+    // forget_memory redacts rather than deletes: the key survives so a session still reads back in
+    // order with a visible gap, but the text is gone and it can never be recalled again.
     await callTool(tools, "forget_memory", { id: saved.id });
-    // `exists` straight after the `del` is a raw read that can be answered by a replica that hasn't
-    // caught up yet (see `RedisMemoryDocumentBackend.read` for the mechanism) — poll it.
-    expect(
-      await pollUntil(
-        () => redis.exists(`agentkit:memory:${scopeKey}:${saved.id}`),
-        (value) => value === 0,
-      ),
-    ).toBe(0);
+    const doc = await pollUntil(
+      () =>
+        redis.json.get<Record<string, unknown>>(
+          `agentkit:memorySlot:${scopeKey}:${saved.id}`,
+        ) as Promise<Record<string, unknown> | null>,
+      (d) => d?.deleted === true,
+    );
+    expect(doc!.text).toBe("");
+    expect(doc!.deleted).toBe(true);
   });
 
   // ---------------------------------------------------------------------------------------
@@ -1106,13 +1113,15 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
 
     // Assert against real Redis, not against "no error was thrown": both memories exist, at the
     // content-addressed keys the provider derives, with the exact stored document shape.
+    // Ids are derived from position as well as text, so a replay of this turn rewrites the same
+    // keys while the same sentence in another session stays a separate record.
     const expected = new Map(
-      ["My cat is called Ada", "I commute on a Brompton"].map((text) => [
-        `agentkit:memory:${scope}:${stableHash(text).slice(0, 12)}`,
+      ["My cat is called Ada", "I commute on a Brompton"].map((text, subIndex) => [
+        `agentkit:memorySlot:${scope}:${stableHash(`session-1|1|userMessage|${subIndex}|${text}`).slice(0, 12)}`,
         text,
       ]),
     );
-    const keys = await redis.keys(`agentkit:memory:${scope}:*`);
+    const keys = await redis.keys(`agentkit:memorySlot:${scope}:*`);
     expect(keys.sort()).toEqual([...expected.keys()].sort());
 
     for (const [key, text] of expected) {
@@ -1120,28 +1129,31 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         text,
         userId: scope,
         createdAt: expect.any(Number),
-        metadata: { source: "userMessage", sessionId: "session-1" },
+        sessionId: expect.any(String),
+        source: "userMessage",
+        deleted: false,
+        sequence: expect.any(Number),
+        subIndex: expect.any(Number),
       });
     }
     // The assistant message was never written.
     expect(keys).toHaveLength(2);
   });
 
-  it("round-trips: recall returns exactly the memories Redis is holding", async () => {
+  it("round-trips: recall returns exactly the facts Redis is holding", async () => {
     const scope = newScope("roundtrip");
-    const text = "I always deploy on Fridays";
-    await captureAt(
-      provider,
-      "turn.completed",
-      operationContext({ scopeKey: scope, input: [userMessage(text)] }),
+    const tools = await provider.tools!(
+      operationContext({ scopeKey: scope, slot: "recall" }) as never,
     );
+    await callTool(tools, "save_memory", { text: "The user always deploys on Fridays" });
 
     // Take the id and text from REDIS, so the recall assertion below is tied to persisted state
     // rather than to a value hardcoded in the test.
-    const [key] = await redis.keys(`agentkit:memory:${scope}:*`);
+    const [key] = await redis.keys(`agentkit:memorySlot:${scope}:*`);
     expect(key).toBeDefined();
-    const stored = (await redis.json.get(key!)) as { text: string };
-    const id = key!.slice(`agentkit:memory:${scope}:`.length);
+    const stored = (await redis.json.get(key!)) as { text: string; source: string };
+    expect(stored.source).toBe("agent");
+    const id = key!.slice(`agentkit:memorySlot:${scope}:`.length);
 
     await index.waitIndexing();
     const content = await pollUntil(
@@ -1149,7 +1161,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         recallAt(
           provider,
           "turn.started",
-          operationContext({ scopeKey: scope, input: [userMessage("when do I ship?")] }),
+          operationContext({ scopeKey: scope, input: [userMessage("when does the user deploy?")] }),
         ),
       (c) => c.includes(stored.text),
     );
@@ -1157,38 +1169,28 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     expect(content).toContain(`${id}: ${stored.text}`);
   });
 
-  it("round-trips through the compaction hooks too (capture on requested, recall on completed)", async () => {
+  it("recalls again at compaction.completed, against the same locked scope", async () => {
     const scope = newScope("compaction");
-    const text = "My deploy target is Vercel";
-
-    // eve calls this one before a compaction checkpoint; nothing else in the suite reaches it.
-    await captureAt(
-      provider,
-      "compaction.requested",
-      operationContext({ scopeKey: scope, input: [userMessage(text)] }),
+    const tools = await provider.tools!(
+      operationContext({ scopeKey: scope, slot: "recall" }) as never,
     );
-
-    const key = `agentkit:memory:${scope}:${stableHash(text).slice(0, 12)}`;
-    expect(await redis.json.get(key)).toEqual({
-      text,
-      userId: scope,
-      createdAt: expect.any(Number),
-      metadata: { source: "userMessage", sessionId: "session-1" },
-    });
-
+    await callTool(tools, "save_memory", { text: "The user's deploy target is Vercel" });
     await index.waitIndexing();
-    // ...and this one after it. Both halves of the compaction lifecycle, against real Redis.
+
+    // There is no `compaction.requested` capture any more — messages are stored as they happen, so
+    // nothing is left to rescue before the summarizer runs.
+    expect(provider.capture?.["compaction.requested"]).toBeUndefined();
+
     const content = await pollUntil(
       () =>
         recallAt(
           provider,
           "compaction.completed",
-          operationContext({ scopeKey: scope, input: [userMessage("where do I deploy?")] }),
+          operationContext({ scopeKey: scope, input: [userMessage("what is the deploy target?")] }),
         ),
-      (c) => c.includes(text),
+      (c) => c.includes("Vercel"),
     );
-    expect(content).toContain("# Recalled memories for recall");
-    expect(content).toContain(text);
+    expect(content).toContain("Vercel");
   });
 
   it("rejects a model-supplied memory id that could address another scope's key", async () => {
@@ -1198,16 +1200,9 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     );
   });
 
-  it("conversations: stamps sessionId, stores the transcript, and reads it back", async () => {
-    const isolated = newScope("conv");
-    // Default `agentkit:chat` prefix on purpose: a per-test prefix would mint a new search index,
-    // and an Upstash database caps at 10.
-    const withConversations = redisMemory({
-      redis,
-      rememberMessages: true,
-      rememberSessions: true,
-    });
-    const sessionId = "conv-session-1";
+  it("read_session replays one session in order, with redactions left visible", async () => {
+    const isolated = newScope("session");
+    const sessionId = "sess-order-1";
     const context = operationContext({
       scopeKey: isolated,
       sessionId,
@@ -1217,81 +1212,57 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
         { role: "assistant", content: "Nice — folding bikes are great on trains." },
       ],
     });
-    chatScopes.push(isolated);
-
-    await captureTurn(withConversations, context);
-
-    // Both halves of the turn are captured (rememberMessages defaults to "all"), and each carries the
-    // pointer and its own source — stored unindexed alongside `createdAt`.
-    const keys = await redis.keys(`agentkit:memory:${isolated}:*`);
-    expect(keys).toHaveLength(2);
-    const metadata = await Promise.all(
-      keys.map(
-        async (key) => (await redis.json.get<Record<string, unknown>[]>(key, "$"))![0]!.metadata,
-      ),
-    );
-    expect(metadata).toEqual(
-      expect.arrayContaining([
-        { source: "userMessage", sessionId: sessionId },
-        { source: "agentMessage", sessionId: sessionId },
-      ]),
-    );
-
-    // Recall advertises the pointer so the model knows read_session is worth calling.
-    const content = await recallContent(withConversations, context);
-    expect(content).toContain(`session=${sessionId}`);
-    expect(content).toContain("read_session");
-
-    // And the tool expands it into the full exchange — including the model's reply, which is the
-    // whole point: the memory matched the question, the answer is what the caller wanted.
-    const tools = await withConversations.tools!({
+    const tools = await provider.tools!({
       ...context,
       turn: { id: "t", input: [], sequence: 1 },
     } as never);
-    const read = await callTool<{
-      found: boolean;
-      truncated: boolean;
-      messages: { role: string; content: string }[];
-    }>(tools, "read_session", { sessionId: sessionId });
-    expect(read.found).toBe(true);
-    expect(read.truncated).toBe(false);
-    expect(read.messages).toEqual([
-      { role: "user", content: "I ride a Brompton" },
-      { role: "assistant", content: "Nice — folding bikes are great on trains." },
-    ]);
-  });
 
-  it("conversations: the recalled block is never written into the transcript it points at", async () => {
-    const isolated = newScope("convclean");
-    const withConversations = redisMemory({
-      redis,
-      rememberMessages: true,
-      rememberSessions: true,
-    });
-    const sessionId = "conv-session-2";
-    chatScopes.push(isolated);
-    // A projected history that already contains an injected recall block, as eve hands it to us.
-    await captureTurn(
-      withConversations,
-      operationContext({
-        scopeKey: isolated,
-        sessionId,
-        input: [userMessage("what do you know?")],
-        messages: [
-          { role: "user", content: "# Recalled memories for recall\n\nabc123: I ride a Brompton" },
-          userMessage("what do you know?"),
-          { role: "assistant", content: "You ride a Brompton." },
-        ],
-      }),
+    // A curated fact saved mid-turn, then both halves of the turn captured at turn end.
+    await callTool(tools, "save_memory", { text: "The user commutes by folding bike" });
+    await captureTurn(provider, context);
+    await index.waitIndexing();
+
+    const read = await pollUntil(
+      () =>
+        callTool<{
+          found: boolean;
+          entries: { id: string; text: string; source?: string; redacted?: boolean }[];
+        }>(tools, "read_session", { sessionId }),
+      (r) => r.found && r.entries.length >= 3,
     );
 
-    const chat = await redis.json.get<Record<string, unknown>[]>(
-      `agentkit:chat:${isolated}:${sessionId}`,
-      "$",
+    // (sequence, sourceRank, subIndex): the caller speaks, the model saves, then it answers.
+    expect(read.entries.map((e) => e.source)).toEqual(["userMessage", "agent", "agentMessage"]);
+    expect(read.entries[0]!.text).toContain("Brompton");
+
+    // Redaction is visible rather than silent, so the model cannot mistake it for "never said".
+    const fact = read.entries.find((e) => e.source === "agent")!;
+    await callTool(tools, "forget_memory", { id: fact.id });
+    await index.waitIndexing();
+
+    const after = await pollUntil(
+      () =>
+        callTool<{ entries: { id: string; text: string; redacted?: boolean }[] }>(
+          tools,
+          "read_session",
+          { sessionId },
+        ),
+      (r) => r.entries.some((e) => e.redacted === true),
     );
-    const messages = chat![0]!.messages as { content: string }[];
-    // Storing it would round-trip recall output back into the transcript recall later expands.
-    expect(messages.some((m) => m.content.startsWith("# Recalled memories for"))).toBe(false);
-    expect(messages).toHaveLength(2);
+    const tombstone = after.entries.find((e) => e.id === fact.id)!;
+    expect(tombstone.text).toBe("[redacted]");
+    expect(tombstone.redacted).toBe(true);
+    // Still in place, so the session reads back with a gap the model can see.
+    expect(after.entries).toHaveLength(read.entries.length);
+
+    // And it is gone from every other read.
+    const searched = await pollUntil(
+      () =>
+        callTool<{ memories: { id: string }[] }>(tools, "search_memory", {
+          query: "folding bike commutes",
+        }),
+      (r) => !r.memories.some((m) => m.id === fact.id),
+    );
+    expect(searched.memories.some((m) => m.id === fact.id)).toBe(false);
   });
 });
