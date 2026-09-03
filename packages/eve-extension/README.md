@@ -15,7 +15,7 @@ no repeated schemas; upgrades come through the package manager.
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
-Start from an eve project (eve ≥ 0.48.0 — the prebuilt extension is built with eve 0.49.0 and its compatibility manifest requires tool contract v24 (dynamicTool v21, hook v16), which eve 0.48.0 is the first release to support; the package declares this as its `eve` peer range), then:
+Start from an eve project (eve ≥ 0.50.0 — the prebuilt extension is built with eve 0.50.0 and its compatibility manifest requires tool contract v24, dynamicTool v22 and hook v17, which eve 0.50.0 is the first release to support; the package declares this as its `eve` peer range), then:
 
 ```bash
 pnpm add @upstash/agentkit-eve-extension

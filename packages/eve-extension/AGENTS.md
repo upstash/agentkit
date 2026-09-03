@@ -32,7 +32,16 @@ unavailable, use https://eve.dev/docs/extensions as a fallback.
 agent-shaped source tree into `dist/extension/`, emits type declarations and a
 compatibility manifest, and fills the package `exports` map. Ship `dist/` only.
 `eve` is a required peer so the consumer's eve is the one that runs, but NOT a
-wildcard: keep the floor (`>=0.48.0`) in sync with what the built manifest's
+wildcard: keep the floor (`>=0.50.0`) in sync with what the built manifest's
 contracts require, so an incompatible eve fails at install instead of at
 `eve build` (see issue #22). eve validates the real compatibility from the
 generated manifest.
+
+Re-derive the floor from **every** contract in the fresh `dist/extension/_manifest.json`
+`requires` block, not just `tool`. eve 0.50.0 *dropped* `dynamicTool` 21 and `hook` 16
+while still supporting `tool` 21, which broke the published 0.8.0 dist even though its
+tool contract was fine. The floor is the oldest eve whose
+`EXTENSION_CAPABILITY_CONTRACTS` (in eve's
+`dist/src/compiler/extension-compatibility.js`) lists **all** required versions as
+supported; `findUnsupportedExtensionCapabilities()` from that same module answers this
+directly.
