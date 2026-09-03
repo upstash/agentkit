@@ -1,6 +1,7 @@
+import { s } from "@upstash/redis";
 import { afterAll, describe, expect, it } from "vitest";
 import { AgentMemory } from "./memory.js";
-import { hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
   const prefix = uniquePrefix("memory");
@@ -115,5 +116,155 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     await memory.searchIndex.waitIndexing();
     const [hit] = await memory.recall({ query: "dated fact", userId: "meta", topK: 1 });
     expect(hit?.createdAt).toBeGreaterThan(0);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Extended stores: metadataSchema + metadata
+// -------------------------------------------------------------------------------------------
+
+describe.skipIf(!hasRedisCreds)("AgentMemory with metadataSchema (live Redis)", () => {
+  const redis = testRedis();
+  const prefix = uniquePrefix("memory-meta");
+  /** The shape a caller declares: extra fields that become filterable. */
+  const memory = new AgentMemory<{ source: string; deleted: boolean; slot: number }>({
+    redis,
+    prefix,
+    metadataSchema: {
+      source: s.string().noTokenize(),
+      deleted: s.boolean(),
+      slot: s.number(),
+    },
+  });
+
+  afterAll(async () => {
+    try {
+      await memory.searchIndex.drop();
+    } catch {
+      /* index may not exist */
+    }
+    await cleanupKeys(redis, prefix);
+  });
+
+  it("round-trips metadata through add and recall", async () => {
+    await memory.add({
+      text: "The user commutes by folding bike",
+      userId: "meta",
+      metadata: { source: "agent", deleted: false, slot: 3 },
+    });
+    await memory.searchIndex.waitIndexing();
+
+    const [hit] = await memory.recall({ query: "folding bike", userId: "meta", topK: 5 });
+    expect(hit?.text).toContain("folding bike");
+    // Declared fields come back typed, with their values intact — including a non-string one.
+    expect(hit?.metadata).toEqual({ source: "agent", deleted: false, slot: 3 });
+  });
+
+  it("filters a ranked recall by a metadata field", async () => {
+    await memory.add({
+      text: "The user reviews pull requests on Mondays",
+      userId: "filter",
+      metadata: { source: "agent", deleted: false, slot: 1 },
+    });
+    await memory.add({
+      text: "I review pull requests whenever I get a chance",
+      userId: "filter",
+      metadata: { source: "userMessage", deleted: false, slot: 1 },
+    });
+    await memory.searchIndex.waitIndexing();
+
+    const all = await memory.recall({ query: "review pull requests", userId: "filter", topK: 10 });
+    expect(all.length).toBe(2);
+
+    // The point of indexing metadata: one kind can be retrieved without the other competing for
+    // the same `topK`, which no amount of ranking could guarantee.
+    const facts = await memory.recall({
+      query: "review pull requests",
+      userId: "filter",
+      topK: 10,
+      filter: { source: { $eq: "agent" } },
+    });
+    expect(facts.map((h) => h.metadata?.source)).toEqual(["agent"]);
+  });
+
+  it("list() reads by filter alone, and count() reports without fetching", async () => {
+    for (const [i, source] of ["agent", "userMessage", "userMessage"].entries()) {
+      await memory.add({
+        text: `listable memory number ${i}`,
+        userId: "listing",
+        metadata: { source, deleted: false, slot: i },
+      });
+    }
+    await memory.searchIndex.waitIndexing();
+
+    const messages = await memory.list({
+      userId: "listing",
+      filter: { source: { $eq: "userMessage" } },
+    });
+    expect(messages).toHaveLength(2);
+    // Unranked: `list` is the filter-first read, so every hit scores the same.
+    expect(messages.every((m) => m.metadata?.source === "userMessage")).toBe(true);
+
+    expect(await memory.count({ userId: "listing" })).toBe(3);
+    expect(await memory.count({ userId: "listing", filter: { source: { $eq: "agent" } } })).toBe(1);
+  });
+
+  it("a filter on a field the record lacks hides it — which is why an extended store needs its own prefix", async () => {
+    // Written the way an older release wrote it: no `deleted`, no `source`.
+    await redis.json.set(`${prefix}:legacy:aaaaaaaaaaaa`, "$", {
+      text: "written before the schema was extended",
+      userId: "legacy",
+      createdAt: Date.now(),
+    });
+    await memory.searchIndex.waitIndexing();
+
+    // Visible on its own...
+    expect(await memory.list({ userId: "legacy" })).toHaveLength(1);
+    // ...and invisible to any filter naming a field it does not carry. Upstash Search does not
+    // match a missing field against `{$eq: …}` and has no `$ne`, so there is no filter-level
+    // workaround: this is the whole reason an extended schema must not cover a keyspace that
+    // already holds records written without its fields.
+    expect(
+      await memory.list({ userId: "legacy", filter: { deleted: { $eq: false } } }),
+    ).toHaveLength(0);
+  });
+});
+
+describe.skipIf(!hasRedisCreds)("AgentMemory without metadataSchema is unchanged", () => {
+  const redis = testRedis();
+  const prefix = uniquePrefix("memory-plain");
+  const memory = new AgentMemory({ redis, prefix });
+
+  afterAll(async () => {
+    try {
+      await memory.searchIndex.drop();
+    } catch {
+      /* index may not exist */
+    }
+    await cleanupKeys(redis, prefix);
+  });
+
+  it("stores no extra fields and reads records written without them", async () => {
+    // A record written by a release that predates `metadataSchema`.
+    await redis.json.set(`${prefix}:plain:bbbbbbbbbbbb`, "$", {
+      text: "the user lives in Berlin",
+      userId: "plain",
+      createdAt: Date.now(),
+    });
+    await memory.add({ text: "the user works in Munich", userId: "plain" });
+    await memory.searchIndex.waitIndexing();
+
+    // Both are recallable: an unextended store declares the same two indexed fields it always did,
+    // so nothing already in its keyspace falls out of scope.
+    const hits = await memory.recall({ userId: "plain", topK: 10 });
+    expect(hits.map((h) => h.text).sort()).toEqual([
+      "the user lives in Berlin",
+      "the user works in Munich",
+    ]);
+    // And `metadata` is absent rather than an empty object, so callers can tell it was never declared.
+    expect(hits.every((h) => h.metadata === undefined)).toBe(true);
+
+    const doc = (await redis.json.get(`${prefix}:plain:bbbbbbbbbbbb`)) as Record<string, unknown>;
+    expect(Object.keys(doc).sort()).toEqual(["createdAt", "text", "userId"]);
   });
 });
