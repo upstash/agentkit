@@ -25,14 +25,9 @@ export interface MemoryRecord<TMetadata = Record<string, unknown>> {
   text: string;
   createdAt: number;
   /**
-   * Anything the caller wants to keep alongside the text — where the memory came from, which
-   * conversation produced it, a confidence score. Stored but **not indexed** (like
-   * {@link MemoryRecord.createdAt}), so it costs no schema change and no re-index: it rides along
-   * in the JSON doc and comes back on {@link AgentMemory.recall}.
-   *
-   * Because it is unindexed it cannot be filtered or searched on — a query still matches `text`
-   * only. Anything you need to filter by has to go in the schema instead, which does mean
-   * re-creating the index.
+   * Extra fields this store was configured to carry, via
+   * {@link AgentMemoryConfig.metadataSchema}. They are stored as **top-level, indexed** fields, so
+   * unlike `createdAt` they can be filtered on — that is the whole point of declaring them.
    */
   metadata?: TMetadata;
 }
@@ -50,6 +45,22 @@ export interface AgentMemoryConfig {
   prefix?: string;
   /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
   indexName?: string;
+  /**
+   * Extra indexed fields to carry on every record, as Upstash Search schema builders — e.g.
+   * `{ source: s.string().noTokenize(), deleted: s.boolean() }`. Values are supplied per record as
+   * `metadata` and can then be filtered on in {@link AgentMemory.recall}, {@link AgentMemory.list}
+   * and {@link AgentMemory.count}.
+   *
+   * **Give an extended store its own `prefix`.** The schema describes an index, and an index covers
+   * a keyspace: pointing a stricter schema at a keyspace that already holds records written without
+   * these fields makes those records permanently invisible, because Upstash Search does not match a
+   * missing field against `{$eq: …}` and has no `$ne`. Its own prefix means its own keyspace and its
+   * own index, and nothing written earlier is in scope.
+   *
+   * Omit it and this is exactly the store it always was — same two indexed fields, same index, no
+   * re-index, existing records untouched.
+   */
+  metadataSchema?: Record<string, unknown>;
   /** Default relevance floor for {@link AgentMemory.recall} (BM25 score). */
   minScore?: number;
   /**
@@ -60,10 +71,9 @@ export interface AgentMemoryConfig {
 }
 
 /** One JSON doc per memory: `text` is fuzzy-searchable, `userId` is an exact-match tenant filter. */
-const MemorySchema = s.object({
-  text: s.string(),
-  userId: s.string().noTokenize(),
-});
+/** The two fields every store indexes: the ranked text and the tenant filter. */
+const BASE_FIELDS = { text: s.string(), userId: s.string().noTokenize() };
+const MemorySchema = s.object(BASE_FIELDS);
 
 /**
  * Long-term agent memory with fuzzy recall, backed entirely by Upstash Redis Search. You pass only
@@ -78,6 +88,7 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
   private keyPrefix: string;
   private index: ReactiveSearchIndex<typeof MemorySchema>;
   private minScore: number;
+  private metadataFields: string[];
 
   constructor(config: AgentMemoryConfig) {
     this.redis = config.redis;
@@ -86,11 +97,18 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
     // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
     const indexName = config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_");
     this.keyPrefix = `${prefix}:`;
+    // A store with no `metadataSchema` builds exactly the schema it always did, so its index and
+    // every record already in it are unaffected.
+    this.metadataFields = Object.keys(config.metadataSchema ?? {});
+    const schema =
+      config.metadataSchema === undefined
+        ? MemorySchema
+        : (s.object({ ...BASE_FIELDS, ...config.metadataSchema }) as typeof MemorySchema);
     this.index = new ReactiveSearchIndex({
       redis: this.redis,
       indexName,
       prefix: this.keyPrefix,
-      schema: MemorySchema,
+      schema,
       ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
     });
     this.minScore = config.minScore ?? 0;
@@ -123,29 +141,32 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
       createdAt: now(),
       ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
     };
-    // `createdAt` and `metadata` are stored but not in the schema, so they ride along unindexed —
-    // no index change, and both come back on the `query` row.
+    // `metadata` is spread **top-level**: Redis Search indexes JSON fields by path, so a nested
+    // object would not be filterable. `createdAt` still rides along unindexed.
     await this.redis.json.set(this.keyFor(userId, record.id), "$", {
       text,
       userId,
       createdAt: record.createdAt,
-      ...(record.metadata !== undefined ? { metadata: record.metadata } : {}),
+      ...(record.metadata ?? {}),
     });
     return record;
   }
 
   /**
    * Fuzzily recall the memories most relevant to `query` for `userId`. Omit `query` (or pass an empty
-   * string) to return any memories for the user, unfiltered by relevance. When a `query` is given but
-   * the text matches **nothing at all**, it falls back to that same "everything for the user" fetch —
-   * so recall isn't empty just because the fuzzy text didn't match (e.g. a model passing "everything").
-   * `minScore` still filters genuine-but-weak matches (no fallback then).
+   * string) to return everything for the user, unfiltered by relevance.
+   *
+   * A `query` that matches nothing returns **nothing**. There is no fallback to "everything for the
+   * user": a search that answers a miss with unrelated memories cannot be told apart from a hit, and
+   * a model will report whatever came back as a result. Pass no query when you want the whole set.
    */
   async recall(params: {
     userId: string;
     query?: string;
     topK?: number;
     minScore?: number;
+    /** Extra clauses over {@link AgentMemoryConfig.metadataSchema} fields, e.g. `{source: {$eq: "agent"}}`. */
+    filter?: Record<string, unknown>;
   }): Promise<RecalledMemory<TMetadata>[]> {
     const { userId, query } = params;
     assertUserId(userId);
@@ -154,50 +175,82 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
     // BM25 relevance only exists when there's a text query; a filter-only fetch scores 0 for all.
     const minScore = hasQuery ? (params.minScore ?? this.minScore) : 0;
 
-    const matched = await this.query(userId, hasQuery ? query : undefined, topK);
-    // Fall back to "everything for the user" only when the text matched nothing — not when a genuine
-    // match was filtered out by `minScore`.
-    const hits =
-      hasQuery && matched.length === 0
-        ? await this.query(userId, undefined, topK)
-        : matched.filter((h) => h.score >= minScore);
-
-    const idPrefix = this.keyFor(userId, "");
-    return hits.map((h) => ({
-      id: h.key.startsWith(idPrefix) ? h.key.slice(idPrefix.length) : h.key,
-      text: h.text,
-      createdAt: h.createdAt,
-      ...(h.metadata !== undefined ? { metadata: h.metadata } : {}),
-      score: h.score,
-    }));
+    const matched = await this.query({
+      userId,
+      topK,
+      ...(hasQuery ? { query } : {}),
+      ...(params.filter !== undefined ? { filter: params.filter } : {}),
+    });
+    return matched.filter((h) => h.score >= minScore);
   }
 
-  /** Run a `userId`-scoped query (optionally fuzzy on `text`) and return normalized rows. */
-  private async query(
-    userId: string,
-    query: string | undefined,
-    topK: number,
-  ): Promise<
-    { key: string; text: string; createdAt: number; metadata?: TMetadata; score: number }[]
-  > {
-    const filter: Record<string, unknown> = { userId: { $eq: userId } };
-    if (query && query.trim()) filter.text = { $smart: query };
-    // `query` returns the indexed fields plus the unindexed `createdAt`, so cast the result.
+  /**
+   * Records matching a metadata filter, unranked — the filter-first read, where {@link
+   * AgentMemory.recall} is the relevance-first one. Ordering is the caller's business: sort the
+   * result by whatever fields they put in `metadata`.
+   */
+  async list(params: {
+    userId: string;
+    filter?: Record<string, unknown>;
+    limit?: number;
+  }): Promise<RecalledMemory<TMetadata>[]> {
+    assertUserId(params.userId);
+    return this.query({
+      userId: params.userId,
+      topK: params.limit ?? 100,
+      ...(params.filter !== undefined ? { filter: params.filter } : {}),
+    });
+  }
+
+  /** How many records match, without fetching them. */
+  async count(params: { userId: string; filter?: Record<string, unknown> }): Promise<number> {
+    assertUserId(params.userId);
+    const result = await this.index.count({
+      filter: {
+        userId: { $eq: params.userId },
+        ...(params.filter ?? {}),
+      } as InferFilterFromSchema<typeof MemorySchema>,
+    });
+    // A missing index answers `{count: -1}`; the reactive wrapper creates it and retries, so a
+    // negative here means "genuinely nothing", not "not provisioned".
+    return typeof result?.count === "number" && result.count > 0 ? result.count : 0;
+  }
+
+  /** Run a `userId`-scoped query and normalize the rows back into records. */
+  private async query(params: {
+    userId: string;
+    topK: number;
+    query?: string;
+    filter?: Record<string, unknown>;
+  }): Promise<RecalledMemory<TMetadata>[]> {
+    const filter: Record<string, unknown> = {
+      userId: { $eq: params.userId },
+      ...(params.filter ?? {}),
+    };
+    if (params.query && params.query.trim()) filter.text = { $smart: params.query };
     const rows = (await this.index.query({
       filter: filter as InferFilterFromSchema<typeof MemorySchema>,
-      limit: topK,
+      limit: params.topK,
     })) as unknown as {
       key: string;
       score: number;
-      data?: { text?: string; createdAt?: number; metadata?: TMetadata };
+      data?: Record<string, unknown>;
     }[];
-    return rows.map((r) => ({
-      key: r.key,
-      text: typeof r.data?.text === "string" ? r.data.text : "",
-      createdAt: typeof r.data?.createdAt === "number" ? r.data.createdAt : 0,
-      ...(r.data?.metadata !== undefined ? { metadata: r.data.metadata } : {}),
-      score: r.score,
-    }));
+    const idPrefix = this.keyFor(params.userId, "");
+    return rows.map((r) => {
+      const data = r.data ?? {};
+      // Metadata was stored flat so it could be indexed; rebuild the declared subset for the caller.
+      const metadata = Object.fromEntries(
+        this.metadataFields.filter((f) => data[f] !== undefined).map((f) => [f, data[f]]),
+      ) as TMetadata;
+      return {
+        id: r.key.startsWith(idPrefix) ? r.key.slice(idPrefix.length) : r.key,
+        text: typeof data.text === "string" ? data.text : "",
+        createdAt: typeof data.createdAt === "number" ? data.createdAt : 0,
+        ...(this.metadataFields.length > 0 ? { metadata } : {}),
+        score: r.score,
+      };
+    });
   }
 
   /** Delete a memory by id for `userId` (required, non-empty). */

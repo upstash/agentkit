@@ -65,12 +65,17 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     expect(await memory.recall({ userId: "all-other", topK: 10 })).toHaveLength(0);
   });
 
-  it("falls back to everything when a query matches nothing", async () => {
+  it("returns nothing when a query matches nothing", async () => {
     await memory.add({ text: "the user lives in Berlin", userId: "fb" });
     await memory.searchIndex.waitIndexing();
-    // A query that won't fuzzily match still returns the user's memories (no empty result).
-    const hits = await memory.recall({ query: "zzqqxx nonexistent topic", userId: "fb", topK: 10 });
-    expect(hits.some((h) => h.text.includes("Berlin"))).toBe(true);
+    // No fallback to "everything for the user": a miss answered with unrelated memories is
+    // indistinguishable from a hit to whoever asked.
+    expect(
+      await memory.recall({ query: "zzqqxx nonexistent topic", userId: "fb", topK: 10 }),
+    ).toEqual([]);
+    // Omitting the query is still how you ask for the whole set.
+    const all = await memory.recall({ userId: "fb", topK: 10 });
+    expect(all.some((h) => h.text.includes("Berlin"))).toBe(true);
   });
 
   it("forgets a memory", async () => {

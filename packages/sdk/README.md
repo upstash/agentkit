@@ -94,7 +94,7 @@ new AgentMemory({
 ```
 
 - `add` takes an optional `id` (a stable id; generated when omitted).
-- `recall` takes `topK` (default 5), `minScore`, and an optional `query` — omit it (or pass `""`) to return everything for the user.
+- `recall` takes `topK` (default 5), `minScore`, and an optional `query` — omit it (or pass `""`) to return everything for the user. A `query` that matches nothing returns nothing; there is no fallback to the whole set.
 - Stored at `agentkit:memory:<userId>:<id>`.
 
 `userId` is **required, non-empty, and may not contain `:`** on every method — the only tenant boundary
