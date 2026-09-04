@@ -2,36 +2,37 @@
 "@upstash/agentkit-sdk": minor
 ---
 
-feat(sdk): `AgentMemory` can carry extra **indexed** fields, and no longer falls back on a miss
+feat(sdk): typed indexed metadata on `AgentMemory`, plus `get`/`list`/`count`
 
-`AgentMemory` accepts a `metadataSchema` — Upstash Search field builders such as
-`{ source: s.string().noTokenize(), deleted: s.boolean() }` — whose values are supplied per record as
-`metadata` and can then be filtered on in `recall({ filter })`, the new `list({ filter })`, and the
-new `count({ filter })`. Metadata is stored as top-level fields, because Redis Search indexes JSON by
-path and a nested object would not be filterable.
+`AgentMemory` accepts a `metadataSchema` of Upstash Search field builders, whose values are supplied
+per record as `metadata` and can then be filtered on:
 
-The schema is the single source of truth for the types. `AgentMemory`'s type parameter is the
-schema itself, and the `metadata` accepted by `add` plus the `filter` accepted by `recall`, `list`
-and `count` are derived from it — field names and their value types both. Declaring a field
-`s.boolean()` and then filtering it against a string, or naming a field the schema does not have, is
-a compile error rather than a query that quietly matches nothing. Where a derived type is too wide
-(a `s.string()` field that only holds a few values), pass the metadata type as a second argument:
-`new AgentMemory<typeof schema, { source: "agent" | "userMessage" }>(…)`. It is constrained to the
-schema, so the two cannot drift apart.
+```ts
+const memory = new AgentMemory({
+  redis,
+  prefix: "myapp:memory", // ← its own prefix; see below
+  metadataSchema: { source: s.string().noTokenize(), deleted: s.boolean() },
+});
 
-**Give an extended store its own `prefix`.** A schema describes an index and an index covers a
-keyspace: pointing a stricter schema at a keyspace that already holds records written without those
-fields makes those records permanently unreachable, because Upstash Search does not match a missing
-field against `{$eq: …}` and has no `$ne` to work around it. Its own prefix means its own keyspace
-and its own index, so nothing written earlier is in scope.
+await memory.add({ text: "…", userId: "u1", metadata: { source: "agent", deleted: false } });
+await memory.recall({ userId: "u1", query: "…", filter: { source: { $eq: "agent" } } });
+```
 
-Omit `metadataSchema` and this is exactly the store it was: the same two indexed fields, the same
-index, no re-index, existing records untouched.
+The schema types everything: `metadata` and each `filter` are derived from it, so a wrong operand
+type or an undeclared field is a compile error rather than a query that quietly matches nothing. To
+narrow a derived type, pass it as a second argument, constrained to the schema:
+`new AgentMemory<typeof schema, { source: "agent" | "userMessage" }>(…)`.
+
+Also new: `list({ userId, filter, limit })` (filter-first, unranked), `count({ userId, filter })`,
+and `get({ userId, id })` — a direct-key read, for when you have an id and a bounded search page
+could hide it.
+
+**Give an extended store its own `prefix`.** A stricter schema pointed at a keyspace that already
+holds records written without those fields makes them permanently unreachable: Upstash Search does
+not match a missing field against `{$eq: …}` and has no `$ne`. Omitting `metadataSchema` leaves the
+store exactly as it was.
 
 **Behaviour change:** `recall()` no longer falls back to "everything for the user" when a `query`
-matches nothing — it returns nothing. The fallback made a miss indistinguishable from a hit, so a
-caller (or a model) would report unrelated memories as results; one black-box test had an agent
-answer "I do not see that in the stored entries" from an unfiltered dump it mistook for a filtered
-one. Omitting the query is still how you ask for the whole set. This affects every caller of
-`recall`, including the memory tools in `@upstash/agentkit-ai-sdk`, `@upstash/agentkit-eve` and the
-eve extension: a model passing a placeholder like "everything" now gets nothing back.
+matches nothing; it returns nothing, since the fallback made a miss indistinguishable from a hit.
+Omitting the query is still how you ask for the whole set. This reaches every caller of `recall`,
+including the memory tools in `@upstash/agentkit-ai-sdk`, `@upstash/agentkit-eve` and the extension.
