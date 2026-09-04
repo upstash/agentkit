@@ -9,5 +9,8 @@ coverage
 .env.*
 !.env.example
 *.tsbuildinfo
+# `pnpm pack` output — packing is how a plugin is installed into a dsh profile
+# without publishing, so these land in the tree routinely.
+*.tgz
 .vscode
 .idea

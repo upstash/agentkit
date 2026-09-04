@@ -18,6 +18,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-ai-sdk` (`packages/ai-sdk`) | Vercel AI SDK adapter. |
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
+| `@upstash/agentkit-deepseek` (`packages/deepseek`) | **DeepSeek Harness** (`dsh`) plugins. A cordis plugin package — nothing to do with the AgentKit primitives above; it shares only Redis. Currently one plugin: a session-persistence backend. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
@@ -365,6 +366,96 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `agent/memory/recall.ts`) and `evals/memory.eval.ts` drives them with eve's `mockModel`
   (`AGENTKIT_MOCK_MODEL=1`, no OpenAI key). The mock echoes the memory blocks eve injected into its
   *prompt*, which is what proves automatic recall. CI runs it next to the extension eval.
+
+### deepseek (`packages/deepseek`) — DeepSeek Harness plugins
+- **Different world from the rest of the repo.** Not AI SDK, not eve, not the AgentKit primitives:
+  it's a [**cordis**](https://github.com/deepseek-ai/deepseek-harness) plugin package for the DeepSeek
+  Harness (`dsh`). Peers `@deepseek-ai/cordis` + `@deepseek-ai/dsh-session` + `@deepseek-ai/dsh-session-persistence`
+  (pinned to the `next` npm tag, `0.1.0-rc.6` — `latest` is a much older `0.0.1-rc.1`), dep
+  `@deepseek-ai/schemastery` for the config schema.
+- **`@upstash/redis` is a `dependency` here, NOT a peer** — the one place in this repo that diverges
+  from the peer-everywhere convention, and it's load-bearing. A peer means "the host provides it";
+  the *host* is `dsh`, which has never heard of Redis, so nothing in a profile's `node_modules` ever
+  satisfies it → `ERR_MODULE_NOT_FOUND: Cannot find package '@upstash/redis'` at plugin load. There's
+  also no single-copy requirement (unlike `ai`/`eve`): the plugin builds its own client via
+  `Redis.fromEnv()`. The `@deepseek-ai/*` packages stay **peers** — dsh really does provide them, and
+  a second copy of `dsh-session-persistence` would break service identity (cordis registration, the
+  `Context` module augmentation, `instanceof`). Runtime imports in the built dist are exactly three:
+  `@deepseek-ai/schemastery` (dep, matching the first-party backends), `@upstash/redis` (dep),
+  `@deepseek-ai/dsh-session-persistence` (peer). `cordis`/`dsh-session` are type-only.
+- `RedisSessionPersistence` (default export) provides `ctx.sessionPersistence`. It **extends the
+  abstract `SessionPersistence` service and composes the harness's `PersistenceCoordinator`**,
+  implementing only the small `PersistenceBackend<number>` hook interface — exactly how the
+  first-party JSONL/SQLite backends are built. Never reimplement the service methods; delegate them
+  to the coordinator (the sole exception is `list`, which IS a backend hook — delegating it would
+  recurse).
+- **Key layout:** `<prefix>:store` (SET-NX store identity), `<prefix>:ids` (set), `<prefix>:meta:<id>`
+  (hash: `meta`/`incarnation`/`revision`), `<prefix>:events:<id>` (**list**). The list is load-bearing:
+  a session log is contiguous from seq 0, so **list index === event seq** → `LLEN` is the stored
+  next-seq, `LRANGE key fromSeq -1` is a real seek (so we implement the optional `loadStoredFrom`
+  hook), `LTRIM` truncates a tail.
+- **All four Redis ops are Lua scripts** (`src/scripts.ts`, run via `createScript` so it's EVALSHA
+  with an EVAL fallback). Append must be atomic per the seam (materialize + first batch cannot tear);
+  a script is the equivalent of SQLite's transaction. Consequence: this backend **never produces a
+  torn tail**, so `tornMarker` is only reachable by damaging a key out-of-band — truncation stays
+  implemented anyway. The append script also guards contiguous seq via `LLEN`, turning a second
+  writer into a loud `AGENTKIT_SEQ_MISMATCH` instead of an interleaved log.
+- **Reads of one session go through ONE script** (header + events + revision together). Two round
+  trips could straddle a concurrent append and return a revision describing a different prefix, which
+  the seam forbids. Listing is a pipeline instead — cross-session atomicity buys nothing there, and a
+  script looping over every session would block the server.
+- **`@upstash/redis` auto-deserializes responses**, so a stored JSON string comes back already parsed.
+  Every decoder in `src/records.ts` accepts **both** shapes; never assume which. Same reason `smembers`
+  results are `String()`-ed (an all-digits id would come back as a number).
+- **Testing: the conformance suite is vendored.** `test/contract.ts` is a **verbatim copy** of the
+  harness's `runPersistenceContract` — the same suite JSONL and SQLite pass. It's copied because the
+  harness ships only `lib/` to npm. Only the `SessionPersistence` type import was repointed. **Don't
+  reformat or "fix" it** (it's in `.prettierignore` + eslint ignores); re-copy it when bumping the
+  `@deepseek-ai/dsh-session-persistence` peer. Each `make()` gets a `uniquePrefix()` keyspace.
+- **`cordis.patch.yml` + `dsh.bundle`:** the package is a *bundle*, so `dsh plugin add` installs AND
+  activates it. The layer **disables** `session-persistence-jsonl` and **inserts** a new row.
+  ⚠️ A patch's `name` is an **assertion about the target row**, not an override — patching
+  `{id: session-persistence-jsonl, name: '@upstash/agentkit-deepseek'}` warns "name mismatch …
+  skipping" and silently changes nothing. Swap a provider by disable + insert, always.
+- `redis` stays a **runtime-only config seam** (not in the schemastery schema) per repo convention —
+  a client instance isn't a YAML value, and `Redis.fromEnv()` works because `dsh` loads `.env`.
+- **Credentials resolve through `ctx.credentials`, then `Redis.fromEnv()`.** `~/.dsh/.credentials.yaml`
+  (the managed store the Web Models page writes) is **never materialized into `process.env`** — it's
+  resolved by name — so an env-only backend cannot see it. `src/credentials.ts` binds the service
+  **structurally** (`ctx.get('credentials')` returns `any`), so there is no dependency on
+  `@deepseek-ai/dsh-credentials` and the service stays optional. Config names the *reference*
+  (`urlRef`/`tokenRef`, the harness's `apiKeyEnv` pattern), never the value. `.env` layers still work
+  because the launcher materializes those into `process.env`.
+- **Why the client lives behind `ready`:** credential resolution is async, so `connect()` resolves the
+  client, prepares the four scripts, and claims store identity in one promise every hook already
+  awaited. `ConnectedStore` is **inferred** from the module-level `connectStore()` factory because
+  `@upstash/redis` does not export its `Script`/`ScriptRO` types. `.redis` is now a *getter returning
+  a promise*, not a field.
+- **`agentkit-deepseek` CLI** (`src/cli.ts`, the package `bin`): `credentials set|status`. Mounts the
+  harness's own `LocalCredentialProvider` and calls `set()`, so the atomic write / lock / `0600` /
+  comment-preserving patch are their code. cordis + credentials-local are **dynamically imported and
+  never runtime deps** — cordis must stay one copy, and both resolve from a profile via the parent
+  walk to `$DSH_HOME/profiles/node_modules`. Run it as
+  `dsh plugin --profile web exec agentkit-deepseek credentials set`. Must `fiber.dispose()` or the
+  provider's watcher keeps the process alive. **`set` rejects a ref the launching shell exports**
+  (a higher layer would shadow it) — surface that message, don't swallow it.
+- **No Web UI is possible for us.** The Models page is LLM-provider-specific, and the generic plugin
+  settings section gates cards behind a **Host allowlist in `packages/host/apiproxy`** — its own docs
+  say a plugin distributed outside the harness repo cannot surface config there. Don't plan around it.
+  (`.env` bootstrap-var rejection covers `DSH_`/`XDG_`/`DYLD_`/`BASH_FUNC_` — `UPSTASH_*` is fine.)
+- **`dsh` is the whole CLI**, not a web-only tool: `dsh web` is a *hardcoded alias* for
+  `--profile web`. A **profile** is one runnable composition at `~/.dsh/profiles/<name>/`
+  (`package.json` with the ordered `bundles` list + a `cordis.patch.yml`); `web`/`headless`
+  auto-initialize on first use. A plugin installs into **one** profile — installing into `demo` and
+  then running `dsh web` silently does nothing. `npx @deepseek-ai/dsh …` is the same binary; the
+  profile dir is durable state, so npx is fine.
+- **Installing needs no publishing.** `dsh plugin <args>` forwards to pnpm in the profile dir, so any
+  pnpm specifier works: local path (links it — best for dev), `pnpm pack` tarball (ships built `dist/`
+  — best for handing to someone), git URL, or registry. Only the last is "publishing". A `--patch`
+  overlay naming `dist/index.js` by absolute path skips installation entirely. `--dump-config`
+  verifies the swap. **Git installs are the one trap**: pnpm fetches *sources*, so `dist/` never gets
+  built — that route alone needs a `prepare` script plus the user's `allowBuilds` opt-in. We ship no
+  `prepare` (install-time builds break in a monorepo: sdk isn't built yet at install).
 
 ## Naming history (so you don't resurrect old names)
 - ai-sdk caching: `cacheTools` → `cachedTool`+`cachedTools` → now **`cachedTools` only** (singular `cachedTool` removed; toolName = map key, `userId` scopes).

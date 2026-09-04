@@ -6,7 +6,16 @@ import prettier from "eslint-config-prettier";
 export default [
   {
     // `examples/**` has its own (Next.js) eslint toolchain; lint it there, not here.
-    ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "**/*.d.ts", "examples/**"],
+    // `packages/deepseek/test/contract.ts` is vendored verbatim from the DeepSeek Harness and is
+    // re-copied on upgrade, so it is not held to this repo's style.
+    ignores: [
+      "**/dist/**",
+      "**/node_modules/**",
+      "**/coverage/**",
+      "**/*.d.ts",
+      "examples/**",
+      "packages/deepseek/test/contract.ts",
+    ],
   },
   js.configs.recommended,
   {

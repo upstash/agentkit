@@ -4,3 +4,7 @@ coverage
 pnpm-lock.yaml
 *.md
 examples
+
+# Vendored verbatim from the DeepSeek Harness so it can be re-copied on upgrade.
+# Reformatting it would make that diff unreadable.
+packages/deepseek/test/contract.ts
