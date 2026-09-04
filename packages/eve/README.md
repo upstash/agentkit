@@ -197,8 +197,7 @@ that followed it.
 
 `redisDocuments({ … })` — `redis` (defaults to `Redis.fromEnv()`), `prefix`
 (`agentkit:memoryFile`), `ttlSeconds`, `enableTelemetry`. One Redis hash per scope key; the
-conditional write eve requires is a Lua `EVAL` compare-and-set, because the Upstash REST API has no
-`WATCH`/`MULTI`.
+conditional write eve requires is a Lua `EVAL` compare-and-set.
 
 `redisMemory({ … })` — `redis`, `prefix` (`agentkit:memorySlot`) / `indexName`, `topK` (5),
 `minScore`, `maxRecallCharacters` (4,000 — the recalled block's budget), `maxMemoryCharacters`
