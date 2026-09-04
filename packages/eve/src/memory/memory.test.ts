@@ -760,8 +760,10 @@ describe.skipIf(!hasRedisCreds)("redisDocuments() — MemoryDocumentBackend (liv
     expect((await backend.read({ key, signal }))?.version).toBe(fresh.version);
   });
 
-  // The whole point of the Lua script: on Upstash's REST API there is no WATCH/MULTI, so without a
-  // server-side compare-and-set concurrent writers would all "succeed" and silently lose data.
+  // The whole point of the Lua script. Upstash's REST API does have `MULTI` (via /multi-exec), but a
+  // transaction returns every result at EXEC, so nothing in it can branch on a value it just read;
+  // `WATCH`, which is what makes a write conditional, is rejected over REST. Without a server-side
+  // compare-and-set, concurrent writers would all "succeed" and silently lose data.
   it("lets exactly one of N concurrent writers win (atomic compare-and-set)", async () => {
     const raceKey = "scope-race";
     await backend.write({ key: raceKey, content: "base", expectedVersion: null, signal });

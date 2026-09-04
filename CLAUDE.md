@@ -204,7 +204,14 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `HGET`/`HSET`/`EXPIRE` inside the script behave normally (`SCRIPT LOAD`/`EVALSHA` work too, but the
   backend just sends the ~300-byte script each time — writes are rare and `EVALSHA` would need a
   `NOSCRIPT` fallback). This is the *only* way to satisfy `MemoryDocumentBackend.write`'s
-  optimistic-concurrency contract: REST is stateless, so there is no `WATCH`/`MULTI`. A stale
+  optimistic-concurrency contract. **`MULTI` does exist over REST** — `redis.multi()` posts to a
+  dedicated `/multi-exec` endpoint and executes atomically (measured live; don't repeat the old
+  claim that REST has no MULTI). It just cannot do a CAS: a transaction hands back every result at
+  `EXEC`, so nothing inside it can branch on a value it just read —
+  `multi().get(k).set(k,v).exec()` returns `["a","OK"]` with the `set` already done. Conditioning
+  the write is `WATCH`'s job, and **`WATCH`/`UNWATCH` are what REST actually lacks**: the server
+  answers `ERR Command "WATCH" is not allowed in REST`, since watching spans requests and REST keeps
+  no session. A stale
   `expectedVersion` must throw eve's `MemoryDocumentConflictError` — `fileMemory()` catches exactly
   that, re-reads and retries up to 8 times, using the structural `MemoryDocumentConflictError.is()`,
   so the class is imported from `eve/memory/file` at **runtime** (the only new runtime eve import

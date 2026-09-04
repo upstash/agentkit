@@ -24,13 +24,22 @@
  * See `./provider.ts` for the other integration, `redisMemory()`, and `./index.ts` for
  * how the two differ and which to pick.
  *
- * ## Optimistic concurrency without WATCH/MULTI (verified, not assumed)
+ * ## Optimistic concurrency without WATCH (verified, not assumed)
  *
  * `MemoryDocumentBackend.write()` is a conditional replace: it must throw eve's
  * `MemoryDocumentConflictError` when the caller's `expectedVersion` no longer matches the stored
- * one (`fileMemory()` catches it, re-reads, and retries up to 8 times). `@upstash/redis` speaks the
- * **REST** API, which is stateless and therefore has no `WATCH`/`MULTI` — so the compare and the
- * swap have to happen inside a single server-side command.
+ * one (`fileMemory()` catches it, re-reads, and retries up to 8 times).
+ *
+ * `MULTI` **is** available over Upstash's REST API — `redis.multi()` posts to a dedicated
+ * `/multi-exec` endpoint and executes atomically (measured). It still cannot do this job: a
+ * transaction queues its commands and hands back every result at `EXEC`, so nothing inside it can
+ * branch on a value it just read — `multi().get(k).set(k, v).exec()` returns `["a", "OK"]`, the
+ * `set` having run unconditionally. Making the write conditional is what `WATCH` is for, and
+ * `WATCH` is the part REST genuinely lacks: the server rejects it outright with
+ * `ERR Command "WATCH" is not allowed in REST`, because watching a key spans requests and REST
+ * keeps no session between them.
+ *
+ * So the compare and the swap have to happen inside a single server-side command.
  *
  * That command is `EVAL`. **Verified live against an Upstash Redis instance** (2026-09, an
  * `upstash start-redis` database on the current REST API), not assumed:
@@ -204,7 +213,8 @@ export class RedisMemoryDocumentBackend implements MemoryDocumentBackend {
   }: MemoryDocumentWriteInput): Promise<MemoryDocument> => {
     signal.throwIfAborted();
     const version = nextVersion();
-    // REST has no WATCH/MULTI, so the compare and the swap happen inside one Lua script — see the
+    // REST has no WATCH (and a MULTI cannot branch on a read), so the compare and the swap happen
+    // inside one Lua script — see the
     // module docstring for the live verification that EVAL works on Upstash's REST API.
     const [ok] = await this.redis.eval<string[], [number, string]>(
       CAS_SCRIPT,
