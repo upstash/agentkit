@@ -11,7 +11,7 @@ import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-supp
  * the `{count: -1}` sentinel on a missing index, which makes the reactive wrapper create it, wait
  * for indexing, and retry.
  */
-async function provision<TMetadata>(memory: AgentMemory<TMetadata>) {
+async function provision<TSchema>(memory: AgentMemory<TSchema>) {
   await memory.count({ userId: "provision-probe" });
 }
 
@@ -176,8 +176,9 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
 describe.skipIf(!hasRedisCreds)("AgentMemory with metadataSchema (live Redis)", () => {
   const redis = testRedis();
   const prefix = uniquePrefix("memory-meta");
-  /** The shape a caller declares: extra fields that become filterable. */
-  const memory = new AgentMemory<{ source: string; deleted: boolean; slot: number }>({
+  // No metadata type is written down: the store's `metadata` shape and the fields its `filter`
+  // accepts are both derived from `metadataSchema` below.
+  const memory = new AgentMemory({
     redis,
     prefix,
     metadataSchema: {

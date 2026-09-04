@@ -237,8 +237,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `metadata.source` `"agent"` → *you saved this* (`save_memory`), `"userMessage"` → *the user said
   this*, `"agentMessage"` → *you said this* (`rememberMessages` `"fromModel"`/`"all"`). They are not
   equally trustworthy — a deliberate save vs. a passing remark — which is the whole reason the label
-  exists. **`metadata` is unindexed** (it rides along like `createdAt` on core `AgentMemory`, which
-  is now `AgentMemory<TMetadata>`): free to add, but *not filterable* — a query still matches `text`
+  exists. **`metadata` is unindexed** (it rides along like `createdAt` on core `AgentMemory`, whose
+  generic is now the *schema*: `AgentMemory<TSchema, TMetadata extends MetadataOf<TSchema>>`, so
+  `metadata` and every `filter` are derived from `metadataSchema` and checked against it): free to add, but *not filterable* — a query still matches `text`
   only, so "recall only saved facts" would need an indexed schema field and a re-index. Both write
   paths still share the `stableHash(text)` id, so identical text collapses onto one record whichever
   way it arrived, keeping the last write's metadata; and records written before `metadata` existed,

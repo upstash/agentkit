@@ -502,7 +502,10 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
   // written without these fields: Upstash Search does not match a missing field against `{$eq: …}`
   // and has no `$ne`, so those records would be silently unreachable. One extra index (the database
   // caps at 10) buys a store where every record has the same shape.
-  const memory = new AgentMemory<RedisMemoryMetadata>({
+  // Both type arguments are given: the schema drives the field names and their types, while
+  // `RedisMemoryMetadata` narrows `source` from `string` to the `MemorySource` union. The second is
+  // constrained to the first, so the two cannot drift apart.
+  const memory = new AgentMemory<typeof METADATA_SCHEMA, RedisMemoryMetadata>({
     redis,
     metadataSchema: METADATA_SCHEMA,
     prefix: config.prefix ?? "agentkit:memorySlot",

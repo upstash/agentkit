@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { s } from "@upstash/redis";
-import type { InferFilterFromSchema, Redis } from "@upstash/redis";
+import type { FlatIndexSchema, InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex } from "./reactive-index.js";
 import { addTelemetry } from "./telemetry.js";
 import { now } from "./utils.js";
@@ -20,6 +20,70 @@ function assertUserId(userId: string | undefined): asserts userId is string {
   }
 }
 
+/** A store that declares no `metadataSchema`: it carries no metadata and has nothing to filter on. */
+type EmptySchema = Record<never, never>;
+
+/**
+ * The built field object a schema builder produces — `{type: "TEXT", …}` for `s.string()`,
+ * `{type: "BOOL"}` for `s.boolean()`, and so on.
+ *
+ * `@upstash/redis` does not export the builder classes, so the built shape is recovered
+ * structurally rather than by naming them: every builder carries exactly one zero-argument method
+ * (keyed by an internal symbol) that returns the field object, and none of its other public methods
+ * returns anything with a `type` property — `noTokenize()`/`fast()` return builders, and `from()`
+ * takes an argument. Deriving it this way means the field-type mapping below is the only thing
+ * restated from the library.
+ */
+type BuiltField<TBuilder> =
+  Extract<TBuilder[keyof TBuilder], () => { type: string }> extends () => infer TField
+    ? TField
+    : never;
+
+/** The JS value an indexed field carries, mirroring Upstash's own field-type table. */
+type FieldValue<TField> = TField extends { type: infer TType }
+  ? TType extends "TEXT" | "KEYWORD" | "DATE" | "FACET"
+    ? string
+    : TType extends "U64" | "I64" | "F64"
+      ? number
+      : TType extends "BOOL"
+        ? boolean
+        : never
+  : never;
+
+/**
+ * Constraint for `metadataSchema`: every value must be a builder `s` produces. Self-referential the
+ * same way `s.object`'s own parameter is, so a bad entry is reported on the offending key instead of
+ * collapsing the whole object.
+ */
+export type MetadataSchemaShape<TSchema> = {
+  [K in keyof TSchema]: [FieldValue<BuiltField<TSchema[K]>>] extends [never] ? never : TSchema[K];
+};
+
+/**
+ * The `metadata` object a store carries, derived from the fields its `metadataSchema` declares:
+ * `s.string()` → `string`, `s.number()` → `number`, `s.boolean()` → `boolean`.
+ */
+export type MetadataOf<TSchema> = {
+  [K in keyof TSchema]: FieldValue<BuiltField<TSchema[K]>>;
+};
+
+/** The built schema, as Upstash's own filter/query types want to see it. */
+type BuiltSchema<TSchema> = {
+  [K in keyof TSchema]: BuiltField<TSchema[K]>;
+};
+
+/**
+ * Filter clauses over the declared metadata fields — the field names come from `metadataSchema`, and
+ * each operand is checked against that field's type (`{deleted: {$eq: false}}` is accepted,
+ * `{deleted: {$eq: "false"}}` and `{notAField: …}` are not).
+ */
+export type MetadataFilter<TSchema> =
+  BuiltSchema<TSchema> extends infer TBuilt
+    ? TBuilt extends FlatIndexSchema
+      ? InferFilterFromSchema<TBuilt>
+      : never
+    : never;
+
 export interface MemoryRecord<TMetadata = Record<string, unknown>> {
   id: string;
   text: string;
@@ -38,7 +102,7 @@ export interface RecalledMemory<
   score: number;
 }
 
-export interface AgentMemoryConfig {
+export interface AgentMemoryConfig<TSchema = EmptySchema> {
   /** The Upstash Redis client. The search index is created and managed internally. */
   redis: Redis;
   /** Base key prefix for stored memories. Defaults to `agentkit:memory`. */
@@ -47,9 +111,10 @@ export interface AgentMemoryConfig {
   indexName?: string;
   /**
    * Extra indexed fields to carry on every record, as Upstash Search schema builders — e.g.
-   * `{ source: s.string().noTokenize(), deleted: s.boolean() }`. Values are supplied per record as
-   * `metadata` and can then be filtered on in {@link AgentMemory.recall}, {@link AgentMemory.list}
-   * and {@link AgentMemory.count}.
+   * `{ source: s.string().noTokenize(), deleted: s.boolean() }`. The store's `metadata` type is
+   * derived from what you declare here, so `add` and the `filter` on {@link AgentMemory.recall},
+   * {@link AgentMemory.list} and {@link AgentMemory.count} are all checked against these fields and
+   * their types — there is no second type to keep in sync.
    *
    * **Give an extended store its own `prefix`.** The schema describes an index, and an index covers
    * a keyspace: pointing a stricter schema at a keyspace that already holds records written without
@@ -60,7 +125,7 @@ export interface AgentMemoryConfig {
    * Omit it and this is exactly the store it always was — same two indexed fields, same index, no
    * re-index, existing records untouched.
    */
-  metadataSchema?: Record<string, unknown>;
+  metadataSchema?: TSchema & MetadataSchemaShape<TSchema>;
   /** Default relevance floor for {@link AgentMemory.recall} (BM25 score). */
   minScore?: number;
   /**
@@ -83,14 +148,17 @@ const MemorySchema = s.object(BASE_FIELDS);
  * Each memory is one JSON doc at `<prefix>:<userId>:<id>`. Memories are scoped per user via the
  * exact-match `userId` filter, and recalled with the `$smart` operator (phrase/term/fuzzy/prefix).
  */
-export class AgentMemory<TMetadata = Record<string, unknown>> {
+export class AgentMemory<
+  TSchema = EmptySchema,
+  TMetadata extends MetadataOf<TSchema> = MetadataOf<TSchema>,
+> {
   private redis: Redis;
   private keyPrefix: string;
   private index: ReactiveSearchIndex<typeof MemorySchema>;
   private minScore: number;
   private metadataFields: string[];
 
-  constructor(config: AgentMemoryConfig) {
+  constructor(config: AgentMemoryConfig<TSchema>) {
     this.redis = config.redis;
     addTelemetry(config.redis, { enabled: config.enableTelemetry });
     const prefix = config.prefix ?? "agentkit:memory";
@@ -103,7 +171,12 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
     const schema =
       config.metadataSchema === undefined
         ? MemorySchema
-        : (s.object({ ...BASE_FIELDS, ...config.metadataSchema }) as typeof MemorySchema);
+        : // `s.object` cannot check a generic `TSchema` against its own self-referential parameter
+          // constraint; `metadataSchema`'s type has already enforced that every value is a builder.
+          (s.object({
+            ...BASE_FIELDS,
+            ...(config.metadataSchema as Record<string, never>),
+          }) as typeof MemorySchema);
     this.index = new ReactiveSearchIndex({
       redis: this.redis,
       indexName,
@@ -166,7 +239,7 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
     topK?: number;
     minScore?: number;
     /** Extra clauses over {@link AgentMemoryConfig.metadataSchema} fields, e.g. `{source: {$eq: "agent"}}`. */
-    filter?: Record<string, unknown>;
+    filter?: MetadataFilter<TSchema>;
   }): Promise<RecalledMemory<TMetadata>[]> {
     const { userId, query } = params;
     assertUserId(userId);
@@ -191,7 +264,7 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
    */
   async list(params: {
     userId: string;
-    filter?: Record<string, unknown>;
+    filter?: MetadataFilter<TSchema>;
     limit?: number;
   }): Promise<RecalledMemory<TMetadata>[]> {
     assertUserId(params.userId);
@@ -203,7 +276,7 @@ export class AgentMemory<TMetadata = Record<string, unknown>> {
   }
 
   /** How many records match, without fetching them. */
-  async count(params: { userId: string; filter?: Record<string, unknown> }): Promise<number> {
+  async count(params: { userId: string; filter?: MetadataFilter<TSchema> }): Promise<number> {
     assertUserId(params.userId);
     const result = await this.index.count({
       filter: {

@@ -114,7 +114,7 @@ each record can carry more — and, crucially, be **filtered** on them:
 ```ts
 import { s } from "@upstash/redis";
 
-const memory = new AgentMemory<{ source: string; deleted: boolean }>({
+const memory = new AgentMemory({
   redis,
   prefix: "myapp:memory", // ← its own prefix. See the warning below.
   metadataSchema: {
@@ -141,6 +141,36 @@ await memory.count({ userId: "user-123", filter: { deleted: { $eq: false } } });
 
 Values are stored as **top-level** fields, because Redis Search indexes JSON by path — a nested
 object would not be filterable. They come back on `recall`, `list` and `count` results as `metadata`.
+
+The schema is the single source of truth for the types: `metadata` and every `filter` are derived
+from it, so there is no second type to keep in sync and a mismatch is a compile error, not a silent
+no-op at query time.
+
+```ts
+await memory.add({
+  text: "…",
+  userId: "user-123",
+  metadata: { source: "agent", deleted: "false" },
+  //                           ^ Type 'string' is not assignable to type 'boolean'
+});
+
+await memory.recall({ userId: "user-123", filter: { notAField: { $eq: 1 } } });
+//                                                 ^ 'notAField' does not exist
+```
+
+To narrow a derived type — a `s.string()` field that only ever holds a few values, say — pass the
+metadata type as a second argument. It is constrained to the schema, so the two cannot drift apart:
+
+```ts
+const schema = { source: s.string().noTokenize(), deleted: s.boolean() };
+type Source = "agent" | "userMessage";
+
+const memory = new AgentMemory<typeof schema, { source: Source; deleted: boolean }>({
+  redis,
+  prefix: "myapp:memory",
+  metadataSchema: schema,
+});
+```
 
 > **Give an extended store its own `prefix`.** A schema describes an index, and an index covers a
 > keyspace. Upstash Search does not match a missing field against `{$eq: …}`, and it has no `$ne`, so

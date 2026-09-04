@@ -10,6 +10,15 @@ feat(sdk): `AgentMemory` can carry extra **indexed** fields, and no longer falls
 new `count({ filter })`. Metadata is stored as top-level fields, because Redis Search indexes JSON by
 path and a nested object would not be filterable.
 
+The schema is the single source of truth for the types. `AgentMemory`'s type parameter is the
+schema itself, and the `metadata` accepted by `add` plus the `filter` accepted by `recall`, `list`
+and `count` are derived from it — field names and their value types both. Declaring a field
+`s.boolean()` and then filtering it against a string, or naming a field the schema does not have, is
+a compile error rather than a query that quietly matches nothing. Where a derived type is too wide
+(a `s.string()` field that only holds a few values), pass the metadata type as a second argument:
+`new AgentMemory<typeof schema, { source: "agent" | "userMessage" }>(…)`. It is constrained to the
+schema, so the two cannot drift apart.
+
 **Give an extended store its own `prefix`.** A schema describes an index and an index covers a
 keyspace: pointing a stricter schema at a keyspace that already holds records written without those
 fields makes those records permanently unreachable, because Upstash Search does not match a missing
