@@ -26,7 +26,7 @@
     "@tailwindcss/postcss": "4.3.0",
     "@upstash/agentkit-eve": "workspace:*",
     "@upstash/box": "^0.5.1",
-    "@upstash/redis": "^1.38.0",
+    "@upstash/redis": "^1.38.4",
     "@vercel/connect": "0.2.2",
     "ai": "7.0.87",
     "class-variance-authority": "0.7.1",

@@ -131,3 +131,10 @@ only. Nothing becomes unreachable — deletion just stops claiming to be possibl
 
 This is also why the default is `"fromUser"` rather than `"all"`: in the same run, assistant replies
 were 18 of 41 stored records — half the store, and the entire source of the leak.
+
+**`@upstash/redis` peer floor raised to `>=1.38.4`.** `redisDocuments()` reads a document straight
+after writing it, so it depends on the client's read-your-writes guarantee. Through 1.38.0 the
+`upstash-sync-token` was sent one request late, and the backend worked around it by re-reading an
+"absent" answer for a key it had written; 1.38.4 fixes the ordering upstream, so the workaround is
+gone and a read is a single `HMGET` again.
+

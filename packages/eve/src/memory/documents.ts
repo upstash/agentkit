@@ -136,9 +136,6 @@ if ttl and ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
 return {1, ARGV[3]}
 `;
 
-/** How many written scope keys {@link RedisMemoryDocumentBackend} remembers (FIFO). */
-const WRITTEN_KEY_MEMO_LIMIT = 1_024;
-
 /** Monotonic-ish, collision-proof opaque version. eve only ever compares versions for equality. */
 let versionCounter = 0;
 function nextVersion(): string {
@@ -156,14 +153,6 @@ export class RedisMemoryDocumentBackend implements MemoryDocumentBackend {
   private readonly redis: Redis;
   private readonly prefix: string;
   private readonly ttlSeconds: number;
-  /**
-   * Scope keys this instance has written, newest last. Used only to tell a document that is
-   * *genuinely* absent from one this backend knows it wrote — see {@link read}. Bounded so a
-   * long-lived server with many scopes can't grow it without limit; evicting an entry only costs a
-   * confirming re-read that would have happened anyway.
-   */
-  private readonly written = new Set<string>();
-
   constructor(config: RedisDocumentsConfig = {}) {
     this.redis = config.redis ?? Redis.fromEnv();
     addTelemetry(this.redis, config.enableTelemetry);
@@ -201,39 +190,10 @@ export class RedisMemoryDocumentBackend implements MemoryDocumentBackend {
     return { content: decodeContent(content), version };
   }
 
-  /**
-   * Read the document for a scope key.
-   *
-   * A plain `HMGET` is not quite enough: an Upstash database replicates, and `@upstash/redis`'s
-   * read-your-writes guarantee is carried by an `upstash-sync-token` header that **lags one request
-   * behind** in 1.38.0 — `HttpClient.request()` merges the outgoing headers *before* it copies the
-   * latest token into them, so every request is sent with the token from one response ago. A read
-   * issued right after a write therefore travels without the token that would force the replica to
-   * catch up, and can report the document as absent. It is a race, not a certainty: the replica is
-   * usually current within the round trip, which is why this only ever surfaced as a rare CI failure
-   * and never locally.
-   *
-   * Reporting a document we just wrote as absent is the one wrong answer here — eve's `fileMemory()`
-   * would start a *fresh* document and write it with `expectedVersion: null`, taking a conflict and a
-   * retry (it recovers, but that is a wasted round trip built on a lie). So when the store says
-   * "absent" for a key **this instance has written**, confirm it: each extra request also flushes the
-   * correct sync token into the client's headers, so the retry is the request that carries it.
-   * Genuinely absent documents (a fresh scope, or one whose `ttlSeconds` expired) still resolve to
-   * `null` — the common "no document yet" path costs exactly one round trip, as before.
-   */
+  /** Read the document for a scope key, or `null` when the scope has none yet. */
   read = async ({ key, signal }: MemoryDocumentReadInput): Promise<MemoryDocument | null> => {
     signal.throwIfAborted();
-    const document = await this.load(key);
-    if (document !== null || !this.written.has(key)) return document;
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      signal.throwIfAborted();
-      const confirmed = await this.load(key);
-      if (confirmed !== null) return confirmed;
-    }
-    // Really gone (expired via `ttlSeconds`, or deleted out from under us) — stop second-guessing it.
-    this.written.delete(key);
-    return null;
+    return this.load(key);
   };
 
   write = async ({
@@ -254,13 +214,6 @@ export class RedisMemoryDocumentBackend implements MemoryDocumentBackend {
     // Someone else wrote between the caller's read and this write. eve's `fileMemory()` catches
     // this exact error, re-reads and retries — so it must be *this* error, not a generic one.
     if (ok !== 1) throw new MemoryDocumentConflictError(key);
-    // Remember that this key exists so a read racing this write can't be fooled into reporting it
-    // absent (see `read`). Bounded FIFO — Sets iterate in insertion order.
-    if (this.written.size >= WRITTEN_KEY_MEMO_LIMIT) {
-      const oldest = this.written.values().next();
-      if (!oldest.done) this.written.delete(oldest.value);
-    }
-    this.written.add(key);
     return { content, version };
   };
 }
