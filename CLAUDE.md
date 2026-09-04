@@ -80,8 +80,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `MemoryDocumentBackend` for eve's own `fileMemory()` (storage only — replaces Vercel Blob, which is
   the documented gap: `fileMemory()` with no `backend` errors outside `eve dev`/Vercel-with-Blob), and
   `redisMemory()` is a **full `MemoryProvider`** over core `AgentMemory` (ranked BM25 recall at
-  `turn.started`/`compaction.completed`, automatic capture at `turn.completed`/`compaction.requested`,
-  plus `save_memory`/`forget_memory` tools). See the **eve memory slots** section below.
+  `turn.started`/`compaction.completed`, automatic capture at `turn.completed`,
+  plus `save_memory`/`search_memory`/`read_session`/`forget_memory` tools). See the **eve memory slots** section below.
   This is *additive*: `defineMemoryRecallTool`/`defineMemorySaveTool`, ai-sdk `createMemoryTools` and
   the extension's `recall_memory`/`save_memory` are untouched and still the answer for
   purely model-driven memory with no slot and no eve-version floor.
@@ -260,13 +260,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   way it arrived, keeping the last write's metadata; and records written before `metadata` existed,
   or by the standalone memory tools that share this store, carry no source and get **no note**
   rather than a guessed one.
-- **Lifecycle, all four hooks** (documented in `packages/eve/README.md` and the `memory/index.ts`
-  barrel): recall at `turn.started` (before the model runs) and again at `compaction.completed`
-  (against the *new* checkpoint, so memory isn't folded into the summary — eve excludes recalled
-  records from the summarizer); capture at `turn.completed` (after the response is delivered, which
-  is what makes the `waitIndexing()` free) and at `compaction.requested` (last look at the history
-  about to be summarized; `turn` can be `null` there). `redisDocuments()` under `fileMemory()` only
-  ever sees the two recall points — eve reads the document and injects it whole.
+- **Lifecycle: eve offers four hooks, we register three** (documented in `packages/eve/README.md`
+  and the `memory/index.ts` barrel): recall at `turn.started` (before the model runs) and again at
+  `compaction.completed` (against the *new* checkpoint, so memory isn't folded into the summary —
+  eve excludes recalled records from the summarizer); capture at `turn.completed` only (after the
+  response is delivered, which is what makes the `waitIndexing()` free). **There is no
+  `compaction.requested` capture** — messages are stored as they happen so the summarizer takes
+  nothing with it, and it was the one context where `turn` (and so the ordering `sequence`) can be
+  null. Don't re-add it from an older description of this file. `redisDocuments()` under
+  `fileMemory()` only ever sees the two recall points — eve reads the document and injects it whole.
 - **Recall is returned as ONE keyed message** (`id: "agentkit-redis-memory"`), like eve's own
   `file-memory-document`: eve supersedes a record when the same id comes back with different
   content, and omitting an item does **not** delete it — so per-memory ids would accumulate and a
@@ -352,12 +354,12 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   nothing here is version-fragile.
 - **What the tests pin down** (a PR review flagged that only the `profile` tools were covered):
   `memory/memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
-  scripts the search index, so it asserts recall/capture actually *fire* at **all four** lifecycle
-  hooks and with what — the exact `{userId, topK, query, minScore}`, the `agentkit_memory` index
-  name, the `{userId:{$eq}, text:{$smart}}` filter, the unfiltered fallback query, and that a
-  replayed `operationId` re-queries **zero** times. The live suite then asserts the JSON documents
-  in Redis (key = `stableHash(text).slice(0,12)`, value = `{text,userId,createdAt}`) and round-trips
-  them back through recall, including the `compaction.requested` → `compaction.completed` pair.
+  scripts the search index, so it asserts recall/capture actually *fire* at the lifecycle
+  hooks it registers and with what — the exact `{userId, topK, query, minScore}`, the
+  `agentkit_memorySlot` index name, the `{userId:{$eq}, text:{$smart}}` filter, and that a replayed
+  `operationId` re-queries **zero** times. The live suite then asserts the JSON documents in Redis
+  (key = `recordIdFor(sessionId|sequence|source|subIndex|text)`, value = `{text,userId,createdAt}`
+  plus the indexed metadata) and round-trips them back through recall.
   All of it is mutation-checked: removing a hook or the `memory.add` call turns 10 tests red.
 - **E2E proof:** `examples/eve-demo` declares both slots (`agent/memory/profile.ts`,
   `agent/memory/recall.ts`) and `evals/memory.eval.ts` drives them with eve's `mockModel`

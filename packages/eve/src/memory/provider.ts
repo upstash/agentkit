@@ -600,10 +600,15 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
     const seen = new Set<string>();
     for (const captured of await extract(context)) {
       const text = normalizeText(captured.text);
-      // Skip blanks and oversized turns; dedupe within the batch. The id is derived from the
-      // position as well as the text, so a durable replay of this turn rewrites the same keys.
-      if (text.length === 0 || text.length > maxMemoryCharacters || seen.has(text)) continue;
-      seen.add(text);
+      // Dedupe per source, not per text. Under `"all"` both halves of a turn are captured, and the
+      // caller and the model do say the same short thing ("thanks", "yes") — those are two entries
+      // of the transcript, and `recordIdFor` already gives them different keys, so collapsing them
+      // would only make `read_session` skip one with no gap to show for it.
+      const key = `${captured.source}\u0000${text}`;
+      // Skip blanks and oversized turns. The id is derived from the position as well as the text,
+      // so a durable replay of this turn rewrites the same keys.
+      if (text.length === 0 || text.length > maxMemoryCharacters || seen.has(key)) continue;
+      seen.add(key);
       const subIndex = next[captured.source] ?? 0;
       next[captured.source] = subIndex + 1;
       await memory.add({

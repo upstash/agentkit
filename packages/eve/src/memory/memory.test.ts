@@ -1222,6 +1222,40 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     );
   });
 
+  // Regression: capture used to dedupe the batch by text alone, so under `"all"` an assistant reply
+  // matching the caller's message was dropped and `read_session` silently lost half the turn. The
+  // two are distinct entries and already get distinct keys — only the batch filter collapsed them.
+  it("keeps both halves of a turn when the caller and the model say the same thing", async () => {
+    const scope = newScope("echo");
+    const sessionId = "session-echo";
+    const context = operationContext({
+      scopeKey: scope,
+      slot: "recall",
+      sessionId,
+      input: [userMessage("thanks")],
+      messages: [userMessage("thanks"), { role: "assistant", content: "thanks" }],
+    });
+    const both = redisMemory({ redis, rememberMessages: "all" });
+    await captureTurn(both, context);
+    await index.waitIndexing();
+
+    const tools = await both.tools!({
+      ...context,
+      turn: { id: "t", input: [], sequence: 1 },
+    } as never);
+    const read = await pollUntil(
+      () =>
+        callTool<{ found: boolean; entries: { text: string; source?: string }[] }>(
+          tools,
+          "read_session",
+          { sessionId },
+        ),
+      (r) => r.found && r.entries.length >= 2,
+    );
+    expect(read.entries.map((e) => e.source)).toEqual(["userMessage", "agentMessage"]);
+    expect(read.entries.every((e) => e.text === "thanks")).toBe(true);
+  });
+
   it("read_session replays one session in order, with redactions left visible", async () => {
     const isolated = newScope("session");
     const sessionId = "sess-order-1";
