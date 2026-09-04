@@ -46,7 +46,7 @@ function operationContext(options: {
 }) {
   return {
     abortSignal: signal,
-    // eve's real contexts extend SessionContext; `rememberSessions` is the only feature that reads it.
+    // eve's real contexts extend SessionContext, so the fixtures carry a session too.
     session: { id: options.sessionId ?? "session-1", auth: { current: null } },
     memory: {
       scope: {
@@ -1069,6 +1069,42 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
       () =>
         redis.json.get<Record<string, unknown>>(
           `agentkit:memorySlot:${scopeKey}:${saved.id}`,
+        ) as Promise<Record<string, unknown> | null>,
+      (d) => d?.deleted === true,
+    );
+    expect(doc!.text).toBe("");
+    expect(doc!.deleted).toBe(true);
+  });
+
+  // Regression: `forget_memory` used to fetch one unranked page of live records and filter it for
+  // the id, so a scope holding more live memories than a page could report an existing record as
+  // "no entry with that id" — the user asks to forget something and is told it was never there,
+  // while it stays recallable. It now reads the key directly, which no page can hide.
+  it("redacts a memory that falls outside one page of results", async () => {
+    const scope = newScope("forget-paged");
+    const tools = await provider.tools!(
+      operationContext({ scopeKey: scope, slot: "recall" }) as never,
+    );
+
+    // Fill a whole page first, so the record we then save sits beyond it. Saving the target first
+    // would leave it inside the page and prove nothing.
+    for (let i = 0; i < 60; i += 1) {
+      await callTool(tools, "save_memory", { text: `unrelated filler fact number ${i}` });
+    }
+    const target = await callTool<{ id: string }>(tools, "save_memory", {
+      text: "The user's passport number is 123456789",
+    });
+    await index.waitIndexing();
+
+    const result = await callTool<{ redacted: boolean }>(tools, "forget_memory", {
+      id: target.id,
+    });
+    expect(result.redacted).toBe(true);
+
+    const doc = await pollUntil(
+      () =>
+        redis.json.get<Record<string, unknown>>(
+          `agentkit:memorySlot:${scope}:${target.id}`,
         ) as Promise<Record<string, unknown> | null>,
       (d) => d?.deleted === true,
     );

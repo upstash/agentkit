@@ -11,8 +11,9 @@ export default defineMemory({
     // `redis` omitted → Redis.fromEnv() inside the package.
     topK: 5, // optional: max memories recalled per turn (default 5)
     minScore: 0.1, // optional: minimum BM25 relevance (default 0 — BM25 scores are unbounded)
-    // rememberMessages defaults to true, meaning "all" — both halves of each turn are stored.
-    // Narrow with "fromUser" / "fromModel", or `false` for a slot the model curates itself.
+    // rememberMessages defaults to true, which means "fromUser" — the caller's messages are stored,
+    // the model's replies are not. Widen with "all" / "fromModel" (both drop `forget_memory`, since
+    // a reply confirming a deletion quotes the deleted text), or `false` to capture nothing.
     // Automatic recall only ever injects facts saved with `recall__save_memory`; captured turns are
     // reached on demand with `recall__search_memory` and `recall__read_session`, so a passing
     // remark can never outrank something the model deliberately kept.

@@ -8,9 +8,9 @@ import { mockModel } from "eve/evals";
 //
 // The script is prompt-aware: eve injects each memory slot's recalled context as messages *before*
 // the model call, so echoing what arrived in the prompt is what proves automatic recall works end
-// to end. Two prefixes drive the save tools, one per slot — both slots are model-curated, since
-// `redisMemory()`'s automatic capture is opt-in (captured utterances outrank curated facts in the
-// shared BM25 ranking, so it is off by default):
+// to end. Two prefixes drive the save tools, one per slot. `redisMemory()` also captures the
+// caller's messages automatically (`rememberMessages` defaults to `true`, i.e. `"fromUser"`), but
+// automatic recall injects curated facts only, so what these save tools store is what comes back:
 //
 //   "REMEMBER: <fact>" → `profile__save_memory` (eve's own file memory, our Redis storage)
 //   "NOTE: <fact>"     → `recall__save_memory`  (our MemoryProvider)

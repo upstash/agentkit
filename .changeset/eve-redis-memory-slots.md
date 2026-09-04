@@ -12,9 +12,9 @@ feature (`agent/memory/<slot>.ts`), because eve exposes two genuinely different 
   closes eve's documented gap — with no `backend`, `fileMemory()` only resolves storage under
   `eve dev` (process-local) and on Vercel with a Blob store attached, and errors everywhere else.
 - **`redisMemory()`** — a full `MemoryProvider` over the SDK's `AgentMemory`: ranked BM25 recall at
-  `turn.started` / `compaction.completed`, automatic capture at `turn.completed` /
-  `compaction.requested`, plus `<slot>__save_memory` and `<slot>__forget_memory` tools bound to the
-  slot's locked scope. Where `fileMemory()` replays one bounded, model-curated document, this
+  `turn.started` / `compaction.completed`, automatic capture at `turn.completed`, plus
+  `<slot>__save_memory`, `<slot>__search_memory`, `<slot>__read_session` and (outside the modes that
+  store the assistant's replies) `<slot>__forget_memory`, bound to the slot's locked scope. Where `fileMemory()` replays one bounded, model-curated document, this
   retrieves the top-K memories relevant to the current turn from an unbounded store and needs no
   tool call to remember anything.
 
@@ -77,17 +77,14 @@ entirely. Set `rememberMessages: false` for a model-curated slot. `"fromModel"` 
 still (the assistant's text is derived from the recalled block, so the agent re-memorizes its own
 restatements) and their JSDoc says so.
 
-### Conversations
+### Reading a conversation back
 
-`rememberSessions: true` also stores each turn's transcript through core `ChatHistory` (keyed by the
-eve session id), stamps that id on every memory captured or saved in the turn, tags recalled
-memories `session=<id>`, and contributes a `read_session` tool. That is small-to-big
-retrieval: individual memories stay individually ranked, and the model expands a match into the
-surrounding exchange **on demand** instead of transcripts being injected into every prompt — so a
-remembered *question* can lead to the answer that followed it. The recalled block is filtered out of
-what gets stored, so recall output never round-trips into the transcript recall later expands. The
-pointer is not a snapshot: a memory captured mid-conversation points at a transcript that keeps
-growing.
+Every memory carries the eve session id it was written in, recalled memories are tagged
+`session=<id>`, and `<slot>__read_session` replays that session. That is small-to-big retrieval:
+individual memories stay individually ranked, and the model expands a match into the surrounding
+exchange **on demand** rather than transcripts being injected into every prompt — so a remembered
+*question* can lead to the answer that followed it. The recalled block is excluded from what gets
+captured, so recall output never round-trips back into the store.
 
 `examples/eve-demo` now declares both slots and ships a mocked-model e2e eval
 (`AGENTKIT_MOCK_MODEL=1 npx eve eval`) that exercises them against real Redis in CI — including a

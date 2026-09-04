@@ -319,18 +319,42 @@ export class AgentMemory<
     const idPrefix = this.keyFor(params.userId, "");
     return rows.map((r) => {
       const data = r.data ?? {};
-      // Metadata was stored flat so it could be indexed; rebuild the declared subset for the caller.
-      const metadata = Object.fromEntries(
-        this.metadataFields.filter((f) => data[f] !== undefined).map((f) => [f, data[f]]),
-      ) as TMetadata;
       return {
-        id: r.key.startsWith(idPrefix) ? r.key.slice(idPrefix.length) : r.key,
-        text: typeof data.text === "string" ? data.text : "",
-        createdAt: typeof data.createdAt === "number" ? data.createdAt : 0,
-        ...(this.metadataFields.length > 0 ? { metadata } : {}),
+        ...this.toRecord(r.key.startsWith(idPrefix) ? r.key.slice(idPrefix.length) : r.key, data),
         score: r.score,
       };
     });
+  }
+
+  /** Rebuild a stored document into a record. Metadata is stored flat so it can be indexed. */
+  private toRecord(id: string, data: Record<string, unknown>): MemoryRecord<TMetadata> {
+    const metadata = Object.fromEntries(
+      this.metadataFields.filter((f) => data[f] !== undefined).map((f) => [f, data[f]]),
+    ) as TMetadata;
+    return {
+      id,
+      text: typeof data.text === "string" ? data.text : "",
+      createdAt: typeof data.createdAt === "number" ? data.createdAt : 0,
+      ...(this.metadataFields.length > 0 ? { metadata } : {}),
+    };
+  }
+
+  /**
+   * One memory by id, or `null` if there is none.
+   *
+   * This reads the key directly rather than going through the index, which is the point: a search
+   * returns a bounded, unordered page, so looking a known id up by listing and filtering can miss a
+   * record that exists purely because it fell outside the page. It also sees records the index has
+   * not caught up with yet, and records a `filter` would have excluded.
+   */
+  async get(params: { userId: string; id: string }): Promise<MemoryRecord<TMetadata> | null> {
+    assertUserId(params.userId);
+    const data = (await this.redis.json.get(this.keyFor(params.userId, params.id))) as Record<
+      string,
+      unknown
+    > | null;
+    if (data === null || typeof data !== "object") return null;
+    return this.toRecord(params.id, data);
   }
 
   /** Delete a memory by id for `userId` (required, non-empty). */

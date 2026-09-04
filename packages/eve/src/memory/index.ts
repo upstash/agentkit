@@ -24,13 +24,14 @@
  * ## Lifecycle
  *
  * eve drives a slot at four points. Both integrations recall at the same two; only
- * {@link redisMemory} writes.
+ * {@link redisMemory} writes, and it writes at `turn.completed` only — capture needs the turn's own
+ * input, which `compaction.requested` does not carry (`turn` is nullable there).
  *
  * | phase | `fileMemory({ backend: redisDocuments() })` | {@link redisMemory} |
  * | --- | --- | --- |
  * | `turn.started` | read the document, inject it whole | ranked recall → one keyed message, before the model runs |
- * | `turn.completed` | — | save the transcript (`rememberSessions`), write captures (`rememberMessages`), wait for indexing |
- * | `compaction.requested` | — | same capture, before history is summarized; `turn` may be `null` |
+ * | `turn.completed` | — | write captures (`rememberMessages`), wait for indexing |
+ * | `compaction.requested` | — | — |
  * | `compaction.completed` | read and inject against the new checkpoint | recall again against the new checkpoint |
  *
  * Capture runs *after* the response is delivered, which is what makes the `waitIndexing()` there

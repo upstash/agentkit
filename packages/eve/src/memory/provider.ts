@@ -16,11 +16,15 @@
  * ```
  *
  * BM25 (`$smart`) recall at `turn.started` / `compaction.completed`, plus `save_memory` /
- * `search_memory` / `forget_memory` tools bound to the slot's locked scope. Automatic capture is on
- * by default; conversation capture is opt-in. Nothing new is stored: this is `AgentMemory` (one JSON doc per memory at
- * `agentkit:memory:<userId>:<id>`, one shared Redis Search index) keyed by eve's scope key, so
- * adding memory slots doesn't move an Upstash database toward its 10-index cap, and the store is
- * the same one `defineMemorySaveTool` writes to.
+ * `search_memory` / `read_session` / `forget_memory` tools bound to the slot's locked scope.
+ * Automatic capture of the caller's messages is on by default (`rememberMessages`).
+ *
+ * This is `AgentMemory` (one JSON doc per memory) keyed by eve's scope key, but in **its own**
+ * keyspace at `agentkit:memorySlot:<userId>:<id>` with its own Redis Search index — not the
+ * `agentkit:memory` store `defineMemorySaveTool` writes to. It has to be: this schema indexes
+ * `sessionId`/`source`/`deleted`, and Upstash Search does not match a missing field against
+ * `{$eq: …}` and has no `$ne`, so pointing it at the shared keyspace would make every record
+ * written without those fields permanently unreachable. It costs one of the database's 10 indexes.
  *
  * See `./documents.ts` for the other integration, `redisDocuments()`, and `./index.ts`
  * for how the two differ and which to pick.
@@ -118,10 +122,13 @@ export interface RedisMemoryConfig {
   rememberMessages?: RememberMessages;
 
   /**
-   * Base key prefix for stored memories. Defaults to `agentkit:memory` — the same store
-   * {@link defineMemorySaveTool} writes to, so slots and tools share one Redis Search index
-   * (an Upstash database caps at 10). Memories are still isolated: the per-user key part is eve's
-   * scope key, which no tool-based `userId` can collide with.
+   * Base key prefix for stored memories. Defaults to `agentkit:memorySlot`, which is deliberately
+   * **not** the `agentkit:memory` store {@link defineMemorySaveTool} writes to: this slot's schema
+   * indexes extra fields, and a stricter schema over a keyspace that already holds records without
+   * them would make those records unreachable. It therefore owns one of the database's 10 indexes.
+   * Memories are isolated by the per-user key part, which is eve's scope key.
+   *
+   * @default "agentkit:memorySlot"
    */
   prefix?: string;
 
@@ -726,15 +733,12 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
             // with a visible gap, which stops the model treating a removal as "never said". Core
             // `AgentMemory.forget` is a real delete and stays that way for its other callers; here an
             // overwrite is the update, because `add` writes the whole document.
-            const [existing] = await memory
-              .list({
-                userId,
-                filter: { deleted: { $eq: false } },
-                limit: MAX_SESSION_ENTRIES,
-              })
-              .then((rows) => rows.filter((r) => r.id === id));
-            const existed = existing !== undefined;
-            if (existing !== undefined) {
+            // Read the key directly. Listing a page and filtering it for the id would report a
+            // record that exists as missing as soon as the scope holds more live memories than one
+            // page — the user asks to forget something, is told it was never there, and it stays.
+            const existing = await memory.get({ userId, id });
+            const existed = existing !== null;
+            if (existing !== null) {
               await memory.add({
                 text: "",
                 userId,
