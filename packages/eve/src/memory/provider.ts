@@ -167,11 +167,22 @@ export interface RedisMemoryConfig {
 
   /**
    * TTL, in seconds, of the per-`operationId` recall replay cache. Defaults to 3,600; `0` disables
-   * it. eve stores a digest of each recall result and **throws** if the same `operationId` is
-   * replayed with a different result ("Memory recall operation … replayed with a different
-   * result"). Recall here is a live ranked query, so a concurrent write between the original run
-   * and a durable replay would change it. Caching the rendered block under the `operationId` eve
-   * hands us makes replay return exactly what it returned the first time.
+   * it.
+   *
+   * eve does the replay bookkeeping itself — it records a digest of the accepted recall result and
+   * rejects a replay whose result differs ("Memory recall operation … replayed with a different
+   * result"). Its docs are explicit that a provider therefore does **not** need to persist recall
+   * results by `operationId` *"unless its store can change before a replay"*
+   * (`docs/memory/custom-provider.md`, clarified in vercel/eve#2951).
+   *
+   * This provider is that exception, which is why the cache is on by default. Recall is a live
+   * ranked query plus two live counts over a store the same turn actively writes to: `save_memory`
+   * adds a `source: "agent"` record — exactly what recall ranks — and the model can call it
+   * mid-turn; `forget_memory` flips `deleted`; capture appends the turn's messages; and a second
+   * session sharing the scope key can do any of it concurrently. Replaying `turn.started` after any
+   * of those would legitimately produce a different block, and eve would reject the turn. Caching
+   * the rendered block under the `operationId` makes a replay return what it returned the first
+   * time. It is keyed per operation, not per session, so each new turn still runs a fresh query.
    *
    * @default 3600
    */
@@ -528,8 +539,10 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
     context.abortSignal.throwIfAborted();
     const userId = toKeyPart(context.memory.scope.key);
 
-    // Replay-stability first: eve compares a digest of this operation's result against the one it
-    // recorded, and throws if a durable replay produces something different.
+    // Replay-stability first. eve records a digest of the accepted result and rejects a replay that
+    // differs; a provider only needs its own cache when its store can change before that replay,
+    // which this one's can (see `replayCacheTtlSeconds`) — `save_memory` writes the very records
+    // recall ranks, and the model can call it mid-turn.
     if (replayTtl > 0) {
       const cached = await redis.get<string>(replayKey(context));
       if (typeof cached === "string" && cached.length > 0) {

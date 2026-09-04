@@ -228,10 +228,18 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   precisely because this code now relies on the fix — do not lower it). Verified before removing the
   workaround, by stubbing `fetch` and reading the token off each outgoing request: 1.38.0 sends
   `[null, "", "tok-1"]` for three calls (each one behind), 1.38.4 sends `["", "tok-1", "tok-2"]`.
-- **Recall must be replay-stable.** eve stores a digest per `operationId` and throws
-  *"Memory recall operation … replayed with a different result"* if a durable replay returns
-  something else. A live ranked query is not naturally stable, so the rendered block is cached at
-  `agentkit:memoryRecall:<userId>:<operationId>` (`replayCacheTtlSeconds`, default 3600, `0` disables).
+- **Recall must be replay-stable, and the cache stays — this was checked with Vercel, don't delete it.**
+  eve records a digest per `operationId` and throws *"Memory recall operation … replayed with a
+  different result"* if a durable replay returns something else. eve's docs say a provider does
+  **not** need to persist recall results by `operationId` *"unless its store can change before a
+  replay"* (`docs/memory/custom-provider.md`, clarified in **vercel/eve#2951** after we asked —
+  supermemory and `fileMemory()` don't cache because *their* stores can't). **We are the exception:**
+  recall is a live ranked query plus two live counts, and `save_memory` writes `source: "agent"`
+  records — exactly what recall ranks — mid-turn, while `forget_memory` flips `deleted`, capture
+  appends the turn's messages, and a concurrent session on the same scope key can do any of it. So
+  the rendered block is cached at `agentkit:memoryRecall:<userId>:<operationId>`
+  (`replayCacheTtlSeconds`, default 3600, `0` disables), keyed per *operation* so each new turn
+  still runs a fresh query.
 - **What can be in the recalled block, and how each line is labelled.** A line is `<id>: <text>`
   plus a parenthesised note. Three sources land in one ranked list and each is named:
   `metadata.source` `"agent"` → *you saved this* (`save_memory`), `"userMessage"` → *the user said
