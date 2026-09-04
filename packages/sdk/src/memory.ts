@@ -278,6 +278,12 @@ export class AgentMemory<
   /** How many records match, without fetching them. */
   async count(params: { userId: string; filter?: MetadataFilter<TSchema> }): Promise<number> {
     assertUserId(params.userId);
+    // The handle is typed with the base schema, while the index also covers whatever
+    // `metadataSchema` declared, so the composed filter needs an assertion here. Typing the handle
+    // with the full schema instead does not remove it — a value cannot be checked against a filter
+    // type built on an unresolved generic, so the cast only moves. What it guards is safe by
+    // construction: one literal `userId` clause plus a `filter` the caller already typed as
+    // `MetadataFilter<TSchema>`.
     const result = await this.index.count({
       filter: {
         userId: { $eq: params.userId },
@@ -294,13 +300,14 @@ export class AgentMemory<
     userId: string;
     topK: number;
     query?: string;
-    filter?: Record<string, unknown>;
+    filter?: MetadataFilter<TSchema>;
   }): Promise<RecalledMemory<TMetadata>[]> {
     const filter: Record<string, unknown> = {
       userId: { $eq: params.userId },
       ...(params.filter ?? {}),
     };
     if (params.query && params.query.trim()) filter.text = { $smart: params.query };
+    // Asserted for the same reason as in `count` above.
     const rows = (await this.index.query({
       filter: filter as InferFilterFromSchema<typeof MemorySchema>,
       limit: params.topK,
