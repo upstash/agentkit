@@ -7,6 +7,10 @@ real Upstash Redis. It's a real `eve` CLI scaffold (a workspace member) — see
 ## What it shows (under `agent/`)
 
 - **Memory tools** — `recall_memory` / `save_memory` (`defineMemoryRecallTool` / `defineMemorySaveTool`).
+- **Memory slots** — eve's native [memory](https://eve.dev/docs/memory) on Upstash Redis
+  (`agent/memory/`): `recall` uses `redisMemory()` (ranked recall + automatic capture) and
+  `profile` uses eve's own `fileMemory()` with `redisDocuments()` as its storage backend. Unlike the
+  tools above, eve recalls these before every turn without the model asking.
 - **Search tools** — `search_books` / `aggregate_books` / `count_books` over a seeded **books** index
   (`defineSearchTools`). The books are seeded once into Redis when the page loads.
 - **Cached tool** — `get_weather`, memoized in Redis (`defineCachedTool`).
@@ -38,3 +42,15 @@ pnpm --filter eve-demo dev   # or: cd examples/eve-demo && pnpm dev
 
 Open <http://localhost:3000>. The agent model is `gpt-5.4-mini`. Requires Node 24 (`engines.node`); on
 Node 20 it warns but still runs.
+
+## E2E eval (no model provider)
+
+`evals/memory.eval.ts` drives the two memory slots end to end against **real Redis** with a scripted
+mock model, so it needs no `OPENAI_API_KEY`:
+
+```bash
+cd examples/eve-demo && AGENTKIT_MOCK_MODEL=1 npx eve eval
+```
+
+`AGENTKIT_MOCK_MODEL=1` swaps `agent/agent.ts`'s model for eve's `mockModel`, which echoes the memory
+context eve injected into its prompt — that echo is what the eval asserts on. CI runs it too.

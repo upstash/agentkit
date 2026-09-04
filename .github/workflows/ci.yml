@@ -60,6 +60,23 @@ jobs:
       - name: Build example apps
         run: pnpm -r --filter "./examples/*" build
 
+      - name: E2E eval (eve memory slots, mocked model)
+        # Boots the eve demo's agent with a scripted mockModel (no model provider, no
+        # OPENAI_API_KEY) and asserts both Upstash Redis memory integrations run at eve's real
+        # memory lifecycle boundaries against real Redis: redisMemory() captures a turn and recalls
+        # it, and fileMemory({ backend: redisDocuments() }) saves and recalls its document.
+        working-directory: examples/eve-demo
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          AGENTKIT_MOCK_MODEL: "1"
+        run: |
+          if [ -z "$UPSTASH_REDIS_REST_URL" ]; then
+            echo "No Redis secrets available — skipping the e2e eval."
+            exit 0
+          fi
+          npx eve eval
+
       - name: E2E eval (eve extension, mocked model)
         # Boots the extension demo's agent with a scripted mockModel (no model provider,
         # no OPENAI_API_KEY) and asserts the extension's tools execute against real Redis

@@ -90,16 +90,97 @@ new AgentMemory({
   prefix: "agentkit:memory", // optional: base key prefix
   indexName: "agentkit_memory", // optional: Redis Search index name (defaults to the prefix)
   minScore: 0, // optional: default BM25 relevance floor for recall
+  metadataSchema: undefined, // optional: extra indexed fields — see below
 });
 ```
 
 - `add` takes an optional `id` (a stable id; generated when omitted).
-- `recall` takes `topK` (default 5), `minScore`, and an optional `query` — omit it (or pass `""`) to return everything for the user.
+- `recall` takes `topK` (default 5), `minScore`, and an optional `query` — omit it (or pass `""`) to return everything for the user. A `query` that matches nothing returns nothing; there is no fallback to the whole set.
+- `list({ userId, filter, limit })` is the filter-first read (unranked); `count({ userId, filter })` reports how many match without fetching them.
 - Stored at `agentkit:memory:<userId>:<id>`.
 
 `userId` is **required, non-empty, and may not contain `:`** on every method — the only tenant boundary
 for memory. **Derive it from a verified server-side auth source** (Clerk, Auth.js/NextAuth, Supabase
 Auth, Auth0, …) — never a client-supplied value.
+
+</details>
+
+<details>
+<summary>Carrying your own indexed fields (<code>metadataSchema</code>)</summary>
+
+By default a memory carries `text` and `userId` as its indexed fields. Declare a `metadataSchema` and
+each record can carry more — and, crucially, be **filtered** on them:
+
+```ts
+import { s } from "@upstash/redis";
+
+const memory = new AgentMemory({
+  redis,
+  prefix: "myapp:memory", // ← its own prefix. See the warning below.
+  metadataSchema: {
+    source: s.string().noTokenize(),
+    deleted: s.boolean(),
+  },
+});
+
+await memory.add({
+  text: "The user commutes by folding bike",
+  userId: "user-123",
+  metadata: { source: "agent", deleted: false },
+});
+
+// Retrieve one kind without the other competing for the same topK.
+const facts = await memory.recall({
+  query: "how does the user travel?",
+  userId: "user-123",
+  filter: { source: { $eq: "agent" } },
+});
+
+await memory.count({ userId: "user-123", filter: { deleted: { $eq: false } } });
+```
+
+Values are stored as **top-level** fields, because Redis Search indexes JSON by path — a nested
+object would not be filterable. They come back on `recall`, `list` and `count` results as `metadata`.
+
+The schema is the single source of truth for the types: `metadata` and every `filter` are derived
+from it, so there is no second type to keep in sync and a mismatch is a compile error, not a silent
+no-op at query time.
+
+```ts
+await memory.add({
+  text: "…",
+  userId: "user-123",
+  metadata: { source: "agent", deleted: "false" },
+  //                           ^ Type 'string' is not assignable to type 'boolean'
+});
+
+await memory.recall({ userId: "user-123", filter: { notAField: { $eq: 1 } } });
+//                                                 ^ 'notAField' does not exist
+```
+
+To narrow a derived type — a `s.string()` field that only ever holds a few values, say — pass the
+metadata type as a second argument. It is constrained to the schema, so the two cannot drift apart:
+
+```ts
+const schema = { source: s.string().noTokenize(), deleted: s.boolean() };
+type Source = "agent" | "userMessage";
+
+const memory = new AgentMemory<typeof schema, { source: Source; deleted: boolean }>({
+  redis,
+  prefix: "myapp:memory",
+  metadataSchema: schema,
+});
+```
+
+> **Give an extended store its own `prefix`.** A schema describes an index, and an index covers a
+> keyspace. Upstash Search does not match a missing field against `{$eq: …}`, and it has no `$ne`, so
+> there is no filter-level workaround: point a stricter schema at a keyspace that already holds
+> records written without those fields and **those records become permanently unreachable** — still
+> in Redis, never returned, no error. A separate prefix means a separate keyspace and index, so
+> nothing written earlier is in scope.
+
+Omit `metadataSchema` and this is exactly the store it always was: the same two indexed fields, the
+same index, no re-index, existing records untouched.
 
 </details>
 
