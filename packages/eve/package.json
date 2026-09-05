@@ -62,7 +62,7 @@
     "@upstash/redis": "^1.38.4",
     "ai": "7.0.87",
     "dotenv": "^16.4.5",
-    "eve": "^0.49.0"
+    "eve": "^0.52.1"
   },
   "peerDependencies": {
     "@upstash/box": ">=0.5.0",
