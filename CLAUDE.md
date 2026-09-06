@@ -108,7 +108,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   has `"eve": { "extension": { "source": "./extension", "dist": "./dist/extension" } }`, `files` ships
   **`dist/` only** (compiled `.mjs` + `.d.ts` per contribution, plus `_manifest.json` with
   `builtWithEve`; eve validates compatibility from the manifest), and `eve` is a **floored peer**
-  (`">=0.48.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
+  (`">=0.52.0"` — was the scaffold's `"*"` until issue #22; see **Consumer eve version** below). The old 0.24
   format (`"eve": { "extension": "./extension" }`, ships source the consumer recompiles) is rejected by
   eve ≥0.25 with "must declare `eve.extension.dist`" — don't regress to it. **No `prepare` script** (an
   install-time build broke CI: sdk isn't built yet at install; `pnpm build` handles topological order).
@@ -121,19 +121,19 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.49.0**, stamps formatVersion 2; extension 1 /
-  **tool 24** / **dynamicTool 21** / **hook 16** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.48.0** (0.48.0 is the first eve whose supported list includes tool 24; 0.47.7 tops out at
-  tool 23, 0.47.5/0.47.6 at tool 22, 0.47.0–0.47.3 at tool 21 and 0.47.4 was never published to npm;
-  0.46.1 at tool 20 / hook 15, 0.45.1–0.46.0 at tool 19 / hook 14). Verified end-to-end, not just from
+  supported list — the current dist, built with **eve 0.52.1**, stamps formatVersion 2; extension 1 /
+  **tool 29** / **dynamicTool 28** / **hook 20** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.52.0** (0.52.0 is the first eve whose supported list includes tool 29 *and* dynamicTool 28;
+  0.51.1 already accepts hook 20 but tops out at tool 27 / dynamicTool 27, 0.51.0 at tool 25 /
+  dynamicTool 25 / hook 18, 0.50.0 at tool 24 / dynamicTool 22 / hook 17). Verified end-to-end, not just from
   the contract tables: the rebuilt extension, `pnpm pack`ed into a real eve app, builds on eve
-  0.48.0/0.49.0 and **fails on 0.47.5, 0.47.6 and 0.47.7**
+  0.52.0/0.52.1 and **fails on 0.51.1**
   (`Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.` — an incompatible manifest makes the mount contribute nothing, so the error is that obtuse;
   don't expect the old explicit "requires tool contract vN" wording).
   **eve moved the tool contract inside the 0.45 patch line and again twice across 0.47.7 → 0.48.0**,
   so a *patch* bump of the eve devDep can re-stamp the manifest and raise the floor — re-derive it,
   don't assume the minor is enough, and don't assume one release's worth of headroom.
-  The `eve` peer is **`">=0.48.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.52.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -348,9 +348,10 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   sandbox floor is: `pnpm pack` the package into a throwaway consumer that calls `defineMemory` with
   both providers, then `tsc` per eve version. **0.45.0** fails (`Cannot find module 'eve/memory'` *and*
   `'eve/memory/file'`), **0.45.1** fails on `eve/memory/file` alone, and **0.45.2 / 0.46.1 / 0.47.6 /
-  0.49.0** are all clean; the runtime import throws `ERR_PACKAGE_PATH_NOT_EXPORTED` below the floor.
-  `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.49.0 (`eve/memory`'s
-  `index.d.ts` and `eve/memory/file`'s `backend.d.ts` `diff` clean between 0.47.6 and 0.49.0), so
+  0.49.0 / 0.52.1** are all clean; the runtime import throws `ERR_PACKAGE_PATH_NOT_EXPORTED` below the floor.
+  `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.52.1 (`eve/memory`'s
+  `index.d.ts` and `eve/memory/file`'s `backend.d.ts` `diff` clean between 0.47.6 and 0.49.0, and
+  `eve/memory` + `eve/memory/file` `index.d.ts` `diff` clean between 0.49.0 and 0.52.1), so
   nothing here is version-fragile.
 - **What the tests pin down** (a PR review flagged that only the `profile` tools were covered):
   `memory/memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
@@ -434,8 +435,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.49.0)
-  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — the 0.47.6 → 0.49.0 bump did **not**
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.52.1)
+  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — the 0.47.6 → 0.49.0 → 0.52.1 bumps did **not**
   move it), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.53`, `@ai-sdk/provider` `^4.0.9`, `@ai-sdk/react` `^4.0.90` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
@@ -543,15 +544,18 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.49.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
+- The repo is on **`eve@0.52.1`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
   `examples/eve-extension-demo`). `packages/eve`'s peer stays
   **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
   **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
   unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
   against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
   the 0.49.0 bump across 0.32.0/0.44.3/0.45.2/0.47.0/0.47.3/0.47.6/0.47.7/0.48.0/0.49.0, also all clean).
+  Re-verified on the **0.52.1** bump: `eve/sandbox`, `eve/memory`, `eve/memory/file` and
+  `eve/channels/auth` `.d.ts` are **byte-identical 0.49.0 → 0.52.1**, and `packages/eve`'s built `dist`
+  is byte-identical whether built against 0.49.1 or 0.52.1 — so the floor stays `>=0.32.0`.
   Don't raise the floor without re-running that check; the extension's peer is
-  `>=0.48.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  `>=0.52.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
@@ -647,6 +651,26 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   typechecking its built `dist` against 0.32.0/0.44.3/0.45.2/0.47.0/0.47.3/0.47.6/0.47.7/0.48.0/0.49.0
   (all clean); eve's `dist/src/shared/sandbox-backend.d.ts` is **byte-identical** between 0.47.6 and
   0.49.0, so `SandboxBackendHandle` gained no new required member.
+- **The 0.49.0 → 0.52.1 bump needed no source change, and moved only the extension's floor.** The
+  extension rebuild re-stamped **tool 24→29 / dynamicTool 21→28 / hook 16→20** (instructions 2,
+  config 1, extension 1 unchanged), moving its peer floor `>=0.48.0` → **`>=0.52.0`**. Three contracts
+  moved at once because **eve 0.50.0 was a deliberate extension-invalidating release** — its changelog
+  says outright *"Extensions built against the previous dynamic-tool, channel, schedule, subagent,
+  connection, hook, dynamic-skill, or dynamic-instructions capability contracts must be rebuilt and
+  republished with this release"* (message/reasoning appends became deltas) — and **0.52.0** then
+  dropped tool contracts 14–27 when `task.delegated()` was removed. The published `0.9.0` extension
+  (built with eve 0.49.0) is therefore broken on **every eve ≥0.50.0**, not just 0.52.x.
+  `>=0.52.0` is the *exact* floor, proven both ways by `pnpm pack`ing the rebuilt dist into a real eve
+  consumer: **0.51.1 is now refused at install** by the new peer (`npm error ERESOLVE … peer
+  eve@">=0.52.0"`), and forced past with `--legacy-peer-deps` it still fails `eve build` with the same
+  obtuse *"has no compile or runtime usage"* message; **0.52.0 and 0.52.1 both build and mount every
+  contribution**. Note 0.51.1 already accepted hook 20 — only tool/dynamicTool held the floor up — so
+  checking a single contract would have given the wrong answer. eve's `ai` peer stayed `^7.0.82`, so
+  the repo-wide `ai` 7.0.87 pin did not move. `packages/eve`'s peer stayed **`>=0.32.0`**: `eve/sandbox`,
+  `eve/memory`, `eve/memory/file` and `eve/channels/auth` `.d.ts` are **byte-identical 0.49.0 → 0.52.1**
+  (only `eve/tools/index.d.ts` changed — it *removed* `TaskBinding`/`TaskDelegated`/`TaskExecutorBinding`
+  and added `defineWorkflowTool`, none of which `packages/eve/src` imports), and its built `dist` is
+  byte-identical whether built against 0.49.1 or 0.52.1 — so **only the extension needed a changeset**.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
