@@ -121,19 +121,25 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.49.0**, stamps formatVersion 2; extension 1 /
-  **tool 24** / **dynamicTool 21** / **hook 16** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.48.0** (0.48.0 is the first eve whose supported list includes tool 24; 0.47.7 tops out at
-  tool 23, 0.47.5/0.47.6 at tool 22, 0.47.0–0.47.3 at tool 21 and 0.47.4 was never published to npm;
-  0.46.1 at tool 20 / hook 15, 0.45.1–0.46.0 at tool 19 / hook 14). Verified end-to-end, not just from
+  supported list — the current dist, built with **eve 0.52.2**, stamps formatVersion 2; extension 1 /
+  **tool 30** / **dynamicTool 29** / **hook 20** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.52.2** — 0.52.2 is the *only* release accepting all three, because eve now **drops**
+  mid-range contracts rather than only adding new ones (0.52.2's supported `tool` list is
+  [1–13, 28, 29, 30]: everything from 14–27 is dropped with "TaskExec.delegated was removed").
+  0.52.1/0.52.0 top out at tool 29, 0.51.1 at tool 27 / dynamicTool 27 / hook 20, 0.51.0 at tool 25 /
+  hook 18, 0.50.0 at dynamicTool 22 / hook 17, and 0.48.0–0.49.1 at tool 24 / dynamicTool 21 / hook 16.
+  Verified end-to-end, not just from
   the contract tables: the rebuilt extension, `pnpm pack`ed into a real eve app, builds on eve
-  0.48.0/0.49.0 and **fails on 0.47.5, 0.47.6 and 0.47.7**
+  0.52.2 and **fails on 0.52.1**
   (`Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.` — an incompatible manifest makes the mount contribute nothing, so the error is that obtuse;
   don't expect the old explicit "requires tool contract vN" wording).
-  **eve moved the tool contract inside the 0.45 patch line and again twice across 0.47.7 → 0.48.0**,
-  so a *patch* bump of the eve devDep can re-stamp the manifest and raise the floor — re-derive it,
-  don't assume the minor is enough, and don't assume one release's worth of headroom.
-  The `eve` peer is **`">=0.48.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  **eve moved the tool contract inside the 0.45 patch line, twice across 0.47.7 → 0.48.0, and then
+  six more times across 0.49.1 → 0.52.2**, so a *patch* bump of the eve devDep can re-stamp the
+  manifest and raise the floor — re-derive it, don't assume the minor is enough, and don't assume one
+  release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
+  supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
+  landed on the pinned version itself, with **no back-compat window at all**.
+  The `eve` peer is **`">=0.52.2"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -348,9 +354,8 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   sandbox floor is: `pnpm pack` the package into a throwaway consumer that calls `defineMemory` with
   both providers, then `tsc` per eve version. **0.45.0** fails (`Cannot find module 'eve/memory'` *and*
   `'eve/memory/file'`), **0.45.1** fails on `eve/memory/file` alone, and **0.45.2 / 0.46.1 / 0.47.6 /
-  0.49.0** are all clean; the runtime import throws `ERR_PACKAGE_PATH_NOT_EXPORTED` below the floor.
-  `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.49.0 (`eve/memory`'s
-  `index.d.ts` and `eve/memory/file`'s `backend.d.ts` `diff` clean between 0.47.6 and 0.49.0), so
+  0.49.0 / 0.52.2** are all clean; the runtime import throws `ERR_PACKAGE_PATH_NOT_EXPORTED` below the
+  floor. `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.52.2, so
   nothing here is version-fragile.
 - **What the tests pin down** (a PR review flagged that only the `profile` tools were covered):
   `memory/memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
@@ -434,9 +439,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.49.0)
-  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — the 0.47.6 → 0.49.0 bump did **not**
-  move it), so the apps/packages provide the single copy. Providers:
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.52.2)
+  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — neither the 0.47.6 → 0.49.0 nor the
+  0.49.0 → 0.52.2 bump moved it), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.53`, `@ai-sdk/provider` `^4.0.9`, `@ai-sdk/react` `^4.0.90` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
   second, older `ai` copy via its peer resolution, which is exactly the two-copy breakage to avoid).
@@ -543,15 +548,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.49.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
+- The repo is on **`eve@0.52.2`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
   `examples/eve-extension-demo`). `packages/eve`'s peer stays
   **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
   **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
   unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
   against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
-  the 0.49.0 bump across 0.32.0/0.44.3/0.45.2/0.47.0/0.47.3/0.47.6/0.47.7/0.48.0/0.49.0, also all clean).
+  the 0.52.2 bump across 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2, also all clean).
   Don't raise the floor without re-running that check; the extension's peer is
-  `>=0.48.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  `>=0.52.2`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
@@ -647,6 +652,35 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   typechecking its built `dist` against 0.32.0/0.44.3/0.45.2/0.47.0/0.47.3/0.47.6/0.47.7/0.48.0/0.49.0
   (all clean); eve's `dist/src/shared/sandbox-backend.d.ts` is **byte-identical** between 0.47.6 and
   0.49.0, so `SandboxBackendHandle` gained no new required member.
+- **The 0.49.0 → 0.52.2 bump needed no source change, and again moved only the extension's floor —
+  but it is the first bump where eve *dropped* contracts out of the middle of its supported range.**
+  The extension rebuild re-stamped **tool 24→30, dynamicTool 21→29, hook 16→20** (instructions 2,
+  config 1, extension 1 unchanged), moving its peer floor `>=0.48.0` → **`>=0.52.2`**. Only 0.52.2
+  accepts the new dist: 0.52.1/0.52.0 top out at tool 29, 0.51.1 at tool 27, 0.51.0 at tool 25 /
+  hook 18, 0.50.0 at dynamicTool 22 / hook 17. Proven by `pnpm pack`ing the rebuilt dist into a real
+  eve consumer — 0.52.1 installs cleanly and then fails `eve build` with the usual obtuse
+  *"has no compile or runtime usage"*, 0.52.2 builds and mounts all 7 tools + the hook.
+  **The new hazard: a newer eve is no longer automatically compatible.** 0.52.2's supported `tool`
+  list is [1–13, **28, 29, 30**] — 14–27 are all in `dropped` ("TaskExec.delegated was removed;
+  migrate to workflow-backed background tools"), and dynamicTool/hook dropped entries cite
+  "Message and reasoning append events now expose deltas instead of cumulative snapshots". That is
+  why the **published** `0.9.0` dist (tool 24, built with 0.49.0) breaks on every eve from **0.50.0**
+  up while its `>=0.48.0` peer happily admits them — a floored peer with no ceiling is still a trap
+  when the framework drops contracts. Despite those scary drop reasons, **no source change was
+  needed**: the `chat_history` hook only subscribes to `message.received`/`message.completed`
+  (not the append events), and nothing in the repo touches `TaskExec.delegated` — both packages'
+  sources typecheck clean against 0.52.2. eve's `ai` peer stayed `^7.0.82`, so the repo-wide `ai`
+  7.0.87 pin did not move. `packages/eve`'s peer stayed **`>=0.32.0`**, re-verified by typechecking
+  its built `dist` against 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2 (all clean);
+  its `dist` is **byte-identical to the published 0.9.0**, so `@upstash/agentkit-eve` gets no
+  changeset this round — only `@upstash/agentkit-eve-extension` ships different bytes.
+  **Expect a large `pnpm-lock.yaml` diff on this bump (~550 lines, mostly deletions) — that is
+  normal, not corruption.** eve's `nitro` dep moved `3.0.260610-beta` → `3.0.260903-beta`, and the
+  new nitro dropped a pile of optional peer deps (`vite`, `rollup`, `jiti`, `chokidar`, `dotenv`,
+  `@upstash/redis`), which collapses eve's long peer-suffixed resolution key
+  `eve@0.49.0(@opentelemetry/api)(@upstash/redis)(ai)(chokidar)(dotenv)(jiti)(rollup)(vite)` down to
+  `eve@0.52.2(@opentelemetry/api)(ai)` and garbage-collects the now-unreferenced entries. Confirm with
+  `pnpm install --frozen-lockfile` (must print "Already up to date"), not by eyeballing the line count.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
