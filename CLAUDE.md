@@ -147,17 +147,6 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   (in eve's `dist/src/compiler/extension-compatibility.js`) supports them all, and move the peer floor
   to match.**
 - `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
-  The default export is **cast to a local `AgentkitExtension` type whose config parameter is optional**
-  (`(config?: AgentkitConfig) => MountedExtension`, keeping eve's `config`/`schema` members via
-  `Pick<ExtensionHandle<…>, …>`): eve types `ExtensionHandle`'s call signature as `(values: InferInput<S>)`,
-  a *required* parameter no matter how optional the schema is, and TS won't let a required parameter be
-  omitted even when its type admits `undefined` — so the README's smallest mount `agentkit()` failed with
-  `TS2554: Expected 1 arguments, but got 0` (issue: `eve build` doesn't typecheck the mount file, so only
-  `tsc`/editor consumers saw it). Runtime was always fine — `defineExtension` validates `values ?? {}`.
-  Don't drop the cast when editing the schema, and don't try to fix it with `.optional()`/`.default({})`
-  on the schema: that only widens the *type* of the argument, not its optionality.
-  Guarded by `test/mount-config.test.ts` (a zero-arg mount + a `@ts-expect-error` bad field) — the
-  package's `typecheck` covers `test/`, so removing the cast fails `pnpm typecheck`, not just review.
   Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
   ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
   `search{schema,indexName,prefix,defaultLimit}`, `chatHistory: boolean | {prefix,indexName,ttlSeconds}`
