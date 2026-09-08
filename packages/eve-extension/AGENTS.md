@@ -15,6 +15,11 @@ unavailable, use https://eve.dev/docs/extensions as a fallback.
 - Declare the extension in `extension/extension.ts` with `defineExtension` from
   `eve/extension`. Config is optional; read bound values via the handle's
   `.config` in tools and hooks.
+  Note: even when every config *field* is optional, eve types the mount handle's
+  call signature as `(values: InferInput<S>)` — a **required** parameter — so
+  `agentkit()` fails `tsc` with TS2554 and docs must show `agentkit({})`. That
+  signature lives in the `eve` peer dep, not here; `.optional()` on the schema
+  does not fix it (it only makes `extension.config` possibly-undefined).
 - Add contributions under `extension/` the same way as in an agent:
   `tools/`, `channels/`, `connections/`, `skills/`, `schedules/`, `subagents/`,
   `hooks/`, and optional instruction fragments (eve ≥0.41 supports the full set;

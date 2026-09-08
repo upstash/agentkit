@@ -26,13 +26,13 @@ Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` in your env (the exten
 
 ## Mount it
 
-Every field is optional. The smallest mount gives the agent memory tools:
+Every field is optional, so the smallest mount is an empty config — it gives the agent memory tools:
 
 ```ts
 // agent/extensions/agentkit.ts
 import agentkit from "@upstash/agentkit-eve-extension";
 
-export default agentkit();
+export default agentkit({});
 ```
 
 Add `search` to turn on the search tools over one index. The schema is built with `s` from
