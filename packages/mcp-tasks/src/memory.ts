@@ -11,6 +11,7 @@ import {
   UnknownTaskError,
   type Task,
   type TaskDispatcher,
+  type TaskEndpoints,
   type TaskPatch,
   type TaskStore,
   type TerminalTaskPatch,
@@ -73,21 +74,49 @@ export class MemoryTaskStore implements TaskStore {
  */
 export class InlineTaskDispatcher implements TaskDispatcher {
   private readonly pending = new Set<Promise<void>>();
+  private endpoints: TaskEndpoints | undefined;
+  private readonly autoRun: boolean;
 
   /** How many tasks have been dispatched. Test-only. */
   dispatched = 0;
 
-  constructor(private readonly execute: (taskId: string) => Promise<unknown>) {}
+  constructor(config: { autoRun?: boolean } = {}) {
+    // `autoRun: false` records dispatches without running them, so a test can drive execution
+    // itself and observe what a single attempt does.
+    this.autoRun = config.autoRun ?? true;
+  }
+
+  attach(endpoints: TaskEndpoints): void {
+    this.endpoints = endpoints;
+  }
 
   async dispatch(taskId: string): Promise<string | undefined> {
     this.dispatched += 1;
+    if (!this.autoRun) return undefined;
+    const endpoints = this.endpoints;
+    if (!endpoints) {
+      throw new Error(
+        "This dispatcher is not attached to a task layer — pass it to createTaskLayer().",
+      );
+    }
+
     // Deferred to a microtask so the tool call returns its handle before the work starts, which
     // is the ordering a real queue gives you for free.
     const run = Promise.resolve()
-      .then(() => this.execute(taskId))
+      .then(() => endpoints.run(taskId))
       .then(
         () => undefined,
-        () => undefined, // executeTask already recorded the failure on the task
+        // There are no retries in this process, so the first error is the last one.
+        (cause: unknown) =>
+          endpoints
+            .fail(taskId, {
+              code: -32603,
+              message: cause instanceof Error ? cause.message : String(cause),
+            })
+            .then(
+              () => undefined,
+              () => undefined,
+            ),
       );
     this.pending.add(run);
     void run.finally(() => this.pending.delete(run));

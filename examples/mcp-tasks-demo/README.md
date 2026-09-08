@@ -12,9 +12,9 @@ tasks, so you can watch the protocol rather than just the result.
 
 | File | What it does |
 | --- | --- |
-| `app/lib/tasks.ts` | The whole server wiring: `RedisTaskStore`, `QStashDispatcher`, and the `generate_report` task tool |
+| `app/lib/tasks.ts` | The whole server wiring: the store, the dispatcher (`TASKS_DRIVER` picks one), and the `generate_report` task tool |
 | `app/api/mcp/route.ts` | The MCP endpoint, over `WebStandardStreamableHTTPServerTransport` |
-| `app/api/execute/route.ts` | Where QStash delivers a task. One line: the dispatcher owns the endpoint |
+| `app/api/execute/route.ts` | Where the work is delivered. One line: the dispatcher owns the endpoint |
 | `app/page.tsx` | The client: call the tool, poll, cancel, and the wire log |
 | `scripts/smoke.mjs` | Drives the same flow from the terminal and asserts on it |
 
@@ -42,6 +42,20 @@ To check everything from the terminal instead:
 ```bash
 pnpm smoke     # happy path, cancel mid-flight, a client without the capability, unknown task id
 ```
+
+## Swapping the transport
+
+`TASKS_DRIVER` chooses which dispatcher runs the work. The route, the tool and the handler are
+identical either way — only durability changes:
+
+```bash
+TASKS_DRIVER=qstash     # default: one delivery, one invocation
+TASKS_DRIVER=workflow   # one invocation per step, replayed from a journal
+```
+
+On `workflow`, each `task.run(...)` in the handler becomes its own request, so the task can run
+far longer than the route's `maxDuration`. Watch the server log with either value and the tool
+behaves the same; only the number of invocations differs.
 
 ## The three things worth watching
 

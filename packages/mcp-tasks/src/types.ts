@@ -145,24 +145,57 @@ export interface TaskDispatcher {
   cancel(dispatchId: string): Promise<void>;
 
   /**
+   * Receives the layer's entry points, once, when the dispatcher is passed to `createTaskLayer`.
+   *
+   * A transport needs to call back into the layer — to run a delivered task, and to record a
+   * failure once it has given up retrying — but the layer does not exist when the dispatcher is
+   * constructed. This hands them over at wiring time instead of making callers late-bind.
+   */
+  attach?(endpoints: TaskEndpoints): void;
+
+  /**
    * Optionally, the transport's own delivery endpoint.
    *
    * A dispatcher that delivers over HTTP knows things the application should not have to: how the
-   * request is authenticated, where the task id sits in the body, which attempt this is, and which
-   * status code means "retry me". Implementing this keeps all of that inside the transport, so the
-   * application's route is `export const POST = tasks.createExecuteHandler()` rather than a
-   * hand-written endpoint that has to remember to verify a signature.
+   * request is authenticated, where the task id sits in the body, and which status code means
+   * "retry me". Implementing this keeps all of that inside the transport, so the application's
+   * route is `export const POST = tasks.createExecuteHandler()` rather than a hand-written
+   * endpoint that has to remember to verify a signature.
    *
    * Dispatchers that run work in-process have nothing to serve and leave it undefined.
    */
-  createExecuteHandler?(run: TaskRunner): (request: Request) => Promise<Response>;
+  createExecuteHandler?(): (request: Request) => Promise<Response>;
 }
 
+/** The layer's entry points, handed to a dispatcher by {@link TaskDispatcher.attach}. */
+export type TaskEndpoints = {
+  /**
+   * Runs a delivered task. Rejects if the handler threw — which the transport should treat as
+   * "deliver again", not as a failed task.
+   */
+  run(taskId: string, steps?: TaskSteps): Promise<unknown>;
+  /**
+   * Records a terminal failure. Only the transport knows when retrying is over, so only the
+   * transport calls this.
+   */
+  fail(taskId: string, error: TaskError): Promise<unknown>;
+};
+
 /**
- * What a delivery endpoint calls to run a task — `executeTask`, with the attempt's finality
- * already worked out by the transport that knows how to count its own retries.
+ * Durable step primitives, when the transport has them.
+ *
+ * This is what separates a transport that can run work longer than one invocation from one that
+ * cannot. A queue delivery is a single function invocation: exceed its time limit and the work is
+ * killed, and a redelivery restarts the handler from the beginning. A workflow engine gives each
+ * step its own invocation and replays completed steps from a journal instead of re-running them.
+ *
+ * Handlers are written against {@link TaskContext.run} either way; supplying this is how a
+ * dispatcher upgrades those calls from plain function calls into durable checkpoints.
  */
-export type TaskRunner = (taskId: string, options: { isFinalAttempt: boolean }) => Promise<unknown>;
+export type TaskSteps = {
+  run<T>(stepName: string, fn: () => Promise<T>): Promise<T>;
+  sleep(stepName: string, seconds: number): Promise<void>;
+};
 
 /** What a task handler is handed alongside its arguments. */
 export type TaskContext = {
@@ -170,6 +203,23 @@ export type TaskContext = {
   taskId: string;
   /** Publishes a human-readable progress line that the client's next poll will see. */
   update(statusMessage: string): Promise<void>;
+  /**
+   * Runs one step of the task, checkpointed when the dispatcher supports it.
+   *
+   * Under a workflow dispatcher each step runs in its own invocation and a completed step is
+   * replayed from the journal rather than re-executed, so the task as a whole can outlive any
+   * single function's time limit. Under a plain queue dispatcher this just calls `fn` — same
+   * result, no checkpoint — so a handler written with `run` works under both and gets more
+   * durability from the one that can provide it.
+   *
+   * `stepName` identifies the step in the journal and must be stable across replays.
+   */
+  run<T>(stepName: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Waits, durably when the dispatcher supports it. A workflow sleep costs no compute and can
+   * span far longer than an invocation; without step support this is an ordinary timer.
+   */
+  sleep(stepName: string, seconds: number): Promise<void>;
   /**
    * Reads the durable status to see whether a client asked to stop. Cancellation is cooperative:
    * running code only stops where it checks, so call this at your step boundaries.

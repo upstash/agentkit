@@ -27,19 +27,14 @@ type Harness = {
 /** Builds a server with one task tool backed by `handler`. */
 async function harness(
   handler: (args: { topic: string }, task: TaskContext) => Promise<Record<string, unknown>>,
-  layerOptions: Partial<Parameters<typeof createTaskLayer>[0]> & {
-    /** What the auto-dispatch reports as the attempt's finality. Defaults to true. */
-    dispatchIsFinalAttempt?: boolean;
-  } = {},
+  layer: Partial<Parameters<typeof createTaskLayer>[0]> = {},
 ): Promise<Harness> {
-  const { dispatchIsFinalAttempt = true, ...layer } = layerOptions;
   const store = new MemoryTaskStore();
-  // Bound below, once the layer exists.
-  let execute: (taskId: string) => Promise<unknown> = async () => undefined;
-  const dispatcher = new InlineTaskDispatcher((taskId) => execute(taskId));
-
-  const tasks = createTaskLayer({ store, dispatcher, ...layer });
-  execute = (taskId) => tasks.executeTask(taskId, { isFinalAttempt: dispatchIsFinalAttempt });
+  // `createTaskLayer` attaches the layer's endpoints to the dispatcher, so there is nothing to
+  // late-bind here.
+  const dispatcher =
+    (layer.dispatcher as InlineTaskDispatcher | undefined) ?? new InlineTaskDispatcher();
+  const tasks = createTaskLayer({ store, ...layer, dispatcher });
 
   // The transport validates the request's `mcp-protocol-version` header against this list, which
   // otherwise defaults to the 2025-era versions and rejects every 2026-07-28 request.
@@ -313,7 +308,7 @@ describe("createTaskLayer over MCP", () => {
       expect(runs).toBe(1);
     });
 
-    it("keeps a task retryable until the dispatcher's last attempt", async () => {
+    it("leaves a thrown task retryable rather than settling it failed", async () => {
       let attempts = 0;
       live = await harness(
         async () => {
@@ -321,32 +316,30 @@ describe("createTaskLayer over MCP", () => {
           if (attempts < 3) throw new Error(`boom ${attempts}`);
           return { content: [{ type: "text", text: "eventually" }] };
         },
-        { dispatchIsFinalAttempt: false },
+        { dispatcher: new InlineTaskDispatcher({ autoRun: false }) },
       );
       const created = await live.rpc("tools/call", {
         name: "generate_report",
         arguments: { topic: "x" },
       });
       const taskId = String(created.result?.taskId);
-      await live.dispatcher.drain();
 
-      // Attempt 1 failed but must have left the task non-terminal, or the retries below would
-      // all short-circuit on the redelivery guard.
+      // Redeliveries are driven by hand here, to prove `executeTask` itself never makes a
+      // failure terminal — that decision belongs to the transport.
+      await expect(live.tasks.executeTask(taskId)).rejects.toThrow("boom 1");
       let current = await live.rpc("tasks/get", { taskId });
       expect(current.result?.status).toBe("working");
 
-      await expect(live.tasks.executeTask(taskId, { isFinalAttempt: false })).rejects.toThrow(
-        "boom 2",
-      );
+      await expect(live.tasks.executeTask(taskId)).rejects.toThrow("boom 2");
       expect((await live.rpc("tasks/get", { taskId })).result?.status).toBe("working");
 
-      await live.tasks.executeTask(taskId, { isFinalAttempt: false });
+      await live.tasks.executeTask(taskId);
       current = await live.rpc("tasks/get", { taskId });
       expect(current.result?.status).toBe("completed");
       expect(attempts).toBe(3);
     });
 
-    it("settles failed on the final attempt", async () => {
+    it("settles failed once the dispatcher stops retrying", async () => {
       live = await harness(async () => {
         throw new Error("permanent");
       });

@@ -7,13 +7,17 @@
  */
 import { Redis } from "@upstash/redis";
 import { Client as QStashClient, Receiver } from "@upstash/qstash";
+
+/** JSON-RPC internal error, per the MCP spec — inlined so this file imports no MCP SDK. */
+const INTERNAL_ERROR = -32603;
 import {
   TERMINAL_STATUSES,
   UnknownTaskError,
   type Task,
   type TaskDispatcher,
   type TaskPatch,
-  type TaskRunner,
+  type TaskEndpoints,
+  type TaskError,
   type TaskStore,
   type TerminalTaskPatch,
 } from "./types.js";
@@ -216,14 +220,14 @@ export type QStashDispatcherConfig = {
  */
 export class QStashDispatcher implements TaskDispatcher {
   private readonly url: string;
-  /** How many retries this dispatcher asks QStash for. Pair it with {@link isFinalQStashAttempt}. */
-  readonly retries: number;
+  private readonly retries: number;
   private readonly retryDelay: string;
   private readonly headers: Record<string, string> | undefined;
   private readonly resolveQStash: () => QStashClient;
   private client: QStashClient | undefined;
   private readonly resolveReceiver: () => Receiver;
   private verifier: Receiver | undefined;
+  private endpoints: TaskEndpoints | undefined;
 
   constructor(config: QStashDispatcherConfig) {
     this.url = config.url;
@@ -232,6 +236,10 @@ export class QStashDispatcher implements TaskDispatcher {
     this.headers = config.headers;
     this.resolveQStash = () => config.qstash ?? qstashFromEnv();
     this.resolveReceiver = () => config.receiver ?? receiverFromEnv();
+  }
+
+  attach(endpoints: TaskEndpoints): void {
+    this.endpoints = endpoints;
   }
 
   /** Resolved on first use, for the same reason as {@link RedisTaskStore}'s client. */
@@ -252,6 +260,9 @@ export class QStashDispatcher implements TaskDispatcher {
       retries: this.retries,
       retryDelay: this.retryDelay,
       headers: this.headers,
+      // The failure callback comes back to this same endpoint. QStash signs it against the URL it
+      // posts to, so one URL means one signature check and one route for the application.
+      failureCallback: this.url,
       // QStash delivery is at-least-once. Pinning deduplication to the task id means a
       // double-submitted tool call cannot enqueue the same task twice.
       deduplicationId: taskId,
@@ -266,20 +277,32 @@ export class QStashDispatcher implements TaskDispatcher {
   /**
    * The delivery endpoint, as a fetch handler: `export const POST = tasks.createExecuteHandler()`.
    *
-   * It owns the four things the application would otherwise have to get right by hand — verifying
-   * the signature, reading the task id, counting the attempt, and choosing the status code that
-   * tells QStash whether to try again.
+   * One route serves both things QStash sends here, told apart by the body:
+   *
+   * - a **delivery** (`{ taskId }`) — run the task;
+   * - a **failure callback**, which carries `sourceBody` and fires only once every retry is
+   *   exhausted — settle the task `failed`.
+   *
+   * That second half is why nothing in this package counts attempts. QStash already knows when it
+   * has given up; asking it rather than re-deriving it from a retry header means the answer cannot
+   * drift from the configuration.
    *
    * Status codes are the retry contract:
-   * - **200** — the task ran, or was already terminal, or was redelivered after finishing. Done.
+   * - **200** — the task ran, was already terminal, or the failure was recorded. Done.
    * - **401** — the signature did not verify. Deliberately terminal: a retry cannot fix a bad
    *   signature, and answering 500 would make QStash replay an unauthenticated request.
-   * - **400** — the body carried no task id. Also terminal, for the same reason.
-   * - **500** — the handler threw and QStash still has attempts left. This is the one that asks
-   *   for a redelivery.
+   * - **400** — the body was neither a delivery nor a failure callback. Also terminal.
+   * - **500** — the handler threw. This is the one that asks for a redelivery.
    */
-  createExecuteHandler(run: TaskRunner): (request: Request) => Promise<Response> {
+  createExecuteHandler(): (request: Request) => Promise<Response> {
     return async (request: Request): Promise<Response> => {
+      const endpoints = this.endpoints;
+      if (!endpoints) {
+        throw new Error(
+          "This dispatcher is not attached to a task layer — pass it to createTaskLayer().",
+        );
+      }
+
       const body = await request.text();
 
       try {
@@ -294,64 +317,98 @@ export class QStashDispatcher implements TaskDispatcher {
         return new Response("invalid signature", { status: 401 });
       }
 
-      let taskId: string | undefined;
+      let payload: QStashDelivery;
       try {
-        taskId = (JSON.parse(body) as { taskId?: string }).taskId;
+        payload = JSON.parse(body) as QStashDelivery;
       } catch {
         return new Response("malformed body", { status: 400 });
       }
-      if (!taskId) return new Response("missing taskId", { status: 400 });
+
+      const failure = readFailureCallback(payload);
+      if (failure) {
+        await endpoints.fail(failure.taskId, failure.error);
+        // 200: the failure is recorded. A non-2xx here would only make QStash retry the callback.
+        return new Response("recorded");
+      }
+
+      if (!payload.taskId) return new Response("missing taskId", { status: 400 });
 
       try {
-        await run(taskId, {
-          isFinalAttempt: isFinalQStashAttempt(request.headers, this.retries),
-        });
+        await endpoints.run(payload.taskId);
         return new Response("ok");
       } catch {
-        // The task's own failure is already recorded by `executeTask`; the non-2xx is purely how
-        // you ask QStash for another delivery.
+        // The task is left `working` on purpose; the non-2xx is purely how you ask QStash for
+        // another delivery. If it runs out, the failure callback above settles the task.
         return new Response("retry", { status: 500 });
       }
     };
   }
 }
 
-/** QStash's per-delivery header: how often this message has been retried so far, starting at 0. */
-export const QSTASH_RETRIED_HEADER = "upstash-retried";
+/** Either shape QStash posts to the execute endpoint. */
+type QStashDelivery = {
+  /** Present on a normal delivery: the body we published. */
+  taskId?: string;
+  /** Present on a failure callback: base64 of the body of the message that failed. */
+  sourceBody?: string;
+  /** The failed response's status. */
+  status?: number;
+  /** Base64 of the failed response's body. */
+  body?: string;
+  /** The dead-letter entry the message landed in, so an operator can find and replay it. */
+  dlqId?: string;
+  retried?: number;
+  maxRetries?: number;
+};
 
 /**
- * Whether the delivery being handled is QStash's last attempt at this task.
+ * Recognises a failure callback and turns it into the error the task will carry.
  *
- * Pass the result to `executeTask` as `isFinalAttempt`. It is what keeps a transient failure
- * retryable: before the last attempt the task stays `working` so a retry can still finish it, and
- * only the last one settles it `failed`.
- *
- * @param headers the incoming request's headers
- * @param maxRetries the retry count the dispatcher was configured with (`dispatcher.retries`)
+ * `sourceBody` is the discriminator: a normal delivery is the `{ taskId }` we published and has no
+ * such field, while the callback wraps it. Both are decoded from base64 per QStash's contract.
  */
-export function isFinalQStashAttempt(
-  headers: Headers | Record<string, string | string[] | undefined>,
-  maxRetries: number,
-): boolean {
-  const raw =
-    typeof (headers as Headers).get === "function"
-      ? (headers as Headers).get(QSTASH_RETRIED_HEADER)
-      : firstHeader(headers as Record<string, string | string[] | undefined>);
-  // No header means this is not a QStash delivery at all (a manual replay, say). Treating that as
-  // the final attempt keeps the safe default: the failure is recorded rather than left hanging.
-  // Note `Number(null)` and `Number("")` are both 0, so the emptiness check has to come first.
-  if (raw === null || raw === undefined || raw === "") return true;
-  const retried = Number(raw);
-  if (!Number.isFinite(retried)) return true;
-  return retried >= maxRetries;
+function readFailureCallback(
+  payload: QStashDelivery,
+): { taskId: string; error: TaskError } | undefined {
+  if (typeof payload.sourceBody !== "string") return undefined;
+
+  let taskId: string | undefined;
+  try {
+    taskId = (JSON.parse(decodeBase64(payload.sourceBody)) as { taskId?: string }).taskId;
+  } catch {
+    return undefined;
+  }
+  if (!taskId) return undefined;
+
+  const responseBody = typeof payload.body === "string" ? decodeBase64(payload.body) : undefined;
+  return {
+    taskId,
+    error: {
+      code: INTERNAL_ERROR,
+      message: `Delivery failed after ${payload.retried ?? payload.maxRetries ?? "all"} retries${
+        payload.status ? ` (last status ${payload.status})` : ""
+      }`,
+      // Keep what an operator needs to find the message again and see what the endpoint said.
+      data: { dlqId: payload.dlqId, status: payload.status, response: responseBody },
+    },
+  };
 }
 
-function firstHeader(headers: Record<string, string | string[] | undefined>): string | undefined {
-  for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() !== QSTASH_RETRIED_HEADER) continue;
-    return Array.isArray(value) ? value[0] : value;
-  }
-  return undefined;
+/**
+ * Decodes QStash's base64 fields, through whichever primitive the runtime has. Both globals are
+ * reached via `globalThis` so this file stays free of runtime-specific globals — it has to work on
+ * Node, edge and worker runtimes alike.
+ */
+type Base64Global = {
+  atob?: (value: string) => string;
+  Buffer?: { from(value: string, encoding: string): { toString(encoding: string): string } };
+};
+
+function decodeBase64(value: string): string {
+  const runtime = globalThis as unknown as Base64Global;
+  if (runtime.atob) return runtime.atob(value);
+  if (runtime.Buffer) return runtime.Buffer.from(value, "base64").toString("utf8");
+  throw new Error("No base64 decoder available in this runtime.");
 }
 
 /** Encodes a partial task into the hash fields that represent it. `undefined` values are skipped. */

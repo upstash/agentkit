@@ -15,8 +15,26 @@ execution transport are yours to choose:
 | Layer | Interface | What it has to guarantee | What ships here |
 | --- | --- | --- | --- |
 | Task record | `TaskStore` | Durable create before the response, TTL cleanup | Upstash Redis hash + `PEXPIRE` |
-| Execution | `TaskDispatcher` | At-least-once delivery that survives a dead process, cancellable while pending | QStash publish to your execute endpoint |
+| Execution | `TaskDispatcher` | At-least-once delivery that survives a dead process, cancellable while pending | QStash, or Upstash Workflow |
 | Polling | — | `tasks/get` reads the store | built in |
+
+### Which dispatcher
+
+Both serve the same route and run the same handler. They differ in one thing — how long the work
+is allowed to take.
+
+| | `QStashDispatcher` | `WorkflowDispatcher` |
+| --- | --- | --- |
+| Runs the work off the `tools/call` request | ✅ | ✅ |
+| Survives the process dying | ✅ redelivery | ✅ replay |
+| Can outlive one function invocation | ❌ | ✅ one invocation per step |
+| Retries | whole task, from the start | per step, resuming from the journal |
+
+A queue delivery is a single serverless invocation. Exceed your platform's limit and the work is
+killed, and the redelivery restarts your handler from the beginning — for a task measured in
+minutes or hours that is a livelock, not durability. Workflow gives each `task.run(...)` step its
+own invocation and replays finished steps from a journal, so the task as a whole has no time
+limit. Start on QStash; move to Workflow when the work outgrows a function.
 
 ## Why two interfaces and not one
 
@@ -99,14 +117,19 @@ return transport.handleRequest(request);
 export const POST = tasks.createExecuteHandler();
 ```
 
-That second one is deliberately not yours to write. Verifying the QStash signature, reading the
-task id, counting which attempt this is and picking the status code that decides whether QStash
+That second one is deliberately not yours to write. Verifying the signature, reading the task id,
+recognising a failure callback, and picking the status code that decides whether the transport
 tries again are all facts about the transport, and the dispatcher already knows them — so it hands
 you the endpoint instead of a checklist. Skipping the signature check would let anyone who can
 reach the route run tasks; here you cannot skip it.
 
-If you would rather wire it yourself, the pieces are still exported — `executeTask`,
-`isFinalQStashAttempt(headers, dispatcher.retries)` and `@upstash/qstash`'s `Receiver`.
+Switching transports is the dispatcher line and nothing else — same route, same handler:
+
+```ts
+import { WorkflowDispatcher } from "@upstash/mcp-tasks/workflow";
+
+dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+```
 
 ## What the client sees
 
@@ -139,12 +162,20 @@ and returns `null` when it lost. A check-then-write would let a late `completed`
 `cancelled`; this cannot. The store also keeps one field per task property rather than one JSON
 blob, so a progress update and a cancel never clobber each other's fields.
 
-**A failed attempt is not automatically a failed task.** Settling `failed` on the first error makes
-the task terminal, and every subsequent redelivery then short-circuits on the redelivery guard — so
-QStash's retries would be silently useless. `executeTask(id, { isFinalAttempt })` is what
-distinguishes them: before the last attempt the task stays `working` and the error is rethrown so
-your endpoint can answer non-2xx; on the last one it settles `failed`. `isFinalQStashAttempt` reads
-that from the `Upstash-Retried` header.
+**A failed attempt is not automatically a failed task, and the core never decides which is which.**
+Settling `failed` on the first error makes the task terminal, so every later redelivery
+short-circuits on the redelivery guard and the retries are silently useless. But knowing that a
+failure is *final* means knowing whether the transport will try again — and only the transport
+knows that. So `executeTask` rethrows and leaves the task `working`; the dispatcher calls
+`failTask` once it has genuinely given up. QStash learns this from its own failure callback, which
+fires only after every retry is exhausted; Workflow from its `failureFunction`. Nothing in this
+package counts attempts or reads a retry header.
+
+**Under a step-capable dispatcher, only `task.run` bodies are replay-safe.** Workflow re-enters the
+handler once per step and replays finished steps from the journal, so anything *outside* a step
+runs again on every invocation — measured on the demo: 19 handler entries, each step body executed
+exactly once. Put side effects (including `task.update`) inside `task.run`; leave reads like
+`task.isCancelled()` outside, where re-running them is the point.
 
 **Redelivery is expected, not exceptional.** At-least-once is the strongest thing a queue promises,
 so `executeTask` returns early on an already-terminal task.
@@ -204,13 +235,15 @@ is exactly the failure this package is about.
 
 | Export | What it is |
 | --- | --- |
-| `createTaskLayer(options)` | The runtime: `{ registerTask, executeTask, createExecuteHandler, getTask, store, dispatcher }` |
-| `TaskStore`, `TaskDispatcher`, `TaskContext`, `TaskRunner` | The two seams, what a handler is handed, and what a delivery endpoint calls |
+| `createTaskLayer(options)` | The runtime: `{ registerTask, executeTask, failTask, createExecuteHandler, getTask, store, dispatcher }` |
+| `TaskStore`, `TaskDispatcher`, `TaskContext` | The two seams, and what a handler is handed |
+| `TaskEndpoints`, `TaskSteps` | What a dispatcher is given to call back into, and the step primitives it may provide |
 | `Task`, `WireTask`, `TaskStatus`, `TaskError` | The record, and the subset that goes on the wire |
 | `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type |
 | `TASKS_EXTENSION`, `TASKS_PROTOCOL_VERSION`, `TASK_METHODS` | The extension id, `"2026-07-28"`, the method names |
 | `MemoryTaskStore`, `InlineTaskDispatcher` | Non-durable backends for tests |
-| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `isFinalQStashAttempt`, `DEFAULT_RETRIES`, `DEFAULT_RETRY_DELAY` |
+| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `DEFAULT_RETRIES`, `DEFAULT_RETRY_DELAY` |
+| `@upstash/mcp-tasks/workflow` | `WorkflowDispatcher` |
 
 ## Not implemented
 

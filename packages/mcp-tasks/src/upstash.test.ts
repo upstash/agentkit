@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { QStashDispatcher, RedisTaskStore, isFinalQStashAttempt } from "./upstash.js";
-import { UnknownTaskError, type Task } from "./types.js";
+import { QStashDispatcher, RedisTaskStore } from "./upstash.js";
+import { UnknownTaskError, type Task, type TaskError } from "./types.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
 
 const makeTask = (overrides: Partial<Task> = {}): Task => {
@@ -172,67 +172,99 @@ describe("QStashDispatcher.createExecuteHandler", () => {
       },
     }) as unknown as ConstructorParameters<typeof QStashDispatcher>[0]["receiver"];
 
-  const dispatcher = (accept = true, retries = 3) =>
-    new QStashDispatcher({
+  type Calls = { ran: string[]; failed: { taskId: string; error: TaskError }[] };
+
+  /** Builds an attached dispatcher plus a record of what it called back into. */
+  const attached = (options: { accept?: boolean; throws?: boolean } = {}) => {
+    const { accept = true, throws = false } = options;
+    const calls: Calls = { ran: [], failed: [] };
+    const dispatcher = new QStashDispatcher({
       url: "https://example.com/api/execute",
-      retries,
       receiver: receiver(accept),
     });
+    dispatcher.attach({
+      run: async (taskId) => {
+        calls.ran.push(taskId);
+        if (throws) throw new Error("boom");
+      },
+      fail: async (taskId, error) => {
+        calls.failed.push({ taskId, error });
+      },
+    });
+    return { handler: dispatcher.createExecuteHandler(), calls };
+  };
 
-  const deliver = (body: unknown, headers: Record<string, string> = {}) =>
+  const deliver = (body: unknown) =>
     new Request("https://internal.example/api/execute", {
       method: "POST",
-      headers: { "upstash-signature": "sig", ...headers },
+      headers: { "upstash-signature": "sig" },
       body: JSON.stringify(body),
     });
 
-  it("runs the task and acknowledges with 200", async () => {
-    const ran: { taskId: string; isFinalAttempt: boolean }[] = [];
-    const handler = dispatcher().createExecuteHandler(async (taskId, options) => {
-      ran.push({ taskId, ...options });
-    });
+  /** QStash sends the original message body base64-encoded on the failure callback. */
+  const base64 = (value: unknown) => Buffer.from(JSON.stringify(value), "utf8").toString("base64");
 
-    const response = await handler(deliver({ taskId: "t1" }, { "upstash-retried": "0" }));
+  it("runs a delivery and acknowledges with 200", async () => {
+    const { handler, calls } = attached();
+    const response = await handler(deliver({ taskId: "t1" }));
+
     expect(response.status).toBe(200);
-    expect(ran).toEqual([{ taskId: "t1", isFinalAttempt: false }]);
+    expect(calls.ran).toEqual(["t1"]);
+    expect(calls.failed).toEqual([]);
   });
 
-  it("tells the runner when QStash is out of retries", async () => {
-    const seen: boolean[] = [];
-    const handler = dispatcher(true, 3).createExecuteHandler(
-      async (_taskId, { isFinalAttempt }) => {
-        seen.push(isFinalAttempt);
-      },
+  it("answers 500 so QStash retries, without failing the task", async () => {
+    const { handler, calls } = attached({ throws: true });
+    const response = await handler(deliver({ taskId: "t1" }));
+
+    expect(response.status).toBe(500);
+    // The transport has attempts left; nothing here decides the task has failed.
+    expect(calls.failed).toEqual([]);
+  });
+
+  it("settles the task failed when the failure callback arrives", async () => {
+    const { handler, calls } = attached();
+    // The shape QStash posts once every retry is exhausted.
+    const response = await handler(
+      deliver({
+        sourceBody: base64({ taskId: "t1" }),
+        sourceMessageId: "msg_1",
+        status: 500,
+        body: Buffer.from("upstream exploded", "utf8").toString("base64"),
+        retried: 5,
+        maxRetries: 5,
+        dlqId: "1788-0",
+      }),
     );
 
-    await handler(deliver({ taskId: "t1" }, { "upstash-retried": "2" }));
-    await handler(deliver({ taskId: "t1" }, { "upstash-retried": "3" }));
-    expect(seen).toEqual([false, true]);
-  });
-
-  it("answers 500 so QStash retries when the task throws", async () => {
-    const handler = dispatcher().createExecuteHandler(async () => {
-      throw new Error("boom");
+    expect(response.status).toBe(200);
+    // Never re-run on a failure callback — the work is over.
+    expect(calls.ran).toEqual([]);
+    expect(calls.failed).toHaveLength(1);
+    expect(calls.failed[0]?.taskId).toBe("t1");
+    expect(calls.failed[0]?.error.code).toBe(-32603);
+    expect(calls.failed[0]?.error.message).toMatch(/5 retries.*status 500/);
+    // Enough for an operator to find the message and see what the endpoint said.
+    expect(calls.failed[0]?.error.data).toMatchObject({
+      dlqId: "1788-0",
+      status: 500,
+      response: "upstream exploded",
     });
-    const response = await handler(deliver({ taskId: "t1" }));
-    expect(response.status).toBe(500);
   });
 
   it("rejects an unsigned delivery with 401 and never runs the task", async () => {
-    let ran = false;
-    const handler = dispatcher(false).createExecuteHandler(async () => {
-      ran = true;
-    });
-
+    const { handler, calls } = attached({ accept: false });
     const response = await handler(deliver({ taskId: "t1" }));
+
     // 401 rather than 500 on purpose: a retry cannot fix a bad signature, and answering 500 would
     // make QStash replay an unauthenticated request.
     expect(response.status).toBe(401);
-    expect(ran).toBe(false);
+    expect(calls.ran).toEqual([]);
+    expect(calls.failed).toEqual([]);
   });
 
-  it("rejects a body with no task id, without asking for a retry", async () => {
-    const handler = dispatcher().createExecuteHandler(async () => undefined);
+  it("rejects a body that is neither a delivery nor a failure callback", async () => {
+    const { handler } = attached();
     expect((await handler(deliver({}))).status).toBe(400);
     expect(
       (
@@ -257,33 +289,23 @@ describe("QStashDispatcher.createExecuteHandler", () => {
       },
     } as unknown as ConstructorParameters<typeof QStashDispatcher>[0]["receiver"];
 
-    const handler = new QStashDispatcher({
+    const dispatcher = new QStashDispatcher({
       url: "https://public.example.com/api/execute",
       receiver: spy,
-    }).createExecuteHandler(async () => undefined);
+    });
+    dispatcher.attach({ run: async () => undefined, fail: async () => undefined });
 
-    await handler(deliver({ taskId: "t1" }));
+    await dispatcher.createExecuteHandler()(deliver({ taskId: "t1" }));
     expect(urls).toEqual(["https://public.example.com/api/execute"]);
   });
-});
 
-describe("isFinalQStashAttempt", () => {
-  it("is false while retries remain", () => {
-    expect(isFinalQStashAttempt(new Headers({ "upstash-retried": "0" }), 3)).toBe(false);
-    expect(isFinalQStashAttempt(new Headers({ "upstash-retried": "2" }), 3)).toBe(false);
-  });
-
-  it("is true on the last attempt", () => {
-    expect(isFinalQStashAttempt(new Headers({ "upstash-retried": "3" }), 3)).toBe(true);
-    expect(isFinalQStashAttempt(new Headers({ "upstash-retried": "9" }), 3)).toBe(true);
-  });
-
-  it("treats a non-QStash delivery as final, so a failure is still recorded", () => {
-    expect(isFinalQStashAttempt(new Headers(), 3)).toBe(true);
-  });
-
-  it("reads a plain header record too", () => {
-    expect(isFinalQStashAttempt({ "Upstash-Retried": "1" }, 5)).toBe(false);
-    expect(isFinalQStashAttempt({ "Upstash-Retried": "5" }, 5)).toBe(true);
+  it("refuses to serve before it is attached to a layer", async () => {
+    const dispatcher = new QStashDispatcher({
+      url: "https://example.com/api/execute",
+      receiver: receiver(true),
+    });
+    await expect(dispatcher.createExecuteHandler()(deliver({ taskId: "t1" }))).rejects.toThrow(
+      /not attached/,
+    );
   });
 });

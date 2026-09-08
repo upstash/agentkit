@@ -25,6 +25,8 @@ import {
   type Task,
   type TaskContext,
   type TaskDispatcher,
+  type TaskError,
+  type TaskSteps,
   type TaskStore,
   type WireTask,
 } from "./types.js";
@@ -128,19 +130,6 @@ type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
 
 export type TaskHandler<Args> = (args: Args, task: TaskContext) => Promise<Record<string, unknown>>;
 
-export type ExecuteTaskOptions = {
-  /**
-   * Whether this is the dispatcher's last delivery attempt. Defaults to `true`.
-   *
-   * It decides what a thrown handler means. On the last attempt the task is settled `failed`,
-   * which is terminal and final. Before then the task is deliberately *left* `working` and the
-   * error rethrown, so the endpoint can answer non-2xx and the dispatcher can retry — settling
-   * `failed` on the first error would make the task terminal and quietly turn every subsequent
-   * redelivery into a no-op, which is the opposite of what retries are for.
-   */
-  isFinalAttempt?: boolean;
-};
-
 export type TaskLayer = {
   /** Registers a tool whose calls are answered with a task handle. */
   registerTask<Schema extends StandardSchemaWithJSON>(
@@ -149,8 +138,20 @@ export type TaskLayer = {
     config: TaskToolConfig<Schema>,
     handler: TaskHandler<InferArgs<Schema>>,
   ): void;
-  /** Runs a dispatched task. Call this from the endpoint your dispatcher delivers to. */
-  executeTask(taskId: string, options?: ExecuteTaskOptions): Promise<Task | null>;
+  /**
+   * Runs a dispatched task. Normally you do not call this — the dispatcher does, through the
+   * handler returned by {@link TaskLayer.createExecuteHandler}.
+   *
+   * It **rejects** if the handler threw, and deliberately leaves the task non-terminal. Deciding
+   * that a failure is final means knowing whether the transport will deliver again, and only the
+   * transport knows that: QStash counts deliveries and calls a failure callback when it gives up,
+   * a workflow engine retries per step and has its own failure hook, an in-process dispatcher has
+   * no retries at all. Settling `failed` on the first error would make the task terminal and turn
+   * every later redelivery into a no-op — the opposite of what retries are for.
+   */
+  executeTask(taskId: string, steps?: TaskSteps): Promise<Task | null>;
+  /** Records a terminal failure. Called by the dispatcher once it has stopped retrying. */
+  failTask(taskId: string, error: TaskError): Promise<Task | null>;
   /**
    * The delivery endpoint as a fetch handler, when the dispatcher provides one:
    *
@@ -287,11 +288,7 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
     });
   }
 
-  async function executeTask(
-    taskId: string,
-    executeOptions: ExecuteTaskOptions = {},
-  ): Promise<Task | null> {
-    const { isFinalAttempt = true } = executeOptions;
+  async function executeTask(taskId: string, steps?: TaskSteps): Promise<Task | null> {
     const task = await required(taskId);
 
     // The redelivery guard. Delivery is at-least-once by contract, so the same task id can arrive
@@ -315,6 +312,12 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
         // A task that expired out from under us is not worth finishing either.
         return current === null || current.status === "cancelled";
       },
+      // Without step support these are the plain, uncheckpointed equivalents, so the same handler
+      // runs under any dispatcher — it just cannot outlive one invocation.
+      run: steps ? steps.run : (_stepName, fn) => fn(),
+      sleep: steps
+        ? steps.sleep
+        : (_stepName, seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000)),
     };
 
     try {
@@ -328,30 +331,36 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
       });
       return settled ?? (await store.get(taskId));
     } catch (cause) {
+      // Left non-terminal on purpose — see the note on ExecuteTaskOptions above. The task stays
+      // `working` so a redelivery can still finish it; the dispatcher settles it `failed` only
+      // once it stops trying.
       const message = cause instanceof Error ? cause.message : String(cause);
-      if (!isFinalAttempt) {
-        // Stay non-terminal so the dispatcher's retry can still finish the work.
-        await store
-          .update(taskId, { statusMessage: `Attempt failed, retrying: ${message}` })
-          .catch(() => undefined);
-        throw cause;
-      }
-      await store.settle(taskId, {
-        status: "failed",
-        statusMessage: "Execution failed",
-        error: { code: ProtocolErrorCode.InternalError, message },
-      });
+      await store
+        .update(taskId, { statusMessage: `Attempt failed: ${message}` })
+        .catch(() => undefined);
       throw cause;
     }
+  }
+
+  async function failTask(taskId: string, error: TaskError): Promise<Task | null> {
+    return await store.settle(taskId, {
+      status: "failed",
+      statusMessage: "Execution failed",
+      error,
+    });
   }
 
   async function runInline(name: string, args: unknown): Promise<Record<string, unknown>> {
     const handler = handlers.get(name);
     if (!handler) throw new Error(`No task handler registered for "${name}".`);
+    // Running inline means there is no task and no transport, so none of the context can be more
+    // than a no-op: nothing to report progress to, nothing to cancel, nothing to checkpoint.
     return await (handler as TaskHandler<unknown>)(args, {
       taskId: "",
       update: async () => undefined,
       isCancelled: async () => false,
+      run: (_stepName, fn) => fn(),
+      sleep: (_stepName, seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000)),
     });
   }
 
@@ -376,14 +385,16 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
           "process. Use a transport-backed dispatcher (e.g. QStashDispatcher) to expose one.",
       );
     }
-    return dispatcher.createExecuteHandler((taskId, { isFinalAttempt }) =>
-      executeTask(taskId, { isFinalAttempt }),
-    );
+    return dispatcher.createExecuteHandler();
   }
+
+  // Hand the transport its way back in, now that both halves exist.
+  dispatcher.attach?.({ run: executeTask, fail: failTask });
 
   return {
     registerTask,
     executeTask,
+    failTask,
     createExecuteHandler,
     getTask: (taskId) => store.get(taskId),
     store,
