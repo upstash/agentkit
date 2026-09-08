@@ -12,9 +12,8 @@ accepted the call.
 > runtime.
 >
 > **Wondering what of this belongs in `@modelcontextprotocol/server` itself?** See
-> [Could this be part of the TypeScript SDK?](#could-this-be-part-of-the-typescript-sdk) — two
-> things only that SDK can fix, and the one design choice that decides whether a built-in runtime
-> survives serverless.
+> [Could this be part of the TypeScript SDK?](#could-this-be-part-of-the-typescript-sdk) — three
+> gaps worth closing upstream, two of which no library can work around.
 
 ## Install
 
@@ -273,14 +272,17 @@ checks.
 ## Could this be part of the TypeScript SDK?
 
 Most of it need not be. This package is additive over `@modelcontextprotocol/server` — no fork, no
-patches — which is itself the useful finding: a tasks runtime can live outside that package. Two
-things cannot, and one design choice would decide whether a built-in runtime works on serverless at
-all.
+patches — which is itself the useful finding: a tasks runtime can live outside that package. Three
+gaps are worth closing upstream anyway.
 
 Everything below was verified against `@modelcontextprotocol/server@2.0.0` and `main` as of
 2026-09.
 
-### Two things only `@modelcontextprotocol/server` can fix
+### Three gaps
+
+The first two are blockers: no library can work around them. The third is not — this package
+implements it — but every task server has to, and getting it wrong is a security bug rather than a
+missing feature.
 
 **1. `tasks/get` and `tasks/cancel` are undispatchable on the 2026-07-28 era.** They sit in that
 package's 2025 method registry and were dropped from the 2026 one, so `isSpecRequestMethod` returns
@@ -308,10 +310,30 @@ hand a task to a client that did not declare the capability, and `-32021` is the
 things stand that code cannot reach the client. This package answers with a structured tool error
 carrying the code in `structuredContent`, which is a workaround, not the contract.
 
-### One design choice, if the TypeScript SDK does ship a runtime
+**3. The callback endpoint has no home.** Once work runs outside the request, something has to call
+*back in* to run it, so a task server needs a second route the spec never describes. Every
+implementation invents its own, and each re-implements the same delicate parts: authenticating the
+caller, telling a delivery from a failure notification, and picking the status code that decides
+whether the transport retries. Miss the first and anyone who can reach the route can run your
+tasks.
 
-**Two interfaces, not one.** A durable task id does not make the underlying work durable, and those
-are separate problems:
+None of that is application knowledge — it belongs to whatever transport is driving the work. Given
+a dispatcher seam it collapses to one line, and it need not even be a second route: because the
+transport authenticates its own deliveries, the same handler can sit behind the MCP endpoint.
+
+```ts
+export const POST = tasks.createExecuteHandler(); // the entire second route
+```
+
+### And, less urgently, a shape
+
+The three above are gaps. This is only a suggestion, for whenever a runtime does land.
+
+<details>
+<summary><b>The shape that survives serverless</b></summary>
+
+**Two interfaces, not one** — a durable task id does not make the underlying work durable, and
+those are separate problems:
 
 ```ts
 interface TaskStore {
@@ -327,38 +349,13 @@ interface TaskDispatcher {
 }
 ```
 
-The store half already has precedent: the C# SDK ships `IMcpTaskStore` and its docs are explicit
-that the record must be reachable from any instance. The dispatcher half exists nowhere. Across the
-official SDKs, execution is always in-process — `Task.Run` in C#, `tokio::spawn` in Rust, the
-caller's own `.subscribe()` in Java's open PR, and Python's PR awaits the tool inline. The result is
-the same everywhere: **a durable record and non-durable work.**
+The store half has precedent — the C# SDK ships `IMcpTaskStore`. The dispatcher half exists in no
+official SDK: execution is in-process everywhere (`Task.Run`, `tokio::spawn`, `.subscribe()`,
+Python's PR awaits the tool inline), which leaves a durable record and non-durable work. Fine on a
+host that keeps a process alive; not on serverless. An in-process dispatcher as the default would
+change nothing for anyone who does not need one.
 
-That is survivable on a host that can keep a process alive. It is not survivable on serverless,
-where the invocation ends with the response — which is where a large share of MCP servers run. With
-a dispatcher seam, the same runtime supports both: ship an in-process dispatcher as the default so
-nothing changes for people who do not need one, and let anyone else supply a queue, a workflow
-engine, or a platform primitive like a Durable Object alarm.
-
-**And the callback endpoint should belong to the runtime, not the application.** This is the part
-that surprised us most in practice. Once the work runs outside the request, something has to call
-*back in* to run it — so a task server needs a second route that has nothing to do with MCP. The
-spec describes the client↔server task methods and says nothing about this one, so every serverless
-implementation invents its own, and each one re-implements the same delicate things: authenticating
-the caller, telling a delivery from a failure notification, and choosing the status code that
-decides whether the transport tries again. Forget the first and anyone who can reach the route can
-run your tasks.
-
-None of that is the application's knowledge — it is the transport's. So the dispatcher should hand
-back a finished endpoint:
-
-```ts
-// the entire second route
-export const POST = tasks.createExecuteHandler();
-```
-
-That also keeps the door open to not having a second route at all: because the transport
-authenticates its own deliveries, the same handler can sit behind the MCP endpoint and be selected
-on the way in, so a server can stay single-endpoint if it wants to.
+</details>
 
 ## Reference
 
