@@ -356,7 +356,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `'eve/memory/file'`), **0.45.1** fails on `eve/memory/file` alone, and **0.45.2 / 0.46.1 / 0.47.6 /
   0.49.0 / 0.52.2** are all clean; the runtime import throws `ERR_PACKAGE_PATH_NOT_EXPORTED` below the
   floor. `MemoryProvider`'s declared shape is byte-identical across 0.45.2→0.52.2, so
-  nothing here is version-fragile.
+  nothing here is version-fragile. **Since 2026-09 this is also the package's declared `eve` peer
+  floor** (`packages/eve/package.json`, `">=0.45.2"`): once `./memory` actually shipped (published
+  `0.9.0`), leaving the peer at `>=0.32.0` let consumers install a combination that crashes on first
+  import. Re-verified across 0.32.0/0.44.3/0.45.0/0.45.1/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/
+  0.52.0/0.52.2 — runtime import and `tsc` agree on the same cut at 0.45.2.
 - **What the tests pin down** (a PR review flagged that only the `profile` tools were covered):
   `memory/memory.test.ts` has an offline suite that spies `AgentMemory.prototype.recall`/`add` and
   scripts the search index, so it asserts recall/capture actually *fire* at the lifecycle
@@ -518,6 +522,17 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
   between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`; FLUSHDB does drop
   indexes, and `SEARCH.DROP <name>` is the only other lever — there is no list command).
+- **`curl -X POST https://upstash.com/start-redis` is the no-CLI way to get the same throwaway DB**
+  (returns a markdown page with the REST URL + token; re-fetch with `-H "Idempotency-Key: <db-id>"`).
+  Two operational traps measured 2026-09 in a sandboxed box: (1) the ephemeral endpoint
+  (`*.upstash.io` → `p2-global-eph.upstash.io`) can become unreachable at the TLS layer partway
+  through a run — `curl` returns exit 35 / `http=000`, tests then fail as bare **30s vitest timeouts**
+  with no Redis error text, and it never recovers for that DB. A *newly created* DB is reachable
+  again, so the working recipe is **provision a fresh DB per test file** (which also resets the
+  1-index cap for free) and treat "every live test in a file timed out at 30000ms" as infrastructure,
+  not a regression. (2) DB creation is rate-limited: `start-redis` starts answering **HTTP 429** with
+  an empty body after roughly half a dozen creations, so a runner must fall back to reusing +
+  `FLUSHDB`ing the current DB and back off for several minutes rather than spinning.
 - **The read-your-writes sync-token bug is FIXED as of `@upstash/redis@1.38.4`** (the repo is pinned
   `^1.38.4`; `packages/eve`'s peer floor is `>=1.38.4`). Historically, in **1.38.0 and earlier back to
   1.34.5**, `HttpClient.request()` built `requestHeaders` from `this.headers` and only *then* copied
@@ -549,21 +564,32 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 
 ## Eve framework facts
 - The repo is on **`eve@0.52.2`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
-  `examples/eve-extension-demo`). `packages/eve`'s peer stays
-  **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
+  `examples/eve-extension-demo`). `packages/eve`'s peer is **`>=0.45.2`** (raised 2026-09 from the
+  long-standing `>=0.32.0`, see below). Its `./sandbox` and root entry points are still fine much
+  further back — the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
   **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
   unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
   against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
   the 0.52.2 bump across 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2, also all clean).
-  Don't raise the floor without re-running that check; the extension's peer is
+  **What forces `>=0.45.2` is the `./memory` subpath**, which first *shipped* in published `0.9.0`
+  (2026-09-04): `dist/memory.js` has a **runtime** `import { MemoryDocumentConflictError } from
+  "eve/memory/file"`, a subpath eve only added in 0.45.2. The old `>=0.32.0` floor therefore admitted
+  eve versions on which `import "@upstash/agentkit-eve/memory"` dies at module load with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` — reproduced against the *published* `0.9.0` on eve 0.44.3/0.45.0/0.45.1,
+  clean on 0.45.2 and every release up to 0.52.2 (runtime import **and** `tsc` over
+  `defineMemory({ provider: redisMemory() })` + `fileMemory({ backend: redisDocuments() })`). eve 0.52.0
+  also moved AgentKit into its **memory-provider** registry (`eve add memory/upstash-agentkit`, the old
+  `extension/upstash-agentkit` item is gone), so this subpath is now eve's advertised entry point and
+  the floor has to be honest about it. The floor is **exactly** 0.45.2 — nothing in the dist needs
+  anything newer. Don't raise it further without re-running that per-version check; the extension's peer is
   `>=0.52.2`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
   **Memory landed late:** `eve/memory` first exists in **0.45.1** and `eve/memory/file` in **0.45.2**
   (0.45.0 and everything below has neither) — measured with `npm view eve@<v> exports`. That is the
-  real floor for `@upstash/agentkit-eve/memory`; the package peer stays `>=0.32.0` for the other
-  entry points.
+  real floor for `@upstash/agentkit-eve/memory`, and since 2026-09 it is the package's declared `eve`
+  peer floor too.
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
   APIs with fixed ID-addressed handles — frontend/client `send` is now **positional**
   (`agent.send(message, options?)`, not `send({ message })`; eve-demo's `agent-chat.tsx` was updated);
@@ -681,6 +707,16 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `eve@0.49.0(@opentelemetry/api)(@upstash/redis)(ai)(chokidar)(dotenv)(jiti)(rollup)(vite)` down to
   `eve@0.52.2(@opentelemetry/api)(ai)` and garbage-collects the now-unreferenced entries. Confirm with
   `pnpm install --frozen-lockfile` (must print "Already up to date"), not by eyeballing the line count.
+- **2026-09-08 audit against eve 0.52.2 (still the latest): no pin moved, but `packages/eve`'s peer
+  floor was stale.** Every `eve` pin in the repo was already `^0.52.2`, `pnpm install --frozen-lockfile`
+  printed "Already up to date", build/typecheck/example builds/eval were clean, and rebuilding
+  `packages/eve-extension` re-stamped the *same* manifest (tool 30 / dynamicTool 29 / hook 20), so its
+  `>=0.52.2` peer is still exactly right (0.52.1's contract table tops out at tool 29 / dynamicTool 28 —
+  re-read from `dist/src/compiler/extension-compatibility.js` in the 0.52.0/0.52.1 tarballs). The
+  published `@upstash/agentkit-eve-extension@0.10.0` + `@upstash/agentkit-eve@0.9.0` also install and
+  `eve build` cleanly against eve 0.52.2 in a fresh npm consumer (all 7 `agentkit__*` tools + the
+  `chat_history` hook mount). **The one real finding was `packages/eve`'s `eve` peer `>=0.32.0`**, stale
+  since `./memory` started shipping in `0.9.0` — raised to `>=0.45.2`; see the two bullets above.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.

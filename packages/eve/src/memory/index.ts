@@ -46,10 +46,12 @@
  * ## eve version
  *
  * This entry point imports `eve/memory` and `eve/memory/file`, which eve added in **0.45.1** and
- * **0.45.2** respectively — newer than the package's `>=0.32.0` peer floor, which is set by the
- * (much older) root and `./sandbox` entry points. Importing `@upstash/agentkit-eve/memory` on an
- * older eve fails at module load with an unresolved-subpath error. The peer range is deliberately
- * not raised for this: the other entry points still work all the way down to eve 0.32.
+ * **0.45.2** respectively, so it sets the package's `eve` peer floor: **`>=0.45.2`**. Importing
+ * `@upstash/agentkit-eve/memory` on an older eve fails at module load with
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED`. The floor used to be `>=0.32.0` — the range of the (much older)
+ * root and `./sandbox` entry points — but that predates this subpath shipping: it let a consumer
+ * install cleanly on eve 0.32–0.45.1 and then crash on first import, so the floor now names what the
+ * published `dist` actually needs.
  */
 export { RedisMemoryDocumentBackend, redisDocuments } from "./documents.js";
 export type { RedisDocumentsConfig } from "./documents.js";

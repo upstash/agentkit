@@ -24,4 +24,5 @@ export type { RateLimitConfig, Duration } from "@upstash/agentkit-sdk";
 // Backends for eve's native memory slots (`agent/memory/*.ts`) live at
 // "@upstash/agentkit-eve/memory": `redisDocuments()` (storage for eve's `fileMemory()`) and
 // `redisMemory()` (a full MemoryProvider with ranked recall + automatic capture). That entry point
-// needs eve >= 0.45.2; the tools above have no such floor, which is why it is a separate subpath.
+// needs eve >= 0.45.2, which is why it sets the package's `eve` peer floor; the tools above work on
+// much older eve, which is why it is a separate subpath.
