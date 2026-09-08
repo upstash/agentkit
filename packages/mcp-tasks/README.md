@@ -7,12 +7,14 @@ A long-running tool answers with a task handle instead of blocking. The task rec
 Upstash Redis; the work runs through QStash or Upstash Workflow, so it survives the process that
 accepted the call.
 
-> The official SDK v2 ships the 2026-07-28 wire schemas for tasks but no runtime behind them — the
-> v1 experimental task APIs were removed with no migration path. This is that runtime.
+> `@modelcontextprotocol/server` v2 ships the 2026-07-28 wire schemas for tasks but no runtime
+> behind them — the v1 experimental task APIs were removed with no migration path. This is that
+> runtime.
 >
-> **Wondering what of this belongs in the SDK itself?** See
-> [Could this be part of the SDK?](#could-this-be-part-of-the-sdk) — two things only the SDK can
-> fix, and the one design choice that decides whether a built-in runtime survives serverless.
+> **Wondering what of this belongs in `@modelcontextprotocol/server` itself?** See
+> [Could this be part of the TypeScript SDK?](#could-this-be-part-of-the-typescript-sdk) — two
+> things only that SDK can fix, and the one design choice that decides whether a built-in runtime
+> survives serverless.
 
 ## Install
 
@@ -268,16 +270,20 @@ checks.
 
 </details>
 
-## Could this be part of the SDK?
+## Could this be part of the TypeScript SDK?
 
 Most of it need not be. This package is additive over `@modelcontextprotocol/server` — no fork, no
-patches — which is itself the useful finding: a tasks runtime can live outside the SDK. Two things
-cannot, and one design choice would decide whether a built-in runtime works on serverless at all.
+patches — which is itself the useful finding: a tasks runtime can live outside that package. Two
+things cannot, and one design choice would decide whether a built-in runtime works on serverless at
+all.
 
-### Two things only the SDK can fix
+Everything below was verified against `@modelcontextprotocol/server@2.0.0` and `main` as of
+2026-09.
 
-**1. `tasks/get` and `tasks/cancel` are undispatchable on the 2026-07-28 era.** They sit in the
-SDK's 2025 method registry and were dropped from the 2026 one, so `isSpecRequestMethod` returns
+### Two things only `@modelcontextprotocol/server` can fix
+
+**1. `tasks/get` and `tasks/cancel` are undispatchable on the 2026-07-28 era.** They sit in that
+package's 2025 method registry and were dropped from the 2026 one, so `isSpecRequestMethod` returns
 true, the request is era-gated, and the gate answers `-32601` **before your handler is looked up**.
 A `fallbackRequestHandler` does not help; the gate returns first.
 
@@ -302,7 +308,7 @@ hand a task to a client that did not declare the capability, and `-32021` is the
 things stand that code cannot reach the client. This package answers with a structured tool error
 carrying the code in `structuredContent`, which is a workaround, not the contract.
 
-### One design choice, if the SDK does ship a runtime
+### One design choice, if the TypeScript SDK does ship a runtime
 
 **Two interfaces, not one.** A durable task id does not make the underlying work durable, and those
 are separate problems:
@@ -333,9 +339,26 @@ a dispatcher seam, the same runtime supports both: ship an in-process dispatcher
 nothing changes for people who do not need one, and let anyone else supply a queue, a workflow
 engine, or a platform primitive like a Durable Object alarm.
 
-Optionally, a third method earns its place: letting the dispatcher supply its own delivery endpoint
-(`createExecuteHandler()`), so authenticating a callback and choosing retry status codes stay
-inside the transport that understands them instead of becoming the application's problem.
+**And the callback endpoint should belong to the runtime, not the application.** This is the part
+that surprised us most in practice. Once the work runs outside the request, something has to call
+*back in* to run it — so a task server needs a second route that has nothing to do with MCP. The
+spec describes the client↔server task methods and says nothing about this one, so every serverless
+implementation invents its own, and each one re-implements the same delicate things: authenticating
+the caller, telling a delivery from a failure notification, and choosing the status code that
+decides whether the transport tries again. Forget the first and anyone who can reach the route can
+run your tasks.
+
+None of that is the application's knowledge — it is the transport's. So the dispatcher should hand
+back a finished endpoint:
+
+```ts
+// the entire second route
+export const POST = tasks.createExecuteHandler();
+```
+
+That also keeps the door open to not having a second route at all: because the transport
+authenticates its own deliveries, the same handler can sit behind the MCP endpoint and be selected
+on the way in, so a server can stay single-endpoint if it wants to.
 
 ## Reference
 
@@ -398,7 +421,7 @@ neither is durable, which is exactly the failure this package is about.
 | --- | --- |
 | `createTaskLayer(options)` | `{ registerTask, executeTask, failTask, createExecuteHandler, getTask, store, dispatcher }` |
 | `TaskStore`, `TaskDispatcher`, `TaskContext` | The two seams, and what a handler is handed |
-| `TaskEndpoints`, `TaskJournal` | What a dispatcher calls back into, and how it journals the SDK's writes |
+| `TaskEndpoints`, `TaskJournal` | What a dispatcher calls back into, and how it journals this package's own writes |
 | `Task`, `WireTask`, `TaskStatus`, `TaskError` | The record, and the subset that goes on the wire |
 | `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type |
 | `TASKS_EXTENSION`, `TASKS_PROTOCOL_VERSION`, `TASK_METHODS` | The extension id, `"2026-07-28"`, the method names |
@@ -463,9 +486,10 @@ names, so a client has to know yours.
 </details>
 
 <details>
-<summary><b>Why the transport instead of the SDK's <code>createMcpHandler</code>?</b></summary>
+<summary><b>Why the transport instead of <code>createMcpHandler</code>?</b></summary>
 
-Same reason. `tasks/get` and `tasks/cancel` sit in the SDK's **2025** method registry and were
+Same reason. `tasks/get` and `tasks/cancel` sit in `@modelcontextprotocol/server`'s **2025**
+method registry and were
 dropped from the **2026** one, so on the modern era they are neither dispatchable nor treated as
 free-form extension methods — the gate returns `-32601` before your handler runs. Serving through
 `WebStandardStreamableHTTPServerTransport` leaves the instance on the 2025 era, where they dispatch
