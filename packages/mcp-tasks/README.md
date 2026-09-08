@@ -39,15 +39,37 @@ export function createServer() {
     server,
     "generate_report",
     { description: "Generates a report", inputSchema: z.object({ topic: z.string() }) },
-    async ({ topic }, task) => {
-      await task.update(`Researching ${topic}`);
-      return { content: [{ type: "text", text: `Report on ${topic}` }] };
-    },
+    async ({ topic }) => ({ content: [{ type: "text", text: await writeReport(topic) }] }),
   );
 
   return server;
 }
 ```
+
+Everything above is required. Progress messages and cancellation are opt-in:
+
+<details>
+<summary><b>Reporting progress and honouring cancellation</b></summary>
+
+The handler's second argument is the task. Both calls are optional — a handler that ignores them
+still works, it just reports nothing and cannot be stopped early.
+
+```ts
+async ({ topic }, task) => {
+  for (const source of sources) {
+    if (await task.isCancelled()) return {};
+    await task.update(`Reading ${source}`);
+    await read(source);
+  }
+  return { content: [{ type: "text", text: await writeReport(topic) }] };
+};
+```
+
+`task.update(...)` is what the client sees as `statusMessage` on its next poll. Cancellation is
+cooperative: `tasks/cancel` flips the record and stops a pending delivery, but running code only
+stops where it checks.
+
+</details>
 
 Then two routes — the MCP endpoint, and the one the work is delivered to:
 
