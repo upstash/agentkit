@@ -10,7 +10,7 @@ restart.
 attempt this is and picking the status code that decides whether QStash retries are all facts about
 the transport, so the transport now supplies the endpoint: an app route is
 `export const POST = tasks.createExecuteHandler()` instead of a hand-written handler that has to
-remember `Receiver.verify`. Modelled on Vercel Workflow's `Queue.createQueueHandler`.
+remember `Receiver.verify`.
 
 Retry defaults are re-tuned around a constraint worth knowing: QStash caps `retries` per plan, and
 the local dev server and free tier reject anything above 5. So the budget is bought with backoff

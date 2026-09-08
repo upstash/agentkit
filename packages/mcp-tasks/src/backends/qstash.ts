@@ -43,8 +43,7 @@ export const DEFAULT_RETRY_DELAY = "min(pow(3, retried) * 1000, 300000)";
  *
  * **QStash caps this per plan** — the local dev server and the free tier reject anything above 5
  * with `quota maxRetries exceeded`, so 5 is the highest value that works everywhere and the budget
- * is bought with {@link DEFAULT_RETRY_DELAY} instead. Raise it if your plan allows; Vercel's own
- * QStash-backed Workflow world defaults to 47.
+ * is bought with {@link DEFAULT_RETRY_DELAY} instead. Raise it if your plan allows.
  */
 export const DEFAULT_RETRIES = 5;
 

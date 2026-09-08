@@ -1,47 +1,14 @@
 # @upstash/mcp-tasks
 
 A durable [MCP Tasks](https://github.com/modelcontextprotocol/ext-tasks) runtime for the official
-TypeScript SDK, with Upstash Redis and QStash as the backends.
+TypeScript SDK.
 
-The 2026-07-28 MCP spec made the protocol stateless: no `initialize` handshake, no `Mcp-Session-Id`,
-every request carrying its own protocol version, client identity and capabilities in `_meta`. Long
-running tools got the Tasks extension — a tool call answers with a task handle and the client polls
-for the result. The official TypeScript SDK v2 ships the wire schemas for it but **no tasks
-runtime**; the v1 experimental task APIs were removed with no migration path.
+A long-running tool answers with a task handle instead of blocking. The task record lives in
+Upstash Redis; the work runs through QStash or Upstash Workflow, so it survives the process that
+accepted the call.
 
-This package is that runtime. It is one factory over two interfaces, so the storage and the
-execution transport are yours to choose:
-
-| Layer | Interface | What it has to guarantee | What ships here |
-| --- | --- | --- | --- |
-| Task record | `TaskStore` | Durable create before the response, TTL cleanup | Upstash Redis hash + `PEXPIRE` |
-| Execution | `TaskDispatcher` | At-least-once delivery that survives a dead process, cancellable while pending | QStash, or Upstash Workflow |
-| Polling | — | `tasks/get` reads the store | built in |
-
-### Which dispatcher
-
-Both serve the same route and run the same handler. They differ in one thing — how long the work
-is allowed to take.
-
-| | `QStashDispatcher` | `WorkflowDispatcher` |
-| --- | --- | --- |
-| Runs the work off the `tools/call` request | ✅ | ✅ |
-| Survives the process dying | ✅ redelivery | ✅ replay |
-| Can outlive one function invocation | ❌ | ✅ one invocation per step |
-| Retries | whole task, from the start | per step, resuming from the journal |
-
-A queue delivery is a single serverless invocation. Exceed your platform's limit and the work is
-killed, and the redelivery restarts your handler from the beginning — for a task measured in
-minutes or hours that is a livelock, not durability. Workflow gives each `task.run(...)` step its
-own invocation and replays finished steps from a journal, so the task as a whole has no time
-limit. Start on QStash; move to Workflow when the work outgrows a function.
-
-## Why two interfaces and not one
-
-A durable task ID does not make the underlying work durable. Write the record to shared storage and
-then run the work in a fire-and-forget promise, and a deploy mid-task leaves you with a perfectly
-durable record of a task stuck in `working` until its TTL expires. The record and the work are
-separate problems, so they get separate seams.
+> The official SDK v2 ships the 2026-07-28 wire schemas for tasks but no runtime behind them — the
+> v1 experimental task APIs were removed with no migration path. This is that runtime.
 
 ## Install
 
@@ -49,50 +16,32 @@ separate problems, so they get separate seams.
 npm install @upstash/mcp-tasks @modelcontextprotocol/server @upstash/redis @upstash/qstash
 ```
 
-`@upstash/redis` and `@upstash/qstash` are only needed for the Upstash backends, which live behind
-the `@upstash/mcp-tasks/upstash` entry point. Bring your own store and the root import pulls
-neither.
-
 ## Usage
 
 ```ts
-import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer, TASKS_PROTOCOL_VERSION } from "@upstash/mcp-tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-tasks/upstash";
 import * as z from "zod";
 
-const tasks = createTaskLayer({
-  store: new RedisTaskStore(), //           optional: { redis, prefix, enableTelemetry }
-  dispatcher: new QStashDispatcher({
-    url: `${process.env.APP_URL}/api/execute`, // where QStash delivers the task
-    // retries / retryDelay default to a budget that outlives a restart — see below
-  }),
-  defaults: { ttlMs: 300_000, pollIntervalMs: 2_000 }, // optional
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
 });
 
 export function createServer() {
   const server = new McpServer(
     { name: "reports", version: "1.0.0" },
-    // Required: the transport otherwise rejects 2026-07-28 requests as an unsupported version.
     { supportedProtocolVersions: [TASKS_PROTOCOL_VERSION] },
   );
 
   tasks.registerTask(
     server,
     "generate_report",
-    {
-      description: "Generates a report in four durable steps",
-      inputSchema: z.object({ topic: z.string() }),
-      ttlMs: 300_000, //        optional: retention, null for unlimited
-      pollIntervalMs: 2_000, // optional: what to suggest to the client
-    },
+    { description: "Generates a report", inputSchema: z.object({ topic: z.string() }) },
     async ({ topic }, task) => {
-      for (let step = 1; step <= 4; step++) {
-        if (await task.isCancelled()) return {};
-        await task.update(`Step ${step}/4: processing ${topic}`);
-        await doWork(topic, step);
-      }
-      return { content: [{ type: "text", text: `Report complete: ${topic}` }] };
+      await task.update(`Researching ${topic}`);
+      return { content: [{ type: "text", text: `Report on ${topic}` }] };
     },
   );
 
@@ -100,118 +49,337 @@ export function createServer() {
 }
 ```
 
-Then two endpoints — the MCP transport, and the one QStash delivers to:
+Then two routes — the MCP endpoint, and the one the work is delivered to:
 
 ```ts
-// POST /api/mcp
-const transport = new WebStandardStreamableHTTPServerTransport({
-  sessionIdGenerator: undefined,
-  enableJsonResponse: true,
-});
-await createServer().connect(transport);
-return transport.handleRequest(request);
+// app/api/mcp/route.ts
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
+import { createServer } from "../../lib/tasks";
+
+export async function POST(request: Request) {
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  await createServer().connect(transport);
+  return transport.handleRequest(request);
+}
 ```
 
 ```ts
 // app/api/execute/route.ts
+import { tasks } from "../../lib/tasks";
+
 export const POST = tasks.createExecuteHandler();
 ```
 
-That second one is deliberately not yours to write. Verifying the signature, reading the task id,
-recognising a failure callback, and picking the status code that decides whether the transport
-tries again are all facts about the transport, and the dispatcher already knows them — so it hands
-you the endpoint instead of a checklist. Skipping the signature check would let anyone who can
-reach the route run tasks; here you cannot skip it.
+That second route is deliberately not yours to write — the dispatcher owns it. See the
+[FAQ](#faq) for what it does.
 
-Switching transports is the dispatcher line and nothing else — same route, same handler:
+## Choosing a dispatcher
+
+Both serve the same route. They differ in how long the work may take.
+
+| | `QStashDispatcher` | `WorkflowDispatcher` |
+| --- | --- | --- |
+| Runs off the `tools/call` request | ✅ | ✅ |
+| Survives the process dying | ✅ redelivery | ✅ replay |
+| Outlives one function invocation | ❌ | ✅ one invocation per step |
+| Retries | whole task, from the start | per step, resuming from the journal |
+
+A queue delivery is a single serverless invocation: exceed your platform's function limit and the
+work is killed, and the redelivery restarts your handler from the beginning. Workflow gives each
+step its own invocation and replays finished ones from a journal, so the task has no time limit.
+
+**Start on QStash. Move to Workflow when the work outgrows a function.**
 
 ```ts
-import { WorkflowDispatcher } from "@upstash/mcp-tasks/upstash";
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-tasks/upstash";
+import type { WorkflowContext } from "@upstash/workflow";
 
-dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+const tasks = createTaskLayer<WorkflowContext>({
+  store: new RedisTaskStore(),
+  dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+});
 ```
+
+The type argument flows into `registerTask`, so the handler's context becomes
+`TaskContext & WorkflowContext` — `task.update(...)` and the engine's `task.run(...)` on one object:
+
+```ts
+async ({ topic }, task) => {
+  const data = await task.run("fetch", () => fetchSources(topic));
+  await task.sleep("cool-off", 5);
+  return { content: [{ type: "text", text: await task.run("write", () => summarise(data)) }] };
+};
+```
+
+<details>
+<summary><b>Writing a workflow handler: what goes inside a step</b></summary>
+
+The handler is re-entered once per step, with finished steps replayed from the journal. So code
+*outside* a step runs again on every invocation. Measured on the demo: **19 handler entries, each
+step body executed exactly once.**
+
+- **Work goes inside `task.run`.** That is what makes it survive, and what stops it re-running.
+- **`task.update(...)` needs no wrapping.** The SDK journals its own writes.
+- **`task.isCancelled()` stays outside.** It is a read, and it *must* re-run — a cached `false`
+  would mean a cancel arriving later is never noticed.
+- **Never nest steps.** The engine rejects `task.run` inside `task.run`.
+
+</details>
 
 ## What the client sees
 
 ```jsonc
 // tools/call  →  a handle, immediately
-{ "resultType": "task", "taskId": "0e30…", "status": "working",
-  "statusMessage": "Queued for durable execution", "ttlMs": 300000, "pollIntervalMs": 2000 }
+{ "resultType": "task", "taskId": "0e30…", "status": "working", "ttlMs": 300000, "pollIntervalMs": 2000 }
 
 // tasks/get   →  progress, then the result inline
-{ "resultType": "complete", "taskId": "0e30…", "status": "working", "statusMessage": "Step 3/4: …" }
-{ "resultType": "complete", "taskId": "0e30…", "status": "completed", "statusMessage": "Completed",
-  "result": { "content": [{ "type": "text", "text": "Report complete: coffee trends" }] } }
+{ "resultType": "complete", "taskId": "0e30…", "status": "working", "statusMessage": "Researching coffee" }
+{ "resultType": "complete", "taskId": "0e30…", "status": "completed",
+  "result": { "content": [{ "type": "text", "text": "Report on coffee" }] } }
 ```
 
 Five states — `working`, `input_required`, `completed`, `failed`, `cancelled` — of which the last
 three are terminal and never change again.
 
-## Design notes
+## How it fits together
 
-Five things here are deliberate, and most of them differ from the obvious implementation.
+<details>
+<summary><b>Who is responsible for what</b></summary>
 
-**The record is written before the handle goes out.** The spec requires it: the client may
-`tasks/get` the id against another instance the moment it has it. So `registerTask` creates, then
-dispatches, then responds — never the other way around.
+| | Owns |
+| --- | --- |
+| **`@upstash/mcp-tasks`** | The protocol: creating the record before replying, serving `tasks/get` / `tasks/cancel`, the capability check, the redelivery guard, settling `completed`/`cancelled` |
+| **`TaskStore`** | Durability of the *record*: create-before-response, TTL, and the atomic terminal transition so a cancel and a completion cannot clobber each other |
+| **`TaskDispatcher`** | Durability of the *work*: delivering it, retrying it, cancelling a pending delivery, authenticating its own endpoint, and deciding when a failure is final |
+| **Your handler** | The work, and checking `isCancelled()` at step boundaries |
 
-**Terminal transitions go through `settle`, not `update`.** Two writers race for the end of a task
-by design — a client's `tasks/cancel` and the executor finishing at the same moment. `settle` moves
-a task to a terminal state *only if it is not terminal already*, atomically (a Lua script on Redis),
-and returns `null` when it lost. A check-then-write would let a late `completed` overwrite a
-`cancelled`; this cannot. The store also keeps one field per task property rather than one JSON
-blob, so a progress update and a cancel never clobber each other's fields.
+The split is the whole design: a durable task id does not make the underlying work durable.
 
-**A failed attempt is not automatically a failed task, and the core never decides which is which.**
-Settling `failed` on the first error makes the task terminal, so every later redelivery
-short-circuits on the redelivery guard and the retries are silently useless. But knowing that a
-failure is *final* means knowing whether the transport will try again — and only the transport
-knows that. So `executeTask` rethrows and leaves the task `working`; the dispatcher calls
-`failTask` once it has genuinely given up. QStash learns this from its own failure callback, which
-fires only after every retry is exhausted; Workflow from its `failureFunction`. Nothing in this
-package counts attempts or reads a retry header.
+</details>
 
-**Under a step-capable dispatcher, only `task.run` bodies are replay-safe.** Workflow re-enters the
-handler once per step and replays finished steps from the journal, so anything *outside* a step
-runs again on every invocation — measured on the demo: 19 handler entries, each step body executed
-exactly once. Put side effects (including `task.update`) inside `task.run`; leave reads like
-`task.isCancelled()` outside, where re-running them is the point.
+<details>
+<summary><b>Flow: <code>tools/call</code> → a task handle</b></summary>
 
-**Redelivery is expected, not exceptional.** At-least-once is the strongest thing a queue promises,
-so `executeTask` returns early on an already-terminal task.
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as mcp-tasks
+    participant St as TaskStore
+    participant D as TaskDispatcher
 
-**The retry budget has to outlast a restart.** This is the one default most likely to bite you. A
-task is only as durable as the number of redeliveries left when the process died — run out, and the
-record survives in Redis while nothing ever finishes the work, leaving `working` until the TTL
-expires. QStash caps `retries` per plan (the local dev server and the free tier reject anything
-above **5** with `quota maxRetries exceeded`), so the budget is bought with backoff instead: the
-default delay is `min(pow(3, retried) * 1000, 300000)` — 1s, 3s, 9s, 27s, 81s, about two minutes
-across five attempts. Raise `retries` if your plan allows; for comparison, Vercel's QStash-backed
-Workflow world defaults to 47.
-
-## Two gotchas in the official SDK
-
-Both verified against `@modelcontextprotocol/server@2.0.0`, and both are why this package exists in
-the shape it does.
-
-**`createMcpHandler` cannot serve `tasks/get` / `tasks/cancel`.** It pins each request to the
-2026-07-28 era from the client's envelope claim, and on that era the SDK's dispatch gate answers
-those two methods with `-32601` *before* looking up your handler — they are claimed spec vocabulary
-in its 2025 registry and were dropped from the 2026 one, so they are neither dispatchable nor
-free-form. Either serve with `WebStandardStreamableHTTPServerTransport` (or the Node one) and
-`transport.handleRequest`, which stays on the 2025 era where they dispatch normally — the per-request
-`_meta` envelope is still lifted, so nothing else changes — or keep `createMcpHandler` and move the
-operations to your own namespace:
-
-```ts
-createTaskLayer({ store, dispatcher, methods: { get: "upstash/tasks.get", cancel: "upstash/tasks.cancel" } });
+    C->>S: tools/call (declares tasks capability)
+    S->>S: capability present? else structured tool error (-32021)
+    S->>St: create(task)
+    Note over St: must commit before the reply —<br/>a tasks/get may hit another instance
+    St-->>S: ok
+    S->>D: dispatch(taskId)
+    D-->>S: dispatchId
+    S->>St: update({ dispatchId })
+    S-->>C: resultType "task" + handle
 ```
 
-**A tool callback cannot return a JSON-RPC error.** `McpServer` catches everything a tool callback
-throws — `ProtocolError` and `MissingRequiredClientCapabilityError` included — and flattens it into
-`{ content, isError: true }`, dropping the code. So a client that has not declared the tasks
-capability gets a structured tool error instead, with the code and the capability it is missing in
-`structuredContent`:
+Order is the spec's, not a preference: the record must be durable before the handle goes out.
+
+</details>
+
+<details>
+<summary><b>Flow: the work running</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant D as Dispatcher (QStash/Workflow)
+    participant E as /api/execute
+    participant S as mcp-tasks
+    participant H as Your handler
+    participant St as TaskStore
+
+    D->>E: deliver { taskId } (signed)
+    E->>E: verify signature — 401 if bad
+    E->>S: executeTask(taskId)
+    S->>St: get(taskId)
+    S->>S: already terminal? → stop (redelivery guard)
+    S->>H: run(args, task)
+    H->>St: update(statusMessage) via task.update
+    H-->>S: result
+    S->>St: settle(completed, result)
+    E-->>D: 200
+```
+
+If the handler throws, nothing is recorded and the endpoint answers **500** — that asks the
+transport for another delivery. Only the transport settles `failed`, and only once it has stopped
+retrying.
+
+</details>
+
+<details>
+<summary><b>Flow: <code>tasks/get</code> and <code>tasks/cancel</code></b></summary>
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as mcp-tasks
+    participant St as TaskStore
+    participant D as TaskDispatcher
+
+    C->>S: tasks/get { taskId }
+    S->>St: get(taskId)
+    St-->>S: task (or null → -32602)
+    S-->>C: resultType "complete" + public fields
+
+    C->>S: tasks/cancel { taskId }
+    S->>St: settle(cancelled)
+    Note over St: refused if already terminal —<br/>first terminal write wins
+    S->>D: cancel(dispatchId)
+    S-->>C: the cancelled task
+```
+
+`tasks/get` is a pure read — nothing about it advances the work. Cancellation is cooperative: the
+store flips the status, the dispatcher stops a pending delivery, and the handler stops where it
+checks.
+
+</details>
+
+## Reference
+
+<details>
+<summary><b>The two interfaces</b></summary>
+
+```ts
+interface TaskStore {
+  create(task: Task): Promise<void>;
+  get(taskId: string): Promise<Task | null>;
+  /** Ignored once the task is terminal — a late write must not overwrite "Cancelled by client". */
+  update(taskId: string, patch: TaskPatch): Promise<Task>;
+  /** Atomic. Returns null when the task was already terminal, so first terminal write wins. */
+  settle(taskId: string, patch: TerminalTaskPatch): Promise<Task | null>;
+}
+
+interface TaskDispatcher<TContext = unknown> {
+  dispatch(taskId: string): Promise<string | undefined>;
+  cancel(dispatchId: string): Promise<void>;
+  attach?(endpoints: TaskEndpoints<TContext>): void;
+  createExecuteHandler?(): (request: Request) => Promise<Response>;
+}
+```
+
+Implement both and the core does not change. A Postgres store is the same four methods over one
+table with a cleanup job standing in for `PEXPIRE`; a BullMQ dispatcher is an `add` returning the
+job id and a `remove` for cancel. `MemoryTaskStore` + `InlineTaskDispatcher` ship for tests —
+neither is durable, which is exactly the failure this package is about.
+
+</details>
+
+<details>
+<summary><b>Options</b></summary>
+
+**`createTaskLayer`**
+
+| | |
+| --- | --- |
+| `store`, `dispatcher` | Required. |
+| `defaults.ttlMs` | Retention window, `null` for unlimited. Default 5 min. |
+| `defaults.pollIntervalMs` | Poll interval to suggest to clients. Default 2s. |
+| `onMissingCapability` | `"error"` (default) or `"run-inline"` — run the handler and answer normally for a client that cannot poll. |
+| `methods` | Rename the task methods. Needed only with `createMcpHandler`; see the FAQ. |
+
+**`registerTask` config** — `description`, `inputSchema`, plus optional `title`, `ttlMs`,
+`pollIntervalMs`, `queuedMessage`, `completedMessage`.
+
+**`RedisTaskStore`** — `redis` (defaults to `Redis.fromEnv()`), `prefix`, `enableTelemetry`.
+
+**`QStashDispatcher`** — `url` required; `qstash`, `receiver`, `retries`, `retryDelay`, `headers`.
+
+**`WorkflowDispatcher`** — `url` required; `client`, `headers`, `retries`.
+
+</details>
+
+<details>
+<summary><b>Exports</b></summary>
+
+| Export | What it is |
+| --- | --- |
+| `createTaskLayer(options)` | `{ registerTask, executeTask, failTask, createExecuteHandler, getTask, store, dispatcher }` |
+| `TaskStore`, `TaskDispatcher`, `TaskContext` | The two seams, and what a handler is handed |
+| `TaskEndpoints`, `TaskJournal` | What a dispatcher calls back into, and how it journals the SDK's writes |
+| `Task`, `WireTask`, `TaskStatus`, `TaskError` | The record, and the subset that goes on the wire |
+| `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type |
+| `TASKS_EXTENSION`, `TASKS_PROTOCOL_VERSION`, `TASK_METHODS` | The extension id, `"2026-07-28"`, the method names |
+| `MemoryTaskStore`, `InlineTaskDispatcher` | Non-durable backends for tests |
+| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher` |
+
+</details>
+
+## FAQ
+
+<details>
+<summary><b>What does the execute endpoint actually do?</b></summary>
+
+Everything that has to be right there belongs to the transport, which is why the dispatcher hands
+you the endpoint instead of a checklist:
+
+- **Verifies the signature.** Against the URL you published to, not `request.url` — behind a proxy
+  the incoming URL is the internal one while QStash signed the public destination. Skipping this
+  would let anyone who can reach the route run tasks; here you cannot skip it.
+- **Tells a delivery from a failure callback.** Both arrive at this one route; the failure callback
+  carries `sourceBody` and fires only once every retry is exhausted.
+- **Picks the status code**, which is the retry contract: **200** ran or already terminal, **500**
+  the handler threw and the transport should try again, **401** bad signature and **400** an
+  unusable body — both terminal, because a retry cannot fix either.
+
+</details>
+
+<details>
+<summary><b>Does it work with <code>mcp-handler</code>?</b></summary>
+
+Yes, with one line of config. [`mcp-handler`](https://www.npmjs.com/package/mcp-handler) wraps the
+SDK's own `createMcpHandler`, which serves the 2026-07-28 era — and on that era `tasks/get` and
+`tasks/cancel` are answered with **-32601 before your handler is looked up**. Rename them and
+everything dispatches:
+
+```ts
+import { createMcpHandler } from "mcp-handler";
+
+const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  methods: { get: "upstash/tasks.get", cancel: "upstash/tasks.cancel" },
+});
+
+export const POST = createMcpHandler((server) => {
+  tasks.registerTask(server, "generate_report", { /* … */ }, handler);
+});
+```
+
+Task *creation* needs no change — `tools/call` returns `resultType: "task"` through `mcp-handler`
+as-is. Only the two task methods move, and the cost is that they are no longer the spec's wire
+names, so a client has to know yours.
+
+</details>
+
+<details>
+<summary><b>Why the transport instead of the SDK's <code>createMcpHandler</code>?</b></summary>
+
+Same reason. `tasks/get` and `tasks/cancel` sit in the SDK's **2025** method registry and were
+dropped from the **2026** one, so on the modern era they are neither dispatchable nor treated as
+free-form extension methods — the gate returns `-32601` before your handler runs. Serving through
+`WebStandardStreamableHTTPServerTransport` leaves the instance on the 2025 era, where they dispatch
+normally and the per-request `_meta` envelope is still lifted, so nothing else changes.
+
+Verified against the real SDK: the registered handler never runs on `createMcpHandler`, while a
+namespaced method on the same server dispatches fine.
+
+</details>
+
+<details>
+<summary><b>Why does a missing capability come back as a tool error, not <code>-32021</code>?</b></summary>
+
+Because a tool callback cannot return a JSON-RPC error. `McpServer` catches everything a tool
+callback throws — `ProtocolError` and `MissingRequiredClientCapabilityError` included — and
+flattens it into `{ content, isError: true }`, dropping the code. So the code and the capability
+you are missing are put where a client can actually read them:
 
 ```jsonc
 { "isError": true,
@@ -220,37 +388,38 @@ capability gets a structured tool error instead, with the code and the capabilit
     "requiredCapabilities": { "extensions": { "io.modelcontextprotocol/tasks": {} } } } }
 ```
 
-Pass `onMissingCapability: "run-inline"` to run the handler and answer normally instead — spec-legal,
-since the server chooses per call, but it brings back the blocking request tasks exist to avoid.
+</details>
 
-## Bringing your own backend
+<details>
+<summary><b>How long do retries last, and what if they run out?</b></summary>
 
-Implement `TaskStore` (four methods) and `TaskDispatcher` (two), and the core does not change. A
-Postgres store is the same methods over one table with a cleanup job standing in for `PEXPIRE`; a
-BullMQ dispatcher is an `add` returning the job id and a `remove` for cancel.
-`MemoryTaskStore` + `InlineTaskDispatcher` ship for tests and local runs — neither is durable, which
-is exactly the failure this package is about.
+The retry budget has to outlast whatever killed the process — otherwise the record survives while
+nothing finishes the work, and the task sits at `working` until its TTL.
 
-## API
+QStash caps `retries` per plan: the local dev server and the free tier reject anything above **5**
+with `quota maxRetries exceeded`. So the budget is bought with backoff instead — the default delay
+is `min(pow(3, retried) * 1000, 300000)`, about two minutes across five attempts.
 
-| Export | What it is |
-| --- | --- |
-| `createTaskLayer(options)` | The runtime: `{ registerTask, executeTask, failTask, createExecuteHandler, getTask, store, dispatcher }` |
-| `TaskStore`, `TaskDispatcher`, `TaskContext` | The two seams, and what a handler is handed |
-| `TaskEndpoints`, `TaskSteps` | What a dispatcher is given to call back into, and the step primitives it may provide |
-| `Task`, `WireTask`, `TaskStatus`, `TaskError` | The record, and the subset that goes on the wire |
-| `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type |
-| `TASKS_EXTENSION`, `TASKS_PROTOCOL_VERSION`, `TASK_METHODS` | The extension id, `"2026-07-28"`, the method names |
-| `MemoryTaskStore`, `InlineTaskDispatcher` | Non-durable backends for tests |
-| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher`, `DEFAULT_RETRIES`, `DEFAULT_RETRY_DELAY` |
+When they do run out, QStash calls its failure callback and the task settles `failed` with the DLQ
+id and the failed response attached. The message is in the QStash DLQ, not lost.
+
+</details>
+
+<details>
+<summary><b>Is the task id a secret?</b></summary>
+
+Effectively, yes. Ids are `randomUUID` (~122 bits), and the spec permits treating them as bearer
+tokens. But `tasks/get` and `tasks/cancel` resolve by id alone, so anyone who learns one can read
+*and cancel* that task. The spec also says servers **MUST** authorize each task request — if your
+server has auth, add that check in your route.
+
+</details>
 
 ## Not implemented
 
 `tasks/update` (the client answering an `input_required` task) and `tasks/list`. The latter is
 absent from the spec on purpose — without sessions a server cannot scope a list to one caller
-without leaking that other people's tasks exist. `tasks/update` would follow the same shape as the
-other two: write the client's answer into the record, and let the handler read it at a step
-boundary, exactly as it reads the cancelled status today.
+without leaking that other people's tasks exist.
 
 The `ext-tasks` repo labels itself experimental and its schema is a draft, so these wire shapes may
 change before Tasks lands in core.
