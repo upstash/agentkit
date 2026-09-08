@@ -9,6 +9,10 @@ accepted the call.
 
 > The official SDK v2 ships the 2026-07-28 wire schemas for tasks but no runtime behind them — the
 > v1 experimental task APIs were removed with no migration path. This is that runtime.
+>
+> **Wondering what of this belongs in the SDK itself?** See
+> [Could this be part of the SDK?](#could-this-be-part-of-the-sdk) — two things only the SDK can
+> fix, and the one design choice that decides whether a built-in runtime survives serverless.
 
 ## Install
 
@@ -263,6 +267,75 @@ store flips the status, the dispatcher stops a pending delivery, and the handler
 checks.
 
 </details>
+
+## Could this be part of the SDK?
+
+Most of it need not be. This package is additive over `@modelcontextprotocol/server` — no fork, no
+patches — which is itself the useful finding: a tasks runtime can live outside the SDK. Two things
+cannot, and one design choice would decide whether a built-in runtime works on serverless at all.
+
+### Two things only the SDK can fix
+
+**1. `tasks/get` and `tasks/cancel` are undispatchable on the 2026-07-28 era.** They sit in the
+SDK's 2025 method registry and were dropped from the 2026 one, so `isSpecRequestMethod` returns
+true, the request is era-gated, and the gate answers `-32601` **before your handler is looked up**.
+A `fallbackRequestHandler` does not help; the gate returns first.
+
+That leaves two workarounds, both bad:
+
+- Serve through `WebStandardStreamableHTTPServerTransport`, which stays on the 2025 era where the
+  methods still dispatch. This is what this package does by default — but it means serving a
+  2026-era extension off the legacy codec, and it rules out `createMcpHandler`, and with it
+  [`mcp-handler`](https://www.npmjs.com/package/mcp-handler), the usual way to run MCP on Next.js.
+- Rename the methods (`methods: { get: "upstash/tasks.get" }`). Anything outside both registries is
+  treated as a consumer-owned extension method and dispatches unconditionally — but they are no
+  longer the spec's wire names, so a conforming client calls `tasks/get`, receives `-32601`, and
+  can never poll a task it was just handed a valid id for.
+
+Either the 2026 registry should carry the task methods, or extension-owned methods should be able
+to claim names the registries have released.
+
+**2. A tool callback cannot return a JSON-RPC error.** `McpServer` catches everything a tool
+callback throws — `ProtocolError` and `MissingRequiredClientCapabilityError` included — and
+flattens it into `{ content, isError: true }`, dropping the code. The spec says a server must not
+hand a task to a client that did not declare the capability, and `-32021` is the signal for it; as
+things stand that code cannot reach the client. This package answers with a structured tool error
+carrying the code in `structuredContent`, which is a workaround, not the contract.
+
+### One design choice, if the SDK does ship a runtime
+
+**Two interfaces, not one.** A durable task id does not make the underlying work durable, and those
+are separate problems:
+
+```ts
+interface TaskStore {
+  create(task): Promise<void>;      // must commit before tools/call replies
+  get(taskId): Promise<Task | null>;
+  update(taskId, patch): Promise<Task>;
+  settle(taskId, patch): Promise<Task | null>;   // atomic, first terminal write wins
+}
+
+interface TaskDispatcher {
+  dispatch(taskId): Promise<string | undefined>; // hand the work to something that will run it
+  cancel(dispatchId): Promise<void>;
+}
+```
+
+The store half already has precedent: the C# SDK ships `IMcpTaskStore` and its docs are explicit
+that the record must be reachable from any instance. The dispatcher half exists nowhere. Across the
+official SDKs, execution is always in-process — `Task.Run` in C#, `tokio::spawn` in Rust, the
+caller's own `.subscribe()` in Java's open PR, and Python's PR awaits the tool inline. The result is
+the same everywhere: **a durable record and non-durable work.**
+
+That is survivable on a host that can keep a process alive. It is not survivable on serverless,
+where the invocation ends with the response — which is where a large share of MCP servers run. With
+a dispatcher seam, the same runtime supports both: ship an in-process dispatcher as the default so
+nothing changes for people who do not need one, and let anyone else supply a queue, a workflow
+engine, or a platform primitive like a Durable Object alarm.
+
+Optionally, a third method earns its place: letting the dispatcher supply its own delivery endpoint
+(`createExecuteHandler()`), so authenticating a callback and choosing retry status codes stay
+inside the transport that understands them instead of becoming the application's problem.
 
 ## Reference
 
