@@ -108,8 +108,11 @@ export interface TaskStore {
    * Applies a partial update without extending the task's original TTL — the retention window is
    * measured from creation, so a chatty progress handler must not keep a task alive forever.
    *
-   * Used for non-terminal writes (progress messages). Terminal transitions go through
-   * {@link settle} so they cannot race.
+   * **Ignored once the task is terminal**, and returns it unchanged. "Once a task reaches a
+   * terminal status its state does not change" covers the status message too, so a progress write
+   * that lands after a cancel must not overwrite "Cancelled by client".
+   *
+   * Used for non-terminal writes. Terminal transitions go through {@link settle}.
    */
   update(taskId: string, patch: TaskPatch): Promise<Task>;
 
@@ -130,8 +133,18 @@ export interface TaskStore {
  * A store keeps the record alive across a restart; only a dispatcher keeps the *work* alive. The
  * contract is deliberately at-least-once — that is what a queue can actually promise — so the
  * core guards against redelivery rather than assuming a message arrives exactly once.
+ *
+ * `TContext` is what this transport gives a running handler beyond the task itself, and it is the
+ * honest way to express that transports are not interchangeable. A queue delivery has nothing to
+ * offer, so `QStashDispatcher` is a `TaskDispatcher<undefined>` and handlers take two arguments. A
+ * workflow engine has a great deal to offer, so `WorkflowDispatcher` is a
+ * `TaskDispatcher<WorkflowContext>` and handlers take a third argument carrying the real
+ * engine API — steps, durable sleeps, `waitForEvent`, everything.
+ *
+ * Typing it this way rather than smoothing it into a lowest-common-denominator shim means the
+ * compiler tells you when a handler needs a transport that can actually run it.
  */
-export interface TaskDispatcher {
+export interface TaskDispatcher<TContext = unknown> {
   /**
    * Durably accepts an at-least-once delivery for a task before resolving, and returns a handle
    * that {@link cancel} understands. Return `undefined` when the transport has nothing to cancel.
@@ -151,7 +164,7 @@ export interface TaskDispatcher {
    * failure once it has given up retrying — but the layer does not exist when the dispatcher is
    * constructed. This hands them over at wiring time instead of making callers late-bind.
    */
-  attach?(endpoints: TaskEndpoints): void;
+  attach?(endpoints: TaskEndpoints<TContext>): void;
 
   /**
    * Optionally, the transport's own delivery endpoint.
@@ -168,12 +181,13 @@ export interface TaskDispatcher {
 }
 
 /** The layer's entry points, handed to a dispatcher by {@link TaskDispatcher.attach}. */
-export type TaskEndpoints = {
+export type TaskEndpoints<TContext = unknown> = {
   /**
-   * Runs a delivered task. Rejects if the handler threw — which the transport should treat as
-   * "deliver again", not as a failed task.
+   * Runs a delivered task, handing the handler whatever execution context this transport provides.
+   * Rejects if the handler threw — which the transport should treat as "deliver again", not as a
+   * failed task.
    */
-  run(taskId: string, steps?: TaskSteps): Promise<unknown>;
+  run(taskId: string, context: TContext, journal?: TaskJournal): Promise<unknown>;
   /**
    * Records a terminal failure. Only the transport knows when retrying is over, so only the
    * transport calls this.
@@ -182,44 +196,25 @@ export type TaskEndpoints = {
 };
 
 /**
- * Durable step primitives, when the transport has them.
+ * How a transport journals a side effect so it runs once across replays.
  *
- * This is what separates a transport that can run work longer than one invocation from one that
- * cannot. A queue delivery is a single function invocation: exceed its time limit and the work is
- * killed, and a redelivery restarts the handler from the beginning. A workflow engine gives each
- * step its own invocation and replays completed steps from a journal instead of re-running them.
- *
- * Handlers are written against {@link TaskContext.run} either way; supplying this is how a
- * dispatcher upgrades those calls from plain function calls into durable checkpoints.
+ * Supplied by dispatchers whose engine re-enters the handler — the core uses it to wrap its own
+ * writes (`task.update`) so a progress message is not rewritten on every invocation. Handlers
+ * never see this; they get the engine's real API through the context instead.
  */
-export type TaskSteps = {
-  run<T>(stepName: string, fn: () => Promise<T>): Promise<T>;
-  sleep(stepName: string, seconds: number): Promise<void>;
-};
+export type TaskJournal = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
-/** What a task handler is handed alongside its arguments. */
+/**
+ * What every task handler is handed, whatever the transport.
+ *
+ * Anything transport-specific — a workflow's step and sleep primitives, say — arrives as the
+ * handler's third argument instead, typed by the dispatcher. See {@link TaskDispatcher}.
+ */
 export type TaskContext = {
   /** The id of the running task. */
   taskId: string;
   /** Publishes a human-readable progress line that the client's next poll will see. */
   update(statusMessage: string): Promise<void>;
-  /**
-   * Runs one step of the task, checkpointed when the dispatcher supports it.
-   *
-   * Under a workflow dispatcher each step runs in its own invocation and a completed step is
-   * replayed from the journal rather than re-executed, so the task as a whole can outlive any
-   * single function's time limit. Under a plain queue dispatcher this just calls `fn` — same
-   * result, no checkpoint — so a handler written with `run` works under both and gets more
-   * durability from the one that can provide it.
-   *
-   * `stepName` identifies the step in the journal and must be stable across replays.
-   */
-  run<T>(stepName: string, fn: () => Promise<T>): Promise<T>;
-  /**
-   * Waits, durably when the dispatcher supports it. A workflow sleep costs no compute and can
-   * span far longer than an invocation; without step support this is an ordinary timer.
-   */
-  sleep(stepName: string, seconds: number): Promise<void>;
   /**
    * Reads the durable status to see whether a client asked to stop. Cancellation is cooperative:
    * running code only stops where it checks, so call this at your step boundaries.

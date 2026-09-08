@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { QStashDispatcher, RedisTaskStore } from "./upstash.js";
-import { UnknownTaskError, type Task, type TaskError } from "./types.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { QStashDispatcher, RedisTaskStore } from "./qstash.js";
+import { UnknownTaskError, type Task, type TaskError } from "../types.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../test-support.js";
 
 const makeTask = (overrides: Partial<Task> = {}): Task => {
   const now = new Date().toISOString();
@@ -123,6 +123,18 @@ describe.skipIf(!hasRedisCreds)("RedisTaskStore (real Redis)", () => {
     expect(await store.settle("missing-task", { status: "completed" })).toBeNull();
   });
 
+  it("ignores an update to a task that already finished", async () => {
+    const task = makeTask();
+    await store.create(task);
+    await store.settle(task.taskId, { status: "cancelled", statusMessage: "Cancelled by client" });
+
+    // A progress write landing after the cancel — or a handler that carried on and then errored.
+    const after = await store.update(task.taskId, { statusMessage: "Attempt failed: too late" });
+
+    expect(after.status).toBe("cancelled");
+    expect(after.statusMessage).toBe("Cancelled by client");
+  });
+
   it("never creates a task as a side effect of updating a missing one", async () => {
     await expect(store.update("ghost", { statusMessage: "x" })).rejects.toBeInstanceOf(
       UnknownTaskError,
@@ -183,11 +195,11 @@ describe("QStashDispatcher.createExecuteHandler", () => {
       receiver: receiver(accept),
     });
     dispatcher.attach({
-      run: async (taskId) => {
+      run: async (taskId: string) => {
         calls.ran.push(taskId);
         if (throws) throw new Error("boom");
       },
-      fail: async (taskId, error) => {
+      fail: async (taskId: string, error: TaskError) => {
         calls.failed.push({ taskId, error });
       },
     });

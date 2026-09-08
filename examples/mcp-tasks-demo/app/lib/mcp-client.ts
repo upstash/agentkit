@@ -9,7 +9,17 @@
  */
 export const PROTOCOL_VERSION = "2026-07-28";
 export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
-export const MCP_ENDPOINT = "/api/mcp";
+/** The two servers this demo runs: same tool, different execution transport. */
+export const SERVERS = {
+  qstash: { endpoint: "/api/mcp", label: "QStash", blurb: "one delivery, one invocation" },
+  workflow: {
+    endpoint: "/api/mcp-workflow",
+    label: "Workflow",
+    blurb: "one invocation per step, replayed from a journal",
+  },
+} as const;
+
+export type ServerKey = keyof typeof SERVERS;
 
 export type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
 
@@ -46,6 +56,8 @@ let requestId = 0;
 export type RpcOptions = {
   /** Called once for the request and once for the response, so the UI can render the wire. */
   onFrame?: (frame: Frame) => void;
+  /** Which of the two servers to talk to. Defaults to the QStash one. */
+  server?: ServerKey;
 };
 
 /**
@@ -92,7 +104,7 @@ export async function rpc<T = Record<string, unknown>>(
 
   options.onFrame?.({ id: ++frameId, direction: "out", method, payload: body, at: Date.now() });
 
-  const response = await fetch(MCP_ENDPOINT, {
+  const response = await fetch(SERVERS[options.server ?? "qstash"].endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

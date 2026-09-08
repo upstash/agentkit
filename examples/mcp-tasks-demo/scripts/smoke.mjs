@@ -1,5 +1,7 @@
 // Drives the demo the way the browser does: raw stateless JSON-RPC.
 const BASE = process.env.BASE ?? "http://127.0.0.1:3000";
+// Which server to drive: the QStash one (/api/mcp) or the Workflow one (/api/mcp-workflow).
+const ENDPOINT = process.env.MCP_PATH ?? "/api/mcp";
 const PV = "2026-07-28";
 const EXT = "io.modelcontextprotocol/tasks";
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -14,7 +16,7 @@ async function rpc(method, params = {}, { caps = true } = {}) {
   };
   if (params.name) headers["mcp-name"] = params.name;
   if (params.taskId) headers["mcp-name"] = params.taskId;
-  const response = await fetch(`${BASE}/api/mcp`, {
+  const response = await fetch(`${BASE}${ENDPOINT}`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -43,7 +45,7 @@ const brief = t =>
     ...(t.result ? { result: t.result } : {}),
   });
 
-console.log("== tools/list ==");
+console.log(`== tools/list (${ENDPOINT}) ==`);
 const list = await rpc("tools/list");
 console.log(list.tools.map(t => t.name).join(", "));
 

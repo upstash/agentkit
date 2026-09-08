@@ -24,10 +24,6 @@
     "./upstash": {
       "types": "./dist/upstash.d.ts",
       "import": "./dist/upstash.js"
-    },
-    "./workflow": {
-      "types": "./dist/workflow.d.ts",
-      "import": "./dist/workflow.js"
     }
   },
   "files": [

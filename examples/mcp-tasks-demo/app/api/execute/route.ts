@@ -1,19 +1,15 @@
 /**
- * The endpoint QStash delivers a task to.
+ * Where QStash delivers a task — and, once retries are exhausted, its failure callback.
  *
- * This is where the work actually runs — in a different request, and possibly a different process,
- * from the `tools/call` that created the task. That separation is the whole point: the process
- * that accepted the call can die without taking the work with it.
- *
- * The handler comes from the dispatcher rather than being written here, because everything it has
- * to get right belongs to the transport: verifying the QStash signature, reading the task id,
- * counting which attempt this is, and answering with the status code that decides whether QStash
- * tries again.
+ * One line, because everything that has to be right here belongs to the transport: verifying the
+ * signature, reading the task id, telling a delivery from a failure callback, and choosing the
+ * status code that decides whether QStash tries again.
  */
-import { tasks } from "../../lib/tasks";
+import { tasks } from "../../lib/qstash-server";
 
 export const dynamic = "force-dynamic";
-// The demo tool sleeps for ~10s; give the platform room to let it finish.
+// The demo tool sleeps ~10s and must finish inside this one invocation. That limit is the reason
+// the workflow server exists.
 export const maxDuration = 60;
 
 export const POST = tasks.createExecuteHandler();

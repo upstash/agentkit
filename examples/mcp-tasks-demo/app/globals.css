@@ -384,3 +384,40 @@ pre {
   margin-bottom: 20px;
   font-size: 13px;
 }
+
+.drivers {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.driver {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.driver span {
+  font-weight: 400;
+  font-size: 11px;
+  color: #55706a;
+}
+
+.driver.on {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.driver.on span {
+  color: var(--muted);
+}

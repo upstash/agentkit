@@ -13,7 +13,7 @@
  */
 import { Client as WorkflowClient } from "@upstash/workflow";
 import { serve, type WorkflowContext } from "@upstash/workflow";
-import type { TaskDispatcher, TaskEndpoints, TaskSteps } from "./types.js";
+import type { TaskDispatcher, TaskEndpoints, TaskJournal } from "../types.js";
 
 /** JSON-RPC internal error, per the MCP spec — inlined so this file imports no MCP SDK. */
 const INTERNAL_ERROR = -32603;
@@ -48,13 +48,13 @@ type WorkflowPayload = { taskId?: string };
  * Cancellation composes: `tasks/cancel` settles the record and calls {@link cancel}, which stops
  * the run itself rather than waiting for the handler to notice at its next `isCancelled()` check.
  */
-export class WorkflowDispatcher implements TaskDispatcher {
+export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<WorkflowPayload>> {
   private readonly url: string;
   private readonly headers: Record<string, string> | undefined;
   private readonly retries: number | undefined;
   private readonly resolveClient: () => WorkflowClient;
   private workflow: WorkflowClient | undefined;
-  private endpoints: TaskEndpoints | undefined;
+  private endpoints: TaskEndpoints<WorkflowContext<WorkflowPayload>> | undefined;
 
   constructor(config: WorkflowDispatcherConfig) {
     this.url = config.url;
@@ -63,7 +63,7 @@ export class WorkflowDispatcher implements TaskDispatcher {
     this.resolveClient = () => config.client ?? clientFromEnv();
   }
 
-  attach(endpoints: TaskEndpoints): void {
+  attach(endpoints: TaskEndpoints<WorkflowContext<WorkflowPayload>>): void {
     this.endpoints = endpoints;
   }
 
@@ -104,7 +104,9 @@ export class WorkflowDispatcher implements TaskDispatcher {
         const endpoints = this.required();
         const taskId = context.requestPayload?.taskId;
         if (!taskId) return;
-        await endpoints.run(taskId, stepsFor(context));
+        // The engine's own context goes straight through — the handler receives it merged
+        // with the task context, so `task.run(...)` is the real thing, not an imitation.
+        await endpoints.run(taskId, context, journalFor(context));
       },
       {
         failureFunction: async ({ context, failStatus, failResponse }) => {
@@ -123,7 +125,7 @@ export class WorkflowDispatcher implements TaskDispatcher {
     return handler;
   }
 
-  private required(): TaskEndpoints {
+  private required(): TaskEndpoints<WorkflowContext<WorkflowPayload>> {
     if (!this.endpoints) {
       throw new Error(
         "This dispatcher is not attached to a task layer — pass it to createTaskLayer().",
@@ -134,17 +136,26 @@ export class WorkflowDispatcher implements TaskDispatcher {
 }
 
 /**
- * Bridges the workflow context onto the task context's step primitives.
+ * Lets the core journal its own writes, so `task.update(...)` is not repeated on every replay.
  *
- * This is the whole upgrade: `task.run(...)` stops being a plain function call and becomes a
- * journaled step that survives the invocation it started in.
+ * The nesting check is the whole subtlety. Workflow rejects a step started inside another step
+ * ("A step can not be run inside another step"), and a handler is free to call `task.update(...)`
+ * from inside its own `task.run(...)` — where the enclosing step already makes the write run once.
+ * So journal only at the top level, and fall back to a plain call whenever we cannot be sure.
+ *
+ * That check reads a non-public field, hence the defensive shape: if the engine ever renames it we
+ * silently stop journaling — a status message rewritten on replay — rather than throwing inside
+ * someone's task.
  */
-function stepsFor(context: WorkflowContext<WorkflowPayload>): TaskSteps {
-  return {
-    run: (stepName, fn) => context.run(stepName, fn),
-    // Workflow sleeps cost no compute and can outlast any invocation, unlike a timer.
-    sleep: (stepName, seconds) => context.sleep(stepName, seconds),
-  };
+function journalFor(context: WorkflowContext<WorkflowPayload>): TaskJournal {
+  return async (name, fn) => (insideStep(context) ? await fn() : await context.run(name, fn));
+}
+
+function insideStep(context: WorkflowContext<WorkflowPayload>): boolean {
+  const executor = (context as unknown as { executor?: { executingStep?: string | false } })
+    .executor;
+  // Undefined means we could not tell; treating that as "inside" keeps us out of the engine's way.
+  return executor === undefined || Boolean(executor.executingStep);
 }
 
 function clientFromEnv(): WorkflowClient {

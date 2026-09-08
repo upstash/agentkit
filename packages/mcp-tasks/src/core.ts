@@ -26,7 +26,7 @@ import {
   type TaskContext,
   type TaskDispatcher,
   type TaskError,
-  type TaskSteps,
+  type TaskJournal,
   type TaskStore,
   type WireTask,
 } from "./types.js";
@@ -54,11 +54,11 @@ export type MissingCapabilityBehavior =
    */
   | "run-inline";
 
-export type TaskLayerOptions = {
+export type TaskLayerOptions<TContext = unknown> = {
   /** Durable storage for the task record. */
   store: TaskStore;
   /** Durable transport for the work itself. */
-  dispatcher: TaskDispatcher;
+  dispatcher: TaskDispatcher<TContext>;
   /** Fallback values for tasks that do not set their own. */
   defaults?: {
     /** Retention window. `null` means unlimited. Defaults to 5 minutes. */
@@ -128,15 +128,25 @@ type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
   ? Output
   : unknown;
 
-export type TaskHandler<Args> = (args: Args, task: TaskContext) => Promise<Record<string, unknown>>;
+/**
+ * A task's implementation.
+ *
+ * The context is the {@link TaskContext} intersected with whatever the dispatcher adds: nothing on
+ * a queue, the live `WorkflowContext` on a workflow engine. One object either way, so a workflow
+ * handler calls `task.update(...)` and `task.run(...)` side by side.
+ */
+export type TaskHandler<Args, TContext = unknown> = (
+  args: Args,
+  task: TaskContext & TContext,
+) => Promise<Record<string, unknown>>;
 
-export type TaskLayer = {
+export type TaskLayer<TContext = unknown> = {
   /** Registers a tool whose calls are answered with a task handle. */
   registerTask<Schema extends StandardSchemaWithJSON>(
     server: McpServer,
     name: string,
     config: TaskToolConfig<Schema>,
-    handler: TaskHandler<InferArgs<Schema>>,
+    handler: TaskHandler<InferArgs<Schema>, TContext>,
   ): void;
   /**
    * Runs a dispatched task. Normally you do not call this — the dispatcher does, through the
@@ -149,7 +159,7 @@ export type TaskLayer = {
    * no retries at all. Settling `failed` on the first error would make the task terminal and turn
    * every later redelivery into a no-op — the opposite of what retries are for.
    */
-  executeTask(taskId: string, steps?: TaskSteps): Promise<Task | null>;
+  executeTask(taskId: string, context?: TContext, journal?: TaskJournal): Promise<Task | null>;
   /** Records a terminal failure. Called by the dispatcher once it has stopped retrying. */
   failTask(taskId: string, error: TaskError): Promise<Task | null>;
   /**
@@ -170,7 +180,7 @@ export type TaskLayer = {
   /** The store this layer was built on. */
   store: TaskStore;
   /** The dispatcher this layer was built on. */
-  dispatcher: TaskDispatcher;
+  dispatcher: TaskDispatcher<TContext>;
 };
 
 /**
@@ -183,7 +193,9 @@ export type TaskLayer = {
  * });
  * ```
  */
-export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
+export function createTaskLayer<TContext = unknown>(
+  options: TaskLayerOptions<TContext>,
+): TaskLayer<TContext> {
   const { store, dispatcher, defaults = {}, onMissingCapability = "error" } = options;
   const methods = {
     get: options.methods?.get ?? TASK_METHODS.get,
@@ -192,7 +204,7 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
 
   // Keyed by tool name: the delivery endpoint only receives a task id, so it looks the handler up
   // from the name recorded on the task.
-  const handlers = new Map<string, TaskHandler<never>>();
+  const handlers = new Map<string, TaskHandler<never, TContext>>();
   const completedMessages = new Map<string, string>();
   const wired = new WeakSet<McpServer>();
 
@@ -200,9 +212,9 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
     server: McpServer,
     name: string,
     config: TaskToolConfig<Schema>,
-    handler: TaskHandler<InferArgs<Schema>>,
+    handler: TaskHandler<InferArgs<Schema>, TContext>,
   ): void {
-    handlers.set(name, handler as TaskHandler<never>);
+    handlers.set(name, handler as TaskHandler<never, TContext>);
     if (config.completedMessage) completedMessages.set(name, config.completedMessage);
     wireTaskMethods(server);
 
@@ -288,7 +300,11 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
     });
   }
 
-  async function executeTask(taskId: string, steps?: TaskSteps): Promise<Task | null> {
+  async function executeTask(
+    taskId: string,
+    context?: TContext,
+    journal?: TaskJournal,
+  ): Promise<Task | null> {
     const task = await required(taskId);
 
     // The redelivery guard. Delivery is at-least-once by contract, so the same task id can arrive
@@ -302,44 +318,42 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
       );
     }
 
-    const context: TaskContext = {
+    // Journaled writes get a stable name from their call order, which is deterministic because a
+    // replay re-runs the handler the same way up to the point it left off.
+    let writes = 0;
+
+    const taskContext: TaskContext = {
       taskId,
       update: async (statusMessage) => {
-        await store.update(taskId, { statusMessage });
+        const write = () => store.update(taskId, { statusMessage }).then(() => undefined);
+        // Without a journal this is a plain write that repeats on every replay — harmless on a
+        // queue, which never replays.
+        await (journal ? journal(`mcp-task:update:${++writes}`, write) : write());
       },
       isCancelled: async () => {
         const current = await store.get(taskId);
         // A task that expired out from under us is not worth finishing either.
         return current === null || current.status === "cancelled";
       },
-      // Without step support these are the plain, uncheckpointed equivalents, so the same handler
-      // runs under any dispatcher — it just cannot outlive one invocation.
-      run: steps ? steps.run : (_stepName, fn) => fn(),
-      sleep: steps
-        ? steps.sleep
-        : (_stepName, seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000)),
     };
 
-    try {
-      const result = await (handler as TaskHandler<unknown>)(task.args, context);
-      // If a cancel landed while the handler was running, `settle` refuses the transition and
-      // returns null — the cancelled status wins, with no check-then-write race of our own.
-      const settled = await store.settle(taskId, {
-        status: "completed",
-        statusMessage: completedMessages.get(task.name) ?? "Completed",
-        result,
-      });
-      return settled ?? (await store.get(taskId));
-    } catch (cause) {
-      // Left non-terminal on purpose — see the note on ExecuteTaskOptions above. The task stays
-      // `working` so a redelivery can still finish it; the dispatcher settles it `failed` only
-      // once it stops trying.
-      const message = cause instanceof Error ? cause.message : String(cause);
-      await store
-        .update(taskId, { statusMessage: `Attempt failed: ${message}` })
-        .catch(() => undefined);
-      throw cause;
-    }
+    // A throw propagates untouched, leaving the task non-terminal on purpose: the dispatcher
+    // decides whether that was a retry or a failure. Nothing is recorded here either, because the
+    // core cannot tell a real error from a workflow engine suspending the handler mid-step — and
+    // writing "attempt failed" for the latter would spray noise over a perfectly healthy run.
+    const result = await (handler as TaskHandler<unknown, TContext>)(
+      task.args,
+      mergeContext(taskContext, context),
+    );
+
+    // If a cancel landed while the handler was running, `settle` refuses the transition and
+    // returns null — the cancelled status wins, with no check-then-write race of our own.
+    const settled = await store.settle(taskId, {
+      status: "completed",
+      statusMessage: completedMessages.get(task.name) ?? "Completed",
+      result,
+    });
+    return settled ?? (await store.get(taskId));
   }
 
   async function failTask(taskId: string, error: TaskError): Promise<Task | null> {
@@ -355,13 +369,13 @@ export function createTaskLayer(options: TaskLayerOptions): TaskLayer {
     if (!handler) throw new Error(`No task handler registered for "${name}".`);
     // Running inline means there is no task and no transport, so none of the context can be more
     // than a no-op: nothing to report progress to, nothing to cancel, nothing to checkpoint.
-    return await (handler as TaskHandler<unknown>)(args, {
-      taskId: "",
-      update: async () => undefined,
-      isCancelled: async () => false,
-      run: (_stepName, fn) => fn(),
-      sleep: (_stepName, seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000)),
-    });
+    return await (handler as TaskHandler<unknown, TContext>)(
+      args,
+      mergeContext(
+        { taskId: "", update: async () => undefined, isCancelled: async () => false },
+        undefined,
+      ),
+    );
   }
 
   async function required(taskId: string): Promise<Task> {
@@ -445,6 +459,23 @@ function clientSupportsTasks(context: unknown): boolean {
     | { extensions?: Record<string, unknown> }
     | undefined;
   return Boolean(capabilities?.extensions && TASKS_EXTENSION in capabilities.extensions);
+}
+
+/**
+ * Merges the task context into whatever the transport supplied, as one object.
+ *
+ * The transport's context is *mutated* rather than copied, and deliberately: a `WorkflowContext`
+ * is a class instance whose `run`/`sleep`/`call` live on the prototype, so spreading it would drop
+ * every method, and re-parenting it with `Object.create` would break `this` for anything the
+ * engine keeps private. Assigning onto the instance keeps it intact — the object is ours for the
+ * duration of one invocation anyway.
+ */
+function mergeContext<TContext>(
+  taskContext: TaskContext,
+  supplied: TContext | undefined,
+): TaskContext & TContext {
+  if (supplied === undefined || supplied === null) return taskContext as TaskContext & TContext;
+  return Object.assign(supplied as object, taskContext) as TaskContext & TContext;
 }
 
 /** Strips the server-only fields, leaving exactly what the draft schema puts on the wire. */

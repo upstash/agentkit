@@ -126,7 +126,7 @@ reach the route run tasks; here you cannot skip it.
 Switching transports is the dispatcher line and nothing else — same route, same handler:
 
 ```ts
-import { WorkflowDispatcher } from "@upstash/mcp-tasks/workflow";
+import { WorkflowDispatcher } from "@upstash/mcp-tasks/upstash";
 
 dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
 ```
@@ -242,8 +242,7 @@ is exactly the failure this package is about.
 | `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type |
 | `TASKS_EXTENSION`, `TASKS_PROTOCOL_VERSION`, `TASK_METHODS` | The extension id, `"2026-07-28"`, the method names |
 | `MemoryTaskStore`, `InlineTaskDispatcher` | Non-durable backends for tests |
-| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `DEFAULT_RETRIES`, `DEFAULT_RETRY_DELAY` |
-| `@upstash/mcp-tasks/workflow` | `WorkflowDispatcher` |
+| `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher`, `DEFAULT_RETRIES`, `DEFAULT_RETRY_DELAY` |
 
 ## Not implemented
 

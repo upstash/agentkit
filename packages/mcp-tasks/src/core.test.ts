@@ -6,7 +6,7 @@ import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelconte
 import { afterEach, describe, expect, it } from "vitest";
 import * as z from "zod";
 import { createTaskLayer, TASKS_EXTENSION, TASKS_PROTOCOL_VERSION } from "./core.js";
-import { InlineTaskDispatcher, MemoryTaskStore } from "./memory.js";
+import { InlineTaskDispatcher, MemoryTaskStore } from "./backends/memory.js";
 import type { TaskContext, TaskLayer, WireTask } from "./index.js";
 import { sleep } from "./test-support.js";
 

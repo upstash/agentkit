@@ -27,7 +27,6 @@ export {
   type TaskError,
   type TaskPatch,
   type TaskEndpoints,
-  type TaskSteps,
   type TaskStatus,
   type TaskStore,
   type TerminalTaskPatch,
@@ -35,7 +34,7 @@ export {
   type WireTask,
 } from "./types.js";
 
-export { InlineTaskDispatcher, MemoryTaskStore } from "./memory.js";
+export { InlineTaskDispatcher, MemoryTaskStore } from "./backends/memory.js";
 
 export { SDK_TELEMETRY } from "./telemetry.js";
 export { VERSION } from "./version.js";

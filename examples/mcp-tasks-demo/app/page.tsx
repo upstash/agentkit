@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   rpc,
+  SERVERS,
   TASKS_EXTENSION,
   TERMINAL,
   type Frame,
+  type ServerKey,
   type WireTask,
 } from "./lib/mcp-client";
 
 const TOOL_NAME = "generate_report";
 
 type TrackedTask = {
+  server: ServerKey;
   taskId: string;
   topic: string;
   startedAt: number;
@@ -22,6 +25,7 @@ type TrackedTask = {
 
 export default function Page() {
   const [topic, setTopic] = useState("coffee trends");
+  const [server, setServer] = useState<ServerKey>("qstash");
   const [tasks, setTasks] = useState<TrackedTask[]>([]);
   const [frames, setFrames] = useState<Frame[]>([]);
   const [tools, setTools] = useState<string[] | null>(null);
@@ -36,10 +40,10 @@ export default function Page() {
   // A plain `tools/list` — the task tool is an ordinary MCP tool. Nothing about its declaration
   // says "task"; the server decides per call whether to answer with a handle.
   useEffect(() => {
-    rpc<{ tools: { name: string }[] }>("tools/list", {}, { onFrame })
+    rpc<{ tools: { name: string }[] }>("tools/list", {}, { onFrame, server })
       .then(result => setTools(result.tools.map(tool => tool.name)))
       .catch(cause => setError(String(cause)));
-  }, [onFrame]);
+  }, [onFrame, server]);
 
   // Re-render once a second so the elapsed counters move.
   useEffect(() => {
@@ -59,7 +63,7 @@ export default function Page() {
         if (TERMINAL.has(task.wire.status)) continue;
         if (now - task.lastPolledAt < (task.wire.pollIntervalMs ?? 2000)) continue;
         markPolled(task.taskId);
-        void poll(task.taskId);
+        void poll(task.taskId, task.server);
       }
     }, 400);
     return () => clearInterval(id);
@@ -72,9 +76,9 @@ export default function Page() {
     );
   }
 
-  async function poll(taskId: string) {
+  async function poll(taskId: string, from: ServerKey) {
     try {
-      const wire = await rpc<WireTask>("tasks/get", { taskId }, { onFrame });
+      const wire = await rpc<WireTask>("tasks/get", { taskId }, { onFrame, server: from });
       setTasks(previous =>
         previous.map(task =>
           task.taskId === taskId ? { ...task, wire, polls: task.polls + 1 } : task,
@@ -96,10 +100,11 @@ export default function Page() {
       const wire = await rpc<WireTask>(
         "tools/call",
         { name: TOOL_NAME, arguments: { topic: topic.trim() } },
-        { onFrame },
+        { onFrame, server },
       );
       setTasks(previous => [
         {
+          server,
           taskId: wire.taskId,
           topic: topic.trim(),
           startedAt: Date.now(),
@@ -116,10 +121,10 @@ export default function Page() {
     }
   }
 
-  async function cancel(taskId: string) {
+  async function cancel(taskId: string, from: ServerKey) {
     try {
-      await rpc("tasks/cancel", { taskId }, { onFrame });
-      await poll(taskId);
+      await rpc("tasks/cancel", { taskId }, { onFrame, server: from });
+      await poll(taskId, from);
     } catch (cause) {
       setError(String(cause));
     }
@@ -150,6 +155,19 @@ export default function Page() {
           <div className="panel">
             <h2>Call the tool</h2>
             <div className="panel-body">
+              <div className="drivers">
+                {(Object.keys(SERVERS) as ServerKey[]).map(key => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`driver ${server === key ? "on" : ""}`}
+                    onClick={() => setServer(key)}
+                  >
+                    {SERVERS[key].label}
+                    <span>{SERVERS[key].blurb}</span>
+                  </button>
+                ))}
+              </div>
               <form className="launch" onSubmit={start}>
                 <input
                   type="text"
@@ -174,7 +192,11 @@ export default function Page() {
               <p className="empty">No tasks yet. Run the tool to create one.</p>
             ) : (
               tasks.map(task => (
-                <TaskCard key={task.taskId} task={task} onCancel={() => cancel(task.taskId)} />
+                <TaskCard
+                  key={task.taskId}
+                  task={task}
+                  onCancel={() => cancel(task.taskId, task.server)}
+                />
               ))
             )}
           </div>
@@ -223,6 +245,7 @@ function TaskCard({ task, onCancel }: { task: TrackedTask; onCancel: () => void 
     <article className="task">
       <div className="task-head">
         <span className="task-topic">{task.topic}</span>
+        <span className="pill">{SERVERS[task.server].label}</span>
         <span className="task-id">{wire.taskId.slice(0, 8)}…</span>
         <span className="spacer" />
         <span className={`badge ${wire.status}`}>{wire.status}</span>

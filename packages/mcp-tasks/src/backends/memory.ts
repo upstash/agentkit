@@ -15,7 +15,7 @@ import {
   type TaskPatch,
   type TaskStore,
   type TerminalTaskPatch,
-} from "./types.js";
+} from "../types.js";
 
 /** An in-process {@link TaskStore}. Not durable, not shared between instances. */
 export class MemoryTaskStore implements TaskStore {
@@ -43,6 +43,8 @@ export class MemoryTaskStore implements TaskStore {
   async update(taskId: string, patch: TaskPatch): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new UnknownTaskError(taskId);
+    // A terminal task is finished, message included — see the note on `TaskStore.update`.
+    if (isTerminal(task.status)) return { ...task };
     const next: Task = { ...task, ...patch, lastUpdatedAt: new Date().toISOString() };
     this.tasks.set(taskId, next);
     return { ...next };
@@ -103,7 +105,7 @@ export class InlineTaskDispatcher implements TaskDispatcher {
     // Deferred to a microtask so the tool call returns its handle before the work starts, which
     // is the ordering a real queue gives you for free.
     const run = Promise.resolve()
-      .then(() => endpoints.run(taskId))
+      .then(() => endpoints.run(taskId, undefined))
       .then(
         () => undefined,
         // There are no retries in this process, so the first error is the last one.
