@@ -218,8 +218,8 @@ sequenceDiagram
     participant H as Your handler
     participant St as TaskStore
 
-    D->>E: deliver { taskId } (signed)
-    E->>E: verify signature — 401 if bad
+    D->>E: deliver the task (authenticated by the transport)
+    E->>E: reject if it does not authenticate
     E->>S: executeTask(taskId)
     S->>St: get(taskId)
     S->>S: already terminal? → stop (redelivery guard)
@@ -339,17 +339,25 @@ neither is durable, which is exactly the failure this package is about.
 <details>
 <summary><b>What does the execute endpoint actually do?</b></summary>
 
-Everything that has to be right there belongs to the transport, which is why the dispatcher hands
-you the endpoint instead of a checklist:
+Whatever its transport needs — which is the reason the dispatcher hands you a finished endpoint
+instead of a checklist. Authenticating a delivery, recognising its shapes and answering in the
+codes it understands are all facts about the transport, not about your application. So the answer
+differs by dispatcher:
 
-- **Verifies the signature.** Against the URL you published to, not `request.url` — behind a proxy
-  the incoming URL is the internal one while QStash signed the public destination. Skipping this
-  would let anyone who can reach the route run tasks; here you cannot skip it.
-- **Tells a delivery from a failure callback.** Both arrive at this one route; the failure callback
-  carries `sourceBody` and fires only once every retry is exhausted.
-- **Picks the status code**, which is the retry contract: **200** ran or already terminal, **500**
-  the handler threw and the transport should try again, **401** bad signature and **400** an
-  unusable body — both terminal, because a retry cannot fix either.
+**`QStashDispatcher`** serves the route itself. It authenticates each delivery by verifying the
+QStash signature — against the URL you published to rather than `request.url`, since behind a proxy
+the incoming URL is the internal one while QStash signed the public destination. It tells a normal
+delivery (`{ taskId }`) from a failure callback (carries `sourceBody`, fires only once every retry
+is exhausted). And it picks the status code, which *is* the retry contract: **200** ran or already
+terminal, **500** the handler threw so try again, **401** bad signature and **400** an unusable
+body — both terminal, because a retry cannot fix either.
+
+**`WorkflowDispatcher`** returns the Workflow engine's own `serve()` handler. Authentication,
+replay and step journaling are the engine's, so there is nothing here to get wrong by hand; it adds
+only the failure hook that settles the task once a run has exhausted its retries.
+
+A dispatcher that runs work in-process — `InlineTaskDispatcher` — has no endpoint at all, and
+`createExecuteHandler()` throws to say so.
 
 </details>
 
