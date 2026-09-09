@@ -134,7 +134,7 @@ importers:
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)))
       ai:
         specifier: 7.0.87
         version: 7.0.87(zod@4.4.3)
@@ -148,8 +148,8 @@ importers:
         specifier: 1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       eve:
-        specifier: ^0.52.2
-        version: 0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
+        specifier: ^0.52.3
+        version: 0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
       lucide-react:
         specifier: 1.16.0
         version: 1.16.0(react@19.2.6)
@@ -216,13 +216,13 @@ importers:
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)))
       ai:
         specifier: 7.0.87
         version: 7.0.87(zod@4.4.3)
       eve:
-        specifier: ^0.52.2
-        version: 0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
+        specifier: ^0.52.3
+        version: 0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -284,8 +284,8 @@ importers:
         specifier: ^16.4.5
         version: 16.6.1
       eve:
-        specifier: ^0.52.2
-        version: 0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
+        specifier: ^0.52.3
+        version: 0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
 
   packages/eve-extension:
     dependencies:
@@ -303,8 +303,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: ^0.52.2
-        version: 0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
+        specifier: ^0.52.3
+        version: 0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -3327,8 +3327,8 @@ packages:
     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
     engines: {node: '>=0.10.0'}
 
-  eve@0.52.2:
-    resolution: {integrity: sha512-FM3aC2A3SCKQxtyhSNR5+CaIVlKJmTGb7rCqcuHEhZShDKo1IXCTt/F7r4toqkLDG6lW7VcStTku77KWiosLfg==}
+  eve@0.52.3:
+    resolution: {integrity: sha512-Ii/fs18oBX7mVoywtAy8Pmi0sHRWVx8/IR0Uzhic3e/WkcFLTmr07ewfaH3VJ1h5Y9SpeUni2WfBE5Yd83mv0A==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -7146,13 +7146,13 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)))':
+  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.41(zod@4.4.3))(ai@7.0.87(zod@4.4.3))(eve@0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)))':
     dependencies:
       '@vercel/oidc': 3.6.1
     optionalDependencies:
       '@ai-sdk/mcp': 2.0.41(zod@4.4.3)
       ai: 7.0.87(zod@4.4.3)
-      eve: 0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
+      eve: 0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -7765,7 +7765,7 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  eve@0.52.2(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)):
+  eve@0.52.3(@opentelemetry/api@1.9.1)(ai@7.0.87(zod@4.4.3)):
     dependencies:
       ai: 7.0.87(zod@4.4.3)
       nitro: 3.0.260903-beta
