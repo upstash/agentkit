@@ -121,25 +121,25 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.52.2**, stamps formatVersion 2; extension 1 /
-  **tool 30** / **dynamicTool 29** / **hook 20** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.52.2** — 0.52.2 is the *only* release accepting all three, because eve now **drops**
-  mid-range contracts rather than only adding new ones (0.52.2's supported `tool` list is
-  [1–13, 28, 29, 30]: everything from 14–27 is dropped with "TaskExec.delegated was removed").
-  0.52.1/0.52.0 top out at tool 29, 0.51.1 at tool 27 / dynamicTool 27 / hook 20, 0.51.0 at tool 25 /
+  supported list — the current dist, built with **eve 0.52.3**, stamps formatVersion 2; extension 1 /
+  **tool 32** / **dynamicTool 31** / **hook 22** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.52.3** — 0.52.3 is the *only* release accepting all three, because eve now **drops**
+  mid-range contracts rather than only adding new ones (0.52.3's supported `tool` list is
+  [1–13, 28–32]: everything from 14–27 is dropped with "TaskExec.delegated was removed").
+  0.52.2 tops out at tool 30 / dynamicTool 29 / hook 20, 0.52.1/0.52.0 at tool 29, 0.51.1 at tool 27 / dynamicTool 27 / hook 20, 0.51.0 at tool 25 /
   hook 18, 0.50.0 at dynamicTool 22 / hook 17, and 0.48.0–0.49.1 at tool 24 / dynamicTool 21 / hook 16.
   Verified end-to-end, not just from
   the contract tables: the rebuilt extension, `pnpm pack`ed into a real eve app, builds on eve
-  0.52.2 and **fails on 0.52.1**
+  0.52.3 and **fails on 0.52.2**
   (`Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.` — an incompatible manifest makes the mount contribute nothing, so the error is that obtuse;
   don't expect the old explicit "requires tool contract vN" wording).
   **eve moved the tool contract inside the 0.45 patch line, twice across 0.47.7 → 0.48.0, and then
-  six more times across 0.49.1 → 0.52.2**, so a *patch* bump of the eve devDep can re-stamp the
+  eight more times across 0.49.1 → 0.52.3**, so a *patch* bump of the eve devDep can re-stamp the
   manifest and raise the floor — re-derive it, don't assume the minor is enough, and don't assume one
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.52.2"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.52.3"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -439,9 +439,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.52.2)
-  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — neither the 0.47.6 → 0.49.0 nor the
-  0.49.0 → 0.52.2 bump moved it), so the apps/packages provide the single copy. Providers:
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.52.3)
+  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — none of the 0.47.6 → 0.49.0,
+  0.49.0 → 0.52.2 or 0.52.2 → 0.52.3 bumps moved it), so the apps/packages provide the single copy. Providers:
   `@ai-sdk/openai` `^4.0.53`, `@ai-sdk/provider` `^4.0.9`, `@ai-sdk/react` `^4.0.90` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
   second, older `ai` copy via its peer resolution, which is exactly the two-copy breakage to avoid).
@@ -548,15 +548,18 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.52.2`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
+- The repo is on **`eve@0.52.3`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
   `examples/eve-extension-demo`). `packages/eve`'s peer stays
   **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
   **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
   unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
   against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
   the 0.52.2 bump across 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2, also all clean).
-  Don't raise the floor without re-running that check; the extension's peer is
-  `>=0.52.2`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  Don't raise the floor without re-running that check. The **0.52.2 → 0.52.3 bump left
+  `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js` and `.d.ts`), which
+  is why it ships no `@upstash/agentkit-eve` release — only that package's devDependency moved.
+  The extension's peer is
+  `>=0.52.3`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
@@ -681,6 +684,25 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `eve@0.49.0(@opentelemetry/api)(@upstash/redis)(ai)(chokidar)(dotenv)(jiti)(rollup)(vite)` down to
   `eve@0.52.2(@opentelemetry/api)(ai)` and garbage-collects the now-unreferenced entries. Confirm with
   `pnpm install --frozen-lockfile` (must print "Already up to date"), not by eyeballing the line count.
+- **The 0.52.2 → 0.52.3 bump needed no source change, and again moved only the extension's floor —
+  but unlike every bump before it, this one fixes *no* break.** The extension rebuild re-stamped
+  **tool 30→32, dynamicTool 29→31, hook 20→22** (instructions 2, config 1, extension 1 unchanged),
+  moving its peer floor `>=0.52.2` → **`>=0.52.3`**. Only 0.52.3 accepts the new dist — 0.52.2 tops
+  out at tool 30 / dynamicTool 29 / hook 20 — proven by packing the rebuilt dist into a real eve
+  consumer: on 0.52.2 it fails `eve build` with the usual obtuse *"has no compile or runtime usage"*,
+  on 0.52.3 it builds and mounts all 7 tools + the hook.
+  **The difference that matters: eve 0.52.3 did NOT drop the contracts the published `0.10.0` needs.**
+  0.52.3 still supports tool 30 / dynamicTool 29 / hook 20 (its `tool` list is [1–13, 28–32], i.e. it
+  *added* 31/32 without dropping 30), so published `0.10.0` installs **and builds** fine on eve 0.52.3
+  — verified in a scratch consumer with `eve@latest` + `@upstash/agentkit-eve-extension@latest`, which
+  mounts all 7 tools and the hook. So this rebuild is **"keep the stamps current", not a fix**: its only
+  consumer-visible effect is that the raised floor makes the new version unusable on 0.52.2. Weigh that
+  before shipping it — holding the rebuild is a legitimate option while 0.10.0 still works on latest,
+  and `>=0.52.3` should not be raised as a reflex.
+  `packages/eve`'s peer stayed **`>=0.32.0`** and it ships **no changeset**: its `dist` is
+  **byte-identical** before and after the bump (`diff -r` over the whole built output, `.js` + `.d.ts`),
+  so only its devDependency moved. eve's `ai` peer stayed `^7.0.82`, so the repo-wide `ai` 7.0.87 pin
+  did not move. The lockfile diff is small this time (~30 lines) — no nitro churn, unlike the previous bump.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
