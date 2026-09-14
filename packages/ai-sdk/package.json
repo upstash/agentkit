@@ -50,10 +50,10 @@
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "^4.0.53",
-    "@ai-sdk/provider": "^4.0.9",
+    "@ai-sdk/openai": "^4.0.66",
+    "@ai-sdk/provider": "^4.0.14",
     "@upstash/redis": "^1.38.4",
-    "ai": "7.0.87",
+    "ai": "7.0.99",
     "dotenv": "^16.4.5"
   },
   "peerDependencies": {

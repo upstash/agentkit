@@ -229,8 +229,8 @@ conversation changes topic.
 `scope.key` that is used as the storage partition. Derive it from verified session auth, never from
 model input — `byPrincipal` from `eve/memory/scope` is the built-in shorthand.
 
-**Requires eve ≥ 0.45.2** (`eve/memory` landed in 0.45.1, `eve/memory/file` in 0.45.2). The package's
-`eve` peer stays `>=0.32.0` for the other entry points; only this subpath needs the newer eve.
+**Requires eve ≥ 0.45.2** (`eve/memory` landed in 0.45.1, `eve/memory/file` in 0.45.2), which the
+package's `eve` peer of `>=0.47.0` already covers.
 
 </details>
 
