@@ -121,25 +121,29 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.52.3**, stamps formatVersion 2; extension 1 /
-  **tool 32** / **dynamicTool 31** / **hook 22** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.52.3** — 0.52.3 is the *only* release accepting all three, because eve now **drops**
-  mid-range contracts rather than only adding new ones (0.52.3's supported `tool` list is
-  [1–13, 28–32]: everything from 14–27 is dropped with "TaskExec.delegated was removed").
-  0.52.2 tops out at tool 30 / dynamicTool 29 / hook 20, 0.52.1/0.52.0 at tool 29, 0.51.1 at tool 27 / dynamicTool 27 / hook 20, 0.51.0 at tool 25 /
+  supported list — the current dist, built with **eve 0.55.0**, stamps formatVersion 2; extension 1 /
+  **tool 38** / **dynamicTool 37** / **hook 22** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.55.0** — 0.55.0 is the *only* release accepting all three, because eve now **drops**
+  mid-range contracts rather than only adding new ones (0.55.0's supported `tool` list is
+  [1–13, 28–32, 34–38]: 14–27 are dropped with "TaskExec.delegated was removed" and 33 with
+  "ctx.agent now accepts the subagent name as its first argument").
+  0.54.3–0.54.5 top out at tool 36 (dynamicTool 34 on 0.54.3, 35 on 0.54.4/0.54.5), 0.54.0/0.54.2 at tool 35 /
+  dynamicTool 33, 0.53.0/0.53.1 at tool 34 / dynamicTool 32, 0.52.3 at tool 32 / dynamicTool 31,
+  0.52.2 at tool 30 / dynamicTool 29 / hook 20, 0.52.1/0.52.0 at tool 29, 0.51.1 at tool 27 / dynamicTool 27 / hook 20, 0.51.0 at tool 25 /
   hook 18, 0.50.0 at dynamicTool 22 / hook 17, and 0.48.0–0.49.1 at tool 24 / dynamicTool 21 / hook 16.
+  (`hook` has sat at 22 since 0.53.0 — it is `tool`/`dynamicTool` that keep moving.)
   Verified end-to-end, not just from
   the contract tables: the rebuilt extension, `pnpm pack`ed into a real eve app, builds on eve
-  0.52.3 and **fails on 0.52.2**
+  0.55.0 and **fails on 0.54.5**
   (`Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.` — an incompatible manifest makes the mount contribute nothing, so the error is that obtuse;
   don't expect the old explicit "requires tool contract vN" wording).
   **eve moved the tool contract inside the 0.45 patch line, twice across 0.47.7 → 0.48.0, and then
-  eight more times across 0.49.1 → 0.52.3**, so a *patch* bump of the eve devDep can re-stamp the
+  fourteen more times across 0.49.1 → 0.55.0**, so a *patch* bump of the eve devDep can re-stamp the
   manifest and raise the floor — re-derive it, don't assume the minor is enough, and don't assume one
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.52.3"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.55.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -439,10 +443,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.87`**. `eve` (0.52.3)
-  declares `ai` as a **peer** (`^7.0.82`, unchanged since 0.47.6 — none of the 0.47.6 → 0.49.0,
-  0.49.0 → 0.52.2 or 0.52.2 → 0.52.3 bumps moved it), so the apps/packages provide the single copy. Providers:
-  `@ai-sdk/openai` `^4.0.53`, `@ai-sdk/provider` `^4.0.9`, `@ai-sdk/react` `^4.0.90` (all stable ranges;
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.101`**. `eve` (0.55.0)
+  declares `ai` as a **peer** (`^7.0.93` — it sat at `^7.0.82` from 0.47.6 through 0.52.3 and moved
+  somewhere in 0.53.0 → 0.55.0, so the 0.52.3 → 0.55.0 bump forced the repo-wide pin
+  `7.0.87` → `7.0.101`), so the apps/packages provide the single copy. Providers:
+  `@ai-sdk/openai` `^4.0.66`, `@ai-sdk/provider` `^4.0.14`, `@ai-sdk/react` `^4.0.104` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
   second, older `ai` copy via its peer resolution, which is exactly the two-copy breakage to avoid).
   (History: the repo was on `7.0.0-beta.178` for `eve@0.13.1`, `7.0.30` for `eve@0.25.2`, then `7.0.58`
@@ -452,10 +457,18 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   consumer on the old exact pin gets `npm error code ERESOLVE … peer ai@"^7.0.82" from eve@0.47.6`
   and cannot install without `--force`/`--legacy-peer-deps`. Treat eve's `ai` peer as a release-blocking
   input on every eve bump; check it with `npm view eve@<v> peerDependencies.ai`.
+  **This fired again on 0.52.3 → 0.55.0** (peer `^7.0.82` → `^7.0.93`): `npm install eve@latest`
+  beside the old `ai@7.0.87` pin dies with
+  `npm error ERESOLVE … peer ai@"^7.0.93" from eve@0.55.0`. pnpm in-workspace was silent about it.
 - The `@ai-sdk/*` bump riding along with `ai` 7.0.87 **collapsed a long-standing second `ai` copy**:
   `@ai-sdk/react@4.0.62` was resolving its own `ai@7.0.59` beside the pinned one (visible on `main` as
   two `ai@…` keys in `pnpm-lock.yaml`). After `pnpm -r update "@ai-sdk/*"` the lockfile has exactly one
   `ai@7.0.87`. Verify with `grep -oE "^  ai@[0-9][^:(]*" pnpm-lock.yaml | sort -u` after any bump.
+  **It recurs every time the `ai` pin moves and you forget the provider update.** On the
+  0.52.3 → 0.55.0 bump, pinning `ai@7.0.101` alone left the lockfile with *two* copies —
+  `@ai-sdk/react@4.0.90` still dragged in its own `ai@7.0.87`. `pnpm -r update "@ai-sdk/*"`
+  (which moved the ranges to `^4.0.66` / `^4.0.14` / `^4.0.104`) collapsed it back to one.
+  Run it as step two of every `ai` pin bump, then re-run the `grep`.
 - **Why exact-pin and not a pnpm `override`:** because everyone lands on the same exact `ai`, pnpm
   installs a single copy. Two copies of `ai` cause type/identity breakage. An override was tried and
   removed as unnecessary — keep it that way unless a dep forces a different `ai@7`.
@@ -518,6 +531,21 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
   between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`; FLUSHDB does drop
   indexes, and `SEARCH.DROP <name>` is the only other lever — there is no list command).
+- **Throwaway DBs also *die* mid-run, and the failure mode looks exactly like a code regression.**
+  Measured 2026-09-15: every `start-redis` database (they all live behind the shared
+  `p2-global-eph.upstash.io` endpoint) went unreachable after roughly 3–6 test files — the REST
+  endpoint stops completing the TLS handshake, so `curl` hangs to its timeout and vitest reports
+  `Test timed out in 30000ms` / `Hook timed out in 10000ms` across **every** live suite at once,
+  including ones that never touch search (`tool-cache`, `chat-history`). Metrics for the dead DB show
+  `commands_total` stuck at a tiny number. Re-fetching the same credentials with the
+  `Idempotency-Key` header does **not** revive it; only a brand-new `upstash start-redis` does.
+  So: **`PING` before each test file, and reprovision + rerun the file when the ping fails** — a
+  self-healing loop turns a cascade of red into a clean green run. A whole-suite red where the
+  failures are timeouts rather than assertions is an infrastructure death, not a regression;
+  confirm with `curl … '["PING"]'` before believing it. (`curl -X POST https://upstash.com/start-redis`
+  returns the same kind of database as the CLI.)
+  On a box where `npm i -g` is not writable, install the CLI to a prefix:
+  `npm i -g @upstash/cli --prefix /tmp/upstash-cli` → `/tmp/upstash-cli/bin/upstash`.
 - **The read-your-writes sync-token bug is FIXED as of `@upstash/redis@1.38.4`** (the repo is pinned
   `^1.38.4`; `packages/eve`'s peer floor is `>=1.38.4`). Historically, in **1.38.0 and earlier back to
   1.34.5**, `HttpClient.request()` built `requestHeaders` from `this.headers` and only *then* copied
@@ -548,18 +576,20 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.52.3`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
+- The repo is on **`eve@0.55.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
   `examples/eve-extension-demo`). `packages/eve`'s peer stays
   **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
   **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
   unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
   against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
-  the 0.52.2 bump across 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2, also all clean).
-  Don't raise the floor without re-running that check. The **0.52.2 → 0.52.3 bump left
-  `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js` and `.d.ts`), which
-  is why it ships no `@upstash/agentkit-eve` release — only that package's devDependency moved.
+  the 0.52.2 bump across 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2, also all clean,
+  and again on the 0.55.0 bump across 0.32.0/0.45.2/0.47.6/0.52.3/0.54.5/0.55.0 — clean, with 0.32.0
+  failing *only* on the `./memory` subpath, which has its own documented `>=0.45.2` floor).
+  Don't raise the floor without re-running that check. The **0.52.2 → 0.52.3 and 0.52.3 → 0.55.0 bumps both left
+  `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js`, `.d.ts` and `.map`), which
+  is why they ship no `@upstash/agentkit-eve` release — only that package's devDependency moved.
   The extension's peer is
-  `>=0.52.3`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  `>=0.55.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
@@ -703,6 +733,32 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   **byte-identical** before and after the bump (`diff -r` over the whole built output, `.js` + `.d.ts`),
   so only its devDependency moved. eve's `ai` peer stayed `^7.0.82`, so the repo-wide `ai` 7.0.87 pin
   did not move. The lockfile diff is small this time (~30 lines) — no nitro churn, unlike the previous bump.
+- **The 0.52.3 → 0.55.0 bump (2026-09-15) needed no source change, moved the extension's floor by
+  three minors, and — for the first time since 0.47.6 — moved the repo-wide `ai` pin.**
+  eve went 0.52.3 → **0.55.0** in a week (0.52.4, 0.52.5, 0.53.0, 0.53.1, 0.54.0, 0.54.2–0.54.5, 0.55.0).
+  The extension rebuild re-stamped **tool 32→38, dynamicTool 31→37** (hook stayed 22; instructions 2,
+  config 1, extension 1 unchanged), moving its peer floor `>=0.52.3` → **`>=0.55.0`**. Only 0.55.0
+  accepts the new dist — 0.54.4/0.54.5 top out at tool 36 / dynamicTool 35 — proven by packing the
+  rebuilt dist into a real eve consumer: 0.54.5 installs fine (the old `>=0.52.3` floor lets it) and
+  then fails `eve build` with the usual obtuse *"has no compile or runtime usage"*; 0.55.0 builds and
+  mounts all 7 tools + the hook.
+  **Published `0.10.0` was NOT broken by 0.55.0** — 0.55.0's `tool` list is [1–13, 28–32, 34–38] and
+  its `hook` list still has 20, so the published stamps (tool 30 / dynamicTool 29 / hook 20) remain
+  supported; a scratch `npm install eve@latest @upstash/agentkit-eve-extension@latest
+  @upstash/agentkit-eve@latest` consumer resolved **eve 0.55.0** and `eve build` **succeeded**,
+  mounting all 7 tools + the hook, with a `defineMemoryRecallTool` tool from `@upstash/agentkit-eve`
+  alongside. So this is again a "keep the stamps current" rebuild, not a fix.
+  **The new thing on this bump: eve's `ai` peer moved `^7.0.82` → `^7.0.93`**, which makes the old
+  exact `ai@7.0.87` pin a hard **npm** ERESOLVE failure against `eve@latest`. Repo-wide pin went to
+  **`7.0.101`**, plus `pnpm -r update "@ai-sdk/*"` to collapse the second `ai` copy `@ai-sdk/react`
+  drags in (see the AI SDK section).
+  `packages/eve`'s peer stayed **`>=0.32.0`** and it ships **no changeset**: its `dist` is
+  **byte-identical** before and after the bump (`diff -rq` over the whole built output, `.js`, `.d.ts`
+  *and* `.map`), and `defineSandbox({ backend: upstash() })` against that dist typechecks clean on
+  0.32.0/0.45.2/0.47.6/0.52.3/0.54.5/0.55.0. `packages/eve/src/sandbox.ts`'s `SandboxBackendHandle`
+  implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
+  Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
+  `packages/eve-extension/dist` that differs from published `0.10.0`.**
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -802,6 +858,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   spawnSync … ENOENT`. **Install the pinned version rather than working around it:**
   ```bash
   npm i -g pnpm@11.5.3                  # or, to a local prefix: npm i -g pnpm@11.5.3 --prefix /tmp/pnpm11
+  ```
+  A second flavour of the same error: pnpm 11 **did** download 11.5.3 into
+  `~/.local/share/pnpm/.tools/pnpm/11.5.3/` but its `bin/*` symlinks point at a `…_tmp_<pid>` path
+  under a *different* home prefix (e.g. `/workspace/home/...` when `$HOME` is `/home/boxuser`), so they
+  dangle and every pnpm invocation still ENOENTs. Repoint them at the real files that are already there:
+  ```bash
+  D=~/.local/share/pnpm/.tools/pnpm/11.5.3
+  ln -sf $D/node_modules/pnpm/bin/pnpm.mjs $D/bin/pnpm; ln -sf $D/node_modules/pnpm/bin/pnpm.mjs $D/bin/pn
+  ln -sf $D/node_modules/pnpm/bin/pnpx.mjs $D/bin/pnpx; ln -sf $D/node_modules/pnpm/bin/pnpx.mjs $D/bin/pnx
   ```
   The escape hatch `pnpm config set manage-package-manager-versions false --global` *does* let an older
   pnpm run, but **don't ship a lockfile written by it**: pnpm 10.x rewrites `pnpm-lock.yaml` dropping
