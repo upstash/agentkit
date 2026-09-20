@@ -121,12 +121,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.55.0**, stamps formatVersion 2; extension 1 /
-  **tool 38** / **dynamicTool 37** / **hook 22** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.55.0** — 0.55.0 is the *only* release accepting all three, because eve now **drops**
-  mid-range contracts rather than only adding new ones (0.55.0's supported `tool` list is
-  [1–13, 28–32, 34–38]: 14–27 are dropped with "TaskExec.delegated was removed" and 33 with
-  "ctx.agent now accepts the subagent name as its first argument").
+  supported list — the current dist, built with **eve 0.63.0**, stamps formatVersion 2; extension 1 /
+  **tool 53** / **dynamicTool 51** / **hook 24** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.63.0** — 0.63.0 is the *only* release accepting all three, because eve now **drops**
+  mid-range contracts rather than only adding new ones (0.63.0's supported `tool` list is
+  [1–13, 29–32, 34, 35, 53] and its `dynamicTool` list [1–20, 22, 31–33, 51]: 36–52 are dropped with
+  "experimental_workflow … removed" / "Background defineTool and TaskExec were removed", and dynamicTool 29
+  — the stamp published `0.10.0` carries — with "Background dynamic tools were removed").
+  0.61.0 stamps tool 51 / dynamicTool 50 / hook 24 and 0.61.1–0.62.0 still reject tool 53 / dynamicTool 51;
+  0.55.0 topped out at tool 38 / dynamicTool 37 / hook 22 (its `tool` list was [1–13, 28–32, 34–38]);
   0.54.3–0.54.5 top out at tool 36 (dynamicTool 34 on 0.54.3, 35 on 0.54.4/0.54.5), 0.54.0/0.54.2 at tool 35 /
   dynamicTool 33, 0.53.0/0.53.1 at tool 34 / dynamicTool 32, 0.52.3 at tool 32 / dynamicTool 31,
   0.52.2 at tool 30 / dynamicTool 29 / hook 20, 0.52.1/0.52.0 at tool 29, 0.51.1 at tool 27 / dynamicTool 27 / hook 20, 0.51.0 at tool 25 /
@@ -143,7 +146,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.55.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.63.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -160,7 +163,10 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 - Contributions: static tools `recall_memory`/`save_memory`; **dynamic** tools `search`/`search_aggregate`/
   `search_count` (one `defineDynamic` per file, resolved at `session.started` — static modules evaluate at
   discovery where mount config is **not yet bound**, so schema-derived descriptions/input schemas must be
-  built in a resolver; unconfigured `search` → resolver returns `null` and the tools don't exist);
+  built in a resolver; unconfigured `search` → resolver returns `null` and the tools don't exist; and the
+  input schema is passed as **plain JSON Schema** (`z.toJSONSchema(…)` into a resolver-local variable), never
+  the live zod object — eve ≥0.59 replays dynamic tools from a JSON snapshot and rejects a live schema
+  captured from the resolver, see the 0.63.0 bump note under Eve framework facts);
   **dynamic** tools `search_chat_history`/`read_chat_history` (same `defineDynamic` reason — they exist
   only when `chatHistory` is enabled, which config binding decides at runtime); hook `chat_history`
   (appends every `message.received`/`message.completed` via core `ChatHistory.getChat`
@@ -443,11 +449,12 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.101`**. `eve` (0.55.0)
-  declares `ai` as a **peer** (`^7.0.93` — it sat at `^7.0.82` from 0.47.6 through 0.52.3 and moved
-  somewhere in 0.53.0 → 0.55.0, so the 0.52.3 → 0.55.0 bump forced the repo-wide pin
-  `7.0.87` → `7.0.101`), so the apps/packages provide the single copy. Providers:
-  `@ai-sdk/openai` `^4.0.66`, `@ai-sdk/provider` `^4.0.14`, `@ai-sdk/react` `^4.0.104` (all stable ranges;
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0)
+  declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
+  `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
+  the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
+  apps/packages provide the single copy. Providers:
+  `@ai-sdk/openai` `^4.0.71`, `@ai-sdk/provider` `^4.0.17`, `@ai-sdk/react` `^4.0.110` (all stable ranges;
   bump them with `pnpm -r update "@ai-sdk/*"` when eve moves — a stale `@ai-sdk/react` range can pin a
   second, older `ai` copy via its peer resolution, which is exactly the two-copy breakage to avoid).
   (History: the repo was on `7.0.0-beta.178` for `eve@0.13.1`, `7.0.30` for `eve@0.25.2`, then `7.0.58`
@@ -576,7 +583,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.55.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
+- The repo is on **`eve@0.63.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
   `examples/eve-extension-demo`). `packages/eve`'s peer stays
   **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
   **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
@@ -589,7 +596,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js`, `.d.ts` and `.map`), which
   is why they ship no `@upstash/agentkit-eve` release — only that package's devDependency moved.
   The extension's peer is
-  `>=0.55.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  `>=0.63.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
@@ -759,6 +766,40 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
   Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
   `packages/eve-extension/dist` that differs from published `0.10.0`.**
+- **The 0.55.0 → 0.63.0 bump (2026-09-20) is the first eve bump that fixes a real break, and the first
+  that needed source changes.** eve went 0.55.0 → **0.63.0** in five days (0.56–0.58, 0.59.0/0.59.1, 0.60.0/
+  0.60.1, 0.61.0/0.61.1, 0.62.0, 0.63.0). Three things happened at once:
+  (1) **eve 0.63.0 (2026-09-19) dropped `dynamicTool` 29** — the stamp published `0.10.0` (built with
+  0.52.2) carries — so a fresh `npm install eve@latest @upstash/agentkit-eve-extension@latest` consumer
+  installs (the `>=0.55.0` floor lets it) and then fails `eve build` with the usual obtuse *"has no compile
+  or runtime usage"*. 0.55.0 through 0.62.0 all still accepted tool 30 / dynamicTool 29 / hook 20; 0.63.0 is
+  the first release that does not, eleven days after `0.10.0` shipped. The rebuild re-stamps **tool 38→53,
+  dynamicTool 37→51, hook 22→24** and moves the floor `>=0.55.0` → **`>=0.63.0`** (0.62.0 rejects the new
+  stamps — proven by packing the rebuilt dist into real eve consumers on 0.62.0 and 0.63.0).
+  (2) **eve 0.59.0 made dynamic-tool schemas durable** (`7973fa2`: resolvers are replayed from a JSON
+  snapshot, so a *live* schema captured from the resolver is rejected at `session.started` with
+  *"callback "inputSchema" has a non-serializable capture"*, logged as `[eve:dynamic-tools] … skipping its
+  complete result` — and the tool silently never mounts). Our `search`/`search_aggregate`/`search_count`
+  handed eve the live zod schema core builds from the consumer's `search.schema`, so on eve 0.59–0.62 the
+  extension mounted but its three search tools vanished at runtime, with `eve build` green. The fix is in
+  `extension/tools/search*.ts`: compute `z.toJSONSchema(defs.<tool>.inputSchema)` into a resolver-local
+  variable and pass THAT — plain JSON Schema data needs no durable factory and eve rehydrates it into its
+  own validator. ⚠️ Writing `inputSchema: z.toJSONSchema(defs.search.inputSchema)` *inline* does NOT work:
+  the compiler transforms inline schema expressions into factories and snapshots their captures, and `defs`
+  is not JSON. `eve build` never resolves dynamic tools, so **only a turn that calls one proves it mounted**
+  — `examples/eve-extension-demo`'s mock model now calls `agentkit__search_count` after `save_memory`, and
+  the smoke eval gates on it (verified: reverting the fix fails exactly that gate, 3/4).
+  (3) **eve 0.59.0 replaced the eval API** (`6ddfa9b`): `EveEvalContext` lost the session driver —
+  `t.reply`/`t.newSession()` are gone, `t.send()` opens a FRESH session per call and returns an
+  `EveEvalTurn` (`turn.message`, `turn.calledTool(…)`, `turn.session`), and `await t.session()` makes an
+  explicit one for multi-turn conversations. Both evals were migrated; `memory.eval.ts` threads all five
+  turns through ONE `t.session()` because eve-demo's mock model counts `userMessages` against `toolResults`
+  in the accumulated prompt — repeated `t.send()` would compile, run, and test something else.
+  eve's `ai` peer moved to `^7.0.105`, so the repo-wide pin went **`7.0.101` → `7.0.107`** (+ `pnpm -r
+  update "@ai-sdk/*"`, one `ai@7.0.107` in the lockfile). `packages/eve`'s peer stayed **`>=0.32.0`** and
+  it ships **no changeset**: its `dist` is **byte-identical** to published `0.9.0`. Test-baseline note: on a
+  pay-as-you-go database `vitest run` is **142 passed / 6 skipped / 0 failed** — the "11 failures" earlier
+  automated runs reported were the free `start-redis` database's 1-search-index cap, not eve.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -814,6 +855,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   The mock is *prompt-aware*: `MockModelRequest.messages` exposes what eve injected, so echoing it is
   how the eval asserts on **automatic** memory recall. Watch out: `toolResults` lists every tool
   result in the prompt, not just this turn's — script against a count, not `length > 0`.
+  **Eval API (eve ≥0.59):** `t.send()` opens a FRESH session per call and returns an `EveEvalTurn`
+  (`turn.message` is the reply, `turn.succeeded()`/`turn.calledTool()` its assertions); `t.reply` and
+  `t.newSession()` no longer exist. A multi-turn conversation needs one explicit `await t.session()` and
+  `session.send()` for every turn — `memory.eval.ts` does exactly that, because the prompt-aware mock
+  only works when all five turns share one accumulated conversation.
   `eve eval` works fine in this demo despite its sandbox: nothing opens a Box during an eval, so no
   `UPSTASH_BOX_API_KEY` is needed. CI runs it. **An eval file can talk to Redis itself** —
   `Redis.fromEnv()` resolves inside the eval runner (it loads the project `.env`), so an eval can

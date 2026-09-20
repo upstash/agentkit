@@ -52,12 +52,14 @@ AGENTKIT_MOCK_MODEL=1 npx eve eval   # exit 0 = pass, ~1s
 ```
 
 `AGENTKIT_MOCK_MODEL=1` switches [`agent/agent.ts`](./agent/agent.ts) to a deterministic
-`mockModel` (from `eve/evals`) whose scripted response calls `agentkit__save_memory` and then
-echoes the tool result — so no `OPENAI_API_KEY` is needed and no provider is called, but the
-extension's real tool executes against real Redis (only the `UPSTASH_REDIS_REST_*` vars are
-required). A green run proves the built extension loads on the installed eve, its contributions
-mount, a session runs end to end, the tool call writes `agentkit:memory:demo-user:*`, and the
-`chat_history` hook captures the turn to `agentkit:chat:demo-user:<sessionId>`.
+`mockModel` (from `eve/evals`) whose scripted response calls `agentkit__save_memory`, then
+`agentkit__search_count`, and then echoes the first tool result — so no `OPENAI_API_KEY` is needed
+and no provider is called, but the extension's real tools execute against real Redis (only the
+`UPSTASH_REDIS_REST_*` vars are required). A green run proves the built extension loads on the
+installed eve, its static **and dynamic** contributions mount (the search tools are resolved at
+session start from the mount's `search` config, which `eve build` never exercises), a session runs
+end to end, the save writes `agentkit:memory:demo-user:*`, and the `chat_history` hook captures the
+turn to `agentkit:chat:demo-user:<sessionId>`.
 
 Two notes if you touch the fixture: the mocked branch sets `modelContextWindowTokens` because the
 mock model has no AI Gateway metadata (without it, `eve eval` fails compiling compaction), and it

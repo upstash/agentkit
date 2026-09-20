@@ -48,11 +48,17 @@ export default defineEval({
   async test(t) {
     const redis = Redis.fromEnv();
 
+    // One explicit session for the whole conversation. On eve ≥0.59 a bare `t.send` opens a
+    // FRESH session per call, and the mock model in agent/agent.ts is prompt-aware — it counts
+    // `userMessages` against completed `toolResults` in the accumulated conversation — so the five
+    // turns below must share one session or the script would be testing something else.
+    const session = await t.session();
+
     // 1. Capture through the slot's own tool: eve resolves the scope, binds `recall__save_memory`
     //    to it, and the write lands in AgentMemory under that scope's key.
-    await t.send(`NOTE: ${FACT}`);
-    t.succeeded();
-    t.calledTool("recall__save_memory");
+    const noted = await session.send(`NOTE: ${FACT}`);
+    noted.succeeded();
+    noted.calledTool("recall__save_memory");
 
     // 2. The capture really reached Redis — read the stored document straight out of the database
     //    rather than trusting that the turn didn't throw. The nonce pins it to THIS run.
@@ -60,11 +66,11 @@ export default defineEval({
 
     // 3. Automatic recall — no tool call involved: eve runs the provider's `turn.started` handler
     //    and injects the ranked block before the model sees anything. The retry is insurance
-    //    against Redis Search indexing lag (each t.send is a fresh turn, i.e. a fresh recall).
+    //    against Redis Search indexing lag (each session.send is a fresh turn, i.e. a fresh recall).
     let recalled = "";
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      await t.send("What colour do I like?");
-      recalled = t.reply ?? "";
+      const turn = await session.send("What colour do I like?");
+      recalled = turn.message ?? "";
       if (recalled.includes(NONCE)) break;
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
@@ -75,13 +81,13 @@ export default defineEval({
     t.check(recalled, includes(NONCE));
 
     // 4. eve's own file memory, stored in Redis: the model saves through `profile__save_memory`.
-    await t.send("REMEMBER: The user's deploy target is Vercel.");
-    t.succeeded();
-    t.calledTool("profile__save_memory");
+    const remembered = await session.send("REMEMBER: The user's deploy target is Vercel.");
+    remembered.succeeded();
+    remembered.calledTool("profile__save_memory");
 
     // 5. The saved document comes back in the next turn's recalled context.
-    await t.send("Anything else you know?");
-    t.check(t.reply, includes("Persistent memories for profile"));
-    t.check(t.reply, includes("deploy target is Vercel"));
+    const recap = await session.send("Anything else you know?");
+    t.check(recap.message, includes("Persistent memories for profile"));
+    t.check(recap.message, includes("deploy target is Vercel"));
   },
 });
