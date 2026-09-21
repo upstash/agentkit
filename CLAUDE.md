@@ -584,15 +584,30 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
 
 ## Eve framework facts
 - The repo is on **`eve@0.63.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
-  `examples/eve-extension-demo`). `packages/eve`'s peer stays
-  **`>=0.32.0`**: the *source* needs eve ≥0.47 to compile (it imports `SandboxDeleteOptions`), but the
-  **shipped `dist`** doesn't name any post-0.32 type, and the extra `delete` on the handle is just an
-  unused member on older eve — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
+  `examples/eve-extension-demo`). `packages/eve`'s peer is
+  **`>=0.45.2`** (raised from `>=0.32.0` in 2026-09 — see below). The *source* needs eve ≥0.47 to
+  compile (it imports `SandboxDeleteOptions`), but the extra `delete` on the handle is just an unused
+  member on older eve, and the **root `.` and `./sandbox` entry points' `dist` genuinely still works
+  back to 0.32** — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
   against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
   the 0.52.2 bump across 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2, also all clean,
   and again on the 0.55.0 bump across 0.32.0/0.45.2/0.47.6/0.52.3/0.54.5/0.55.0 — clean, with 0.32.0
-  failing *only* on the `./memory` subpath, which has its own documented `>=0.45.2` floor).
-  Don't raise the floor without re-running that check. The **0.52.2 → 0.52.3 and 0.52.3 → 0.55.0 bumps both left
+  failing *only* on the `./memory` subpath).
+  **What changed: "the shipped `dist` doesn't name any post-0.32 type" used to be the stated reason
+  for the low floor, and it is no longer true.** It described the dist as it was *before* `0.9.0`
+  added the `./memory` subpath. `dist/memory.js` now carries a real **runtime value import**,
+  `import { MemoryDocumentConflictError } from "eve/memory/file"` (and `dist/memory.d.ts` names
+  `eve/memory` + `eve/memory/file` types), so the artifact does name post-0.32 eve. `eve/memory`
+  first exists in 0.45.1 and `eve/memory/file` in 0.45.2, so a consumer on eve 0.32.0–0.45.1
+  installed cleanly under the old floor and then died at module load on
+  `import … from "@upstash/agentkit-eve/memory"` with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED: Package subpath './memory/file' is not defined by "exports"` —
+  and typechecked clean too under `skipLibCheck: true` (the eve scaffold's default), so nothing
+  caught it before runtime. Measured on real installs: 0.45.1 fails, 0.45.2 works. A package has
+  **one** peer range for its whole public surface, so it must name the highest floor any entry point
+  needs; "the other entry points work further back" is a fact about those entry points, not a range
+  that can be declared. Don't *lower* the floor back on the strength of a root-only dist check, and
+  don't raise it further without re-running the check above. The **0.52.2 → 0.52.3 and 0.52.3 → 0.55.0 bumps both left
   `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js`, `.d.ts` and `.map`), which
   is why they ship no `@upstash/agentkit-eve` release — only that package's devDependency moved.
   The extension's peer is
@@ -602,8 +617,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
   **Memory landed late:** `eve/memory` first exists in **0.45.1** and `eve/memory/file` in **0.45.2**
   (0.45.0 and everything below has neither) — measured with `npm view eve@<v> exports`. That is the
-  real floor for `@upstash/agentkit-eve/memory`; the package peer stays `>=0.32.0` for the other
-  entry points.
+  real floor for `@upstash/agentkit-eve/memory`, and therefore **the package peer: `>=0.45.2`**.
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
   APIs with fixed ID-addressed handles — frontend/client `send` is now **positional**
   (`agent.send(message, options?)`, not `send({ message })`; eve-demo's `agent-chat.tsx` was updated);
@@ -659,7 +673,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   (instructions 2, config 1, extension 1 unchanged), moving its peer floor `>=0.45.1` → **`>=0.47.0`**
   — again floor == pinned minor, no back-compat window. 0.46.1 sits in between (tool 20 / hook 15) and
   is genuinely rejected by the new dist. `packages/eve`'s own peer stayed `>=0.32.0` on purpose (its
-  shipped `dist` names no post-0.32 type — see the version bullet at the top of this section).
+  shipped `dist` named no post-0.32 type — true of the dist *at that time*; `0.9.0`'s `./memory`
+  subpath later broke that, and the floor is now `>=0.45.2`. See the version bullet at the top of
+  this section — the log entries below record what was true per bump, not the current floor).
 - **The 0.47.3 → 0.47.6 bump needed no source change, but it moved two pins.** The extension rebuild
   re-stamped **tool 21→22** only (dynamicTool 21, hook 16, instructions 2, config 1, extension 1 all
   unchanged), moving its peer floor `>=0.47.0` → **`>=0.47.5`** — 0.47.5 is the first eve accepting
