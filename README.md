@@ -29,8 +29,8 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
   [memory](https://eve.dev/docs/memory) feature: `redisDocuments()` stores Eve's own `fileMemory()`
   documents (so they work off Vercel), and `redisMemory()` is a full provider with ranked recall and
   automatic capture.
-- **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
-  Eve's `defineSandbox`.
+- **Code sandbox** (Eve only) — an [Upstash Box](https://github.com/upstash/box) sandbox provider for
+  Eve's `defineSandbox` (`UpstashSandbox`, eve ≥ 0.65).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
 
 ## Examples

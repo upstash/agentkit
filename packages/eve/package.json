@@ -58,16 +58,16 @@
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
-    "@upstash/box": "^0.5.1",
+    "@upstash/box": "^0.7.5",
     "@upstash/redis": "^1.38.4",
     "ai": "7.0.107",
     "dotenv": "^16.4.5",
-    "eve": "^0.63.0"
+    "eve": "^0.65.0"
   },
   "peerDependencies": {
-    "@upstash/box": ">=0.5.0",
+    "@upstash/box": ">=0.7.1",
     "@upstash/redis": ">=1.38.4",
-    "eve": ">=0.45.2"
+    "eve": ">=0.65.0"
   },
   "peerDependenciesMeta": {
     "@upstash/box": {
