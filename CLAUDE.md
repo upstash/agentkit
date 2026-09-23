@@ -150,9 +150,29 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
-  `dist/extension/_manifest.json` stamps, find the oldest eve whose `EXTENSION_CAPABILITY_CONTRACTS`
+  `dist/extension/_manifest.json` stamps, find the oldest eve whose capability table
   (in eve's `dist/src/compiler/extension-compatibility.js`) supports them all, and move the peer floor
   to match.**
+  **Reading that table (verified on eve 0.63.0):** `EXTENSION_CAPABILITY_CONTRACTS` is still the
+  internal const — `{ <capability>: { current, supported[], dropped{<version>: "why"} } }`, and the
+  `dropped` strings are the best available changelog for *why* a contract went away — but it is **not
+  exported**. The **exported** names are **`EXTENSION_CAPABILITY_SUPPORT`** (capability → `supported[]`),
+  **`EXTENSION_CAPABILITY_VERSIONS`** (capability → `current`, i.e. exactly what a build stamps), and
+  the one-call check **`findUnsupportedExtensionCapabilities(manifest)`** — pass the **whole parsed
+  manifest** (it reads `manifest.requires` itself; passing just `requires` throws
+  `Cannot convert undefined or null to object`). It returns `[]` for compatible, else
+  `[{capability, requiredVersion, supportedVersions}]`. So the whole floor check is:
+  ```js
+  const m = await import("<consumer>/node_modules/eve/dist/src/compiler/extension-compatibility.js");
+  const manifest = JSON.parse(fs.readFileSync(".../dist/extension/_manifest.json", "utf8"));
+  m.findUnsupportedExtensionCapabilities(manifest);        // [] === compatible
+  m.EXTENSION_CAPABILITY_VERSIONS;                          // what THIS eve would stamp
+  ```
+  Comparing `EXTENSION_CAPABILITY_VERSIONS` against the committed manifest is the fast way to tell
+  whether a rebuild would re-stamp anything **before** running it. To find the floor empirically without
+  installing each eve, fetch the tarballs and regex the minified table:
+  `tar -xzf eve-<v>.tgz package/dist/src/compiler/extension-compatibility.js` then match
+  `<capability>:\{current:(\d+),supported:\[([0-9,]*)\]`.
 - `extension/extension.ts` = `defineExtension({ config: zod })`; the default export is the mount factory.
   Config knobs: `userId` (string or `(ctx: SessionContext) => string` — eve's public base of tool+hook
   ctx, imported from `eve/tools`), `redis` (defaults `Redis.fromEnv()`), `memory{topK,minScore}`,
@@ -483,7 +503,24 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   also deduped by aligning `ai-sdk-demo` to `19.2.15`, not by an override.)
 - `pnpm-workspace.yaml` sets `minimumReleaseAge: 0` so fresh eve/ai releases aren't gated.
 - Two `zod` 4.x copies exist in the lockfile (`@vercel/cli-config`, eve-transitive, wants its own) —
-  preexisting and harmless; our packages all resolve one shared zod.
+  preexisting and harmless; our packages all resolve one shared zod **in this workspace**.
+- **⚠️ "one shared zod" is a property of OUR LOCKFILE, not of a consumer install — never infer consumer
+  dedup from a green repo.** `packages/eve-extension` used to pin `"zod": "4.4.3"` **exactly** while
+  `packages/sdk` declares `"^3.23.8 || ^4"`. In the workspace both resolved to 4.4.3, so everything was
+  green; in **every real consumer install (npm *and* pnpm)** the sdk resolved zod `4.6.5` and the
+  extension got its own nested `4.4.3` — **two instances**. zod changed its internal schema
+  representation in **4.6.0**, so a schema built by zod ≥4.6.0 cannot be converted by zod <4.6.0
+  (measured: 4.4.3 ✗, 4.5.0 ✗, 4.6.0 ✓, 4.6.5 ✓). The extension's search resolvers call
+  `z.toJSONSchema(defs.<tool>.inputSchema)` on defs built by the **sdk's** zod, so cross-instance it
+  threw `Cannot read properties of undefined (reading 'push')`; eve logged
+  `[eve:dynamic-tools] … failed — skipping its complete result` and all three search tools **silently
+  never mounted**, with `eve build` green. Fixed by widening the extension to **`"^4.4.3"`** so normal
+  resolution dedupes to one instance. **Rules that follow:** (1) never exact-pin `zod` in a *published*
+  package — a range that overlaps the sdk's is what makes dedup possible (exact-pinning is the right
+  move for `ai`, the opposite of the right move for `zod`, because `ai` is pinned identically in *every*
+  workspace package while `zod`'s ranges differ); (2) a dual-instance bug of this class is **invisible to
+  every in-repo check** — only a packed-tarball consumer install can see it, so verify dependency changes
+  to `packages/eve-extension` with `pnpm pack` into a scratch consumer (see "Verifying a consumer install").
 - **v7 type renames to know:** `ToolCallOptions` → **`ToolExecutionOptions<never>`**. v7's
   `LanguageModelMiddleware = Omit<LanguageModelV4Middleware,'specificationVersion'> & { specificationVersion?: string }`
   so middlewares need **no** `specificationVersion` (v6 required `'v3'`, v5 required none — don't add it on v7).
@@ -553,6 +590,28 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   returns the same kind of database as the CLI.)
   On a box where `npm i -g` is not writable, install the CLI to a prefix:
   `npm i -g @upstash/cli --prefix /tmp/upstash-cli` → `/tmp/upstash-cli/bin/upstash`.
+- **A brand-new throwaway DB is often DEAD ON ARRIVAL — always `PING` it before writing it to `.env`.**
+  The note above says "only a brand-new `start-redis` does [revive things]"; that is too optimistic.
+  Measured 2026-09-22: a just-provisioned database answered `curl` with **exit 35 / `SSL_ERROR_SYSCALL`**
+  on the very first request and never recovered, and three consecutive fresh databases each failed the
+  6th of 6 warm-up pings. They all share the `p2-global-eph.upstash.io` endpoint, so "fresh" buys
+  nothing on its own. **Provision in a loop and only accept a candidate that answers several
+  consecutive `PING`s**, e.g.:
+  ```bash
+  for i in $(seq 1 6); do
+    out=$(curl -s -X POST https://upstash.com/start-redis)
+    U=$(echo "$out" | grep -oP '(?<=\*\*Endpoint:\*\* )\S+'); T=$(echo "$out" | grep -oP '(?<=\*\*Token:\*\* )\S+')
+    ok=0; for n in $(seq 1 6); do
+      [ "$(curl -s --max-time 12 "$U" -H "Authorization: Bearer $T" -d '["PING"]')" = '{"result":"PONG"}' ] && ok=$((ok+1)); sleep 2
+    done
+    [ $ok -ge 6 ] && { printf 'UPSTASH_REDIS_REST_URL=%s\nUPSTASH_REDIS_REST_TOKEN=%s\n' "$U" "$T" > .env; break; }
+  done
+  ```
+  A healthy DB runs a whole eval in **~350ms**; when you see a mocked eval take **3–4 minutes**, that is
+  `@upstash/redis` burning its retry/backoff budget against a dead endpoint, *not* slow code. The
+  distinguishing detail in a failing eval gate: `observed <tool> calls: {}` means the tool **mounted and
+  ran** (and Redis failed underneath), whereas `observed tools: [<other>]` means the tool **never
+  mounted** — only the latter is a real code problem.
 - **The read-your-writes sync-token bug is FIXED as of `@upstash/redis@1.38.4`** (the repo is pinned
   `^1.38.4`; `packages/eve`'s peer floor is `>=1.38.4`). Historically, in **1.38.0 and earlier back to
   1.34.5**, `HttpClient.request()` built `requestHeaders` from `this.headers` and only *then* copied
@@ -949,6 +1008,31 @@ pnpm test         # vitest run (against real Redis)
 pnpm -r --filter "./examples/*" build   # build both demo apps
 ```
 - CI: Node 24 + pnpm 11; runs lint → typecheck → build → test → example builds.
+
+### Verifying a consumer install (the only way to catch dependency-resolution bugs)
+Every in-repo check runs against `pnpm-lock.yaml`, so it cannot see how a *consumer's* resolver will
+lay out our dependencies — that blind spot is what hid the dual-zod bug. When you change any
+`dependencies`/`peerDependencies` of a published package, verify in a real scratch consumer:
+```bash
+cd packages/eve-extension && pnpm pack --pack-destination /tmp     # rewrites workspace:* -> the real version
+mkdir /tmp/c && cd /tmp/c                                          # scaffold: package.json (type:module,
+                                                                   # imports {"#*":"./agent/*","#evals/*":"./evals/*"}),
+                                                                   # agent/agent.ts, agent/channels/eve.ts,
+                                                                   # agent/extensions/agentkit.ts, evals/
+npm install eve@latest /tmp/upstash-agentkit-eve-extension-*.tgz \
+  @upstash/redis @ai-sdk/openai ai zod @vercel/connect
+```
+Copy `examples/eve-extension-demo`'s `agent/agent.ts` (the `AGENTKIT_MOCK_MODEL` scripted `mockModel`)
+and its `evals/agentkit-smoke.eval.ts`, then `AGENTKIT_MOCK_MODEL=1 npx eve eval`. **`eve build` passing
+proves almost nothing** about dynamic tools — only a turn that *calls* one does.
+Two cheap, Redis-free checks worth running first:
+```bash
+# 1. how many copies of a dep does the consumer actually have, and who gets which?
+find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node -p "require('./$f').version")"; done
+# 2. does the extension's zod convert the sdk's schema? (reproduces the dual-instance break in ~1s)
+#    import createSearchToolDefs from the consumer's sdk, then call the EXTENSION's zod
+#    toJSONSchema(defs.search.inputSchema) -> "Cannot read properties of undefined (reading 'push')" == two instances
+```
 - Releases use **Changesets**: `pnpm changeset`, `pnpm ci:version`, `pnpm ci:publish`. Do **not** use
   `pnpm version`/`pnpm release` (they collide with built-in pnpm commands).
   **Keep one pending changeset per package, describing the final state.** `.changeset/` accumulates

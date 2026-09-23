@@ -296,7 +296,7 @@ importers:
         specifier: ^1.38.4
         version: 1.38.4
       zod:
-        specifier: 4.4.3
+        specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
       '@types/node':
