@@ -8,7 +8,7 @@
     "#evals/*": "./evals/*"
   },
   "scripts": {
-    "build": "eve build",
+    "build": "eve build --skip-sandbox-prewarm",
     "dev": "eve dev",
     "start": "eve start",
     "typecheck": "tsc"
@@ -19,7 +19,7 @@
     "@upstash/redis": "^1.38.4",
     "@vercel/connect": "0.2.2",
     "ai": "7.0.107",
-    "eve": "^0.63.0",
+    "eve": "^0.64.1",
     "zod": "4.4.3"
   },
   "devDependencies": {

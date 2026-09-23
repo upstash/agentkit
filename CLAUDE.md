@@ -121,10 +121,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.63.0**, stamps formatVersion 2; extension 1 /
-  **tool 53** / **dynamicTool 51** / **hook 24** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.63.0** — 0.63.0 is the *only* release accepting all three, because eve now **drops**
-  mid-range contracts rather than only adding new ones (0.63.0's supported `tool` list is
+  supported list — the current dist, built with **eve 0.64.1**, stamps formatVersion 2; extension 1 /
+  **tool 54** / **dynamicTool 52** / **hook 25** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.64.0** — 0.64.0 and 0.64.1 are the *only* releases accepting all three, because eve now
+  **drops** mid-range contracts rather than only adding new ones (0.64.0's supported `tool` list is
+  [1–13, 29–32, 34, 35, 54], its `dynamicTool` list [1–20, 22, 31–33, 52] and its `hook` list
+  [10–15, 17–23, 25] — 0.64.0 dropped **tool 53, dynamicTool 51 AND hook 24 in one release**, which is
+  exactly the stamp published `0.12.0` carries, so 0.12.0 cannot build on any eve newer than it).
+  0.63.0 stamps tool 53 / dynamicTool 51 / hook 24 and rejects tool 54 / dynamicTool 52 / hook 25
+  (0.63.0's supported `tool` list is
   [1–13, 29–32, 34, 35, 53] and its `dynamicTool` list [1–20, 22, 31–33, 51]: 36–52 are dropped with
   "experimental_workflow … removed" / "Background defineTool and TaskExec were removed", and dynamicTool 29
   — the stamp published `0.10.0` carries — with "Background dynamic tools were removed").
@@ -146,14 +151,14 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.63.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.64.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
   `dist/extension/_manifest.json` stamps, find the oldest eve whose capability table
   (in eve's `dist/src/compiler/extension-compatibility.js`) supports them all, and move the peer floor
   to match.**
-  **Reading that table (verified on eve 0.63.0):** `EXTENSION_CAPABILITY_CONTRACTS` is still the
+  **Reading that table (verified on eve 0.63.0, re-verified on 0.64.1):** `EXTENSION_CAPABILITY_CONTRACTS` is still the
   internal const — `{ <capability>: { current, supported[], dropped{<version>: "why"} } }`, and the
   `dropped` strings are the best available changelog for *why* a contract went away — but it is **not
   exported**. The **exported** names are **`EXTENSION_CAPABILITY_SUPPORT`** (capability → `supported[]`),
@@ -469,7 +474,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 and 0.64.1 alike)
   declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
   `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
   the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
@@ -642,8 +647,19 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.63.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
-  `examples/eve-extension-demo`). `packages/eve`'s peer is
+- The repo is **split across two eve versions since 2026-09-23** — it is no longer "one eve everywhere":
+  `packages/eve-extension` + `examples/eve-extension-demo` are on **`eve@0.64.1`**, while
+  `packages/eve` + `examples/eve-demo` stay on **`eve@0.63.0`**. The split is forced:
+  **eve 0.64.0 removed the `SandboxBackend*` authoring types from `eve/sandbox`**
+  (`SandboxBackend`, `SandboxBackendCreateInput`, `SandboxBackendHandle`, `SandboxBackendPrewarmInput`,
+  `SandboxBackendSessionState`, `SandboxBootstrapUseFn`, `SandboxDeleteOptions`, `SandboxSessionUseFn`,
+  and `SandboxSession.id`), replacing them with a **provider** seam at
+  **`eve/sandbox/provider`** (`defineSandboxProvider`, `SandboxProvider*`, and `SandboxDeleteOptions`
+  re-homed there). `packages/eve/src/sandbox.ts` implements the old backend interface, so `pnpm build`
+  fails its dts step on eve 0.64.x with eight `TS2305/TS2724` "has no exported member" errors plus
+  `TS2353` on `SandboxSession.id` — **migrating it is a source change, deliberately not bundled with an
+  extension rebuild**. Bump `packages/eve` to 0.64.x only together with that migration.
+  `packages/eve`'s peer is
   **`>=0.45.2`** (raised from `>=0.32.0` in 2026-09 — see below). The *source* needs eve ≥0.47 to
   compile (it imports `SandboxDeleteOptions`), but the extra `delete` on the handle is just an unused
   member on older eve, and the **root `.` and `./sandbox` entry points' `dist` genuinely still works
@@ -670,7 +686,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js`, `.d.ts` and `.map`), which
   is why they ship no `@upstash/agentkit-eve` release — only that package's devDependency moved.
   The extension's peer is
-  `>=0.63.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  `>=0.64.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
@@ -841,6 +857,24 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
   Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
   `packages/eve-extension/dist` that differs from published `0.10.0`.**
+- **The 0.63.0 → 0.64.1 bump (2026-09-23) is EXTENSION-ONLY, and the first bump the whole repo could not take.**
+  eve 0.64.0 dropped **tool 53, dynamicTool 51 and hook 24 in a single release** — precisely the stamps the
+  just-published `@upstash/agentkit-eve-extension@0.12.0` carries — while 0.12.0's peer `>=0.63.0` still
+  admitted 0.64.x, so `npm i eve@latest @upstash/agentkit-eve-extension@latest` installed clean and then
+  died on the first `eve build` with the usual obtuse *"Selected module binding "extensions/agentkit.ts"
+  has no compile or runtime usage."*. **This is the third time the same trap fired** (0.10.0 on eve 0.63.0,
+  0.11.0's zod dedupe, now 0.12.0 on eve 0.64.0) — the lesson each time is the same: after ANY release,
+  re-install the published tarball against `eve@latest` in a scratch consumer and run a real turn.
+  The rebuild re-stamps **tool 53→54, dynamicTool 51→52, hook 24→25** (`builtWithEve` 0.64.1) and moves the
+  floor `>=0.63.0` → **`>=0.64.0`** — measured, not read off the tables: the rebuilt dist packed into real
+  npm consumers **fails on 0.63.0** (same obtuse error) **and builds on 0.64.0/0.64.1**, and with the new
+  floor npm refuses the 0.63.0 install up front with
+  `ERESOLVE … peer eve@">=0.64.0" from @upstash/agentkit-eve-extension@0.12.0`.
+  **`packages/eve` deliberately stayed on 0.63.0** — see the sandbox-provider note under Eve framework
+  facts; bumping it is a source migration, not a pin bump. There is a **stale branch
+  `chore/eve-0.64.1-extension-only` (96bb264)** on origin that attempted this fix from *before*
+  `ae3db83` (the zod widen): do not merge or build on it — it would regress `zod` back to the exact pin
+  `4.4.3` and re-break the search tools.
 - **The 0.55.0 → 0.63.0 bump (2026-09-20) is the first eve bump that fixes a real break, and the first
   that needed source changes.** eve went 0.55.0 → **0.63.0** in five days (0.56–0.58, 0.59.0/0.59.1, 0.60.0/
   0.60.1, 0.61.0/0.61.1, 0.62.0, 0.63.0). Three things happened at once:
@@ -968,6 +1002,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   indexes, so the demos share; seed data comes from eve-demo's `lib/books.ts` seeder.
 - Needs a local `.env` (gitignored) with the Upstash + OpenAI creds — `eve dev` reads the project dir,
   not the repo root.
+- **Its build script is `eve build --skip-sandbox-prewarm` since eve 0.64.** eve 0.64 prewarms a
+  sandbox template by default even for a scaffold with no `sandbox/` directory, and its default provider
+  is **just-bash**, which eve does not bundle — a plain `eve build` dies with *"The just-bash sandbox
+  provider requires the `just-bash` package, which is not bundled with eve"* / `Cannot find package
+  'just-bash'`. On eve 0.63.0 the same project builds with no flag. The alternative is adding
+  `just-bash` as a devDependency; the flag is used here because this demo has no sandbox to prewarm.
+  `eve eval` is unaffected — it never prewarms.
 - The extension demo's `userId` is the static `"demo-user"` so memory persists across sessions in an
   unauthenticated local agent (the default derivation would fall back to the per-session id).
 
