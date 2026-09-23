@@ -1,135 +1,121 @@
 /**
- * Sandbox backend for **Eve** (`eve/sandbox`, https://eve.dev/docs/sandbox), powered by
+ * Sandbox provider for **Eve** (`eve/sandbox`, https://eve.dev/docs/sandbox), powered by
  * **Upstash Box** (`@upstash/box`) — a serverless cloud sandbox for AI agents.
  *
- * `upstash()` is a drop-in replacement for Eve's `vercel()` backend: it returns a value implementing
- * Eve's real two-phase {@link SandboxBackend} (`name` / `prewarm` / `create`). Take any Eve sandbox
- * file and swap the backend import:
+ * `UpstashSandbox` is an Eve sandbox **provider** (eve ≥0.64's `defineSandboxProvider()` contract),
+ * used exactly like eve's built-in `VercelSandbox`:
  *
  * ```ts
  * // agent/sandbox.ts
  * import { defineSandbox } from "eve/sandbox";
- * import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: import { vercel } from "eve/sandbox/vercel"
+ * import { UpstashSandbox } from "@upstash/agentkit-eve/sandbox";
  *
- * export default defineSandbox({
- *   backend: upstash({ runtime: "node", size: "medium" }),
- *   revalidationKey: () => "repo-bootstrap-v1",
- *   async bootstrap({ use }) {
- *     // Network egress is denied by default — open it here because installing a package needs it.
- *     const sandbox = await use({ networkPolicy: "allow-all" });
- *     await sandbox.run({ command: "apt-get install -y jq" });
- *   },
- *   async onSession({ use }) {
- *     await use(); // sessions inherit the secure default (deny-all) unless you pass a networkPolicy
+ * export const environment = UpstashSandbox.environment({
+ *   runtime: "node",
+ *   size: "medium",
+ *   // Runs once per environment generation (at `eve build`), not per session; the result is
+ *   // captured as a Box snapshot every session starts from.
+ *   async prepare(sandbox) {
+ *     await sandbox.setNetworkPolicy("allow-all"); // egress is denied by default
+ *     const r = await sandbox.run({ command: "sudo apt-get update && sudo apt-get install -y jq" });
+ *     if (r.exitCode !== 0) throw new Error(r.stderr);
  *   },
  * });
+ *
+ * export default defineSandbox(() => environment.open()); // sessions stay deny-all
  * ```
  *
- * **Network egress is denied by default** (see {@link DEFAULT_NETWORK_POLICY}); pass a `networkPolicy`
- * in `bootstrap`'s `use(...)` or the session `use(...)` to open it. Note also that `config.env` is
- * injected into the box and is therefore readable by code running inside it — don't pass secrets you
- * wouldn't want model-generated code to see.
+ * **Lifecycle** (eve owns the orchestration; this provider maps each phase onto Box):
  *
- * The lifecycle maps onto Box like this: `prewarm` builds a template box (seed files + your `bootstrap`
- * hook), captures a Box **snapshot**, and records `templateKey → snapshotId` in a **durable Redis
- * registry**; `create` opens a live session from that snapshot with `Box.fromSnapshot` (or a fresh
- * `Box.create` when there's no template). The registry is what lets `create` (running per request) reuse
- * the snapshot built by `prewarm` (running at build/startup) — a plain in-memory map can't bridge those
- * processes, and Box has no static snapshot lookup. When a sandbox has nothing to bake (no seed files,
- * no `bootstrap`), `prewarm` builds **no** box at all and `create` just spins a fresh one.
+ * - `prepare` (at `eve build`, or first sandbox access under `eve dev`) — creates a temporary box,
+ *   writes eve's compiled workspace seeds (`/workspace`) and skills (`$HOME/.agents/skills`), runs
+ *   your `prepare` hook, captures a Box **snapshot** and deletes the temporary box. The snapshot id
+ *   is the prepared artifact; eve persists it in the build output, so no external registry is
+ *   needed. With nothing to bake (no seeds, skills or hook) no box is created at all.
+ * - `start` (once per durable eve session) — restores a box from that snapshot (or from
+ *   `baseSnapshot`, or a fresh `Box.create`), applies `open({ networkPolicy })`, and returns
+ *   `{ boxId }` as the session state eve checkpoints.
+ * - `resume` (later workflow steps, restarts, redeploys) — reattaches with `Box.get(boxId)`. Per
+ *   eve's contract it **fails** when the box is gone instead of silently creating a fresh one (that
+ *   would drop the session's files); `sandbox.delete()` is how a session asks for a fresh box.
+ * - `sandbox.stop()` → Box `pause` (compute released, state kept; the next access auto-resumes);
+ *   server shutdown → `pause`, failures tolerated; `sandbox.delete()` → Box `delete`. The prepared
+ *   snapshot is never touched by a session — it is shared by every session of the environment.
  *
- * **Session reuse:** Eve re-opens a session many times (per turn / retry / re-render) and hands the box
- * id we returned in `captureState` back as `create`'s `existingMetadata`. `create` **reattaches** to that
- * box (`Box.get`) instead of making a new one, and `dispose` is a **no-op** — so a conversation keeps a
- * single box rather than piling up one per open. Boxes default to Box's pause-based idle lifecycle
- * (`keepAlive: false`): idle → auto-paused, reattach → resumed, then reaped by Box. (`keepAlive: true`
- * opts into an always-running box you manage yourself.)
+ * **Network egress is denied by default** (see {@link DEFAULT_NETWORK_POLICY}); open it per session
+ * with `environment.open({ networkPolicy })` or `sandbox.setNetworkPolicy(...)`. Box applies the
+ * policy to the box itself, so it survives pause/resume. `env` in the environment options is injected
+ * into the box and is readable by code running there — don't pass secrets you wouldn't want
+ * model-generated code to see (use `attachHeaders` to broker credentials instead).
  *
- * **Lifecycle:** `stop()`/`shutdown()` map to Box **`pause`** (compute released, the box stays
- * reattachable), while `delete()` (eve ≥0.47) maps to Box **`delete`** — a permanent teardown of the
- * session box. `delete()` leaves the prewarmed template snapshot and its Redis registry entry alone:
- * that is reusable state, and eve provisions the session's replacement box from it.
+ * Eve roots its sandbox tools at `/workspace`, but a Box session lives in `/workspace/home`; this
+ * provider bridges the two (in `resolvePath` and in raw commands), so the agent's file ops and
+ * `find`/`grep` commands hit the right directory.
  *
- * Eve roots its sandbox tools at `/workspace`, but a Box session lives in `/workspace/home`; this backend
- * bridges the two (in `resolvePath` and in raw commands), so the agent's file ops and `find`/`grep`
- * commands hit the right directory.
- *
- * `@upstash/box` is an optional peer dependency — only needed when you import this entry point. This
- * backend is type-checked against Eve's real types but cannot be runtime-verified in this repo.
+ * `@upstash/box` (≥0.7.1) is an optional peer dependency — only needed when you import this entry
+ * point. Credentials come from `apiKey` or the `UPSTASH_BOX_API_KEY` env var, at build time (for
+ * `prepare`) and at run time.
  */
+import { createHash, randomBytes } from "node:crypto";
 import { Box } from "@upstash/box";
 import type { BoxConfig, NetworkPolicy as BoxNetworkPolicy } from "@upstash/box";
-import { Redis } from "@upstash/redis";
 import type {
-  SandboxBackend,
-  SandboxBackendCreateInput,
-  SandboxBackendHandle,
-  SandboxBackendPrewarmInput,
-  SandboxBackendSessionState,
-  SandboxBootstrapUseFn,
-  SandboxDeleteOptions,
+  MutableNetworkSandboxSession,
   SandboxNetworkPolicy,
-  SandboxSession,
-  SandboxSessionUseFn,
+  SandboxProcess,
 } from "eve/sandbox";
-import { addTelemetry } from "./telemetry.js";
+import { defineSandboxProvider } from "eve/sandbox/provider";
+import type {
+  SandboxDeleteOptions,
+  SandboxProviderHandle,
+  SandboxProviderResources,
+} from "eve/sandbox/provider";
 
-/** Per-session (and per-bootstrap) options a caller can apply via `use(options)`. */
-export interface UpstashSandboxOptions {
-  /** Network policy to apply to the session when it's opened. */
-  networkPolicy?: SandboxNetworkPolicy;
+/** Options for `environment.open(...)` — applied once, when eve starts the session's box. */
+export interface UpstashSandboxOpenOptions {
+  /** Network policy for the session's box. Defaults to deny-all. */
+  readonly networkPolicy?: SandboxNetworkPolicy;
 }
 
 /**
- * Configuration for the {@link upstash} backend — the **Upstash Box** `BoxConfig` as-is (`runtime`,
+ * Options for `UpstashSandbox.environment(...)` — the **Upstash Box** `BoxConfig` as-is (`runtime`,
  * `size`, `apiKey`/`baseUrl`, `keepAlive`, `initCommand`, `env`, `git`, `skills`, `mcpServers`,
- * `timeout`, `debug`, `name`, …). Whatever you'd pass to `Box.create({...})` you pass here, so there
- * are no AgentKit-invented knobs to learn or keep in sync.
+ * `attachHeaders`, `timeout`, …), plus two AgentKit fields: `prepare` and `baseSnapshot`.
  *
- * `networkPolicy` is intentionally **omitted**: in Eve, network access is governed by the secure
- * deny-all default (see {@link DEFAULT_NETWORK_POLICY}) plus per-session `use({ networkPolicy })`, not
- * a backend-level knob. `name` doubles as the Eve backend name (it participates in cache-key
- * derivation; defaults to `"upstash"`).
+ * Omitted from `BoxConfig`: `networkPolicy` (egress is deny-all at creation and opened per session —
+ * see {@link UpstashSandboxOpenOptions}) and `name` (box names are unique per account, and every
+ * session gets its own box; the provider names them `eve-<session hash>-<random>`).
  *
- * Two AgentKit-only fields sit alongside the Box config: `redis` and `templatePrefix`, which back the
- * durable template→snapshot registry (so a snapshot built by `prewarm` at build time is reused by
- * `create` per request — see {@link UpstashSandboxBackend}). They are stripped before the rest is
- * handed to `Box.create`.
+ * Eve hashes these options into the environment's configuration, so changing any of them (including
+ * the source of `prepare`) starts a new environment generation for new sessions. Prefer
+ * `UPSTASH_BOX_API_KEY` over an inline `apiKey` so rotating the key doesn't do that.
  */
-export type UpstashBackendConfig = Omit<BoxConfig, "networkPolicy"> & {
+export type UpstashSandboxEnvironmentOptions = Omit<BoxConfig, "networkPolicy" | "name"> & {
   /**
-   * Redis client backing the template→snapshot registry. `prewarm` and `create` run in different
-   * processes (build/startup vs. per request), so the snapshot id must be stored durably to be reused
-   * — an in-memory map would orphan the prewarmed box. Defaults to `Redis.fromEnv()`; only touched when
-   * a sandbox has a template (seed files or a `bootstrap`).
+   * Setup every session's box inherits — installing packages, cloning a repo, warming caches. Runs
+   * once per environment generation inside a temporary box (after workspace seeds and skills are
+   * written); the result is captured as a Box snapshot. The box starts deny-all: call
+   * `sandbox.setNetworkPolicy("allow-all")` (or an allow-list) first if the setup needs egress.
+   * Sessions do **not** inherit the policy you set here.
    */
-  redis?: Redis;
-  /** Key prefix for the template registry. Defaults to `agentkit:sandbox:template`. */
-  templatePrefix?: string;
+  prepare?: (sandbox: MutableNetworkSandboxSession) => Promise<void> | void;
   /**
-   * Report the sdk name + version to Upstash as a header on the requests made by the redis client
-   * backing the template registry. Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env
-   * var. Defaults to `true`.
-   */
-  enableTelemetry?: boolean;
-  /**
-   * A **base Box snapshot** every fresh session restores from, instead of a bare `Box.create`. Use it
-   * to bake heavy, slow-changing setup (browser binaries, ffmpeg, a preinstalled toolchain) into one
-   * snapshot out-of-band — e.g. built once at server startup from Next.js `instrumentation.ts` — and
-   * have every session start from it.
+   * A **base Box snapshot** to build on instead of a bare `Box.create` — for heavy, slow-changing
+   * setup (browser binaries, a toolchain) you bake and manage yourself, out of band. `prepare` layers
+   * on top of it; with nothing to prepare, sessions restore from it directly.
    *
-   * This is orthogonal to Eve's `bootstrap`/prewarm template mechanism: `bootstrap` bakes a template
-   * from *this repo's* seed files + hook and Eve decides when to rebuild it; `baseSnapshot` points at a
-   * snapshot **you** manage and address by id, which Box has no static name lookup for — hence a
-   * resolver so you can look the id up from your own store (Redis keyed by a name) at open time.
-   *
-   * Pass a snapshot id string, or a function resolving one (sync or async). Returning `undefined` (or
-   * a snapshot that no longer exists) falls back to a fresh `Box.create`. When both a prewarmed
-   * template snapshot and a `baseSnapshot` apply, the template snapshot wins (it's the more specific,
-   * repo-derived one); `baseSnapshot` is the fallback for sessions with no template.
+   * A snapshot id, or a resolver (sync or async) — e.g. looking the id up in your own store.
+   * `undefined` means no base. The resolver runs when eve prepares the environment and, when there
+   * is nothing to prepare, again whenever a session starts.
    */
   baseSnapshot?: string | (() => string | undefined | Promise<string | undefined>);
 };
+
+/** The prepared artifact eve persists in the build output. `null` = nothing was baked. */
+type UpstashSandboxArtifact = { readonly snapshotId: string | null };
+
+/** The minimal state eve checkpoints for a durable session: the box it owns. */
+type UpstashSandboxState = { readonly boxId: string; readonly version: 1 };
 
 /** Eve's canonical sandbox root (hardcoded in its glob/grep/file tools). */
 const EVE_ROOT = "/workspace";
@@ -168,8 +154,7 @@ export function rewriteWorkspacePaths(command: string): string {
 }
 
 /**
- * Secure default: deny all network egress unless the caller opts in via `networkPolicy` (on the
- * backend, the bootstrap `use(...)`, or the session `use(...)`). An agent sandbox runs untrusted,
+ * Secure default: deny all network egress unless the session opts in. An agent sandbox runs untrusted,
  * model-generated code, so open egress would mean SSRF / data exfiltration / reaching your own
  * infrastructure from inside the box by default.
  */
@@ -178,12 +163,13 @@ const DEFAULT_NETWORK_POLICY: SandboxNetworkPolicy = "deny-all";
 /**
  * Map Eve's (Vercel-shaped) network policy onto Box's. Box's policy is a plain domain/CIDR allow-list,
  * so it can't honor Eve's per-domain firewall rules: `transform` (inject headers at the firewall to
- * broker credentials so secrets never enter the box) or `forwardURL`. Silently dropping those would send
- * the request unauthenticated, or push the model to embed the secret inside the box, so we **throw**
- * rather than quietly downgrade a security control. (Plain allow-lists and empty rule arrays map fine.)
+ * broker credentials so secrets never enter the box), `forwardURL` or `match`. Silently dropping those
+ * would send the request unauthenticated, or push the model to embed the secret inside the box, so we
+ * **throw** rather than quietly downgrade a security control. (Plain allow-lists and empty rule arrays
+ * map fine.)
  *
- * For credential brokering on Box, set `attachHeaders` at backend creation instead:
- * `upstash({ attachHeaders: { "api.example.com": { Authorization: "Bearer ..." } } })`.
+ * For credential brokering on Box, set `attachHeaders` in the environment options instead:
+ * `UpstashSandbox.environment({ attachHeaders: { "api.example.com": { Authorization: "Bearer ..." } } })`.
  */
 export function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPolicy {
   if (policy === "allow-all") return { mode: "allow-all" };
@@ -199,10 +185,11 @@ export function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPoli
         rules.some((r) => r && (r.transform || r.forwardURL || r.match))
       ) {
         throw new Error(
-          `UpstashSandboxBackend: the Upstash Box backend can't honor per-domain network rules ` +
+          `UpstashSandbox: Upstash Box can't honor per-domain network rules ` +
             `(transform / forwardURL / match) for "${domain}"; its network policy is a plain ` +
             `domain/CIDR allow-list. To inject credentials into outbound requests, set Box's ` +
-            `attachHeaders at backend creation: upstash({ attachHeaders: { "${domain}": { ... } } }).`,
+            `attachHeaders in the environment options: ` +
+            `UpstashSandbox.environment({ attachHeaders: { "${domain}": { ... } } }).`,
         );
       }
     }
@@ -218,26 +205,6 @@ export function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPoli
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/** Build a shell command from the AI SDK run/spawn options (env + working directory + command). */
-function buildCommand(options: {
-  command: string;
-  workingDirectory?: string;
-  env?: Record<string, string>;
-}): string {
-  // Bridge Eve's `/workspace` paths in the command itself to Box's `/workspace/home`.
-  let cmd = rewriteWorkspacePaths(options.command);
-  if (options.env && Object.keys(options.env).length) {
-    const env = Object.entries(options.env)
-      .map(([k, v]) => `${k}=${shellQuote(v)}`)
-      .join(" ");
-    cmd = `${env} ${cmd}`;
-  }
-  // Default cwd is Box's `/workspace/home`; only emit a `cd` when a working directory is requested.
-  if (options.workingDirectory)
-    cmd = `cd ${shellQuote(toBoxPath(options.workingDirectory))} && ${cmd}`;
-  return cmd;
 }
 
 const toBase64 = (data: string | Uint8Array): string =>
@@ -271,33 +238,109 @@ async function streamToBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8A
   return out;
 }
 
-/** Build Eve's public {@link SandboxSession} over a live Box. */
-function buildSession(box: Box): SandboxSession {
+async function streamToText(stream: ReadableStream<Uint8Array>): Promise<string> {
+  return new TextDecoder().decode(await streamToBytes(stream));
+}
+
+/** A writable byte stream plus its controller, closed exactly once. */
+function pushStream(): {
+  stream: ReadableStream<Uint8Array>;
+  push: (d: Uint8Array) => void;
+  end: (err?: unknown) => void;
+} {
+  let controller!: { enqueue(c: Uint8Array): void; close(): void; error(e: unknown): void };
+  let done = false;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  return {
+    stream,
+    push: (d) => {
+      if (!done) controller.enqueue(new Uint8Array(d));
+    },
+    end: (err) => {
+      if (done) return;
+      done = true;
+      if (err === undefined) controller.close();
+      else controller.error(err);
+    },
+  };
+}
+
+interface ProcessOptions {
+  command: string;
+  workingDirectory?: string;
+  env?: Record<string, string>;
+  abortSignal?: AbortSignal;
+}
+
+/**
+ * Start a process with Box's `exec.session` (a live WebSocket session: streamed stdout/stderr and
+ * signals). The abort signal eve binds to every sandbox call (turn cancellation) kills the process
+ * tree, so a cancelled turn doesn't leave a runaway command in the box.
+ */
+async function spawnOnBox(box: Box, options: ProcessOptions): Promise<SandboxProcess> {
+  options.abortSignal?.throwIfAborted();
+  const stdout = pushStream();
+  const stderr = pushStream();
+  const handle = await box.exec.session({
+    cmd: rewriteWorkspacePaths(options.command),
+    cwd: options.workingDirectory ? toBoxPath(options.workingDirectory) : BOX_ROOT,
+    ...(options.env && Object.keys(options.env).length
+      ? { env: Object.entries(options.env).map(([k, v]) => `${k}=${v}`) }
+      : {}),
+    onStdout: stdout.push,
+    onStderr: stderr.push,
+  });
+  const onAbort = () => handle.kill("KILL");
+  options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  const exited = handle.wait().then(
+    (exitCode) => {
+      options.abortSignal?.removeEventListener("abort", onAbort);
+      stdout.end();
+      stderr.end();
+      return { exitCode };
+    },
+    (err: unknown) => {
+      options.abortSignal?.removeEventListener("abort", onAbort);
+      stdout.end(err);
+      stderr.end(err);
+      throw err;
+    },
+  );
+  // Keep an unobserved wait() rejection from surfacing as an unhandled rejection; callers that
+  // await wait() still see it.
+  exited.catch(() => {});
+  return {
+    pid: handle.pid,
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    wait: () => exited,
+    kill: async () => {
+      handle.kill("KILL");
+    },
+  };
+}
+
+/** Build Eve's {@link MutableNetworkSandboxSession} over a live Box. */
+function buildSession(box: Box): MutableNetworkSandboxSession {
   // Eve hands us `/workspace`-rooted (or relative) paths; map them to Box's `/workspace/home`.
   const resolvePath = (path: string): string => toBoxPath(path);
 
   return {
-    get id() {
-      return box.id;
-    },
     resolvePath,
+    spawn: (options) => spawnOnBox(box, options),
     async run(options) {
-      const run = await box.exec.command(buildCommand(options));
-      const exitCode = run.exitCode ?? 0;
-      const output = run.result ?? "";
-      return { exitCode, stdout: output, stderr: exitCode === 0 ? "" : output };
-    },
-    async spawn(options) {
-      // Box has no detached-process primitive, so run to completion and replay the output as streams.
-      const run = await box.exec.command(buildCommand(options));
-      const exitCode = run.exitCode ?? 0;
-      const output = run.result ?? "";
-      return {
-        stdout: bytesToStream(new TextEncoder().encode(output)),
-        stderr: bytesToStream(new TextEncoder().encode(exitCode === 0 ? "" : output)),
-        wait: () => Promise.resolve({ exitCode }),
-        kill: () => Promise.resolve(),
-      };
+      const proc = await spawnOnBox(box, options);
+      const [stdout, stderr, { exitCode }] = await Promise.all([
+        streamToText(proc.stdout),
+        streamToText(proc.stderr),
+        proc.wait(),
+      ]);
+      options.abortSignal?.throwIfAborted();
+      return { exitCode, stdout, stderr };
     },
     async readFile({ path }) {
       try {
@@ -348,284 +391,232 @@ function buildSession(box: Box): SandboxSession {
     },
     async removePath({ path, force, recursive }) {
       const flags = `${recursive ? "r" : ""}${force ? "f" : ""}`;
-      await box.exec.command(
+      const run = await box.exec.command(
         `rm ${flags ? `-${flags}` : ""} ${shellQuote(resolvePath(path))}`.trim(),
       );
+      if ((run.exitCode ?? 0) !== 0) {
+        throw new Error(`UpstashSandbox: removing "${path}" failed: ${run.stderr || run.result}`);
+      }
     },
   };
 }
 
 /**
- * An Upstash Box implementation of Eve's two-phase {@link SandboxBackend}. Construct it via the
- * {@link upstash} factory and hand it to `defineSandbox({ backend })`.
+ * Eve's compiled workspace seeds and skills, flattened to absolute target paths (workspace files land
+ * under `/workspace`, skills under `$HOME/.agents/skills`).
  */
-export class UpstashSandboxBackend implements SandboxBackend<
-  UpstashSandboxOptions,
-  UpstashSandboxOptions
-> {
-  readonly name: string;
-  private readonly config: UpstashBackendConfig;
-  /** In-process fast-path cache over the durable Redis registry (templateKey → Box snapshot id). */
-  private readonly templates = new Map<string, string>();
-  private redisClient?: Redis;
+function resourceFiles(
+  resources: SandboxProviderResources,
+): { path: string; content: string | Uint8Array }[] {
+  return [resources.workspace, resources.skills].flatMap((tree) =>
+    tree === undefined
+      ? []
+      : tree.files.map((f) => ({
+          path: `${tree.targetPath}/${f.relativePath}`,
+          content: f.content,
+        })),
+  );
+}
 
-  constructor(config: UpstashBackendConfig = {}) {
-    this.config = config;
-    this.name = config.name ?? "upstash";
-  }
-
-  /** Lazily resolve the Redis client backing the template registry (so envless setups that never use a
-   * template don't trip `Redis.fromEnv()`). */
-  private redis(): Redis {
-    if (this.redisClient) return this.redisClient;
-    this.redisClient = this.config.redis ?? Redis.fromEnv();
-    addTelemetry(this.redisClient, this.config.enableTelemetry);
-    return this.redisClient;
-  }
-
-  /** Registry key for a template's snapshot id, namespaced by backend name. */
-  private templateRegistryKey(templateKey: string): string {
-    const prefix = this.config.templatePrefix ?? "agentkit:sandbox:template";
-    return `${prefix}:${this.name}:${templateKey}`;
-  }
-
-  /** Snapshot id for a template — in-process cache first, then the durable Redis registry. */
-  private async resolveSnapshot(templateKey: string): Promise<string | undefined> {
-    const cached = this.templates.get(templateKey);
-    if (cached) return cached;
-    const stored = await this.redis().get<string>(this.templateRegistryKey(templateKey));
-    if (stored) this.templates.set(templateKey, stored);
-    return stored ?? undefined;
-  }
-
-  /** The Box `BoxConfig` passed to `Box.create` / `Box.fromSnapshot` — the user's config verbatim
-   * (minus the AgentKit-only `redis`/`templatePrefix`/`baseSnapshot`), defaulting `keepAlive` on and
-   * enforcing the secure deny-all egress default at creation. */
-  private boxConfig(): BoxConfig {
-    const {
-      redis: _redis,
-      templatePrefix: _templatePrefix,
-      baseSnapshot: _baseSnapshot,
-      ...box
-    } = this.config;
-    return {
-      ...box,
-      // Default to Box's pause-based idle lifecycle: the box auto-pauses when idle (cheap), resumes on
-      // reattach, and is reaped after its TTL — so sessions are reused, not leaked. `keepAlive: true`
-      // opts into an always-running box (which can't be paused) that you manage yourself.
-      keepAlive: box.keepAlive ?? false,
-      // Lock egress down atomically at creation; callers open it per-session via `use({ networkPolicy })`.
-      networkPolicy: toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY),
-    };
-  }
-
-  /** Resolve the configured base snapshot id (string or resolver), or undefined when none/unresolved. */
-  private async resolveBaseSnapshot(): Promise<string | undefined> {
-    const base = this.config.baseSnapshot;
-    if (!base) return undefined;
-    return (typeof base === "function" ? await base() : base) ?? undefined;
-  }
-
-  /** A fresh box: from the configured `baseSnapshot` when one resolves (falling back to a bare create if
-   * that snapshot is gone), otherwise a bare `Box.create`. Shared by `openBox`'s fresh path and `prewarm`
-   * so a template is layered on top of the same base. */
-  private async createBaseBox(): Promise<Box> {
-    const baseId = await this.resolveBaseSnapshot();
-    if (baseId) {
-      try {
-        return await Box.fromSnapshot(baseId, this.boxConfig());
-      } catch {
-        // The base snapshot was deleted/expired — degrade to a bare box rather than failing the session.
-      }
+/** Write eve's resources into a box, expanding `$HOME` and bridging `/workspace` → `/workspace/home`. */
+async function writeResources(
+  box: Box,
+  files: { path: string; content: string | Uint8Array }[],
+): Promise<void> {
+  let home: string | undefined;
+  for (const file of files) {
+    let path = file.path;
+    if (path.startsWith("$HOME/")) {
+      home ??= (await box.exec.command('printf %s "$HOME"')).stdout.trim();
+      if (!home) throw new Error("UpstashSandbox: could not resolve $HOME inside the box.");
+      path = `${home}/${path.slice("$HOME/".length)}`;
     }
-    return Box.create(this.boxConfig());
-  }
-
-  /** Connection-only options for `Box.get` (it retrieves an existing box; it doesn't take create config). */
-  private connOptions(): { apiKey?: string; baseUrl?: string } {
-    const { apiKey, baseUrl } = this.config;
-    return {
-      ...(apiKey !== undefined ? { apiKey } : {}),
-      ...(baseUrl !== undefined ? { baseUrl } : {}),
-    };
-  }
-
-  /**
-   * Open the Box for a session, in priority order:
-   *  1. **Reattach** to the box from a previous open of this session (Eve hands our captured `boxId`
-   *     back as `existingMetadata`) — this is what stops every open from spinning a fresh box.
-   *  2. Restore the prewarmed **template snapshot** (from the Redis registry).
-   *  3. Create a **fresh** box from the base runtime.
-   */
-  private async openBox(input: SandboxBackendCreateInput): Promise<Box> {
-    const existingBoxId = (input.existingMetadata as { boxId?: string } | undefined)?.boxId;
-    if (existingBoxId) {
-      try {
-        // Reattach as-is; the box keeps whatever network policy the session last set.
-        // (Don't re-assert deny-all here: Eve runs `onSession` — which calls
-        // `use({ networkPolicy })` — only ONCE per session, so resetting to deny-all on
-        // reattach would strip egress for every turn after the first, with nothing to
-        // re-open it. `create()` re-applies the persisted policy instead.)
-        return await Box.get(existingBoxId, this.connOptions());
-      } catch {
-        // The box was deleted/expired since we captured it — fall through to template/fresh.
-      }
-    }
-
-    const snapshotId = input.templateKey
-      ? await this.resolveSnapshot(input.templateKey)
-      : undefined;
-    if (snapshotId) {
-      try {
-        return await Box.fromSnapshot(snapshotId, this.boxConfig());
-      } catch {
-        // The snapshot was deleted out from under the registry — drop the stale entry and start fresh.
-        this.templates.delete(input.templateKey as string);
-        await this.redis()
-          .del(this.templateRegistryKey(input.templateKey as string))
-          .catch(() => {});
-      }
-    }
-    return this.createBaseBox();
-  }
-
-  async create(
-    input: SandboxBackendCreateInput,
-  ): Promise<SandboxBackendHandle<UpstashSandboxOptions>> {
-    const box = await this.openBox(input);
-
-    const session = buildSession(box);
-
-    // Eve runs the authored `onSession` (which calls `use({ networkPolicy })`) only ONCE
-    // per session, but a session opens several boxes over its life — reattach, or a fresh
-    // box after the old one was reaped — and each starts at the secure deny-all default.
-    // So we persist the policy the session chose and re-apply it on every open; otherwise
-    // egress silently reverts to deny-all after the first turn.
-    let networkPolicy = (
-      input.existingMetadata as { networkPolicy?: SandboxNetworkPolicy } | undefined
-    )?.networkPolicy;
-    if (networkPolicy) {
-      await box.updateNetworkPolicy(toBoxNetworkPolicy(networkPolicy)).catch(() => {});
-    }
-
-    const useSessionFn: SandboxSessionUseFn<UpstashSandboxOptions> = async (options) => {
-      if (options?.networkPolicy) {
-        networkPolicy = options.networkPolicy;
-        await box.updateNetworkPolicy(toBoxNetworkPolicy(options.networkPolicy));
-      }
-      return session;
-    };
-
-    const captureState = async (): Promise<SandboxBackendSessionState> => ({
-      backendName: this.name,
-      sessionKey: input.sessionKey,
-      metadata: {
-        boxId: box.id,
-        ...(networkPolicy ? { networkPolicy } : {}),
-        ...(input.templateKey ? { templateKey: input.templateKey } : {}),
-      },
+    const binary = typeof file.content !== "string";
+    await box.files.write({
+      path: toBoxPath(path),
+      content: binary ? toBase64(file.content) : (file.content as string),
+      ...(binary ? { encoding: "base64" as const } : {}),
     });
+  }
+}
 
-    // Set once `delete` has destroyed the box: nothing is left to pause, and eve keeps the handle in
-    // its process-wide active-handles map (it only drops its own reference), so `shutdown` would
-    // otherwise pause a box that no longer exists on every server teardown.
-    let deleted = false;
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
-    // Eve calls `delete` when authored code runs `ctx.getSandbox().delete()` (eve ≥0.47): the sandbox
-    // and its *disposable* state must be permanently gone, while *reusable* state — the prewarmed
-    // template (its Box snapshot + our Redis `templateKey → snapshotId` registry entry) — must
-    // survive, because eve provisions the session's replacement box from it on the next
-    // `ctx.getSandbox()`. So this deletes the box and nothing else: no `deleteSnapshot`, no registry
-    // `del`. Box snapshots outlive the box they were taken from (`prewarm` already snapshots a
-    // template box and then deletes it), so dropping a session box never touches the template.
-    // `pause()` — what `stop`/`shutdown` use — is the wrong call here: it only releases compute and
-    // deliberately keeps the box reattachable via `Box.get(boxId)`, which is the opposite of a
-    // permanent delete. `Box#delete()` ("Delete this box permanently") is Box's hard delete.
-    // Errors must reject: eve then preserves the reconnect state so authored code can retry.
-    const deleteSandbox = async (options?: SandboxDeleteOptions): Promise<void> => {
-      if (deleted) return; // already gone — deleting twice must not fail the caller
+function requireArtifact(artifact: unknown): UpstashSandboxArtifact {
+  const a = artifact as Partial<UpstashSandboxArtifact> | null;
+  if (!a || typeof a !== "object" || !(a.snapshotId === null || typeof a.snapshotId === "string")) {
+    throw new Error(
+      "UpstashSandbox: the prepared sandbox artifact is missing or malformed; rebuild (`eve build`) or redeploy.",
+    );
+  }
+  return a as UpstashSandboxArtifact;
+}
+
+function requireState(state: unknown): UpstashSandboxState {
+  const s = state as Partial<UpstashSandboxState> | null;
+  if (!s || typeof s !== "object" || typeof s.boxId !== "string" || s.version !== 1) {
+    throw new Error(
+      "UpstashSandbox: unrecognized session state; delete the session's sandbox to start fresh.",
+    );
+  }
+  return s as UpstashSandboxState;
+}
+
+/** Provider handle over a live box: the session plus eve's lifecycle hooks. */
+function createHandle(box: Box): SandboxProviderHandle<MutableNetworkSandboxSession> {
+  // Set once `onSessionDelete` destroyed the box: eve may still call stop/shutdown on the handle.
+  let deleted = false;
+  return {
+    sandbox: buildSession(box),
+    // `sandbox.stop()`: release compute, keep the box resumable (`resume` → `Box.get` auto-resumes).
+    // Provider errors must reject — keep-alive boxes can't be paused and will.
+    async onSessionStop() {
+      if (deleted) return;
+      await box.pause();
+    },
+    // Server stopping: nothing may be left running, but failures must not block teardown.
+    async onRuntimeShutdown() {
+      if (deleted) return;
+      await box.pause().catch(() => {});
+    },
+    // `sandbox.delete()`: permanently remove the session's box. The prepared snapshot is shared by
+    // every session of the environment and must survive. Errors reject so eve keeps the state and
+    // authored code can retry.
+    async onSessionDelete(options?: SandboxDeleteOptions) {
+      if (deleted) return;
       options?.abortSignal?.throwIfAborted(); // Box's API takes no signal; honour it at the boundary
       await box.delete();
       deleted = true;
-    };
-
-    // Eve calls `stop` when authored code ends sandbox work early (`ctx.getSandbox().stop()`,
-    // eve ≥0.32): stop the compute but keep the session reattachable from `captureState`'s `boxId`
-    // (`openBox` reattaches via `Box.get`). Pausing does exactly that. Per the contract, provider
-    // errors must reject — so no catch here; keep-alive boxes can't be paused and will reject.
-    const stop = async (): Promise<void> => {
-      if (deleted) return; // a deleted box has no compute left to stop
-      await box.pause();
-    };
-
-    // Eve calls `shutdown` only when the server itself is stopping (SIGINT/SIGTERM/nitro close):
-    // nothing may be left running, but the box must stay reattachable on the next start — same
-    // pause as `stop`, except failures are tolerated (keep-alive boxes can't pause; eve collects
-    // and logs shutdown failures rather than blocking teardown).
-    const shutdown = async (): Promise<void> => {
-      if (deleted) return;
-      await box.pause().catch(() => {});
-    };
-
-    return { session, useSessionFn, captureState, delete: deleteSandbox, stop, shutdown };
-  }
-
-  async prewarm(
-    input: SandboxBackendPrewarmInput<UpstashSandboxOptions>,
-  ): Promise<{ reused: boolean }> {
-    // Nothing to bake into a template → don't build a throwaway box; `create` spins a fresh box per
-    // session. (Avoids the "two boxes, first unused" case for sandboxes with no seed files/bootstrap.)
-    if (input.seedFiles.length === 0 && !input.bootstrap) return { reused: false };
-
-    // Already provisioned (durably, in Redis) → reuse; this is what lets `create` (a different process)
-    // find the snapshot. The in-memory map is only a same-process fast path.
-    const existing = await this.resolveSnapshot(input.templateKey);
-    if (existing) return { reused: true };
-
-    // Layer this repo's template (seed files + bootstrap) on top of the base snapshot, so a prewarmed
-    // template inherits whatever the base bakes in.
-    const box = await this.createBaseBox();
-    try {
-      // The box starts with the secure deny-all default (set in `boxConfig`); `bootstrap`'s
-      // `use({ networkPolicy })` opens egress when the build genuinely needs it (e.g. installing pkgs).
-      const session = buildSession(box);
-
-      for (const file of input.seedFiles) {
-        const content = typeof file.content === "string" ? file.content : toBase64(file.content);
-        await box.files.write({
-          path: session.resolvePath(file.path),
-          content,
-          ...(typeof file.content === "string" ? {} : { encoding: "base64" as const }),
-        });
-      }
-
-      if (input.bootstrap) {
-        const use: SandboxBootstrapUseFn<UpstashSandboxOptions> = async (options) => {
-          if (options?.networkPolicy) {
-            await box.updateNetworkPolicy(toBoxNetworkPolicy(options.networkPolicy));
-          }
-          return session;
-        };
-        await input.bootstrap({ use });
-      }
-
-      const snapshot = await box.snapshot({ name: `agentkit-${input.templateKey}`.slice(0, 200) });
-      // Persist durably so `create` (running in another process) can restore from it.
-      await this.redis().set(this.templateRegistryKey(input.templateKey), snapshot.id);
-      this.templates.set(input.templateKey, snapshot.id);
-      return { reused: false };
-    } finally {
-      await box.delete().catch(() => {});
-    }
-  }
+    },
+  };
 }
 
 /**
- * An Upstash Box backend for Eve's `defineSandbox`. Drop-in replacement for `vercel()`. Returns a
- * {@link UpstashSandboxBackend} implementing Eve's real `SandboxBackend`.
+ * The Upstash Box sandbox provider for Eve. Call `UpstashSandbox.environment(options)`, export the
+ * result from your sandbox file as `environment`, and return `environment.open()` from
+ * `defineSandbox()`.
  */
-export function upstash(
-  config: UpstashBackendConfig = {},
-): SandboxBackend<UpstashSandboxOptions, UpstashSandboxOptions> {
-  return new UpstashSandboxBackend(config);
-}
+export const UpstashSandbox = defineSandboxProvider<
+  UpstashSandboxEnvironmentOptions | undefined,
+  UpstashSandboxOpenOptions | undefined,
+  UpstashSandboxArtifact,
+  UpstashSandboxState,
+  MutableNetworkSandboxSession
+>({
+  name: "upstash",
+  environment(options) {
+    const { prepare: prepareHook, baseSnapshot, ...boxOptions } = options ?? {};
+
+    /** `BoxConfig` for new boxes: the user's options, pause-based idle, deny-all egress, a name. */
+    const boxConfig = (name: string): BoxConfig => ({
+      ...boxOptions,
+      name,
+      // Pause-based idle by default: an idle box auto-pauses (cheap) and resumes on the next
+      // command. `keepAlive: true` opts into an always-running box (which can't be paused).
+      keepAlive: boxOptions.keepAlive ?? false,
+      // Lock egress down atomically at creation; sessions open it via open()/setNetworkPolicy().
+      networkPolicy: toBoxNetworkPolicy(DEFAULT_NETWORK_POLICY),
+    });
+
+    const connection = {
+      ...(boxOptions.apiKey !== undefined ? { apiKey: boxOptions.apiKey } : {}),
+      ...(boxOptions.baseUrl !== undefined ? { baseUrl: boxOptions.baseUrl } : {}),
+    };
+
+    const resolveBaseSnapshot = async (): Promise<string | undefined> => {
+      if (!baseSnapshot) return undefined;
+      return (
+        (typeof baseSnapshot === "function" ? await baseSnapshot() : baseSnapshot) ?? undefined
+      );
+    };
+
+    /** A new box restored from `snapshotId`, or a fresh one. A missing snapshot fails loudly. */
+    const createBox = async (name: string, snapshotId: string | undefined): Promise<Box> => {
+      if (!snapshotId) return Box.create(boxConfig(name));
+      try {
+        return await Box.fromSnapshot(snapshotId, boxConfig(name));
+      } catch (err) {
+        throw new Error(
+          `UpstashSandbox: could not restore Upstash Box snapshot "${snapshotId}" (${errorMessage(err)}). ` +
+            `If it was deleted, rebuild (\`eve build\`) or redeploy to prepare the environment again.`,
+          { cause: err },
+        );
+      }
+    };
+
+    return {
+      async prepare(ctx) {
+        const files = resourceFiles(ctx.resources);
+        // Nothing to bake → no temporary box, no snapshot; sessions start from the base (if any).
+        if (files.length === 0 && !prepareHook) return { snapshotId: null };
+
+        const box = await createBox(
+          `eve-prep-${randomBytes(4).toString("hex")}`,
+          await resolveBaseSnapshot(),
+        );
+        try {
+          await writeResources(box, files);
+          if (prepareHook) await prepareHook(buildSession(box));
+          const snapshot = await box.snapshot({
+            name: `eve-${ctx.sourceRevision}`.replace(/[^\w.-]/g, "-").slice(0, 120),
+          });
+          ctx.log?.(`Prepared Upstash Box snapshot ${snapshot.id}`);
+          return { snapshotId: snapshot.id };
+        } catch (err) {
+          throw new Error(
+            `UpstashSandbox: failed to prepare the sandbox environment: ${errorMessage(err)}`,
+            {
+              cause: err,
+            },
+          );
+        } finally {
+          // Snapshots outlive the box they were taken from.
+          await box.delete().catch(() => {});
+        }
+      },
+
+      async start(ctx, openOptions, artifact) {
+        const { snapshotId } = requireArtifact(artifact);
+        // Unique per start (box names are account-wide); the session hash makes boxes traceable
+        // to their eve session in the Box console.
+        const sessionTag = createHash("sha256").update(ctx.session.id).digest("hex").slice(0, 12);
+        const box = await createBox(
+          `eve-${sessionTag}-${randomBytes(3).toString("hex")}`,
+          snapshotId ?? (await resolveBaseSnapshot()),
+        );
+        try {
+          if (openOptions?.networkPolicy) {
+            await box.updateNetworkPolicy(toBoxNetworkPolicy(openOptions.networkPolicy));
+          }
+        } catch (err) {
+          // Never leave a half-configured box behind: eve will not persist state for a failed start.
+          await box.delete().catch(() => {});
+          throw err;
+        }
+        return { handle: createHandle(box), state: { boxId: box.id, version: 1 } };
+      },
+
+      async resume(_ctx, artifact, state) {
+        requireArtifact(artifact);
+        const { boxId } = requireState(state);
+        let box: Box;
+        try {
+          box = await Box.get(boxId, connection);
+          // `Box.get` also returns deleted boxes (their record lingers with that status), so check.
+          const { status } = await box.getStatus();
+          if (status === "deleted" || status === "error")
+            throw new Error(`box status is "${status}"`);
+        } catch (err) {
+          throw new Error(
+            `UpstashSandbox: the session's Upstash Box "${boxId}" is no longer available ` +
+              `(${errorMessage(err)}). Call sandbox.delete() to start a fresh sandbox for this session.`,
+            { cause: err },
+          );
+        }
+        return createHandle(box);
+      },
+    };
+  },
+});

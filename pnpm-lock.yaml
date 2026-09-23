@@ -127,14 +127,14 @@ importers:
         specifier: workspace:*
         version: link:../../packages/eve
       '@upstash/box':
-        specifier: ^0.5.1
-        version: 0.5.1(zod@4.4.3)
+        specifier: ^0.7.5
+        version: 0.7.5(zod@4.4.3)
       '@upstash/redis':
         specifier: ^1.38.4
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.63.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
       ai:
         specifier: 7.0.107
         version: 7.0.107(zod@4.4.3)
@@ -148,8 +148,8 @@ importers:
         specifier: 1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       eve:
-        specifier: ^0.63.0
-        version: 0.63.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.65.0
+        version: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
       lucide-react:
         specifier: 1.16.0
         version: 1.16.0(react@19.2.6)
@@ -216,13 +216,13 @@ importers:
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.64.1(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
       ai:
         specifier: 7.0.107
         version: 7.0.107(zod@4.4.3)
       eve:
-        specifier: ^0.64.1
-        version: 0.64.1(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.65.0
+        version: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -272,8 +272,8 @@ importers:
         version: 4.4.3
     devDependencies:
       '@upstash/box':
-        specifier: ^0.5.1
-        version: 0.5.1(zod@4.4.3)
+        specifier: ^0.7.5
+        version: 0.7.5(zod@4.4.3)
       '@upstash/redis':
         specifier: ^1.38.4
         version: 1.38.4
@@ -284,8 +284,8 @@ importers:
         specifier: ^16.4.5
         version: 16.6.1
       eve:
-        specifier: ^0.63.0
-        version: 0.63.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.65.0
+        version: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
 
   packages/eve-extension:
     dependencies:
@@ -303,8 +303,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: ^0.64.1
-        version: 0.64.1(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.65.0
+        version: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -2737,8 +2737,8 @@ packages:
   '@upsetjs/venn.js@2.0.0':
     resolution: {integrity: sha512-WbBhLrooyePuQ1VZxrJjtLvTc4NVfpOyKx0sKqioq9bX1C1m7Jgykkn8gLrtwumBioXIqam8DLxp88Adbue6Hw==}
 
-  '@upstash/box@0.5.1':
-    resolution: {integrity: sha512-x1HzlmvHeMah8NgJthiNrjsHWIbcPql1Y4nvF83P/attWeQTLNe917e3DyISUFLyUKEU9sbf6zs5pDkJAqgTlw==}
+  '@upstash/box@0.7.5':
+    resolution: {integrity: sha512-PfUn8Ppz+gkI76vftM1VnFvLxJs4SgFy3CR3898ahl4YXReXdWrXwTkP3QjzHjVd9Lj3e1dkQ8iLod9fTCmALg==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -3327,31 +3327,8 @@ packages:
     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
     engines: {node: '>=0.10.0'}
 
-  eve@0.63.0:
-    resolution: {integrity: sha512-iDv0S4MXvZimaXNTJnyB2THumRQLWQSAgpMcZsGtMNquYQpSKB1+i8sxX4KJOHHCLd04lwD+06xnh+ja7rlZIw==}
-    engines: {node: '>=24'}
-    hasBin: true
-    peerDependencies:
-      '@opentelemetry/api': ^1.0.0
-      ai: ^7.0.105
-      braintrust: ^3.0.0
-      dd-trace: ^6.13.0
-      just-bash: ^3.1.0
-      microsandbox: ^0.5.0
-    peerDependenciesMeta:
-      '@opentelemetry/api':
-        optional: true
-      braintrust:
-        optional: true
-      dd-trace:
-        optional: true
-      just-bash:
-        optional: true
-      microsandbox:
-        optional: true
-
-  eve@0.64.1:
-    resolution: {integrity: sha512-dOvgtqg6RAx1I8x5cuzQeKyMXx8YXhEwixQGjdDRJUne6g46tcHNHz4IObOq92+SfSiL4wdS0SqnZnMrH4oOeQ==}
+  eve@0.65.0:
+    resolution: {integrity: sha512-16dcyvpucnMp6f1TKZROvRrDAYWIlV7ulZfEMK+IuK1AVXMQPoLLOrGuLT/qI1TjIkxZt9g1JcXXOv/uu3yjdQ==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -4959,6 +4936,18 @@ packages:
 
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
+
+  ws@8.21.3:
+    resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
 
   xdg-app-paths@5.5.1:
     resolution: {integrity: sha512-hI3flOB4PLZIy5prbtTpirobtPE2ZtZ52szO+2mM9Efp6ErM398La+C1lIpNWDfNoQk+6Lsi6nMcCwVB7pxeMQ==}
@@ -7148,10 +7137,14 @@ snapshots:
       d3-selection: 3.0.0
       d3-transition: 3.0.1(d3-selection@3.0.0)
 
-  '@upstash/box@0.5.1(zod@4.4.3)':
+  '@upstash/box@0.7.5(zod@4.4.3)':
     dependencies:
+      ws: 8.21.3
       zod: 4.4.3
       zod-to-json-schema: 3.25.2(zod@4.4.3)
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@upstash/core-analytics@0.0.10':
     dependencies:
@@ -7175,21 +7168,13 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.63.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))':
+  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))':
     dependencies:
       '@vercel/oidc': 3.6.1
     optionalDependencies:
       '@ai-sdk/mcp': 2.0.54(zod@4.4.3)
       ai: 7.0.107(zod@4.4.3)
-      eve: 0.63.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
-
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.64.1(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))':
-    dependencies:
-      '@vercel/oidc': 3.6.1
-    optionalDependencies:
-      '@ai-sdk/mcp': 2.0.54(zod@4.4.3)
-      ai: 7.0.107(zod@4.4.3)
-      eve: 0.64.1(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+      eve: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -7802,15 +7787,7 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  eve@0.63.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)):
-    dependencies:
-      ai: 7.0.107(zod@4.4.3)
-      nitro: 3.0.260903-beta
-      undici: 8.9.0
-    optionalDependencies:
-      '@opentelemetry/api': 1.9.1
-
-  eve@0.64.1(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)):
+  eve@0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)):
     dependencies:
       ai: 7.0.107(zod@4.4.3)
       nitro: 3.0.260903-beta
@@ -9789,6 +9766,8 @@ snapshots:
   word-wrap@1.2.5: {}
 
   wrappy@1.0.2: {}
+
+  ws@8.21.3: {}
 
   xdg-app-paths@5.5.1:
     dependencies:

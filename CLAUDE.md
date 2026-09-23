@@ -74,7 +74,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   **eve-extension** package does capture transcripts to Redis via its `chat_history` hook, and reads
   them back as **tools** — `search_chat_history`/`read_chat_history` — so the model can look up past
   conversations. That's lookup-on-demand, not session resume: the same no-round-trip caveat holds.)
-- `./sandbox` → `upstash()` Upstash Box backend. **⚠ INCOMPLETE — see Known issues.**
+- `./sandbox` → `UpstashSandbox`, an Upstash Box sandbox **provider** (eve ≥0.64 `defineSandboxProvider`). See Known issues for the design notes.
 - `./memory` → **eve's native memory feature** (`agent/memory/<slot>.ts`), on Redis. Two exports,
   both shipped because they sit at *different* eve seams: `redisDocuments()` is a
   `MemoryDocumentBackend` for eve's own `fileMemory()` (storage only — replaces Vercel Blob, which is
@@ -121,9 +121,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.64.1**, stamps formatVersion 2; extension 1 /
-  **tool 54** / **dynamicTool 52** / **hook 25** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.64.0** — 0.64.0 and 0.64.1 are the *only* releases accepting all three, because eve now
+  supported list — the current dist, built with **eve 0.65.0**, stamps formatVersion 2; extension 1 /
+  **tool 55** / **dynamicTool 52** / **hook 25** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.65.0** — 0.65.0 is the first release accepting tool 55 (the 0.64.1 build stamped tool 54), because eve now
   **drops** mid-range contracts rather than only adding new ones (0.64.0's supported `tool` list is
   [1–13, 29–32, 34, 35, 54], its `dynamicTool` list [1–20, 22, 31–33, 52] and its `hook` list
   [10–15, 17–23, 25] — 0.64.0 dropped **tool 53, dynamicTool 51 AND hook 24 in one release**, which is
@@ -151,7 +151,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.64.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.65.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -474,7 +474,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 and 0.64.1 alike)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 through 0.65.0 alike)
   declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
   `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
   the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
@@ -647,52 +647,27 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is **split across two eve versions since 2026-09-23** — it is no longer "one eve everywhere":
-  `packages/eve-extension` + `examples/eve-extension-demo` are on **`eve@0.64.1`**, while
-  `packages/eve` + `examples/eve-demo` stay on **`eve@0.63.0`**. The split is forced:
-  **eve 0.64.0 removed the `SandboxBackend*` authoring types from `eve/sandbox`**
-  (`SandboxBackend`, `SandboxBackendCreateInput`, `SandboxBackendHandle`, `SandboxBackendPrewarmInput`,
-  `SandboxBackendSessionState`, `SandboxBootstrapUseFn`, `SandboxDeleteOptions`, `SandboxSessionUseFn`,
-  and `SandboxSession.id`), replacing them with a **provider** seam at
-  **`eve/sandbox/provider`** (`defineSandboxProvider`, `SandboxProvider*`, and `SandboxDeleteOptions`
-  re-homed there). `packages/eve/src/sandbox.ts` implements the old backend interface, so `pnpm build`
-  fails its dts step on eve 0.64.x with eight `TS2305/TS2724` "has no exported member" errors plus
-  `TS2353` on `SandboxSession.id` — **migrating it is a source change, deliberately not bundled with an
-  extension rebuild**. Bump `packages/eve` to 0.64.x only together with that migration.
-  `packages/eve`'s peer is
-  **`>=0.45.2`** (raised from `>=0.32.0` in 2026-09 — see below). The *source* needs eve ≥0.47 to
-  compile (it imports `SandboxDeleteOptions`), but the extra `delete` on the handle is just an unused
-  member on older eve, and the **root `.` and `./sandbox` entry points' `dist` genuinely still works
-  back to 0.32** — re-verified 2026-08 by typechecking `defineSandbox({ backend: upstash() })`
-  against the built `dist` on **20 eve versions from 0.30.8 through 0.47.6** (all clean; re-run 2026-09 on
-  the 0.52.2 bump across 0.32.0/0.44.3/0.45.2/0.47.6/0.48.0/0.49.0/0.50.0/0.51.1/0.52.2, also all clean,
-  and again on the 0.55.0 bump across 0.32.0/0.45.2/0.47.6/0.52.3/0.54.5/0.55.0 — clean, with 0.32.0
-  failing *only* on the `./memory` subpath).
-  **What changed: "the shipped `dist` doesn't name any post-0.32 type" used to be the stated reason
-  for the low floor, and it is no longer true.** It described the dist as it was *before* `0.9.0`
-  added the `./memory` subpath. `dist/memory.js` now carries a real **runtime value import**,
-  `import { MemoryDocumentConflictError } from "eve/memory/file"` (and `dist/memory.d.ts` names
-  `eve/memory` + `eve/memory/file` types), so the artifact does name post-0.32 eve. `eve/memory`
-  first exists in 0.45.1 and `eve/memory/file` in 0.45.2, so a consumer on eve 0.32.0–0.45.1
-  installed cleanly under the old floor and then died at module load on
-  `import … from "@upstash/agentkit-eve/memory"` with
-  `ERR_PACKAGE_PATH_NOT_EXPORTED: Package subpath './memory/file' is not defined by "exports"` —
-  and typechecked clean too under `skipLibCheck: true` (the eve scaffold's default), so nothing
-  caught it before runtime. Measured on real installs: 0.45.1 fails, 0.45.2 works. A package has
-  **one** peer range for its whole public surface, so it must name the highest floor any entry point
-  needs; "the other entry points work further back" is a fact about those entry points, not a range
-  that can be declared. Don't *lower* the floor back on the strength of a root-only dist check, and
-  don't raise it further without re-running the check above. The **0.52.2 → 0.52.3 and 0.52.3 → 0.55.0 bumps both left
-  `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js`, `.d.ts` and `.map`), which
-  is why they ship no `@upstash/agentkit-eve` release — only that package's devDependency moved.
-  The extension's peer is
-  `>=0.64.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+- **One eve everywhere again: `eve@0.65.0`** in every package and demo (2026-09-23), and **every package
+  requires it** — `packages/eve` and `packages/eve-extension` both declare `eve: ">=0.65.0"`. (For one
+  day the repo was split: the extension on 0.64.1, `packages/eve` on 0.63.0, because eve 0.64.0 removed
+  the `SandboxBackend*` authoring types that `packages/eve/src/sandbox.ts` implemented.) eve 0.64
+  replaced sandbox **backends** with **providers** (`eve/sandbox/provider`: `defineSandboxProvider`,
+  `SandboxProvider*`, `SandboxDeleteOptions`) and object-form `defineSandbox({ backend, bootstrap,
+  onSession })` with exported environments + `defineSandbox(() => environment.open())`; the sandbox
+  was ported to that API (see Known issues). Nothing else in `packages/eve` needed a change for
+  0.63 → 0.65: memory, tools, auth and search typecheck and test unchanged.
+  **Why the peer is `>=0.65.0` and not lower:** a single peer range covers the whole public surface.
+  `./sandbox` needs ≥0.64 (provider API), and the decision on 2026-09-23 was to require the latest eve
+  across all packages rather than carry a split floor. The older floors recorded below (`>=0.45.2` for
+  `./memory`, `>=0.32` for the root) describe what those entry points *need*, not what is declared.
+  Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
-  `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
-  `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
+  `eve/sandbox/provider`, `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`,
+  **`eve/memory`**, `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`,
+  `eve/evals/expect`, …
   **Memory landed late:** `eve/memory` first exists in **0.45.1** and `eve/memory/file` in **0.45.2**
   (0.45.0 and everything below has neither) — measured with `npm view eve@<v> exports`. That is the
-  real floor for `@upstash/agentkit-eve/memory`, and therefore **the package peer: `>=0.45.2`**.
+  real floor for `@upstash/agentkit-eve/memory` on its own.
 - **Breaking changes absorbed on the 0.25 → 0.32 jump:** (a) 0.31 replaced continuation-token session
   APIs with fixed ID-addressed handles — frontend/client `send` is now **positional**
   (`agent.send(message, options?)`, not `send({ message })`; eve-demo's `agent-chat.tsx` was updated);
@@ -857,6 +832,19 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
   Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
   `packages/eve-extension/dist` that differs from published `0.10.0`.**
+- **The 0.64.1 → 0.65.0 bump (2026-09-23, same PR #46) finished what 0.64.1 couldn't: the whole repo
+  is on 0.65.0 and every package requires it.** `packages/eve`'s sandbox was ported from the removed
+  backend API to an eve **provider** (`UpstashSandbox`, see Known issues) — the only source change;
+  memory/tools/auth/search needed none. `@upstash/box` moved `^0.5.1` → **`^0.7.5`** (peer `>=0.5.0` →
+  **`>=0.7.1`**, the first release with `exec.session`, measured by grepping each 0.5.0–0.7.5 tarball's
+  `client.d.ts`). The extension rebuild on 0.65.0 re-stamps **tool 54→55** (dynamicTool 52, hook 25
+  unchanged) — 0.65.0 is the first eve accepting tool 55, so its floor is `>=0.65.0` whichever way you
+  derive it (the decision to require latest eve everywhere and the manifest agree). eve 0.65.0's own
+  breaking changes (the `todo` tool removed, `ask_question` no longer a default tool, `ctx.ask()`
+  result shape) touch nothing here. Verified: lint, typecheck, build, 155/155 tests (with live Redis
+  and live Box), both example builds (eve-demo also without any Box/Redis env: `next build` does not
+  prepare sandboxes), both mocked-model evals, plus the out-of-repo sandbox e2e described under Known
+  issues.
 - **The 0.63.0 → 0.64.1 bump (2026-09-23) is EXTENSION-ONLY, and the first bump the whole repo could not take.**
   eve 0.64.0 dropped **tool 53, dynamicTool 51 and hook 24 in a single release** — precisely the stamps the
   just-published `@upstash/agentkit-eve-extension@0.12.0` carries — while 0.12.0's peer `>=0.63.0` still
@@ -1105,39 +1093,45 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 - [x] eve `./sandbox` rewritten as a class implementing eve's real two-phase `SandboxBackend` (types imported from `eve/sandbox`); typechecks against eve and the live-Box test passes.
 
 ## Known issues / TODO
-- **eve `./sandbox` — now the real backend.** `packages/eve/src/sandbox.ts` exports `UpstashSandboxBackend`
-  (via the `upstash()` factory), a class implementing eve's real two-phase `SandboxBackend<BO, SO>`
-  (`name`/`prewarm`/`create`). All sandbox types are imported from `eve/sandbox` (not hand-rolled).
-  Mapping: `prewarm`→ seed files + `bootstrap` then `box.snapshot()` (cached in an in-memory
-  `templateKey`→snapshotId map on the instance — use the factory form of `backend` to keep it warm);
-  `create`→`Box.fromSnapshot` (or fresh `Box.create`), returning a `SandboxBackendHandle` whose
-  `session` is a full `SandboxSession` built over Box (run/spawn/read*/write*/setNetworkPolicy/removePath).
-  Typechecks against eve and the offline + live-Box `sandbox.test.ts` pass. `spawn` runs to completion
-  then replays output as streams (Box has no detached-process primitive). Config is **`UpstashBackendConfig
-  = Omit<BoxConfig, "networkPolicy"> & { redis?, templatePrefix? }`** — the real `@upstash/box` `BoxConfig`
-  passed through verbatim (`runtime`/`size`/`apiKey`/`keepAlive`/`initCommand`/`env`/`skills`/…), **no**
-  invented `resources.vcpus` hint or runtime-string coercion. `networkPolicy` is intentionally excluded:
-  egress is enforced deny-all at creation (in `boxConfig()`) and opened only per-session via Eve's
-  `use({ networkPolicy })`. **Template registry:** `prewarm` (build/startup) and `create` (per request)
-  run in different processes, so the `templateKey → snapshotId` map lives in a **durable Redis registry**
-  (`agentkit:sandbox:template:<name>:<templateKey>`, `redis` defaults to `Redis.fromEnv()`) — an in-memory
-  map orphaned the prewarmed box (the old "two boxes, first unused" bug) and Box has no static snapshot
-  lookup. `prewarm` builds **no** box when there's nothing to bake (no seed files/bootstrap). **Session
-  reuse:** `create` reattaches to the box from `input.existingMetadata.boxId` (`Box.get`) — Eve re-opens a
-  session many times and hands our captured `boxId` back, so without this every open spun a fresh box (the
-  "3 boxes per turn" bug). Lifecycle: `stop()` (eve ≥0.32, authored `ctx.getSandbox().stop()`)
-  `box.pause()`s and **propagates** failures (the contract says provider errors must reject — keep-alive
-  boxes can't pause and will reject); `shutdown` (server stop) is the same pause but failure-tolerated.
-  Both leave the box reattachable. **`delete(options?)`** (eve ≥0.47, authored `ctx.getSandbox().delete()`)
-  is the opposite: it calls **`box.delete()`** — Box's permanent teardown — and *nothing else*. It must
-  **not** `deleteSnapshot` or `del` the Redis template registry entry: that's the reusable template state
-  eve provisions the session's replacement box from. Errors reject (eve keeps the reconnect state for a
-  retry); `options.abortSignal` is honoured with `throwIfAborted()` before the call, since Box's API takes
-  no signal. A `deleted` flag makes a second `delete`/`stop`/`shutdown` a no-op — eve keeps deleted
-  handles in its active-handles map and pauses them all at server shutdown. `keepAlive` defaults to **false** (pause-based idle; `true` can't be
-  paused and runs until deleted). **Path bridge:** Eve roots its tools at `/workspace` but Box sessions live in `/workspace/home`,
-  so the backend remaps both `resolvePath` (file ops) and raw commands (`find /workspace …` →
-  `/workspace/home`, URL-safe via lookbehind) through the exported `toBoxPath`/`rewriteWorkspacePaths`.
+- **eve `./sandbox` — `UpstashSandbox` provider** (`packages/eve/src/sandbox.ts`, eve ≥0.64 contract,
+  `@upstash/box` ≥0.7.1). `UpstashSandbox = defineSandboxProvider({ name: "upstash", environment })`;
+  users write `export const environment = UpstashSandbox.environment({...})` and
+  `export default defineSandbox(() => environment.open())`. Options = `Omit<BoxConfig, "networkPolicy" |
+  "name">` + `prepare(sandbox)` + `baseSnapshot`. Mapping:
+  **`prepare(ctx)`** (runs at `eve build`, lazily on first access under `eve dev`, in the build process)
+  → temp box, write `ctx.resources` (workspace tree → `/workspace`, skills tree → literal
+  `$HOME/.agents/skills`, expanded by running `printf %s "$HOME"` in the box), run the user hook,
+  `box.snapshot()`, delete the temp box, return `{ snapshotId }` (or `{ snapshotId: null }` and **no box**
+  when there's nothing to bake). eve persists that artifact in the build output — **so the old Redis
+  template registry is gone** (and with it the `redis`/`templatePrefix`/`enableTelemetry` options).
+  **`start(ctx, open, artifact)`** → `Box.fromSnapshot` (or `baseSnapshot`, or `Box.create`), deny-all at
+  creation, then `open.networkPolicy` if given; returns state `{ boxId, version: 1 }`. A missing
+  prepared snapshot **throws** ("rebuild or redeploy") — Box reports it as "Snapshot is not ready" —
+  instead of falling back to an empty box. Box names are account-unique, so each start names its box
+  `eve-<sha256(session.id)[:12]>-<random6>`; `name` is therefore excluded from the options (the old
+  backend passed a user `name` straight to `Box.create`, which would have collided on the 2nd box).
+  **`resume(ctx, artifact, state)`** → `Box.get(boxId)` **plus `getStatus()`**: `Box.get` *resolves* for a
+  deleted box (its record lingers with `status: "deleted"`), so without the status check resume
+  handed eve a dead box — caught by the live test. A gone box throws (eve's contract: resume must not
+  recreate); `sandbox.delete()` is how a session gets a fresh one. **Handle:** `onSessionStop` →
+  `pause()` (rejects on failure), `onRuntimeShutdown` → `pause()` (swallowed), `onSessionDelete` →
+  `box.delete()` (honours an already-aborted signal; a `deleted` flag makes repeat teardown a no-op).
+  The snapshot is shared by every session of the environment and is never deleted by a session.
+  **Session:** `run`/`spawn` use Box's **`exec.session`** (WebSocket; ≥0.7.1): streamed, *separate*
+  stdout/stderr, env as `KEY=VALUE` (reaches every command in a `&&` chain — the old `K=v cmd` prefix
+  did not), cwd, and **kill on eve's abort signal** (eve binds the turn's signal to every session call;
+  the old buffered `exec.command` could not cancel). eve's built-in `bash`/`glob`/`grep` call `run`,
+  `read_file`/`write_file` call `readTextFile`/`writeTextFile`. Paused boxes auto-resume on exec.
+  Network policy lives on the box (survives pause/resume), so the old "re-apply the persisted policy on
+  every open" workaround is gone. **Path bridge** unchanged: `toBoxPath`/`rewriteWorkspacePaths` map
+  `/workspace` → `/workspace/home`. **Known limitation:** each `eve build` with something to prepare
+  mints a new snapshot (Box has no snapshot lookup by name), so old snapshots accumulate.
+  **Verified 2026-09-23:** 17 offline + 3 live-Box tests in `sandbox.test.ts` (full prepare → start →
+  stop → resume → delete cycle; spawn streaming/kill; abort; attachHeaders), plus an out-of-repo e2e:
+  packed tarballs + eve 0.65.0, `eve build` prepared a snapshot, and a two-turn mocked-model `eve eval`
+  had the built-in `bash` tool read the workspace seed, a skill and the `prepare` output, confirm
+  deny-all egress, and read turn 1's file back in turn 2 (resume) — one Box per session, no leaked
+  prepare boxes. That e2e is **not** in CI (it needs a Box key).
 - ~~`gpt-5.4-mini` (demo model) may not exist~~ — verified live (2026-08): it exists and responds in
   both demos. No swap needed.
 - The `19.2.17` `@types/react` may linger as an unpruned orphan in `.pnpm`; harmless (nothing links it).
