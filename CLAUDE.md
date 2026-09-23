@@ -121,13 +121,15 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.63.0**, stamps formatVersion 2; extension 1 /
-  **tool 53** / **dynamicTool 51** / **hook 24** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.63.0** — 0.63.0 is the *only* release accepting all three, because eve now **drops**
-  mid-range contracts rather than only adding new ones (0.63.0's supported `tool` list is
-  [1–13, 29–32, 34, 35, 53] and its `dynamicTool` list [1–20, 22, 31–33, 51]: 36–52 are dropped with
-  "experimental_workflow … removed" / "Background defineTool and TaskExec were removed", and dynamicTool 29
-  — the stamp published `0.10.0` carries — with "Background dynamic tools were removed").
+  supported list — the current dist, built with **eve 0.64.1**, stamps formatVersion 2; extension 1 /
+  **tool 54** / **dynamicTool 52** / **hook 25** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.64.0** (0.64.0 and 0.64.1 share one support table: `tool` [1–13, 29–32, 34, 35, 54],
+  `dynamicTool` [1–20, 22, 31–33, 52], `hook` [10–15, 17–23, 25]), because eve now **drops**
+  mid-range contracts rather than only adding new ones. **0.64.0 dropped all three stamps the
+  0.63.0-built dist carried at once** (tool 53, dynamicTool 51, hook 24), which is what broke published
+  `0.11.0` on `eve@latest` — see the 0.63.0 → 0.64.1 bump note under Eve framework facts.
+  The previous dist, built with **eve 0.63.0**, stamped tool 53 / dynamicTool 51 / hook 24 and ran only on
+  0.63.0 (its `tool` list was [1–13, 29–32, 34, 35, 53], `dynamicTool` [1–20, 22, 31–33, 51]);
   0.61.0 stamps tool 51 / dynamicTool 50 / hook 24 and 0.61.1–0.62.0 still reject tool 53 / dynamicTool 51;
   0.55.0 topped out at tool 38 / dynamicTool 37 / hook 22 (its `tool` list was [1–13, 28–32, 34–38]);
   0.54.3–0.54.5 top out at tool 36 (dynamicTool 34 on 0.54.3, 35 on 0.54.4/0.54.5), 0.54.0/0.54.2 at tool 35 /
@@ -136,8 +138,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   hook 18, 0.50.0 at dynamicTool 22 / hook 17, and 0.48.0–0.49.1 at tool 24 / dynamicTool 21 / hook 16.
   (`hook` has sat at 22 since 0.53.0 — it is `tool`/`dynamicTool` that keep moving.)
   Verified end-to-end, not just from
-  the contract tables: the rebuilt extension, `pnpm pack`ed into a real eve app, builds on eve
-  0.55.0 and **fails on 0.54.5**
+  the contract tables: the 0.64.1-built dist, `pnpm pack`ed into a real eve app, builds on eve
+  **0.64.0 and 0.64.1** and **fails on 0.63.0**; before it, the 0.63.0-built dist built on eve
+  0.55.0 and **failed on 0.54.5**
   (`Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.` — an incompatible manifest makes the mount contribute nothing, so the error is that obtuse;
   don't expect the old explicit "requires tool contract vN" wording).
   **eve moved the tool contract inside the 0.45 patch line, twice across 0.47.7 → 0.48.0, and then
@@ -146,7 +149,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.63.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.64.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -449,8 +452,10 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0)
-  declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (both
+  0.63.0 and 0.64.1 — see the split below)
+  declares `ai` as a **peer** (`^7.0.105` — unchanged across 0.63.0 → 0.64.1, so the extension-only
+  0.64.1 bump needed no `ai` move; 0.64.0 only adds a new *optional* peer, `chat: ^4.41.0` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
   `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
   the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
   apps/packages provide the single copy. Providers:
@@ -583,8 +588,13 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- The repo is on **`eve@0.63.0`** everywhere (`packages/eve`, `packages/eve-extension`, `examples/eve-demo`,
-  `examples/eve-extension-demo`). `packages/eve`'s peer is
+- **The repo is deliberately split across two eve versions** (since the 0.64.1 extension-only bump):
+  `packages/eve-extension` + `examples/eve-extension-demo` are on **`eve@0.64.1`**, while
+  `packages/eve` + `examples/eve-demo` stay on **`eve@0.63.0`** because eve 0.64.0 removed the
+  `SandboxBackend` API `packages/eve/src/sandbox.ts` is built on (see the 0.63.0 → 0.64.1 bump note
+  below). pnpm resolves both cleanly; there is still exactly one `ai` copy. Don't "tidy" this back to a
+  single version until `upstash()` is rewritten against `eve/sandbox/provider`.
+  `packages/eve`'s peer is
   **`>=0.45.2`** (raised from `>=0.32.0` in 2026-09 — see below). The *source* needs eve ≥0.47 to
   compile (it imports `SandboxDeleteOptions`), but the extra `delete` on the handle is just an unused
   member on older eve, and the **root `.` and `./sandbox` entry points' `dist` genuinely still works
@@ -611,7 +621,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `packages/eve/dist` byte-identical** (`diff -r` over the whole built output, `.js`, `.d.ts` and `.map`), which
   is why they ship no `@upstash/agentkit-eve` release — only that package's devDependency moved.
   The extension's peer is
-  `>=0.63.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
+  `>=0.64.0`, matching its built dist's manifest — see the eve-extension section. Subpath exports:
   `eve/tools`, `eve/hooks`, `eve/extension`, `eve/context`, `eve/instructions`, `eve/sandbox`,
   `eve/sandbox/vercel`, `eve/channels/*`, `eve/next`, `eve/react`, **`eve/memory`**,
   `eve/memory/scope`, `eve/memory/file`, `eve/memory/file/vercel`, `eve/evals`, `eve/evals/expect`, …
@@ -816,6 +826,52 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   it ships **no changeset**: its `dist` is **byte-identical** to published `0.9.0`. Test-baseline note: on a
   pay-as-you-go database `vitest run` is **142 passed / 6 skipped / 0 failed** — the "11 failures" earlier
   automated runs reported were the free `start-redis` database's 1-search-index cap, not eve.
+  **`pnpm test` needs a real database — a throwaway `curl -X POST https://upstash.com/start-redis`
+  instance is not enough.** Besides the index cap, those instances stop answering a few minutes after
+  they are created: every REST call then hangs for exactly **10.01 s** (while `registry.npmjs.org` and
+  `upstash.com` itself stay at <150 ms, so it is the `*.upstash.io` data plane, not general egress),
+  which blows the 10 s `beforeAll` hooks and reports as ~40 failures spread over the live-Redis suites —
+  including `packages/sdk`, which has no `eve` dependency at all. Tell-tale: the instance's
+  `/metrics` shows `commands_total` in the dozens and `keys: 0` after a "25-minute" run, and the very
+  same files pass in ~1 s when run alone against a live endpoint. Don't read those failures as a
+  regression; re-run against a pay-as-you-go database.
+- **The 0.63.0 → 0.64.1 bump (2026-09-23) is EXTENSION-ONLY — eve 0.64.0 removed the `SandboxBackend`
+  API and `packages/eve` cannot follow yet.** Two independent breaks landed in the same release:
+  (1) **eve 0.64.0 dropped tool 53 / dynamicTool 51 / hook 24 — all three stamps the 0.63.0-built dist
+  carried**, so published `0.11.0` (peer `>=0.63.0`, which happily admits 0.64.1) installs clean on
+  `eve@latest` and then dies at `eve build` with the usual obtuse *"Selected module binding
+  "extensions/agentkit.ts" has no compile or runtime usage."* Rebuilding re-stamps **tool 53→54,
+  dynamicTool 51→52, hook 24→25** and moves the floor `>=0.63.0` → **`>=0.64.0`** — boundary proven by
+  packing the rebuilt dist into real npm consumers: **0.63.0 fails, 0.64.0 and 0.64.1 pass**. Again no
+  back-compat window: the floor landed on the release that broke it.
+  (2) **eve 0.64.0 replaced the whole pluggable sandbox-backend seam** (changelog `49971b7`: *"Replace
+  object-form sandbox definitions with exported provider environments whose `open()` method starts and
+  returns the current eve session's persistent live sandbox"*). `eve/sandbox` no longer exports
+  `SandboxBackend`, `SandboxBackendHandle`, `SandboxBackendCreateInput`, `SandboxBackendPrewarmInput`,
+  `SandboxBackendSessionState`, `SandboxBootstrapUseFn`, `SandboxSessionUseFn`, `SandboxDeleteOptions`
+  (moved), `SandboxTemplateNotProvisionedError` or `defaultBackend`, so
+  `packages/eve/src/sandbox.ts` fails `tsc` with **11 errors** (lines 64–73 are the dead type imports;
+  280 is `'id' does not exist in type 'SandboxSession'`; 511/603 are implicit-any `options`), and
+  `examples/eve-demo/agent/sandbox/sandbox.ts` still uses the removed object form
+  `defineSandbox({ backend: upstash(…), onSession })`. **That is a source rewrite, not a pin bump**:
+  `upstash()` has to move to `defineSandboxProvider()` from the new **`eve/sandbox/provider`** subpath
+  (`prepare()`/`resume()`, `SandboxProviderHandle`), and the demo to
+  `export const environment = …; export default defineSandbox(() => environment.open(…))` — the
+  environment export is now required because `eve build` prepares environments before a session exists.
+  Until that lands, **`packages/eve` and `examples/eve-demo` stay pinned to `^0.63.0`** and only the
+  extension moved. `packages/eve`'s `>=0.45.2` peer is unaffected and still correct: 0.64.1 still
+  exports `eve/memory` + `eve/memory/file`, and `packages/eve/src/memory/` typechecks clean on it.
+  (3) **`eve build` on 0.64 prewarms sandbox templates and the default provider now needs an external
+  package.** An app with *no* sandbox file at all fails with *"The just-bash sandbox provider requires the
+  `just-bash` package, which is not bundled with eve"*, so `examples/eve-extension-demo`'s build script
+  is now **`eve build --skip-sandbox-prewarm`** (a flag eve 0.64.0 added for exactly this). The
+  alternative — adding `just-bash` as a devDep — pulls **22.5 MB** and two native optional deps
+  (`@mongodb-js/zstd`, `node-liblzma`) that make `pnpm install` fail with
+  `ERR_PNPM_IGNORED_BUILDS` until they're allowlisted in `pnpm-workspace.yaml`; not worth it for a demo
+  with no sandbox. `eve dev` auto-installs just-bash; `eve build` does not. `examples/eve-demo`
+  (eve 0.63.0, and it *does* define a sandbox) still builds unflagged.
+  eve's `ai` peer did **not** move (`^7.0.105` on both 0.63.0 and 0.64.1), so no `ai` bump; 0.64.0 adds
+  only a new *optional* peer `chat: ^4.41.0`.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
