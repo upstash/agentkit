@@ -1,5 +1,12 @@
 # eve-demo
 
+## 0.0.11
+
+### Patch Changes
+
+- Updated dependencies [2318132]
+  - @upstash/agentkit-eve@0.12.0
+
 ## 0.0.10
 
 ### Patch Changes
