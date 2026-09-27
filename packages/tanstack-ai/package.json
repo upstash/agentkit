@@ -1,0 +1,71 @@
+{
+  "name": "@upstash/agentkit-tanstack-ai",
+  "version": "0.0.0",
+  "description": "Upstash AgentKit backends for TanStack AI: chat persistence, resumable streams, distributed locks, long-term memory, tool caching, rate limiting, and Redis-Search tools — all on one Upstash Redis.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/tanstack-ai"
+  },
+  "homepage": "https://github.com/upstash/agentkit/tree/main/packages/tanstack-ai",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "upstash",
+    "tanstack",
+    "tanstack-ai",
+    "ai",
+    "agent",
+    "persistence",
+    "resumable-stream",
+    "memory",
+    "lock",
+    "rag"
+  ],
+  "dependencies": {
+    "@upstash/agentkit-sdk": "workspace:*",
+    "@upstash/redis": "^1.38.4",
+    "zod": "^3.23.8 || ^4"
+  },
+  "devDependencies": {
+    "@tanstack/ai": "0.61.0",
+    "@tanstack/ai-memory": "0.2.6",
+    "@tanstack/ai-persistence": "0.6.7",
+    "dotenv": "^16.4.5"
+  },
+  "peerDependencies": {
+    "@tanstack/ai": ">=0.61.0",
+    "@tanstack/ai-memory": ">=0.2.6",
+    "@tanstack/ai-persistence": ">=0.6.7"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/ai-memory": {
+      "optional": true
+    },
+    "@tanstack/ai-persistence": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,152 @@
+# @upstash/agentkit-tanstack-ai
+
+Production backends for [TanStack AI](https://tanstack.com/ai), all on one
+[Upstash Redis](https://upstash.com/). TanStack AI defines the contracts for chat persistence,
+resumable streaming, distributed locks and memory, and ships in-memory implementations that only
+work inside one process. This package implements them on Redis, so they hold across serverless
+instances, reloads and devices.
+
+| TanStack AI seam | This package | What you get |
+| --- | --- | --- |
+| `withPersistence()` stores | `upstashPersistence()` | Transcripts, runs, human-in-the-loop interrupts and metadata that survive restarts; reconnect via `findActiveRun` |
+| `StreamDurability` | `upstashStream()` | Reload mid-answer or open the thread on another device and pick up where the stream is |
+| `withLocks()` `LockStore` | `upstashLocks()` | One writer per thread across instances (lease + renewal, aborts on loss) |
+| `memoryMiddleware()` adapter | `upstashMemory()` | Long-term memory ranked in Redis Search (BM25, typo-tolerant), no per-turn full scan |
+| chat middleware | `toolCache()`, `rateLimit()` | Skip repeated deterministic tool calls; throttle users before the model runs |
+| tools | `createSearchTools()` | `search` / `aggregate` / `count` over your own documents for RAG |
+
+`upstashPersistence()` is checked against TanStack AI's own `runPersistenceConformance` suite.
+
+## Install
+
+```bash
+npm install @upstash/agentkit-tanstack-ai @tanstack/ai
+# plus, for the features you use:
+npm install @tanstack/ai-persistence @tanstack/ai-memory
+```
+
+Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`; every factory defaults to
+`Redis.fromEnv()` and accepts `redis` to pass a client explicitly.
+
+## Chat persistence
+
+```ts
+import { chat } from "@tanstack/ai";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai";
+
+const persistence = upstashPersistence({
+  messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: expire idle transcripts
+});
+
+chat({ adapter, messages, threadId, middleware: [withPersistence(persistence)] });
+```
+
+Stores `messages`, `runs`, `interrupts` and `metadata` (the full `ChatPersistence` shape). Runs are
+indexed by thread, parent run and detach time, so reconnect (`findActiveRun`), subagent cards
+(`listByParentRun`) and the sandbox reaper (`listReclaimable`) are index reads. Every mutation is a
+single command or one Lua script, so concurrent instances cannot interleave a write.
+
+`generationRuns`, `artifacts` and `blobs` are not provided yet; compose them from another backend
+with `composePersistence` if you need them.
+
+## Resumable streams
+
+```ts
+import { chat, toServerSentEventsResponse } from "@tanstack/ai";
+import { upstashStream } from "@upstash/agentkit-tanstack-ai";
+
+export async function POST(request: Request) {
+  const stream = chat({ adapter, messages, threadId });
+  return toServerSentEventsResponse(stream, { durability: { adapter: upstashStream(request) } });
+}
+```
+
+Each chunk is appended to a Redis Stream before it is delivered. A client that reconnects with
+`Last-Event-ID` (or `?offset`) replays everything after it and keeps tailing the live run, on any
+instance. Without a `Request`, use `upstashStream({ runId, offset })`.
+
+| Option | Default | |
+| --- | --- | --- |
+| `ttlSeconds` | `86400` | How long a run stays resumable after its last chunk |
+| `pollIntervalMs` | `150` | Tail poll interval (the REST API keeps no blocking reads) |
+| `firstChunkDeadlineMs` | `2000` | How long a from-start join waits for a run that has not produced yet |
+
+## Distributed locks
+
+```ts
+import { withLocks } from "@tanstack/ai/locks";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+
+chat({ adapter, messages, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
+```
+
+A lease (`leaseMs`, default 30 s) renewed while the section runs; the section's `signal` aborts if
+the lease is lost. Built on the core `RedisLock`, which also exposes a fencing token.
+
+## Long-term memory
+
+```ts
+import { memoryMiddleware } from "@tanstack/ai-memory";
+import { upstashMemory } from "@upstash/agentkit-tanstack-ai";
+
+chat({
+  adapter,
+  messages,
+  middleware: [
+    memoryMiddleware({
+      adapter: upstashMemory(),
+      // Derive these server-side from the session, never from the request body.
+      scope: (ctx) => ({ threadId: ctx.threadId, userId: session.userId }),
+    }),
+  ],
+});
+```
+
+- Recall runs before the model: the top matches for the user's message are injected as a system
+  prompt block, each labelled with its source (`you saved this` / `the user said this`).
+- The model gets a `save_memory` tool for durable facts (`saveTool: false` to turn it off).
+- Each turn's user message is captured (`captureUserMessages: false` for model-curated only).
+- Memory is per user across threads by default (`scopeBy: "thread"` for per-conversation);
+  `tenantId` and `namespace` always partition.
+
+## Tool caching and rate limiting
+
+```ts
+import { rateLimit, Ratelimit, toolCache } from "@upstash/agentkit-tanstack-ai";
+
+chat({
+  adapter,
+  messages,
+  tools: [getWeather, sendEmail],
+  middleware: [
+    rateLimit({ limiter: Ratelimit.slidingWindow(10, "60 s"), identifier: userId }),
+    toolCache({ tools: ["get_weather"], userId, ttlSeconds: 600 }), // allowlist deterministic tools only
+  ],
+});
+```
+
+`rateLimit` fails the run with `RateLimitExceededError` before the model is called. To answer with
+an HTTP 429 instead, call `createRateLimit({ limiter }).limit(userId)` in the route before `chat()`.
+
+## Search tools (RAG)
+
+```ts
+import { s } from "@upstash/redis";
+import { createSearchTools } from "@upstash/agentkit-tanstack-ai";
+
+const tools = createSearchTools({
+  indexName: "products",
+  schema: s.object({ name: s.string(), price: s.number(), category: s.string().noTokenize() }),
+});
+chat({ adapter, messages, tools });
+```
+
+## Telemetry
+
+Reports the package name and version as a header on your redis client's requests. Opt out with
+`enableTelemetry: false` on any factory, on the redis client, or with `UPSTASH_DISABLE_TELEMETRY`.
+
+## License
+
+MIT

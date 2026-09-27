@@ -13,6 +13,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-sdk`](./packages/sdk) | Core, framework-agnostic primitives. |
 | [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
+| [`@upstash/agentkit-tanstack-ai`](./packages/tanstack-ai) | Production backends for [TanStack AI](https://tanstack.com/ai) — chat persistence, resumable streams, distributed locks, memory, tool caching, rate limiting and search tools. |
 | [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
 
 ## Core features
@@ -32,6 +33,8 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Code sandbox** (Eve only) — an [Upstash Box](https://github.com/upstash/box) sandbox provider for
   Eve's `defineSandbox` (`UpstashSandbox`, eve ≥ 0.65).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
+- **Coordination primitives** — `RedisLock` (lease lock with fencing tokens) and `EventLog`
+  (resumable append-only log on Redis Streams), under the TanStack AI locks and resumable streams.
 
 ## Examples
 

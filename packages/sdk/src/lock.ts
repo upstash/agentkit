@@ -72,7 +72,10 @@ export interface LockLease {
 
 /** Thrown by `withLock` when the key stays held past `acquireTimeoutMs`. */
 export class LockAcquireTimeoutError extends Error {
-  constructor(readonly key: string, readonly timeoutMs: number) {
+  constructor(
+    readonly key: string,
+    readonly timeoutMs: number,
+  ) {
     super(`RedisLock: could not acquire "${key}" within ${timeoutMs}ms.`);
     this.name = "LockAcquireTimeoutError";
   }
@@ -165,7 +168,10 @@ export class RedisLock {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       opts.signal?.throwIfAborted();
-      const lease = await this.tryAcquire(key, opts.leaseMs !== undefined ? { leaseMs: opts.leaseMs } : {});
+      const lease = await this.tryAcquire(
+        key,
+        opts.leaseMs !== undefined ? { leaseMs: opts.leaseMs } : {},
+      );
       if (lease) return lease;
       if (Date.now() >= deadline) throw new LockAcquireTimeoutError(key, timeoutMs);
       await sleep(Math.min(this.retryDelayMs, Math.max(0, deadline - Date.now())));

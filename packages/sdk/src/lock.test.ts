@@ -88,7 +88,9 @@ describe.skipIf(!hasRedisCreds)("RedisLock (live Redis)", () => {
   it("times out acquiring a held key", async () => {
     const lock = new RedisLock({ redis, prefix, acquireTimeoutMs: 300, retryDelayMs: 50 });
     const held = await lock.tryAcquire("k7");
-    await expect(lock.withLock("k7", async () => 1)).rejects.toBeInstanceOf(LockAcquireTimeoutError);
+    await expect(lock.withLock("k7", async () => 1)).rejects.toBeInstanceOf(
+      LockAcquireTimeoutError,
+    );
     await held!.release();
   });
 });
