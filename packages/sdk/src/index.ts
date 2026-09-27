@@ -41,3 +41,11 @@ export type {
 // Framework-agnostic search-tool definitions (search / aggregate / count over a Redis Search index)
 export { createSearchToolDefs } from "./search-tools.js";
 export type { SearchToolDef, SearchToolDefs, SearchToolDefsConfig } from "./search-tools.js";
+
+// Coordination primitives — a distributed lease lock with fencing tokens, and a resumable
+// append-only event log on Redis Streams. Framework adapters build locks and resumable streams on these.
+export { RedisLock, LockAcquireTimeoutError, LockLostError } from "./lock.js";
+export type { RedisLockConfig, LockLease } from "./lock.js";
+
+export { EventLog } from "./event-log.js";
+export type { EventLogConfig, LogEntry } from "./event-log.js";
