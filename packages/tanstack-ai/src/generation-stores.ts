@@ -17,7 +17,8 @@ const RUN_STATUSES: Record<RunStatus, true> = {
 };
 
 /** Create a hash if absent, index it in one sorted set, return the stored hash. ARGV: score, member, pairs… */
-const CREATE_INDEXED = `if redis.call("EXISTS", KEYS[1]) == 0 then
+const CREATE_INDEXED = `#!lua flags=allow-key-locking
+if redis.call("EXISTS", KEYS[1]) == 0 then
   local fields = {}
   for i = 3, #ARGV do fields[#fields + 1] = ARGV[i] end
   redis.call("HSET", KEYS[1], unpack(fields))
@@ -26,7 +27,8 @@ end
 return redis.call("HGETALL", KEYS[1])`;
 
 /** Patch an existing hash (N pairs to set, then fields to delete); a missing hash is a no-op. */
-const PATCH = `if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
+const PATCH = `#!lua flags=allow-key-locking
+if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
 local n = tonumber(ARGV[1])
 if n > 0 then
   local fields = {}
@@ -39,19 +41,24 @@ return 1`;
 /**
  * Replace an artifact record and move it between indexes if its run or thread changed. The hash
  * remembers the two index keys it is in (`__runIndex` / `__threadIndex`, raw strings the codec
- * skips), so the script can unindex the old position without decoding anything.
- * KEYS: hash, new run index, new thread index. ARGV: createdAt, id, pairs…
+ * skips). Under `allow-key-locking` every touched key must be declared, so the caller reads those two
+ * first and passes them as KEYS[4..5]; the script is a compare-and-swap that returns 0 (caller
+ * retries) if a concurrent save moved the artifact in between.
+ * KEYS: hash, new run index, new thread index, [old run index, old thread index].
+ * ARGV: expected old run index ("" = none), expected old thread index, createdAt, id, pairs…
  */
-const SAVE_ARTIFACT = `local oldRun = redis.call("HGET", KEYS[1], "__runIndex")
-local oldThread = redis.call("HGET", KEYS[1], "__threadIndex")
-if oldRun and oldRun ~= KEYS[2] then redis.call("ZREM", oldRun, ARGV[2]) end
-if oldThread and oldThread ~= KEYS[3] then redis.call("ZREM", oldThread, ARGV[2]) end
+const SAVE_ARTIFACT = `#!lua flags=allow-key-locking
+local curRun = redis.call("HGET", KEYS[1], "__runIndex") or ""
+local curThread = redis.call("HGET", KEYS[1], "__threadIndex") or ""
+if curRun ~= ARGV[1] or curThread ~= ARGV[2] then return 0 end
+if KEYS[4] and KEYS[4] ~= KEYS[2] then redis.call("ZREM", KEYS[4], ARGV[4]) end
+if KEYS[5] and KEYS[5] ~= KEYS[3] then redis.call("ZREM", KEYS[5], ARGV[4]) end
 redis.call("DEL", KEYS[1])
 local fields = {"__runIndex", KEYS[2], "__threadIndex", KEYS[3]}
-for i = 3, #ARGV do fields[#fields + 1] = ARGV[i] end
+for i = 5, #ARGV do fields[#fields + 1] = ARGV[i] end
 redis.call("HSET", KEYS[1], unpack(fields))
-redis.call("ZADD", KEYS[2], ARGV[1], ARGV[2])
-redis.call("ZADD", KEYS[3], ARGV[1], ARGV[2])
+redis.call("ZADD", KEYS[2], ARGV[3], ARGV[4])
+redis.call("ZADD", KEYS[3], ARGV[3], ARGV[4])
 return 1`;
 
 function pairsToObject(flat: unknown): Record<string, unknown> {
@@ -171,11 +178,26 @@ export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore 
       assertId(record.artifactId, "artifactId");
       assertId(record.runId, "runId");
       assertId(record.threadId, "threadId");
-      const fields = encodeFields(record as unknown as Record<string, unknown>);
-      await redis.eval(
-        SAVE_ARTIFACT,
-        [k.artifact(record.artifactId), k.run(record.runId), k.thread(record.threadId)],
-        [String(record.createdAt), record.artifactId, ...flattenPairs(fields)],
+      const fields = flattenPairs(encodeFields(record as unknown as Record<string, unknown>));
+      const hash = k.artifact(record.artifactId);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const stored = await redis.hmget<Record<string, string | null>>(
+          hash,
+          "__runIndex",
+          "__threadIndex",
+        );
+        const oldRun = stored?.__runIndex ?? null;
+        const oldThread = stored?.__threadIndex ?? null;
+        const old = oldRun && oldThread ? [oldRun, oldThread] : [];
+        const saved = await redis.eval(
+          SAVE_ARTIFACT,
+          [hash, k.run(record.runId), k.thread(record.threadId), ...old],
+          [oldRun ?? "", oldThread ?? "", String(record.createdAt), record.artifactId, ...fields],
+        );
+        if (Number(saved) === 1) return;
+      }
+      throw new Error(
+        `@upstash/agentkit-tanstack-ai: artifact ${JSON.stringify(record.artifactId)} kept changing during save.`,
       );
     },
 

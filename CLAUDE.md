@@ -428,6 +428,20 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 - **Removed entirely:** the model cache (`ModelCache`/`SemanticCache`, `cachedModel`, `modelCacheMiddleware`),
   Telemetry, the generic Sandbox (sandbox is eve-only), and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
 
+## Lua scripts: always `allow-key-locking`
+
+- **Every `EVAL` script starts with `#!lua flags=allow-key-locking` on its very first line** (same as
+  `@upstash/ratelimit` since #154). Upstash then locks only the keys the script declares instead of the
+  whole database. The price: **every key a script touches must be in `KEYS`** — a key built or read
+  inside Lua fails with `ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is
+  set` (verified live 2026-09-27). Don't pass placeholder keys for optional indexes either; make `KEYS`
+  variable-length and test `if KEYS[n]` in the script.
+- Scripts that need a key they can only learn by reading (the artifact store's old run/thread index)
+  read it first, declare it, and compare-and-swap inside the script, retrying on a mismatch.
+- Current scripts: `RedisLock` acquire/release/extend (sdk), eve `redisDocuments()` CAS, and the
+  tanstack-ai persistence/generation stores. Upstash tolerates a leading newline before the shebang,
+  standard Redis does not — keep it on line 1.
+
 ## API conventions
 - **Naming of the knobs (consistent across all features):**
   - `prefix` — the base `agentkit:X` key prefix (config level). `ToolCache`/`AgentMemory`/`ChatHistory`

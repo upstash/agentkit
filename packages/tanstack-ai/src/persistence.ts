@@ -56,16 +56,20 @@ const RUN_STATUSES: Record<RunStatus, true> = {
 };
 
 /**
+ * Every script here runs with `allow-key-locking`: Upstash locks only the keys a script declares, not
+ * the whole database, and an undeclared key is an error — so each script touches exactly its `KEYS`.
+ *
  * Create a run hash only if it does not exist yet, index it, and return the stored hash either way
  * (the idempotent `createOrResume` contract: an existing record comes back unchanged).
- * KEYS: run hash, thread index, parent index (may be unused). ARGV: startedAt, runId, hasParent, pairs…
+ * KEYS: run hash, thread index, [parent index — only when the run has a parent]. ARGV: startedAt, runId, pairs…
  */
-const CREATE_RUN = `if redis.call("EXISTS", KEYS[1]) == 0 then
+const CREATE_RUN = `#!lua flags=allow-key-locking
+if redis.call("EXISTS", KEYS[1]) == 0 then
   local fields = {}
-  for i = 4, #ARGV do fields[#fields + 1] = ARGV[i] end
+  for i = 3, #ARGV do fields[#fields + 1] = ARGV[i] end
   redis.call("HSET", KEYS[1], unpack(fields))
   redis.call("ZADD", KEYS[2], ARGV[1], ARGV[2])
-  if ARGV[3] == "1" then redis.call("ZADD", KEYS[3], ARGV[1], ARGV[2]) end
+  if KEYS[3] then redis.call("ZADD", KEYS[3], ARGV[1], ARGV[2]) end
 end
 return redis.call("HGETALL", KEYS[1])`;
 
@@ -73,7 +77,8 @@ return redis.call("HGETALL", KEYS[1])`;
  * Patch an existing hash: set N field/value pairs, delete the remaining named fields. A missing hash
  * is a no-op (the "unknown runId never creates a record" invariant). ARGV: N, pairs…, deletes…
  */
-const PATCH = `if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
+const PATCH = `#!lua flags=allow-key-locking
+if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
 local n = tonumber(ARGV[1])
 if n > 0 then
   local fields = {}
@@ -84,7 +89,8 @@ for i = 2 + n * 2, #ARGV do redis.call("HDEL", KEYS[1], ARGV[i]) end
 return 1`;
 
 /** Create an interrupt hash if absent and index it by thread and by run. ARGV: requestedAt, id, pairs… */
-const CREATE_INTERRUPT = `if redis.call("EXISTS", KEYS[1]) == 0 then
+const CREATE_INTERRUPT = `#!lua flags=allow-key-locking
+if redis.call("EXISTS", KEYS[1]) == 0 then
   local fields = {}
   for i = 3, #ARGV do fields[#fields + 1] = ARGV[i] end
   redis.call("HSET", KEYS[1], unpack(fields))
@@ -97,7 +103,8 @@ return 0`;
  * Settle a batch of interrupts atomically: every key must exist and be pending, or nothing changes.
  * ARGV: pendingValue, resolvedAtValue, then per key: statusValue, hasResponse, responseValue.
  */
-const COMMIT_BATCH = `for i = 1, #KEYS do
+const COMMIT_BATCH = `#!lua flags=allow-key-locking
+for i = 1, #KEYS do
   local status = redis.call("HGET", KEYS[i], "status")
   if not status then return redis.error_reply("missing:" .. i) end
   if status ~= ARGV[1] then return redis.error_reply("nonpending:" .. i) end
@@ -241,12 +248,11 @@ export function upstashPersistence(
         [
           k.run(input.runId),
           k.threadRuns(input.threadId),
-          k.parentRuns(hasParent ? input.parentRunId! : "_"),
+          ...(hasParent ? [k.parentRuns(input.parentRunId!)] : []),
         ],
         [
           String(input.startedAt),
           input.runId,
-          hasParent ? "1" : "0",
           ...flattenPairs(encodeFields(record as unknown as Record<string, unknown>)),
         ],
       );

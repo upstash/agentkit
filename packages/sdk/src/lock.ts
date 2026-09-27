@@ -3,24 +3,31 @@ import type { Redis } from "@upstash/redis";
 import { addTelemetry } from "./telemetry.js";
 
 /**
+ * Every script runs with `allow-key-locking`, so Upstash locks only the keys it declares rather than
+ * the whole database. That makes declaring every touched key in `KEYS` mandatory (an undeclared key
+ * is an error), which these scripts do.
+ *
  * Acquire: take the lease key only if it is free, and on success bump a per-key counter that never
  * expires. The counter is the **fencing token** — strictly increasing across every holder the key
  * ever had, so a holder that stalled past its lease can compare its token against the store and
  * learn it was superseded (a lease alone tells the winner it won, but gives a loser nothing to read).
  */
-const ACQUIRE = `if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
+const ACQUIRE = `#!lua flags=allow-key-locking
+if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
   return redis.call("INCR", KEYS[2])
 end
 return 0`;
 
 /** Release only our own lease: a holder whose lease expired must not delete the next holder's. */
-const RELEASE = `if redis.call("GET", KEYS[1]) == ARGV[1] then
+const RELEASE = `#!lua flags=allow-key-locking
+if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("DEL", KEYS[1])
 end
 return 0`;
 
 /** Extend only our own lease — the same ownership check as release. */
-const EXTEND = `if redis.call("GET", KEYS[1]) == ARGV[1] then
+const EXTEND = `#!lua flags=allow-key-locking
+if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("PEXPIRE", KEYS[1], ARGV[2])
 end
 return 0`;

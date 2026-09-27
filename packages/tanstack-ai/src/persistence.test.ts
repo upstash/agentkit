@@ -82,3 +82,58 @@ describe.skipIf(!hasRedisCreds || !hasBlobToken)(
     );
   },
 );
+
+// Every Lua script runs with `allow-key-locking`, under which touching an undeclared key is an error.
+// These drive the two paths whose key sets vary: a run with a parent index, and an artifact moved
+// between runs and threads (whose old indexes must be declared, not read inside the script).
+describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
+  const redis = testRedis();
+  const prefix = uniquePrefix("tskl");
+  afterAll(async () => {
+    await cleanupKeys(redis, prefix);
+  });
+
+  it("creates runs with and without a parent index", async () => {
+    const { runs } = upstashPersistence({ redis, prefix }).stores;
+    await runs.createOrResume({ runId: "p", threadId: "t", startedAt: 1 });
+    await runs.createOrResume({
+      runId: "c",
+      threadId: "subagent:c",
+      startedAt: 2,
+      parentRunId: "p",
+    });
+    expect((await runs.listByParentRun!("p")).map((r) => r.runId)).toEqual(["c"]);
+    expect(await redis.exists(`${prefix}:parentRuns:_`)).toBe(0);
+  });
+
+  it("moves a re-saved artifact between run and thread indexes", async () => {
+    const { artifacts } = upstashPersistence({ redis, prefix }).stores;
+    const base = {
+      artifactId: "a1",
+      name: "img.png",
+      mimeType: "image/png",
+      size: 3,
+      createdAt: 5,
+    };
+    await artifacts.save({ ...base, runId: "r1", threadId: "t1" });
+    await artifacts.save({ ...base, runId: "r2", threadId: "t2" });
+    expect(await artifacts.list("r1")).toEqual([]);
+    expect(await artifacts.listForThread("t1")).toEqual([]);
+    expect((await artifacts.list("r2")).map((a) => a.artifactId)).toEqual(["a1"]);
+    expect((await artifacts.listForThread("t2")).map((a) => a.runId)).toEqual(["r2"]);
+  });
+
+  it("concurrent saves of one artifact settle on a single indexed copy", async () => {
+    const { artifacts } = upstashPersistence({ redis, prefix }).stores;
+    const base = { artifactId: "a2", name: "x", mimeType: "text/plain", size: 1, createdAt: 1 };
+    await Promise.all(
+      ["ra", "rb", "rc"].map((runId) => artifacts.save({ ...base, runId, threadId: `t-${runId}` })),
+    );
+    const where = await Promise.all(["ra", "rb", "rc"].map((r) => artifacts.list(r)));
+    expect(where.flat()).toHaveLength(1);
+    const final = (await artifacts.get("a2"))!;
+    expect((await artifacts.listForThread(final.threadId)).map((a) => a.artifactId)).toEqual([
+      "a2",
+    ]);
+  });
+});
