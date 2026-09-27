@@ -346,6 +346,9 @@ importers:
       '@tanstack/ai-persistence':
         specifier: 0.6.7
         version: 0.6.7(@tanstack/ai@0.61.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))
+      '@upstash/blob':
+        specifier: 0.0.7
+        version: 0.0.7(react@19.2.6)
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
@@ -2819,6 +2822,15 @@ packages:
 
   '@upsetjs/venn.js@2.0.0':
     resolution: {integrity: sha512-WbBhLrooyePuQ1VZxrJjtLvTc4NVfpOyKx0sKqioq9bX1C1m7Jgykkn8gLrtwumBioXIqam8DLxp88Adbue6Hw==}
+
+  '@upstash/blob@0.0.7':
+    resolution: {integrity: sha512-Q2+GqZdnZxjzdHrROd/dSGVmR7im4FJ6SSKh5qfOLyYiZmtzMiLjd+yG0vwq2urtZ+UswpF4MlLQ//UEIUNkCw==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      react: '>=18'
+    peerDependenciesMeta:
+      react:
+        optional: true
 
   '@upstash/box@0.7.5':
     resolution: {integrity: sha512-PfUn8Ppz+gkI76vftM1VnFvLxJs4SgFy3CR3898ahl4YXReXdWrXwTkP3QjzHjVd9Lj3e1dkQ8iLod9fTCmALg==}
@@ -7260,6 +7272,10 @@ snapshots:
     optionalDependencies:
       d3-selection: 3.0.0
       d3-transition: 3.0.1(d3-selection@3.0.0)
+
+  '@upstash/blob@0.0.7(react@19.2.6)':
+    optionalDependencies:
+      react: 19.2.6
 
   '@upstash/box@0.7.5(zod@4.4.3)':
     dependencies:

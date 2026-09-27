@@ -1,6 +1,10 @@
 // Chat state persistence — messages, runs, interrupts, metadata — for `withPersistence()`.
 export { upstashPersistence } from "./persistence.js";
-export type { UpstashPersistenceConfig } from "./persistence.js";
+export type { UpstashPersistenceConfig, UpstashPersistenceStores } from "./persistence.js";
+
+// Blob store (bytes in Upstash Blob, records in Redis) — included by upstashPersistence({ bucket }).
+export { upstashBlobStore } from "./blob-store.js";
+export type { BlobBucketLike, UpstashBlobStoreConfig } from "./blob-store.js";
 
 // Resumable delivery (`StreamDurability`) on Redis Streams — reload/reconnect/second device.
 export { upstashStream } from "./stream.js";

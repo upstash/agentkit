@@ -1174,6 +1174,19 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   stale member), `threadInterrupts:<id>`/`runInterrupts:<id>` (zset by `requestedAt`). `commitBatch`
   validates every interrupt is present and pending and applies all in one `EVAL`. Run status is
   validated at deserialization (TanStack's readers act destructively on it).
+- **Generation stores** (`generation-stores.ts`): `generationRuns` reuse the run patterns (hash +
+  per-thread zset). `artifacts` are hashes that also carry raw `__runIndex`/`__threadIndex` fields
+  (the codec skips `__`-prefixed fields) so the save script can move a re-saved artifact between
+  indexes without decoding JSON in Lua. Ordering is `createdAt` then id, where zset ties sort by bytes,
+  exactly the reference store's UTF-8 order.
+- **Blobs** (`blob-store.ts`, only when `upstashPersistence({ bucket })`): bytes in Upstash Blob at
+  `<pathPrefix><encodeURIComponent(key)>`, the record (size/etag/contentType/customMetadata/createdAt/
+  updatedAt) in a Redis hash plus a lexical zset of keys. Blob listings omit content type + metadata
+  and S3 metadata keys are restricted, hence the split. Ranges use `signedReadUrl` + `Range`; a 200
+  (server ignored Range) is sliced locally. `@upstash/blob` is an optional peer: the store takes a
+  structural `BlobBucketLike`. The MCP never returns bucket tokens, so the live-Blob conformance copy
+  skips without `UPSTASH_BLOB_TOKEN`; the default suite uses `src/test-bucket.ts`, whose signed URLs are
+  served by a local HTTP server honouring `Range`.
 - **Codec:** every stored value is `j:` + JSON (`src/codec.ts`) — same reason as the EventLog marker.
 - **Memory:** own keyspace `agentkit:tanstackMemory` (its schema adds an indexed `source` field, so
   it must not share `agentkit:memory` — see the eve memory-slot notes on why). Scope → `userId` via
@@ -1181,7 +1194,7 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   collision. Recalled lines are labelled by source like eve's `redisMemory()`.
 - **Testing:** `persistence.test.ts` runs TanStack's `runPersistenceConformance` (from
   `@tanstack/ai-persistence/testkit`; it declares a vitest ^4 peer but runs fine on the repo's vitest
-  2) with a fresh prefix per case — 26/26 on 2026-09-27. `memory.test.ts` also runs
+  2) with a fresh prefix per case — all seven stores, nothing skipped, 26/26 on 2026-09-27. `memory.test.ts` also runs
   `runMemoryAdapterContract` (`@tanstack/ai-memory/testkit`), each scope pinned under a unique
   tenant — it needs `waitForIndexing` (save provisions the index once, writes, then waits), exactly
   like eve's `redisMemory()` capture. Middleware/memory/search tests drive a real
@@ -1190,4 +1203,4 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 - **Not built yet (proposed):** Code Mode isolate driver on Box (port of `@tanstack/ai-isolate-daytona`'s
   need_tools/replay loop), Redis `SandboxInstanceStore`/`SandboxCheckpointStore` (+ Upstash Blob
   `BlobStore`), QStash-backed background runs writing to `upstashStream`, and a QStash schedule for
-  `reapDetachedRuns`. `generationRuns`/`artifacts`/`blobs` persistence stores are also open.
+  `reapDetachedRuns`. 

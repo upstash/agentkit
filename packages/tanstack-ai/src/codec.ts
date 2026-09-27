@@ -28,7 +28,8 @@ export function encodeFields(record: Record<string, unknown>): Record<string, st
 export function decodeFields<T>(raw: Record<string, unknown> | null | undefined): T | null {
   if (!raw || Object.keys(raw).length === 0) return null;
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(raw)) out[k] = decode(v);
+  // `__`-prefixed fields are raw bookkeeping (e.g. which index keys a record is in), not record data.
+  for (const [k, v] of Object.entries(raw)) if (!k.startsWith("__")) out[k] = decode(v);
   return out as T;
 }
 
