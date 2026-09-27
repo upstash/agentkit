@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chat } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { memoryMiddleware } from "@tanstack/ai-memory";
+import { runMemoryAdapterContract } from "@tanstack/ai-memory/testkit";
 import { s } from "@upstash/redis";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { memoryScopeKey, upstashMemory } from "./memory.js";
@@ -130,5 +131,30 @@ describe.skipIf(!hasRedisCreds)("upstashMemory (live Redis, real chat loop)", ()
     const r = await adapter.recall({ threadId: "t", userId: other }, "hazelnuts Izmir");
     expect(r.systemPrompt).toBe("");
     expect(r.fragments).toEqual([]);
+  });
+});
+
+// TanStack AI's own MemoryAdapter contract suite (save receipts, round-trip recall, scope isolation
+// by thread / user / tenant, listFacts), run against a real Upstash Redis.
+describe.skipIf(!hasRedisCreds)("upstashMemory contract (live Redis)", () => {
+  const redis = testRedis();
+  // Share the default index; each contract case uses its own scopes, isolated by a unique tenant.
+  const tenant = uniqueUserId("tscontract");
+  afterAll(async () => {
+    await cleanupKeys(redis, `agentkit:tanstackMemory:${encodeURIComponent(tenant)}`);
+  });
+  runMemoryAdapterContract("upstashMemory", () => {
+    const adapter = upstashMemory({ redis });
+    // Pin every scope under this run's tenant so the suite cannot see earlier runs' data.
+    const pin = <T extends { tenantId?: string }>(scope: T): T => ({
+      ...scope,
+      tenantId: `${tenant}:${scope.tenantId ?? ""}`,
+    });
+    return {
+      ...adapter,
+      recall: (scope, query) => adapter.recall(pin(scope), query),
+      save: (scope, turn) => adapter.save(pin(scope), turn),
+      listFacts: (scope) => adapter.listFacts!(pin(scope)),
+    };
   });
 });

@@ -65,6 +65,13 @@ export interface UpstashMemoryConfig {
    */
   maxMemoryCharacters?: number;
   /**
+   * Wait for the search index to catch up after each write, so a memory saved in one turn is
+   * recallable on the very next one. Upstash Search indexing otherwise lags by minutes. Costs one
+   * extra round trip per save, which `memoryMiddleware` runs after the response is delivered.
+   * @default true
+   */
+  waitForIndexing?: boolean;
+  /**
    * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
    * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
    */
@@ -126,15 +133,28 @@ export function upstashMemory(config: UpstashMemoryConfig = {}): MemoryAdapter {
   const capture = config.captureUserMessages ?? true;
   const toolName = config.saveToolName ?? "save_memory";
 
-  const add = (userId: string, text: string, source: Source) => {
+  const waitForIndexing = config.waitForIndexing ?? true;
+  // Writes do not create the index, and waiting on a missing index is a silent no-op — a doc written
+  // before the index exists can miss the create-time backfill. So the first write provisions it
+  // (any read does, reactively), once per adapter.
+  let provisioned: Promise<unknown> | undefined;
+
+  const add = async (userId: string, text: string, source: Source) => {
     const trimmed = text.trim().slice(0, maxChars);
+    provisioned ??= memory.count({ userId }).catch((error) => {
+      provisioned = undefined;
+      throw error;
+    });
+    await provisioned;
     // Identical text collapses onto one record, so capture is idempotent across turns and retries.
-    return memory.add({
+    const record = await memory.add({
       userId,
       text: trimmed,
       id: stableHash(trimmed).slice(0, 12),
       metadata: { source },
     });
+    if (waitForIndexing) await memory.searchIndex.waitIndexing();
+    return record;
   };
 
   const saveToolFor = (userId: string): Tool =>

@@ -1181,7 +1181,10 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   collision. Recalled lines are labelled by source like eve's `redisMemory()`.
 - **Testing:** `persistence.test.ts` runs TanStack's `runPersistenceConformance` (from
   `@tanstack/ai-persistence/testkit`; it declares a vitest ^4 peer but runs fine on the repo's vitest
-  2) with a fresh prefix per case — 26/26 on 2026-09-27. Middleware/memory/search tests drive a real
+  2) with a fresh prefix per case — 26/26 on 2026-09-27. `memory.test.ts` also runs
+  `runMemoryAdapterContract` (`@tanstack/ai-memory/testkit`), each scope pinned under a unique
+  tenant — it needs `waitForIndexing` (save provisions the index once, writes, then waits), exactly
+  like eve's `redisMemory()` capture. Middleware/memory/search tests drive a real
   `chat()` agent loop through `src/test-adapter.ts` (a scripted `TextAdapter` emitting AG-UI
   `TOOL_CALL_*`/`TEXT_MESSAGE_*`/`RUN_FINISHED` chunks) — no model provider needed.
 - **Not built yet (proposed):** Code Mode isolate driver on Box (port of `@tanstack/ai-isolate-daytona`'s

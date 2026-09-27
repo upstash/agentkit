@@ -15,7 +15,8 @@ instances, reloads and devices.
 | chat middleware | `toolCache()`, `rateLimit()` | Skip repeated deterministic tool calls; throttle users before the model runs |
 | tools | `createSearchTools()` | `search` / `aggregate` / `count` over your own documents for RAG |
 
-`upstashPersistence()` is checked against TanStack AI's own `runPersistenceConformance` suite.
+`upstashPersistence()` and `upstashMemory()` are checked against TanStack AI's own conformance
+suites (`runPersistenceConformance`, `runMemoryAdapterContract`).
 
 ## Install
 
@@ -106,6 +107,8 @@ chat({
 - Recall runs before the model: the top matches for the user's message are injected as a system
   prompt block, each labelled with its source (`you saved this` / `the user said this`).
 - The model gets a `save_memory` tool for durable facts (`saveTool: false` to turn it off).
+- Each save waits for the index (`waitForIndexing`, default on), so a memory is recallable on the very
+  next turn.
 - Each turn's user message is captured (`captureUserMessages: false` for model-curated only).
 - Memory is per user across threads by default (`scopeBy: "thread"` for per-conversation);
   `tenantId` and `namespace` always partition.
