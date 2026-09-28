@@ -21,6 +21,10 @@ const instances = inject("instances");
 const demoPrefix = inject("demoPrefix");
 const users: string[] = [];
 
+/** How many assistant messages a stream carries: two producers show up as two starts, interleaved. */
+const messageStarts = (events: { chunk: { type: string } }[]) =>
+  events.filter((e) => e.chunk.type === "TEXT_MESSAGE_START").length;
+
 const deltaCount = (n: number) => (events: { chunk: { type: string } }[]) =>
   events.filter((e) => e.chunk.type === "TEXT_MESSAGE_CONTENT").length >= n;
 
@@ -107,6 +111,25 @@ describe.skipIf(!instances)("demo app, two instances, one Upstash Redis", () => 
     expect(textOf(other)).not.toContain(fact);
   });
 
+  it("a run that outlives its producer lease is still produced once when re-POSTed elsewhere", async () => {
+    const turn = newTurn("long: a long one");
+    const first = send(a, turn).then((res) => readEvents(res));
+    // Mid-run (the answer takes ~6s) and past the 1s lease: without renewal, B would take the lock
+    // and start a second producer writing into the same log.
+    await new Promise((r) => setTimeout(r, 2_000));
+    const second = await readEvents(await send(b, turn));
+    const fromA = await first;
+    expect(textOf(second)).toBe(textOf(fromA));
+    // A second producer would interleave a second answer into the same log.
+    expect(messageStarts(fromA)).toBe(1);
+    expect(messageStarts(second)).toBe(1);
+    const thread = await until(
+      () => reconstruct(a, turn.threadId),
+      (t) => t.activeRun === null,
+    );
+    expect(thread.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+  });
+
   it("rejects a malformed request with a 400", async () => {
     const res = await fetch(`${a}/api/chat`, {
       method: "POST",
@@ -124,7 +147,8 @@ describe.skipIf(!instances)("demo app, two instances, one Upstash Redis", () => 
     ]);
     // Both clients see the same single answer, tailed from one log.
     expect(textOf(fromA)).toBe(textOf(fromB));
-    expect(textOf(fromA).match(/You said: only once please\./g)).toHaveLength(1);
+    expect(messageStarts(fromA)).toBe(1);
+    expect(messageStarts(fromB)).toBe(1);
 
     const thread = await until(
       () => reconstruct(a, turn.threadId),

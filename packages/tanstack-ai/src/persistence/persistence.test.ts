@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runPersistenceConformance } from "@tanstack/ai-persistence/testkit";
 import type { PersistenceConformanceCheck } from "@tanstack/ai-persistence/testkit";
+import type { BlobStore } from "@tanstack/ai-persistence";
 import { Bucket } from "@upstash/blob";
 import { upstashPersistence } from "./persistence.js";
 import { testBucket, type TestBucket } from "../testing/test-bucket.js";
@@ -100,6 +101,36 @@ describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
       expect(listed).toEqual([]);
       expect(await redis.zcard(`${prefix}:artdel:runArtifacts:r2`)).toBe(0);
     }
+  });
+
+  it("get never reports a live key missing when an overwrite deletes the version it was reading", async () => {
+    // A bucket whose first read of the original version is preceded by a concurrent overwrite, which
+    // commits a new version and deletes the one this get had just resolved.
+    let raced = false;
+    let blobs: BlobStore;
+    const racingBucket: typeof bucket = {
+      ...bucket,
+      put: bucket.put.bind(bucket),
+      del: bucket.del.bind(bucket),
+      get: async (path: string) => {
+        if (!raced && path.startsWith("racy/k/")) {
+          raced = true;
+          await blobs.put("k", "second");
+        }
+        return bucket.get(path);
+      },
+    } as typeof bucket;
+    blobs = upstashPersistence({
+      redis,
+      prefix: `${prefix}:racy`,
+      bucket: racingBucket,
+      blobPathPrefix: "racy/",
+    }).stores.blobs!;
+    await blobs.put("k", "first");
+    const got = await blobs.get("k");
+    expect(raced).toBe(true);
+    expect(got).not.toBeNull();
+    expect(await got!.text()).toBe("second");
   });
 
   it("omits the blobs store when no bucket is given", () => {

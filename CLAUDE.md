@@ -1165,11 +1165,18 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   `spawn.d.ts`.)
 - **Demo + E2E** (`examples/tanstack-ai-demo`): Next.js port of TanStack's `ts-react-chat` persistent-chat
   route onto our backends (detached run, `resumeServerSentEventsResponse`, `reconstructChat`, memory),
-  with `RedisLock` replacing its process-local "one producer per run" set. `AGENTKIT_MOCK_MODEL=1` swaps in
+  with `RedisLock` replacing its process-local "one producer per run" set: `withLock(runId, fn,
+  { acquireTimeoutMs: 0 })` (timeout = someone else produces it, just tail), lease renewed for the run,
+  and on lease loss the run is aborted and the producer neither appends nor closes the log (the new
+  owner may be writing). The producer promise goes to Next.js `after()` (+ `maxDuration`) so it
+  survives the response on serverless; truly durable background runs (QStash) are a follow-up. `AGENTKIT_MOCK_MODEL=1` swaps in
   a scripted model (`lib/model.ts`: word-by-word stream, `remember:` → `save_memory`, echoes recalled
   memories). `pnpm e2e` (`e2e/`, files `*.e2e.ts` so root `pnpm test` skips them) starts **two** `next start`
   servers on free ports, one Redis, a per-run `DEMO_PREFIX`, and checks cross-instance resume, mid-run
-  reconstruct, memory across threads, single production of a doubly-POSTed run, and a 400 on a bad body.
+  reconstruct, memory across threads, single production of a doubly-POSTed run, single production of
+  a run that outlives its lease (`PRODUCER_LEASE_MS=1000` + a `long:` ~6s mock answer), and a 400 on a
+  bad body. Count `TEXT_MESSAGE_START` to detect a second producer: two producers **interleave** their
+  words in one log, so text regexes miss it (a no-renewal build passed a regex check and failed this).
   Gotchas hit building it: AG-UI bodies need a message `id`; Next.js route handlers don't return a thrown
   `Response` (catch `chatParamsFromRequest`'s 400 yourself); spawn `node_modules/.bin/next` detached and
   kill the process group (killing `npx` orphans `next`); backends are created lazily so `next build`
@@ -1183,7 +1190,8 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 - **Redis primitives** (`src/locks/redis-lock.ts`, `src/stream/event-log.ts`; moved here from core 2026-09-28, exported from this package): `RedisLock` (+ `LockLease`, `LockAcquireTimeoutError`,
   `LockLostError`) — `SET NX PX` lease + a never-expiring `INCR` fencing counter, release/extend are
   ownership-checked Lua; `withLock` renews every `leaseMs/3` and aborts the section's signal on loss.
-  `EventLog` (+ `LogEntry`) — Redis Streams: `append` is one `MULTI` of `XADD`s (atomic, ordered ids),
+  `EventLog` (+ `LogEntry`, `EventLogClosedError`) — Redis Streams: `append` is one `EVAL` script of `XADD`s (atomic,
+  ordered ids) that refuses a closed log and refreshes the stream TTL,
   `read` resumes with an **exclusive** `XRANGE (id` and tails by polling (REST keeps no blocking
   reads), `close` sets a separate `:closed` key and readers do a final drain after seeing it, so
   nothing appended before close is lost. Values carry an `agentkit-event-v1:` marker because

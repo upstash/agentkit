@@ -91,7 +91,7 @@ return #KEYS`;
  *
  * ```ts
  * import { withPersistence } from "@tanstack/ai-persistence";
- * import { upstashPersistence } from "@upstash/agentkit-tanstack-ai";
+ * import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
  *
  * chat({ adapter, messages, threadId, middleware: [withPersistence(upstashPersistence())] });
  * ```

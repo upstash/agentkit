@@ -38,16 +38,18 @@ return 1`;
 /**
  * Delete an artifact and unindex it, but only from the indexes it is actually in: the caller reads
  * the side hash, declares those index keys, and the script compare-and-swaps (0 = a concurrent save
- * moved it; retry), so a racing move can never leave a dangling index entry.
- * KEYS: document, side hash, run index, thread index. ARGV: expected run index, expected thread
- * index, id.
+ * changed it; retry), so a racing save can never leave a dangling index entry. An artifact that is
+ * not indexed ("" expected, no index keys) goes through the same check, so a first save that lands
+ * between the read and the delete is noticed rather than half-deleted.
+ * KEYS: document, side hash, [run index, thread index]. ARGV: expected run index, expected thread
+ * index ("" = none), id.
  */
 const DELETE_ARTIFACT = `${KEY_LOCKING}local curRun = redis.call("HGET", KEYS[2], "run") or ""
 local curThread = redis.call("HGET", KEYS[2], "thread") or ""
 if curRun ~= ARGV[1] or curThread ~= ARGV[2] then return 0 end
 redis.call("DEL", KEYS[1], KEYS[2])
-redis.call("ZREM", KEYS[3], ARGV[3])
-redis.call("ZREM", KEYS[4], ARGV[3])
+if KEYS[3] then redis.call("ZREM", KEYS[3], ARGV[3]) end
+if KEYS[4] then redis.call("ZREM", KEYS[4], ARGV[3]) end
 return 1`;
 
 /**
@@ -119,15 +121,11 @@ export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore 
   async function remove(id: string): Promise<void> {
     for (let attempt = 0; attempt < 5; attempt++) {
       const { run, thread } = await readIndexes(id);
-      if (!run || !thread) {
-        // Not indexed: at most a bare document is left (e.g. from a crashed save) — drop it.
-        await redis.del(k.artifact(id), k.where(id));
-        return;
-      }
+      const indexed = Boolean(run && thread);
       const deleted = await redis.eval(
         DELETE_ARTIFACT,
-        [k.artifact(id), k.where(id), run, thread],
-        [run, thread, id],
+        [k.artifact(id), k.where(id), ...(indexed ? [run!, thread!] : [])],
+        [indexed ? run! : "", indexed ? thread! : "", id],
       );
       if (Number(deleted) === 1) return;
     }

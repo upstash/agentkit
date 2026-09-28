@@ -235,22 +235,31 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
 
     async get(key: string, options?: BlobGetOptions): Promise<BlobObject | null> {
       assertKey(key);
-      // The record and its version pointer are read together, so the bytes fetched are the ones
-      // the record describes even while another writer commits.
-      const tx = redis.multi();
-      tx.json.get(recordKey(key));
-      tx.get(versionKey(key));
-      const [record, path] = (await tx.exec()) as [BlobRecord | null, string | null];
-      if (!record || !path) return null;
-      let read;
-      try {
-        read = await readBytes(path, record, options?.range);
-      } catch (error) {
-        if (error instanceof RangeError) throw error;
-        if (isNotFound(error)) return null;
-        throw error;
+      let read: Awaited<ReturnType<typeof readBytes>> | undefined;
+      let record: BlobRecord | null = null;
+      // The record and its version pointer are read together, so the bytes fetched are the ones the
+      // record describes. A concurrent overwrite can still delete that version between the snapshot
+      // and the fetch; then the key has moved on, so read it again rather than report it missing.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const tx = redis.multi();
+        tx.json.get(recordKey(key));
+        tx.get(versionKey(key));
+        const snapshot = (await tx.exec()) as [BlobRecord | null, string | null];
+        record = snapshot[0];
+        const path = snapshot[1];
+        if (!record || !path) return null;
+        try {
+          read = await readBytes(path, record, options?.range);
+        } catch (error) {
+          if (error instanceof RangeError) throw error;
+          if (!isNotFound(error)) throw error;
+          read = null;
+        }
+        if (read) break;
+        // Gone for good only if the key still points at the version that vanished.
+        if ((await redis.get(versionKey(key))) === path) return null;
       }
-      if (!read) return null;
+      if (!read || !record) return null;
       const { bytes, served } = read;
       return {
         ...record,

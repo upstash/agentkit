@@ -8,7 +8,9 @@ Redis, via [`@upstash/agentkit-tanstack-ai`](../../packages/tanstack-ai):
 - **Resumable streams**: every chunk goes to a Redis Stream first (`upstashStream`), so a reload —
   or the same URL on another device — continues the answer, on any server instance.
 - **Detached runs**: closing the tab doesn't stop the model; the run finishes and is persisted.
-  `RedisLock` makes sure a duplicate request never starts a second run.
+  Next.js `after()` keeps the invocation alive for it on serverless hosts (up to `maxDuration`).
+  `RedisLock` makes sure a duplicate request never starts a second run: its lease is renewed for the
+  whole run, and a producer that ever loses it stops.
 - **Memory**: facts saved in one thread are recalled in the next (`upstashMemory`).
 
 It is TanStack AI's own persistent-chat pattern (from their `ts-react-chat` example) with the
@@ -42,6 +44,7 @@ model, and checks what only shared backends can do:
 | A reload on B while A is still generating | `reconstructChat` sees the in-flight run, then the finished transcript |
 | `remember:` in one thread on A, ask in a new thread on B | Memory is shared across threads and instances, and isolated per user |
 | The same run POSTed to both instances at once | Exactly one model run (`RedisLock`), one answer, one transcript entry |
+| A run re-POSTed after its producer lease would have expired | The lease is renewed for the whole run, so it is still produced once |
 | A malformed request | A 400, not a 500 |
 
 Keys are written under a per-run prefix and deleted afterwards. Needs `UPSTASH_REDIS_REST_URL` and

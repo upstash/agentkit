@@ -105,7 +105,7 @@ const LABEL: Record<Source, string> = {
  *
  * ```ts
  * import { memoryMiddleware } from "@tanstack/ai-memory";
- * import { upstashMemory } from "@upstash/agentkit-tanstack-ai";
+ * import { upstashMemory } from "@upstash/agentkit-tanstack-ai/memory";
  *
  * chat({
  *   adapter, messages,
@@ -210,7 +210,11 @@ export function upstashMemory(config: UpstashMemoryConfig = {}): MemoryAdapter {
     },
 
     async listFacts(scope): Promise<MemoryFact[]> {
-      const records = await memory.list({ userId: memoryScopeKey(scope, scopeBy), limit: 100 });
+      // Every fact in the scope: `list` has no cursor, so size the page to the scope's count.
+      const userId = memoryScopeKey(scope, scopeBy);
+      const total = await memory.count({ userId });
+      if (total === 0) return [];
+      const records = await memory.list({ userId, limit: total });
       return records.map((r) => ({
         id: r.id,
         text: r.text,

@@ -62,8 +62,9 @@ describe.skipIf(!hasRedisCreds)("upstashMemory (live Redis, real chat loop)", ()
     await adapter.recall({ threadId: "probe", userId }, "provisioning probe");
   });
 
+  const manyUsers: string[] = [];
   afterAll(async () => {
-    for (const u of [userId, other]) {
+    for (const u of [userId, other, ...manyUsers]) {
       await cleanupKeys(
         redis,
         `agentkit:tanstackMemory:${memoryScopeKey({ threadId: "x", userId: u })}:`,
@@ -125,6 +126,34 @@ describe.skipIf(!hasRedisCreds)("upstashMemory (live Redis, real chat loop)", ()
       (r) => r.systemPrompt.includes("Izmir"),
     );
     expect(recalled.systemPrompt).toContain("I live in Izmir (the user said this)");
+  });
+
+  it("listFacts returns every fact in a scope, past the default page size", async () => {
+    const many = uniqueUserId("tsmem-many");
+    manyUsers.push(many);
+    const store = new AgentMemory({
+      redis,
+      prefix: "agentkit:tanstackMemory",
+      metadataSchema: { source: s.string().noTokenize() },
+    });
+    const scopeUser = memoryScopeKey({ threadId: "x", userId: many });
+    await store.count({ userId: scopeUser }); // provision before writing
+    await Promise.all(
+      Array.from({ length: 120 }, (_, i) =>
+        store.add({
+          userId: scopeUser,
+          text: `fact number ${i}`,
+          id: `f${i}`,
+          metadata: { source: "agent" },
+        }),
+      ),
+    );
+    await store.searchIndex.waitIndexing();
+    const facts = await pollUntil(
+      () => adapter.listFacts!({ threadId: "x", userId: many }),
+      (f) => f.length >= 120,
+    );
+    expect(facts).toHaveLength(120);
   });
 
   it("is isolated per user", async () => {

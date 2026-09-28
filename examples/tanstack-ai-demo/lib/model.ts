@@ -4,7 +4,7 @@
  *
  * - A message starting with `remember:` makes the model call the `save_memory` tool with the rest.
  * - Otherwise it answers `You said: <message>.`, then `I remember: …` with any memories that were
- *   recalled into the system prompt, then a short filler — streamed one word at a time
+ *   recalled into the system prompt, then a short filler (three times over for `long:` messages) — streamed one word at a time
  *   (`MOCK_WORD_DELAY_MS`, default 40) so a client can disconnect mid-answer.
  */
 import { openaiText } from "@tanstack/ai-openai";
@@ -68,7 +68,12 @@ function mockModel(): Adapter {
       const answer =
         last?.role === "tool"
           ? "Saved."
-          : [`You said: ${said}.`, recalled.length ? `I remember: ${recalled.join("; ")}.` : "", FILLER]
+          : [
+              `You said: ${said}.`,
+              recalled.length ? `I remember: ${recalled.join("; ")}.` : "",
+              // "long:" triples the filler, for a run that must outlast a short producer lease.
+              ...(said.toLowerCase().startsWith("long:") ? [FILLER, FILLER, FILLER] : [FILLER]),
+            ]
               .filter(Boolean)
               .join(" ");
 
@@ -93,5 +98,5 @@ function mockModel(): Adapter {
 
 export function chatModel(): Adapter {
   if (process.env.AGENTKIT_MOCK_MODEL === "1") return mockModel();
-  return openaiText((process.env.OPENAI_MODEL ?? "gpt-5-mini") as Parameters<typeof openaiText>[0]);
+  return openaiText((process.env.OPENAI_MODEL ?? "gpt-5.4-mini") as Parameters<typeof openaiText>[0]);
 }

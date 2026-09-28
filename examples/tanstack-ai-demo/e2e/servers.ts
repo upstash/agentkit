@@ -67,6 +67,8 @@ export default async function setup({ provide }: GlobalSetupContext) {
     AGENTKIT_MOCK_MODEL: "1",
     MOCK_WORD_DELAY_MS: process.env.MOCK_WORD_DELAY_MS ?? "60",
     DEMO_PREFIX: demoPrefix,
+    // Shorter than one mock answer (~2s), so a run outlives its first lease and must renew it.
+    PRODUCER_LEASE_MS: "1000",
     NODE_ENV: "production" as const,
   };
   const children: ChildProcess[] = [];

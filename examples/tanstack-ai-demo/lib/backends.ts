@@ -25,7 +25,13 @@ function create() {
      * "Only one producer per run", across instances: a duplicate POST for the same run (a client
      * retry landing on another server) must not start a second model run into the same log.
      */
-    producerLock: new RedisLock({ redis, prefix: `${prefix()}:producer`, leaseMs: 10 * 60_000 }),
+    // A short lease, renewed while the run lasts: a crashed instance frees the run within seconds.
+    // (`PRODUCER_LEASE_MS` lets the E2E suite make it shorter than a run, to prove the renewal.)
+    producerLock: new RedisLock({
+      redis,
+      prefix: `${prefix()}:producer`,
+      leaseMs: Number(process.env.PRODUCER_LEASE_MS ?? 15_000),
+    }),
   };
 }
 
