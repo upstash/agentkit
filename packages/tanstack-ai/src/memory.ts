@@ -165,7 +165,7 @@ export function upstashMemory(config: UpstashMemoryConfig = {}): MemoryAdapter {
     }).server(async ({ text }: { text: string }) => {
       const record = await add(userId, text, "agent");
       return { id: record.id, saved: true };
-    }) as unknown as Tool;
+    });
 
   return {
     id: "upstash",

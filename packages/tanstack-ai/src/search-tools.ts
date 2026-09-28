@@ -42,14 +42,11 @@ export function createSearchTools<TSchema extends AnySearchSchema = AnySearchSch
   const { names: toolNames, ...defsConfig } = config;
   const defs = createSearchToolDefs({ ...defsConfig, redis });
   const names = { search: "search", aggregate: "aggregate", count: "count", ...toolNames };
-  return (["search", "aggregate", "count"] as const).map(
-    (key) =>
-      toolDefinition({
-        name: names[key],
-        description: defs[key].description,
-        inputSchema: defs[key].inputSchema as never,
-      }).server(async (input: unknown) =>
-        defs[key].execute(input as Record<string, unknown>),
-      ) as unknown as Tool,
+  return (["search", "aggregate", "count"] as const).map((key) =>
+    toolDefinition({
+      name: names[key],
+      description: defs[key].description,
+      inputSchema: defs[key].inputSchema,
+    }).server(async (input: unknown) => defs[key].execute(input as Record<string, unknown>)),
   );
 }
