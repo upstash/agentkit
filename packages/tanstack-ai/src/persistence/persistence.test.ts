@@ -1,9 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runPersistenceConformance } from "@tanstack/ai-persistence/testkit";
+import type { PersistenceConformanceCheck } from "@tanstack/ai-persistence/testkit";
 import { Bucket } from "@upstash/blob";
 import { upstashPersistence } from "./persistence.js";
 import { testBucket, type TestBucket } from "../testing/test-bucket.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
+
+// Every opt-in check the kit offers (as of @tanstack/ai-persistence 0.7.1); none is skipped.
+const OPT_IN_CHECKS: PersistenceConformanceCheck[] = [
+  "messages.metadata",
+  "runs.listByThread.state",
+];
 
 const hasBlobToken = Boolean(process.env.UPSTASH_BLOB_TOKEN);
 
@@ -25,9 +32,12 @@ describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
   });
 
   let n = 0;
-  runPersistenceConformance("upstashPersistence", () =>
+  runPersistenceConformance(
+    "upstashPersistence",
     // A fresh keyspace per case: the suite assumes each persistence starts empty.
-    upstashPersistence({ redis, prefix: `${prefix}:${++n}`, bucket, blobPathPrefix: `t/${n}/` }),
+    () =>
+      upstashPersistence({ redis, prefix: `${prefix}:${++n}`, bucket, blobPathPrefix: `t/${n}/` }),
+    { checks: OPT_IN_CHECKS },
   );
 
   it("serves byte ranges with an HTTP Range request, and cleans up bucket objects on delete", async () => {
@@ -115,13 +125,16 @@ describe.skipIf(!hasRedisCreds || !hasBlobToken)(
     });
 
     let n = 0;
-    runPersistenceConformance("upstashPersistence + Upstash Blob", () =>
-      upstashPersistence({
-        redis,
-        prefix: `${prefix}:${++n}`,
-        bucket,
-        blobPathPrefix: `${pathPrefix}${n}/`,
-      }),
+    runPersistenceConformance(
+      "upstashPersistence + Upstash Blob",
+      () =>
+        upstashPersistence({
+          redis,
+          prefix: `${prefix}:${++n}`,
+          bucket,
+          blobPathPrefix: `${pathPrefix}${n}/`,
+        }),
+      { checks: OPT_IN_CHECKS },
     );
   },
 );

@@ -50,16 +50,16 @@
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
-    "@tanstack/ai": "0.61.0",
-    "@tanstack/ai-memory": "0.2.6",
-    "@tanstack/ai-persistence": "0.6.7",
+    "@tanstack/ai": "0.63.0",
+    "@tanstack/ai-memory": "0.2.8",
+    "@tanstack/ai-persistence": "0.7.1",
     "dotenv": "^16.4.5",
     "@upstash/blob": "0.0.7"
   },
   "peerDependencies": {
-    "@tanstack/ai": ">=0.61.0",
-    "@tanstack/ai-memory": ">=0.2.6",
-    "@tanstack/ai-persistence": ">=0.6.7",
+    "@tanstack/ai": ">=0.63.0",
+    "@tanstack/ai-memory": ">=0.2.8",
+    "@tanstack/ai-persistence": ">=0.7.1",
     "@upstash/blob": ">=0.0.7"
   },
   "peerDependenciesMeta": {
