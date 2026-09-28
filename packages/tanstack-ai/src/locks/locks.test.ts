@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { afterAll } from "vitest";
 import { upstashLocks } from "./locks.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

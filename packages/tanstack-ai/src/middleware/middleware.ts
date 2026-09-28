@@ -3,7 +3,7 @@ import { Redis as RedisClient } from "@upstash/redis";
 import { ToolCache, createRateLimit } from "@upstash/agentkit-sdk";
 import type { RateLimitConfig, ToolCacheConfig } from "@upstash/agentkit-sdk";
 import type { ChatMiddleware, ChatMiddlewareContext } from "@tanstack/ai";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /**
  * The core {@link ToolCacheConfig} (`prefix`, `ttlSeconds`), with `redis` optional, plus which tools

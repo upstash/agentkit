@@ -12,7 +12,7 @@ import type {
   MessageStore,
   MetadataStore,
 } from "@tanstack/ai-persistence";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 import {
   CREATE,
   KEY_LOCKING,

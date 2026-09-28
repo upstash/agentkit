@@ -33,8 +33,6 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Code sandbox** (Eve only) — an [Upstash Box](https://github.com/upstash/box) sandbox provider for
   Eve's `defineSandbox` (`UpstashSandbox`, eve ≥ 0.65).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
-- **Coordination primitives** — `RedisLock` (lease lock with fencing tokens) and `EventLog`
-  (resumable append-only log on Redis Streams), under the TanStack AI locks and resumable streams.
 
 ## Examples
 

@@ -4,7 +4,7 @@ import { createSearchToolDefs } from "@upstash/agentkit-sdk";
 import type { AnySearchSchema, SearchToolDefsConfig } from "@upstash/agentkit-sdk";
 import { toolDefinition } from "@tanstack/ai";
 import type { Tool } from "@tanstack/ai";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /**
  * The core {@link SearchToolDefsConfig} (`schema`, `indexName`, `prefix`, `defaultLimit`,

@@ -1,9 +1,9 @@
 import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
-import { RedisLock } from "@upstash/agentkit-sdk";
-import type { RedisLockConfig } from "@upstash/agentkit-sdk";
+import { RedisLock } from "./redis-lock.js";
+import type { RedisLockConfig } from "./redis-lock.js";
 import type { LockStore } from "@tanstack/ai/locks";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /**
  * The core {@link RedisLockConfig} (lease, acquire timeout, retry delay), with `redis` optional.

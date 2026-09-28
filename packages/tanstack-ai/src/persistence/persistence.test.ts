@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runPersistenceConformance } from "@tanstack/ai-persistence/testkit";
 import { Bucket } from "@upstash/blob";
 import { upstashPersistence } from "./persistence.js";
-import { testBucket, type TestBucket } from "./test-bucket.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { testBucket, type TestBucket } from "../testing/test-bucket.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
 
 const hasBlobToken = Boolean(process.env.UPSTASH_BLOB_TOKEN);
 

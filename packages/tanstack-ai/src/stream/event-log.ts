@@ -1,5 +1,5 @@
 import type { Redis } from "@upstash/redis";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /**
  * Every stored event carries this prefix. `@upstash/redis` auto-deserializes replies, so a field
@@ -65,7 +65,7 @@ export class EventLog<T = unknown> {
 
   constructor(config: EventLogConfig) {
     this.redis = config.redis;
-    addTelemetry(config.redis, { enabled: config.enableTelemetry });
+    addTelemetry(config.redis, config.enableTelemetry);
     this.prefix = config.prefix ?? "agentkit:log";
     this.ttlSeconds = config.ttlSeconds ?? 86_400;
     this.pollIntervalMs = config.pollIntervalMs ?? 250;

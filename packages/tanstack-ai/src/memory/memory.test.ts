@@ -6,8 +6,8 @@ import { runMemoryAdapterContract } from "@tanstack/ai-memory/testkit";
 import { s } from "@upstash/redis";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { memoryScopeKey, upstashMemory } from "./memory.js";
-import { scriptedAdapter } from "./test-adapter.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "./test-support.js";
+import { scriptedAdapter } from "../testing/test-adapter.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "../testing/test-support.js";
 
 async function drain(stream: unknown): Promise<StreamChunk[]> {
   const out: StreamChunk[] = [];

@@ -3,8 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chat } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { createSearchTools } from "./search-tools.js";
-import { scriptedAdapter } from "./test-adapter.js";
-import { hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { scriptedAdapter } from "../testing/test-adapter.js";
+import { hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
 
 async function drain(stream: unknown): Promise<StreamChunk[]> {
   const out: StreamChunk[] = [];

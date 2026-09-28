@@ -12,7 +12,7 @@ import type {
   RecallResult,
   SaveReceipt,
 } from "@tanstack/ai-memory";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /** Where a memory came from — shown next to it in the recalled block, since they differ in weight. */
 type Source = "agent" | "userMessage";

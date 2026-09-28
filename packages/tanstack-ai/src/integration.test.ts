@@ -3,10 +3,10 @@ import { afterAll, describe, expect, it } from "vitest";
 import { chat, replayRunStream, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { withPersistence } from "@tanstack/ai-persistence";
-import { upstashPersistence } from "./persistence.js";
-import { upstashStream } from "./stream.js";
-import { scriptedAdapter } from "./test-adapter.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { upstashPersistence } from "./persistence/persistence.js";
+import { upstashStream } from "./stream/stream.js";
+import { scriptedAdapter } from "./testing/test-adapter.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./testing/test-support.js";
 
 // The pieces together, the way an app route wires them: persistence middleware on `chat()`, the
 // durable stream on the SSE response, and a second "instance" reading both back.

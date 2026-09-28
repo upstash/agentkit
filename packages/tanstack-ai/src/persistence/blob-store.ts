@@ -11,7 +11,7 @@ import type {
   BlobRecord,
   BlobStore,
 } from "@tanstack/ai-persistence";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 import { KEY_LOCKING, loadDocs } from "./records.js";
 
 /**

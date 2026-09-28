@@ -35,15 +35,6 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   (**Model cache removed**; **`Rag` removed** — RAG is done via the search tools;
   **`search-index.ts`/`RedisSearchIndex` and the `withIndex` helper removed** — `ReactiveSearchIndex`
   replaces them, owning create-on-read.)
-- **Coordination primitives** (`lock.ts`, `event-log.ts`): `RedisLock` (+ `LockLease`, `LockAcquireTimeoutError`,
-  `LockLostError`) — `SET NX PX` lease + a never-expiring `INCR` fencing counter, release/extend are
-  ownership-checked Lua; `withLock` renews every `leaseMs/3` and aborts the section's signal on loss.
-  `EventLog` (+ `LogEntry`) — Redis Streams: `append` is one `MULTI` of `XADD`s (atomic, ordered ids),
-  `read` resumes with an **exclusive** `XRANGE (id` and tails by polling (REST keeps no blocking
-  reads), `close` sets a separate `:closed` key and readers do a final drain after seeing it, so
-  nothing appended before close is lost. Values carry an `agentkit-event-v1:` marker because
-  `@upstash/redis` auto-deserializes stream fields (`"123"` would come back as `123`). Both verified
-  live over REST (2026-09-27): `MULTI`+`XADD`, `XRANGE (`, `EVAL`, `SET NX PX` all work.
 - `@upstash/ratelimit` is a **dependency** of core (not a peer); rate limiting lives here now.
 - **`ChatHistory`** is durable chat history on **Redis Search** (the source of truth for transcripts,
   resurrecting the old removed ChatHistory). One JSON doc per chat at `agentkit:chat:<userId>:<sessionId>`
@@ -438,7 +429,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   variable-length and test `if KEYS[n]` in the script.
 - Scripts that need a key they can only learn by reading (the artifact store's old run/thread index)
   read it first, declare it, and compare-and-swap inside the script, retrying on a mismatch.
-- Current scripts: `RedisLock` acquire/release/extend (sdk), eve `redisDocuments()` CAS, and the
+- Current scripts: `RedisLock` acquire/release/extend (tanstack-ai), eve `redisDocuments()` CAS, and the
   tanstack-ai persistence/generation stores. Upstash tolerates a leading newline before the shebang,
   standard Redis does not — keep it on line 1.
 
@@ -1164,6 +1155,19 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 
 ## tanstack-ai (`packages/tanstack-ai`)
 
+- **Layout** (`src/`): one folder per feature — `persistence/` (stores, `records.ts` plumbing,
+  `blob-store.ts`), `stream/` (`upstashStream` + `EventLog`), `locks/` (`upstashLocks` + `RedisLock`),
+  `memory/`, `middleware/`, `search/`, and `testing/` (scripted adapter, test bucket, env helpers —
+  never imported by `index.ts`). Root: `index.ts`, `telemetry.ts`, `version.ts`, `integration.test.ts`.
+- **Redis primitives** (`src/locks/redis-lock.ts`, `src/stream/event-log.ts`; moved here from core 2026-09-28, exported from this package): `RedisLock` (+ `LockLease`, `LockAcquireTimeoutError`,
+  `LockLostError`) — `SET NX PX` lease + a never-expiring `INCR` fencing counter, release/extend are
+  ownership-checked Lua; `withLock` renews every `leaseMs/3` and aborts the section's signal on loss.
+  `EventLog` (+ `LogEntry`) — Redis Streams: `append` is one `MULTI` of `XADD`s (atomic, ordered ids),
+  `read` resumes with an **exclusive** `XRANGE (id` and tails by polling (REST keeps no blocking
+  reads), `close` sets a separate `:closed` key and readers do a final drain after seeing it, so
+  nothing appended before close is lost. Values carry an `agentkit-event-v1:` marker because
+  `@upstash/redis` auto-deserializes stream fields (`"123"` would come back as `123`). Both verified
+  live over REST (2026-09-27): `MULTI`+`XADD`, `XRANGE (`, `EVAL`, `SET NX PX` all work.
 - **Why it exists:** TanStack AI (≥0.61) defines backend contracts for production state and ships
   only in-memory implementations (`memoryPersistence`, `memoryStream`, `InMemoryLockStore`,
   `InMemoryRunStore`, the ai-memory `inMemory()`/ioredis-shaped `redis()` adapters). As of 2026-09
@@ -1173,7 +1177,7 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   is TanStack's own package.
 - Exports: `upstashPersistence` (messages/runs/interrupts/metadata), `upstashStream`
   (`StreamDurability`, offsets `upstash:v1:<encodeURIComponent(runId)>:<streamId>`), `upstashLocks`
-  (`LockStore` over core `RedisLock`), `upstashMemory` + `memoryScopeKey` (`MemoryAdapter` over core
+  (`LockStore` over `RedisLock`, `src/locks/`), `upstashMemory` + `memoryScopeKey` (`MemoryAdapter` over core
   `AgentMemory`), `toolCache`/`rateLimit` middlewares + `RateLimitExceededError`, `createSearchTools`
   (returns a `Tool[]` built with `toolDefinition().server()`), re-exported `createRateLimit`/`Ratelimit`.
 - **Peers:** `@tanstack/ai` required; `@tanstack/ai-persistence` and `@tanstack/ai-memory` optional
@@ -1209,7 +1213,7 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   `Range`; a 200 is sliced locally. `@upstash/blob` is an optional peer (structural
   `BlobBucketLike`). Live-Blob conformance runs with `UPSTASH_BLOB_TOKEN` (get it via the MCP's
   `blob_bucket get` + `include_credentials`): 26/26 on 2026-09-28.
-- **Config types reuse core:** `UpstashLocksConfig = Omit<RedisLockConfig, "redis"> & {redis?}`,
+- **Config types reuse the primitives and core:** `UpstashLocksConfig = Omit<RedisLockConfig, "redis"> & {redis?}`,
   `UpstashStreamConfig` from `EventLogConfig`, `ToolCacheMiddlewareConfig` from `ToolCacheConfig`,
   `UpstashMemoryConfig` picks from `AgentMemoryConfig`, `CreateSearchToolsConfig` from
   `SearchToolDefsConfig` — spread straight through, no per-field copying.

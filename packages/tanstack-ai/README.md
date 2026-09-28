@@ -93,7 +93,8 @@ chat({ adapter, messages, middleware: [withLocks(upstashLocks()), withSandbox(sa
 ```
 
 A lease (`leaseMs`, default 30 s) renewed while the section runs; the section's `signal` aborts if
-the lease is lost. Built on the core `RedisLock`, which also exposes a fencing token.
+the lease is lost. Built on `RedisLock`, exported from this package too, which also exposes a
+fencing token (`EventLog`, the Redis Streams log under `upstashStream`, is exported as well).
 
 ## Long-term memory
 

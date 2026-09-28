@@ -4,7 +4,7 @@ import { replayRunStream, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { Redis } from "@upstash/redis";
 import { upstashStream } from "./stream.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

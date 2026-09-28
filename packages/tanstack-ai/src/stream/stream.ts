@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
-import { EventLog } from "@upstash/agentkit-sdk";
-import type { EventLogConfig } from "@upstash/agentkit-sdk";
+import { EventLog } from "./event-log.js";
+import type { EventLogConfig } from "./event-log.js";
 import { resolveResumeRunId } from "@tanstack/ai";
 import type { StreamChunk, StreamDurability } from "@tanstack/ai";
-import { addTelemetry } from "./telemetry.js";
-import { assertId } from "./records.js";
+import { addTelemetry } from "../telemetry.js";
+import { assertId } from "../persistence/records.js";
 
 const OFFSET_PREFIX = "upstash:v1:";
 

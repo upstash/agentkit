@@ -4,14 +4,14 @@ import type { StreamChunk } from "@tanstack/ai";
 import { z } from "zod";
 import { Ratelimit } from "@upstash/agentkit-sdk";
 import { rateLimit, toolCache } from "./middleware.js";
-import { scriptedAdapter } from "./test-adapter.js";
+import { scriptedAdapter } from "../testing/test-adapter.js";
 import {
   cleanupKeys,
   hasRedisCreds,
   testRedis,
   uniquePrefix,
   uniqueUserId,
-} from "./test-support.js";
+} from "../testing/test-support.js";
 
 async function drain(stream: unknown): Promise<StreamChunk[]> {
   const out: StreamChunk[] = [];

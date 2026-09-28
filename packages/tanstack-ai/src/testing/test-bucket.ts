@@ -5,7 +5,7 @@
  */
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { BlobBucketLike } from "./blob-store.js";
+import type { BlobBucketLike } from "../persistence/blob-store.js";
 
 export interface TestBucket extends BlobBucketLike {
   close(): Promise<void>;

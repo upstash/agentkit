@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { LockAcquireTimeoutError, LockLostError, RedisLock } from "./lock.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "./test-support.js";
+import { LockAcquireTimeoutError, LockLostError, RedisLock } from "./redis-lock.js";
+import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Redis } from "@upstash/redis";
-import { addTelemetry } from "./telemetry.js";
+import { addTelemetry } from "../telemetry.js";
 
 /**
  * Every script runs with `allow-key-locking`, so Upstash locks only the keys it declares rather than
@@ -127,7 +127,7 @@ export class RedisLock {
 
   constructor(config: RedisLockConfig) {
     this.redis = config.redis;
-    addTelemetry(config.redis, { enabled: config.enableTelemetry });
+    addTelemetry(config.redis, config.enableTelemetry);
     this.prefix = config.prefix ?? "agentkit:lock";
     this.leaseMs = config.leaseMs ?? 30_000;
     this.acquireTimeoutMs = config.acquireTimeoutMs ?? 30_000;
