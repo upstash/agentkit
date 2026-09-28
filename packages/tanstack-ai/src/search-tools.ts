@@ -1,30 +1,24 @@
 import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
 import { createSearchToolDefs } from "@upstash/agentkit-sdk";
-import type { AnySearchSchema } from "@upstash/agentkit-sdk";
+import type { AnySearchSchema, SearchToolDefsConfig } from "@upstash/agentkit-sdk";
 import { toolDefinition } from "@tanstack/ai";
 import type { Tool } from "@tanstack/ai";
 import { addTelemetry } from "./telemetry.js";
 
-export interface CreateSearchToolsConfig<TSchema extends AnySearchSchema = AnySearchSchema> {
-  /** The Upstash Redis Search schema of your documents (built with `s` from `@upstash/redis`). */
-  schema: TSchema;
+/**
+ * The core {@link SearchToolDefsConfig} (`schema`, `indexName`, `prefix`, `defaultLimit`,
+ * `enableTelemetry`), with `redis` optional, plus the tool names.
+ */
+export type CreateSearchToolsConfig<TSchema extends AnySearchSchema = AnySearchSchema> = Omit<
+  SearchToolDefsConfig<TSchema>,
+  "redis"
+> & {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /** Index name. Defaults to `"agentkit:search"`. */
-  indexName?: string;
-  /** Key prefix of the indexed JSON documents. Defaults to `"<indexName>:"`. */
-  prefix?: string;
-  /** Default page size for the search tool. Defaults to 10. */
-  defaultLimit?: number;
   /** Tool names. Defaults to `search`, `aggregate` and `count`. */
   names?: { search?: string; aggregate?: string; count?: string };
-  /**
-   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
-   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
-   */
-  enableTelemetry?: boolean;
-}
+};
 
 /**
  * Schema-driven Redis Search tools for TanStack AI — `search`, `aggregate` and `count` over one
@@ -45,15 +39,9 @@ export function createSearchTools<TSchema extends AnySearchSchema = AnySearchSch
 ): Tool[] {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
-  const defs = createSearchToolDefs({
-    schema: config.schema,
-    redis,
-    ...(config.indexName !== undefined ? { indexName: config.indexName } : {}),
-    ...(config.prefix !== undefined ? { prefix: config.prefix } : {}),
-    ...(config.defaultLimit !== undefined ? { defaultLimit: config.defaultLimit } : {}),
-    ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
-  });
-  const names = { search: "search", aggregate: "aggregate", count: "count", ...config.names };
+  const { names: toolNames, ...defsConfig } = config;
+  const defs = createSearchToolDefs({ ...defsConfig, redis });
+  const names = { search: "search", aggregate: "aggregate", count: "count", ...toolNames };
   return (["search", "aggregate", "count"] as const).map(
     (key) =>
       toolDefinition({

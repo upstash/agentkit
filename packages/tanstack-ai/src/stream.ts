@@ -2,40 +2,29 @@ import { randomUUID } from "node:crypto";
 import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
 import { EventLog } from "@upstash/agentkit-sdk";
+import type { EventLogConfig } from "@upstash/agentkit-sdk";
 import { resolveResumeRunId } from "@tanstack/ai";
 import type { StreamChunk, StreamDurability } from "@tanstack/ai";
 import { addTelemetry } from "./telemetry.js";
+import { assertId } from "./records.js";
 
 const OFFSET_PREFIX = "upstash:v1:";
 
-export interface UpstashStreamConfig {
+/**
+ * The core {@link EventLogConfig} (TTL, poll interval), with `redis` optional, plus the join deadline.
+ * Defaults here: `prefix` `agentkit:stream`, `ttlSeconds` 86400 (how long a run stays resumable),
+ * `pollIntervalMs` 150.
+ */
+export type UpstashStreamConfig = Omit<EventLogConfig, "redis"> & {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /** Base key prefix. Defaults to `agentkit:stream`. */
-  prefix?: string;
-  /**
-   * How long a run's log is kept after its last append or its close, in seconds — the window in
-   * which a reload or another device can still resume it.
-   * @default 86400
-   */
-  ttlSeconds?: number;
-  /**
-   * How often a caught-up reader polls for new chunks, in ms.
-   * @default 150
-   */
-  pollIntervalMs?: number;
   /**
    * How long a from-start join (`-1` / `now`) waits for a run that has not produced anything yet
    * before failing. Raise it when the producer is queued (e.g. started by a background job).
    * @default 2000
    */
   firstChunkDeadlineMs?: number;
-  /**
-   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
-   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
-   */
-  enableTelemetry?: boolean;
-}
+};
 
 /** Explicit construction when there is no `Request` (server functions, background workers). */
 export interface UpstashStreamInit {
@@ -46,11 +35,7 @@ export interface UpstashStreamInit {
 }
 
 function assertRunId(runId: string): string {
-  if (runId.length === 0 || /[\r\n]/.test(runId)) {
-    throw new Error(
-      `Invalid runId (must be non-empty and contain no CR/LF): ${JSON.stringify(runId)}`,
-    );
-  }
+  assertId(runId, "runId");
   return runId;
 }
 
@@ -107,14 +92,13 @@ export function upstashStream(
 ): StreamDurability {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
+  const { firstChunkDeadlineMs = 2_000, ...logConfig } = config;
   const log = new EventLog<StreamChunk>({
+    ...logConfig,
     redis,
     prefix: config.prefix ?? "agentkit:stream",
-    ttlSeconds: config.ttlSeconds ?? 86_400,
     pollIntervalMs: config.pollIntervalMs ?? 150,
-    ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
   });
-  const firstChunkDeadlineMs = config.firstChunkDeadlineMs ?? 2_000;
 
   const resumeOffset =
     source instanceof Request ? readResumeOffset(source) : (source.offset ?? null);

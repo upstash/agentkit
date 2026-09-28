@@ -1,20 +1,27 @@
 import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
-import type { ModelMessage, RunRecord, RunStatus, RunStore } from "@tanstack/ai";
+import type { ModelMessage, RunRecord, RunStore } from "@tanstack/ai";
 import type {
   AIPersistence,
   ArtifactStore,
   BlobStore,
   ChatPersistenceStores,
   GenerationRunStore,
-  InterruptCommitEntry,
   InterruptRecord,
   InterruptStore,
   MessageStore,
   MetadataStore,
 } from "@tanstack/ai-persistence";
 import { addTelemetry } from "./telemetry.js";
-import { assertId, decode, decodeFields, encode, encodeFields } from "./codec.js";
+import {
+  CREATE,
+  KEY_LOCKING,
+  PATCH,
+  assertId,
+  checkRun,
+  loadDocs,
+  toMergePatches,
+} from "./records.js";
 import { redisArtifactStore, redisGenerationRunStore } from "./generation-stores.js";
 import { upstashBlobStore } from "./blob-store.js";
 import type { BlobBucketLike } from "./blob-store.js";
@@ -47,129 +54,6 @@ export interface UpstashPersistenceConfig {
   enableTelemetry?: boolean;
 }
 
-const RUN_STATUSES: Record<RunStatus, true> = {
-  running: true,
-  interrupted: true,
-  completed: true,
-  failed: true,
-  aborted: true,
-};
-
-/**
- * Every script here runs with `allow-key-locking`: Upstash locks only the keys a script declares, not
- * the whole database, and an undeclared key is an error — so each script touches exactly its `KEYS`.
- *
- * Create a run hash only if it does not exist yet, index it, and return the stored hash either way
- * (the idempotent `createOrResume` contract: an existing record comes back unchanged).
- * KEYS: run hash, thread index, [parent index — only when the run has a parent]. ARGV: startedAt, runId, pairs…
- */
-const CREATE_RUN = `#!lua flags=allow-key-locking
-if redis.call("EXISTS", KEYS[1]) == 0 then
-  local fields = {}
-  for i = 3, #ARGV do fields[#fields + 1] = ARGV[i] end
-  redis.call("HSET", KEYS[1], unpack(fields))
-  redis.call("ZADD", KEYS[2], ARGV[1], ARGV[2])
-  if KEYS[3] then redis.call("ZADD", KEYS[3], ARGV[1], ARGV[2]) end
-end
-return redis.call("HGETALL", KEYS[1])`;
-
-/**
- * Patch an existing hash: set N field/value pairs, delete the remaining named fields. A missing hash
- * is a no-op (the "unknown runId never creates a record" invariant). ARGV: N, pairs…, deletes…
- */
-const PATCH = `#!lua flags=allow-key-locking
-if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
-local n = tonumber(ARGV[1])
-if n > 0 then
-  local fields = {}
-  for i = 2, 1 + n * 2 do fields[#fields + 1] = ARGV[i] end
-  redis.call("HSET", KEYS[1], unpack(fields))
-end
-for i = 2 + n * 2, #ARGV do redis.call("HDEL", KEYS[1], ARGV[i]) end
-return 1`;
-
-/** Create an interrupt hash if absent and index it by thread and by run. ARGV: requestedAt, id, pairs… */
-const CREATE_INTERRUPT = `#!lua flags=allow-key-locking
-if redis.call("EXISTS", KEYS[1]) == 0 then
-  local fields = {}
-  for i = 3, #ARGV do fields[#fields + 1] = ARGV[i] end
-  redis.call("HSET", KEYS[1], unpack(fields))
-  redis.call("ZADD", KEYS[2], ARGV[1], ARGV[2])
-  redis.call("ZADD", KEYS[3], ARGV[1], ARGV[2])
-end
-return 0`;
-
-/**
- * Settle a batch of interrupts atomically: every key must exist and be pending, or nothing changes.
- * ARGV: pendingValue, resolvedAtValue, then per key: statusValue, hasResponse, responseValue.
- */
-const COMMIT_BATCH = `#!lua flags=allow-key-locking
-for i = 1, #KEYS do
-  local status = redis.call("HGET", KEYS[i], "status")
-  if not status then return redis.error_reply("missing:" .. i) end
-  if status ~= ARGV[1] then return redis.error_reply("nonpending:" .. i) end
-end
-for i = 1, #KEYS do
-  local base = 3 + (i - 1) * 3
-  redis.call("HSET", KEYS[i], "status", ARGV[base], "resolvedAt", ARGV[2])
-  if ARGV[base + 1] == "1" then
-    redis.call("HSET", KEYS[i], "response", ARGV[base + 2])
-  else
-    redis.call("HDEL", KEYS[i], "response")
-  end
-end
-return #KEYS`;
-
-/** `HGETALL` inside Lua returns a flat `[field, value, …]` array; turn it into an object. */
-function pairsToObject(flat: unknown): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  if (!Array.isArray(flat)) return out;
-  for (let i = 0; i + 1 < flat.length; i += 2) out[String(flat[i])] = flat[i + 1];
-  return out;
-}
-
-/** Validate a stored run at deserialization — downstream readers act destructively on `status`. */
-function toRunRecord(raw: Record<string, unknown> | null | undefined): RunRecord | null {
-  const record = decodeFields<RunRecord>(raw);
-  if (!record) return null;
-  if (typeof record.status !== "string" || !Object.hasOwn(RUN_STATUSES, record.status)) {
-    throw new Error(
-      `@upstash/agentkit-tanstack-ai: run ${JSON.stringify(record.runId)} has an invalid status.`,
-    );
-  }
-  return record;
-}
-
-function flattenPairs(record: Record<string, string>): string[] {
-  return Object.entries(record).flat();
-}
-
-/**
- * Every TanStack AI chat-state store on Upstash Redis — pass the result to `withPersistence()`.
- *
- * - **messages**: the thread transcript, one value per thread (`saveThread` is a full overwrite).
- * - **runs**: one hash per run plus sorted-set indexes by thread, by parent run and by detach time,
- *   so `findActiveRun` (reconnect), `listByThread`, `listByParentRun` (subagent cards) and
- *   `listReclaimable` (the sandbox reaper) are all index reads, not scans.
- * - **interrupts**: human-in-the-loop pauses, indexed by thread and run; `commitBatch` settles a batch
- *   atomically in one Lua script.
- * - **metadata**: a hash per namespace, so `(namespace, key)` never collides.
- * - **generationRuns** / **artifacts**: one-shot generation jobs (image, video, speech) and the
- *   records of what they produced, for `withGenerationPersistence()`.
- * - **blobs** (when `bucket` is given): the produced bytes in Upstash Blob, records in Redis.
- *
- * Mutations are single commands or single `EVAL`s, so the stores are safe across instances over the
- * REST API. Checked against TanStack's own `runPersistenceConformance` suite.
- *
- * ```ts
- * import { chat } from "@tanstack/ai";
- * import { withPersistence } from "@tanstack/ai-persistence";
- * import { upstashPersistence } from "@upstash/agentkit-tanstack-ai";
- *
- * const persistence = upstashPersistence();
- * chat({ adapter, messages, threadId, middleware: [withPersistence(persistence)] });
- * ```
- */
 /** The stores {@link upstashPersistence} returns; `blobs` is present when a `bucket` is passed. */
 export type UpstashPersistenceStores = ChatPersistenceStores & {
   generationRuns: GenerationRunStore;
@@ -177,6 +61,41 @@ export type UpstashPersistenceStores = ChatPersistenceStores & {
   blobs?: BlobStore;
 };
 
+/**
+ * Settle a batch of interrupts atomically: every document must exist and be pending, or nothing
+ * changes. ARGV[i] is the merge patch for KEYS[i].
+ */
+const COMMIT_BATCH = `${KEY_LOCKING}for i = 1, #KEYS do
+  local status = redis.call("JSON.GET", KEYS[i], "$.status")
+  if not status then return redis.error_reply("missing:" .. i) end
+  if status ~= '["pending"]' then return redis.error_reply("nonpending:" .. i) end
+end
+for i = 1, #KEYS do redis.call("JSON.MERGE", KEYS[i], "$", ARGV[i]) end
+return #KEYS`;
+
+/**
+ * Every TanStack AI persistence store on Upstash Redis — pass the result to `withPersistence()` or
+ * `withGenerationPersistence()`.
+ *
+ * - **messages**: the thread transcript, one JSON document per thread (`saveThread` overwrites).
+ * - **runs**: a JSON document per run plus sorted-set indexes by thread, by parent run and by detach
+ *   time, so `findActiveRun`, `listByThread`, `listByParentRun` and `listReclaimable` are index reads.
+ * - **interrupts**: human-in-the-loop pauses, indexed by thread and run; `commitBatch` is atomic.
+ * - **metadata**: one document per `(namespace, key)`, both parts escaped so they never collide.
+ * - **generationRuns** / **artifacts**: one-shot generation jobs (image, video, speech) and records of
+ *   what they produced.
+ * - **blobs** (when `bucket` is given): the produced bytes in Upstash Blob, records in Redis.
+ *
+ * Records are RedisJSON documents written by single commands or single Lua scripts, so concurrent
+ * instances cannot interleave a write. Checked against TanStack's `runPersistenceConformance` suite.
+ *
+ * ```ts
+ * import { withPersistence } from "@tanstack/ai-persistence";
+ * import { upstashPersistence } from "@upstash/agentkit-tanstack-ai";
+ *
+ * chat({ adapter, messages, threadId, middleware: [withPersistence(upstashPersistence())] });
+ * ```
+ */
 export function upstashPersistence(
   config: UpstashPersistenceConfig = {},
 ): AIPersistence<UpstashPersistenceStores> {
@@ -188,44 +107,31 @@ export function upstashPersistence(
     run: (id: string) => `${p}:run:${id}`,
     threadRuns: (id: string) => `${p}:threadRuns:${id}`,
     parentRuns: (id: string) => `${p}:parentRuns:${id}`,
-    detached: () => `${p}:detachedRuns`,
+    detached: `${p}:detachedRuns`,
     interrupt: (id: string) => `${p}:interrupt:${id}`,
     threadInterrupts: (id: string) => `${p}:threadInterrupts:${id}`,
     runInterrupts: (id: string) => `${p}:runInterrupts:${id}`,
-    meta: (ns: string) => `${p}:meta:${ns}`,
+    // encodeURIComponent never emits ":", so (namespace, key) pairs cannot collide.
+    meta: (ns: string, key: string) =>
+      `${p}:meta:${encodeURIComponent(ns)}:${encodeURIComponent(key)}`,
   };
 
-  /** Fetch run hashes by id, in the given order, dropping ids whose hash is gone. */
-  async function loadRuns(ids: string[]): Promise<RunRecord[]> {
-    if (ids.length === 0) return [];
-    const pipe = redis.pipeline();
-    for (const id of ids) pipe.hgetall(k.run(id));
-    const rows = (await pipe.exec()) as (Record<string, unknown> | null)[];
-    return rows.map(toRunRecord).filter((r): r is RunRecord => r !== null);
-  }
-
-  async function loadInterrupts(ids: string[]): Promise<InterruptRecord[]> {
-    if (ids.length === 0) return [];
-    const pipe = redis.pipeline();
-    for (const id of ids) pipe.hgetall(k.interrupt(id));
-    const rows = (await pipe.exec()) as (Record<string, unknown> | null)[];
-    return rows
-      .map((row) => decodeFields<InterruptRecord>(row))
-      .filter((r): r is InterruptRecord => r !== null);
-  }
+  const loadRuns = async (ids: string[]) =>
+    (await loadDocs<RunRecord>(redis, ids.map(k.run))).map((r) => checkRun(r)!);
+  const loadInterrupts = (ids: string[]) => loadDocs<InterruptRecord>(redis, ids.map(k.interrupt));
+  const patch = (key: string, fields: object) => redis.eval(PATCH, [key], toMergePatches(fields));
 
   const messages: MessageStore = {
     loadThread: (async (threadId: string) => {
       assertId(threadId, "threadId");
-      const raw = await redis.get(k.thread(threadId));
-      return raw == null ? [] : decode<ModelMessage[]>(raw);
+      return (await redis.json.get<ModelMessage[]>(k.thread(threadId))) ?? [];
     }) as MessageStore["loadThread"],
     async saveThread(threadId, list) {
       assertId(threadId, "threadId");
-      const opts = config.messagesTtlSeconds ? { ex: config.messagesTtlSeconds } : undefined;
-      await (opts
-        ? redis.set(k.thread(threadId), encode(list), opts)
-        : redis.set(k.thread(threadId), encode(list)));
+      const tx = redis.multi();
+      tx.json.set(k.thread(threadId), "$", list as unknown as Record<string, unknown>);
+      if (config.messagesTtlSeconds) tx.expire(k.thread(threadId), config.messagesTtlSeconds);
+      await tx.exec();
     },
   };
 
@@ -242,65 +148,44 @@ export function upstashPersistence(
         ...(input.subagentRunId !== undefined ? { subagentRunId: input.subagentRunId } : {}),
         ...(input.name !== undefined ? { name: input.name } : {}),
       };
-      const hasParent = input.parentRunId !== undefined;
+      const indexes = [k.threadRuns(input.threadId)];
+      if (input.parentRunId !== undefined) indexes.push(k.parentRuns(input.parentRunId));
       const stored = await redis.eval(
-        CREATE_RUN,
-        [
-          k.run(input.runId),
-          k.threadRuns(input.threadId),
-          ...(hasParent ? [k.parentRuns(input.parentRunId!)] : []),
-        ],
-        [
-          String(input.startedAt),
-          input.runId,
-          ...flattenPairs(encodeFields(record as unknown as Record<string, unknown>)),
-        ],
+        CREATE,
+        [k.run(input.runId), ...indexes],
+        [JSON.stringify(record), String(input.startedAt), input.runId],
       );
-      return toRunRecord(pairsToObject(stored))!;
+      return checkRun(stored as RunRecord)!;
     },
 
-    async update(runId, patch) {
+    async update(runId, fields) {
       assertId(runId, "runId");
-      const set: Record<string, unknown> = {};
-      const del: string[] = [];
-      for (const [field, value] of Object.entries(patch)) {
-        if (value === undefined) del.push(field);
-        else set[field] = value;
-      }
-      const encoded = flattenPairs(encodeFields(set));
-      const updated = await redis.eval(
-        PATCH,
-        [k.run(runId)],
-        [String(encoded.length / 2), ...encoded, ...del],
-      );
-      if (Number(updated) !== 1) return;
-      // Keep the reclaim index in step. It is only a candidate list — `listReclaimable` re-checks
-      // every record — so a racing update can at worst leave a stale member, never a wrong answer.
-      if ("detachedSince" in patch || "status" in patch) {
-        const current = toRunRecord(await redis.hgetall(k.run(runId)));
-        if (current && current.status === "running" && current.detachedSince !== undefined) {
-          await redis.zadd(k.detached(), { score: current.detachedSince, member: runId });
+      if (Number(await patch(k.run(runId), fields)) !== 1) return;
+      // Keep the reclaim index in step. It is only a candidate list (`listReclaimable` re-checks each
+      // record), so a racing update can at worst leave a stale member, never a wrong answer.
+      if ("detachedSince" in fields || "status" in fields) {
+        const current = checkRun(await redis.json.get<RunRecord>(k.run(runId)));
+        if (current?.status === "running" && current.detachedSince !== undefined) {
+          await redis.zadd(k.detached, { score: current.detachedSince, member: runId });
         } else {
-          await redis.zrem(k.detached(), runId);
+          await redis.zrem(k.detached, runId);
         }
       }
     },
 
     async get(runId) {
       assertId(runId, "runId");
-      return toRunRecord(await redis.hgetall(k.run(runId)));
+      return checkRun(await redis.json.get<RunRecord>(k.run(runId)));
     },
 
     async findActiveRun(threadId) {
       assertId(threadId, "threadId");
-      // Newest first; stop at the first running one.
       const PAGE = 50;
       for (let start = 0; ; start += PAGE) {
-        const ids = (await redis.zrange(k.threadRuns(threadId), start, start + PAGE - 1, {
+        const ids = await redis.zrange<string[]>(k.threadRuns(threadId), start, start + PAGE - 1, {
           rev: true,
-        })) as string[];
-        const records = await loadRuns(ids);
-        const active = records.find((r) => r.status === "running");
+        });
+        const active = (await loadRuns(ids)).find((r) => r.status === "running");
         if (active) return active;
         if (ids.length < PAGE) return null;
       }
@@ -308,63 +193,56 @@ export function upstashPersistence(
 
     async listByThread(threadId) {
       assertId(threadId, "threadId");
-      const ids = (await redis.zrange(k.threadRuns(threadId), 0, -1)) as string[];
-      return loadRuns(ids);
+      return loadRuns(await redis.zrange<string[]>(k.threadRuns(threadId), 0, -1));
     },
 
     async listByParentRun(parentRunId) {
       assertId(parentRunId, "parentRunId");
-      const ids = (await redis.zrange(k.parentRuns(parentRunId), 0, -1)) as string[];
-      return loadRuns(ids);
+      return loadRuns(await redis.zrange<string[]>(k.parentRuns(parentRunId), 0, -1));
     },
 
     async listReclaimable({ now, ttlMs }) {
       const cutoff = now - ttlMs;
-      const ids = (await redis.zrange(k.detached(), "-inf", cutoff, { byScore: true })) as string[];
-      const records = await loadRuns(ids);
-      return records.filter(
+      const ids = await redis.zrange<string[]>(k.detached, "-inf", cutoff, { byScore: true });
+      return (await loadRuns(ids)).filter(
         (r) => r.status === "running" && r.detachedSince !== undefined && r.detachedSince <= cutoff,
       );
     },
   };
 
-  const PENDING = encode("pending");
-
   const interrupts: InterruptStore = {
     async create(record) {
       assertId(record.interruptId, "interruptId");
-      const full: InterruptRecord = { ...record, status: "pending" };
       await redis.eval(
-        CREATE_INTERRUPT,
+        CREATE,
         [
           k.interrupt(record.interruptId),
           k.threadInterrupts(record.threadId),
           k.runInterrupts(record.runId),
         ],
         [
+          JSON.stringify({ ...record, status: "pending" }),
           String(record.requestedAt),
           record.interruptId,
-          ...flattenPairs(encodeFields(full as unknown as Record<string, unknown>)),
         ],
       );
     },
 
     async resolve(interruptId, response) {
       assertId(interruptId, "interruptId");
-      const set = encodeFields({ status: "resolved", resolvedAt: Date.now() });
-      // `response` is set even when undefined, so a resolved record always carries the field.
-      set.response = encode(response);
-      const pairs = flattenPairs(set);
-      await redis.eval(PATCH, [k.interrupt(interruptId)], [String(pairs.length / 2), ...pairs]);
+      await patch(k.interrupt(interruptId), {
+        status: "resolved",
+        resolvedAt: Date.now(),
+        response,
+      });
     },
 
     async cancel(interruptId) {
       assertId(interruptId, "interruptId");
-      const pairs = flattenPairs(encodeFields({ status: "cancelled", resolvedAt: Date.now() }));
-      await redis.eval(PATCH, [k.interrupt(interruptId)], [String(pairs.length / 2), ...pairs]);
+      await patch(k.interrupt(interruptId), { status: "cancelled", resolvedAt: Date.now() });
     },
 
-    async commitBatch(entries: ReadonlyArray<InterruptCommitEntry>) {
+    async commitBatch(entries) {
       if (entries.length === 0) return;
       const seen = new Set<string>();
       for (const entry of entries) {
@@ -374,20 +252,20 @@ export function upstashPersistence(
         }
         seen.add(entry.interruptId);
       }
-      const args: string[] = [PENDING, encode(Date.now())];
-      for (const entry of entries) {
-        const hasResponse = entry.status === "resolved";
-        args.push(
-          encode(entry.status),
-          hasResponse ? "1" : "0",
-          hasResponse ? encode(entry.response) : "",
-        );
-      }
+      const resolvedAt = Date.now();
+      // One merge patch per entry. A cancel clears any earlier response (`null` deletes the field).
+      const patches = entries.map((e) =>
+        JSON.stringify(
+          e.status === "resolved"
+            ? { status: e.status, resolvedAt, response: e.response ?? null }
+            : { status: e.status, resolvedAt, response: null },
+        ),
+      );
       try {
         await redis.eval(
           COMMIT_BATCH,
           entries.map((e) => k.interrupt(e.interruptId)),
-          args,
+          patches,
         );
       } catch (error) {
         const match = /(missing|nonpending):(\d+)/.exec(String((error as Error)?.message ?? error));
@@ -403,12 +281,12 @@ export function upstashPersistence(
 
     async get(interruptId) {
       assertId(interruptId, "interruptId");
-      return decodeFields<InterruptRecord>(await redis.hgetall(k.interrupt(interruptId)));
+      return (await redis.json.get<InterruptRecord>(k.interrupt(interruptId))) ?? null;
     },
 
     async list(threadId) {
       assertId(threadId, "threadId");
-      return loadInterrupts((await redis.zrange(k.threadInterrupts(threadId), 0, -1)) as string[]);
+      return loadInterrupts(await redis.zrange<string[]>(k.threadInterrupts(threadId), 0, -1));
     },
 
     async listPending(threadId) {
@@ -417,7 +295,7 @@ export function upstashPersistence(
 
     async listByRun(runId) {
       assertId(runId, "runId");
-      return loadInterrupts((await redis.zrange(k.runInterrupts(runId), 0, -1)) as string[]);
+      return loadInterrupts(await redis.zrange<string[]>(k.runInterrupts(runId), 0, -1));
     },
 
     async listPendingByRun(runId) {
@@ -426,20 +304,19 @@ export function upstashPersistence(
   };
 
   const metadata: MetadataStore = {
+    // Values are wrapped (`{ v }`) so any JSON value, including a bare string, round-trips exactly.
     async get(namespace, key) {
-      const raw = await redis.hget(k.meta(namespace), key);
-      return raw == null ? null : decode<unknown>(raw);
+      const doc = await redis.json.get<{ v: unknown }>(k.meta(namespace, key));
+      return doc ? doc.v : null;
     },
     async set(namespace, key, value) {
-      await redis.hset(k.meta(namespace), { [key]: encode(value) });
+      await redis.json.set(k.meta(namespace, key), "$", { v: value ?? null });
     },
     async delete(namespace, key) {
-      await redis.hdel(k.meta(namespace), key);
+      await redis.del(k.meta(namespace, key));
     },
   };
 
-  const generationRuns = redisGenerationRunStore(redis, p);
-  const artifacts = redisArtifactStore(redis, p);
   const blobs = config.bucket
     ? upstashBlobStore({
         bucket: config.bucket,
@@ -455,8 +332,8 @@ export function upstashPersistence(
       runs,
       interrupts,
       metadata,
-      generationRuns,
-      artifacts,
+      generationRuns: redisGenerationRunStore(redis, p),
+      artifacts: redisArtifactStore(redis, p),
       ...(blobs ? { blobs } : {}),
     },
   } as AIPersistence<UpstashPersistenceStores>;

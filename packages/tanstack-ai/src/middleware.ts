@@ -1,11 +1,15 @@
 import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
 import { ToolCache, createRateLimit } from "@upstash/agentkit-sdk";
-import type { RateLimitConfig } from "@upstash/agentkit-sdk";
+import type { RateLimitConfig, ToolCacheConfig } from "@upstash/agentkit-sdk";
 import type { ChatMiddleware, ChatMiddlewareContext } from "@tanstack/ai";
 import { addTelemetry } from "./telemetry.js";
 
-export interface ToolCacheMiddlewareConfig {
+/**
+ * The core {@link ToolCacheConfig} (`prefix`, `ttlSeconds`), with `redis` optional, plus which tools
+ * to cache and who the entries belong to.
+ */
+export type ToolCacheMiddlewareConfig = Omit<ToolCacheConfig, "redis"> & {
   /**
    * Names of the tools whose results may be cached. Required on purpose: only deterministic,
    * side-effect-free tools belong here (a cached `send_email` would silently stop sending).
@@ -13,18 +17,9 @@ export interface ToolCacheMiddlewareConfig {
   tools: string[];
   /** The user entries are scoped to — a string, or derived from the run context. */
   userId: string | ((ctx: ChatMiddlewareContext) => string);
-  /** Per-result TTL in seconds. Omit for no expiry. */
-  ttlSeconds?: number;
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /** Base key prefix. Defaults to `agentkit:toolCache` (shared with the other adapters' caches). */
-  prefix?: string;
-  /**
-   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
-   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
-   */
-  enableTelemetry?: boolean;
-}
+};
 
 /**
  * Chat middleware that memoizes tool results in Redis, keyed by `userId` + tool name + a stable hash
@@ -42,15 +37,11 @@ export interface ToolCacheMiddlewareConfig {
 export function toolCache(config: ToolCacheMiddlewareConfig): ChatMiddleware {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
-  const cache = new ToolCache({
-    redis,
-    ...(config.prefix !== undefined ? { prefix: config.prefix } : {}),
-    ...(config.ttlSeconds !== undefined ? { ttlSeconds: config.ttlSeconds } : {}),
-    ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
-  });
-  const allowed = new Set(config.tools);
+  const { tools, userId, ...cacheConfig } = config;
+  const cache = new ToolCache({ ...cacheConfig, redis });
+  const allowed = new Set(tools);
   const resolveUserId = (ctx: ChatMiddlewareContext) =>
-    typeof config.userId === "function" ? config.userId(ctx) : config.userId;
+    typeof userId === "function" ? userId(ctx) : userId;
   // Calls this middleware has seen, by id: the args to key the write with, or "hit" when served.
   const pending = new Map<string, { args: unknown } | "hit">();
 
@@ -109,8 +100,10 @@ export interface RateLimitMiddlewareConfig extends RateLimitConfig {
  */
 export function rateLimit(config: RateLimitMiddlewareConfig): ChatMiddleware {
   const { identifier, ...limitConfig } = config;
-  const limiter = createRateLimit(limitConfig);
-  if (config.redis) addTelemetry(config.redis, config.enableTelemetry);
+  // Resolve the client here so the default one is tagged too, not only a client passed in.
+  const redis = config.redis ?? RedisClient.fromEnv();
+  addTelemetry(redis, config.enableTelemetry);
+  const limiter = createRateLimit({ ...limitConfig, redis });
   return {
     name: "upstash-rate-limit",
     async onStart(ctx) {

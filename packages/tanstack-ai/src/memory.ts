@@ -2,6 +2,7 @@ import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient, s } from "@upstash/redis";
 import { z } from "zod";
 import { AgentMemory, stableHash } from "@upstash/agentkit-sdk";
+import type { AgentMemoryConfig } from "@upstash/agentkit-sdk";
 import { toolDefinition } from "@tanstack/ai";
 import type { Tool } from "@tanstack/ai";
 import type {
@@ -18,16 +19,18 @@ type Source = "agent" | "userMessage";
 
 const METADATA = { source: s.string().noTokenize() };
 
-export interface UpstashMemoryConfig {
+/**
+ * The core `AgentMemoryConfig` options this adapter passes through (`prefix`, `indexName`,
+ * `minScore`, `enableTelemetry`), with `redis` optional, plus how the adapter scopes, recalls and
+ * captures. `prefix` defaults to `agentkit:tanstackMemory` — its own keyspace (and search index),
+ * because the store indexes a `source` field the plain `agentkit:memory` store does not have.
+ */
+export type UpstashMemoryConfig = Pick<
+  AgentMemoryConfig,
+  "prefix" | "indexName" | "minScore" | "enableTelemetry"
+> & {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
-  /**
-   * Base key prefix. Defaults to `agentkit:tanstackMemory` — its own keyspace (and search index),
-   * because the store indexes a `source` field the plain `agentkit:memory` store does not have.
-   */
-  prefix?: string;
-  /** Redis Search index name. Defaults to the identifier-safe `prefix`. */
-  indexName?: string;
   /**
    * What memory is partitioned by. `"user"` keeps one long-term memory per user across every
    * thread (falling back to the thread when the scope has no `userId`); `"thread"` keeps it per
@@ -40,8 +43,6 @@ export interface UpstashMemoryConfig {
    * @default 5
    */
   topK?: number;
-  /** Relevance floor for recall (a BM25 score, unbounded — not 0..1). */
-  minScore?: number;
   /**
    * Store each turn's user message automatically. `false` = only what the model saves with the
    * `save_memory` tool.
@@ -71,12 +72,7 @@ export interface UpstashMemoryConfig {
    * @default true
    */
   waitForIndexing?: boolean;
-  /**
-   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
-   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
-   */
-  enableTelemetry?: boolean;
-}
+};
 
 /** Escape one scope part so no value can forge a separator (`.`) or the key separator (`:`). */
 const part = (v: string | undefined) =>
@@ -120,12 +116,12 @@ const LABEL: Record<Source, string> = {
 export function upstashMemory(config: UpstashMemoryConfig = {}): MemoryAdapter {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
+  const { prefix, indexName, minScore, enableTelemetry } = config;
   const memory = new AgentMemory({
+    ...{ indexName, minScore, enableTelemetry },
     redis,
-    prefix: config.prefix ?? "agentkit:tanstackMemory",
-    ...(config.indexName !== undefined ? { indexName: config.indexName } : {}),
+    prefix: prefix ?? "agentkit:tanstackMemory",
     metadataSchema: METADATA,
-    ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
   });
   const scopeBy = config.scopeBy ?? "user";
   const topK = config.topK ?? 5;
@@ -181,7 +177,6 @@ export function upstashMemory(config: UpstashMemoryConfig = {}): MemoryAdapter {
         userId,
         query,
         topK,
-        ...(config.minScore !== undefined ? { minScore: config.minScore } : {}),
       });
       const lines = hits.map((h) => {
         const source = h.metadata?.source as Source | undefined;

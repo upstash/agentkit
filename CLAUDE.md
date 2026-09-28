@@ -1179,29 +1179,40 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 - **Peers:** `@tanstack/ai` required; `@tanstack/ai-persistence` and `@tanstack/ai-memory` optional
   (only their *types* are imported, so the runtime never needs them). `@tanstack/ai` is pinned exactly
   as a devDep (0.61.0) — TanStack AI is pre-1.0 and moves fast; re-run the conformance suite on bumps.
-- **Persistence layout** (`agentkit:tanstack:*`): runs and interrupts are **hashes with one encoded
-  field per record property**, not JSON blobs — so `update` is a field-level `HSET`/`HDEL` in one Lua
-  script with no JSON decode in Lua (cjson would turn `[]` into `{}`). A patch key present with
-  `undefined` means *clear the field* (`HDEL`), matching the in-memory spread semantics. Indexes:
-  `threadRuns:<id>`/`parentRuns:<id>` (zset by `startedAt`), `detachedRuns` (zset by `detachedSince`,
-  a **candidate** list — `listReclaimable` re-checks each record, so a racing update can only leave a
-  stale member), `threadInterrupts:<id>`/`runInterrupts:<id>` (zset by `requestedAt`). `commitBatch`
-  validates every interrupt is present and pending and applies all in one `EVAL`. Run status is
-  validated at deserialization (TanStack's readers act destructively on it).
-- **Generation stores** (`generation-stores.ts`): `generationRuns` reuse the run patterns (hash +
-  per-thread zset). `artifacts` are hashes that also carry raw `__runIndex`/`__threadIndex` fields
-  (the codec skips `__`-prefixed fields) so the save script can move a re-saved artifact between
-  indexes without decoding JSON in Lua. Ordering is `createdAt` then id, where zset ties sort by bytes,
-  exactly the reference store's UTF-8 order.
+- **Persistence layout** (`agentkit:tanstack:*`): every record (run, interrupt, generation run,
+  artifact, blob record, metadata value, transcript) is a **RedisJSON document**, so values keep their
+  JSON types and need no codec. Shared plumbing is in `src/records.ts`:
+  - `CREATE`: `JSON.SET … NX` + `ZADD` into each index, returns the stored doc (idempotent
+    `createOrResume`). `PATCH`: `EXISTS` guard (a bare `JSON.MERGE` on a missing key *creates* it,
+    verified live 2026-09-28) then `JSON.MERGE`.
+  - `toMergePatches` turns `{...existing, ...patch}` semantics into two merge patches: a key present
+    with `undefined` becomes `null` (merge-patch delete); object-valued fields are nulled in the first
+    patch and set in the second, because merge patches *merge* nested objects instead of replacing
+    them. A literal `null` in a patch therefore deletes the field.
+  - `checkRun` validates run status at read time (TanStack's readers act destructively on it).
+- Indexes: `threadRuns:<id>`/`parentRuns:<id>` (zset by `startedAt`), `detachedRuns` (by
+  `detachedSince`, a **candidate** list — `listReclaimable` re-checks each record),
+  `threadInterrupts`/`runInterrupts` (by `requestedAt`), `threadGenerationRuns`,
+  `runArtifacts`/`threadArtifacts` (by `createdAt`, ties byte-ordered like the reference store).
+  `commitBatch` checks every interrupt is present and pending (`JSON.GET $.status`) and applies all
+  patches in one script.
+- Artifacts: which indexes a doc is in lives in a side hash `artifactIndexes:<id>` (raw index-key
+  strings) so the doc stays exactly the record. Re-saving under another run/thread: the caller reads
+  the side hash, declares the old index keys (required by `allow-key-locking`), and the script
+  compare-and-swaps, retrying on a race.
+- Metadata: one doc per pair, key `meta:<encodeURIComponent(ns)>:<encodeURIComponent(key)>`, value
+  wrapped as `{ v }` so a bare string round-trips.
 - **Blobs** (`blob-store.ts`, only when `upstashPersistence({ bucket })`): bytes in Upstash Blob at
-  `<pathPrefix><encodeURIComponent(key)>`, the record (size/etag/contentType/customMetadata/createdAt/
-  updatedAt) in a Redis hash plus a lexical zset of keys. Blob listings omit content type + metadata
-  and S3 metadata keys are restricted, hence the split. Ranges use `signedReadUrl` + `Range`; a 200
-  (server ignored Range) is sliced locally. `@upstash/blob` is an optional peer: the store takes a
-  structural `BlobBucketLike`. The MCP never returns bucket tokens, so the live-Blob conformance copy
-  skips without `UPSTASH_BLOB_TOKEN`; the default suite uses `src/test-bucket.ts`, whose signed URLs are
-  served by a local HTTP server honouring `Range`.
-- **Codec:** every stored value is `j:` + JSON (`src/codec.ts`) — same reason as the EventLog marker.
+  `<pathPrefix><encodeURIComponent(key)>`; the record is a JSON doc plus a lexical zset of keys.
+  `PUT_RECORD` replaces the doc but restores the old `createdAt` (read via `JSON.GET $.createdAt`).
+  Blob listings omit content type + metadata, hence records in Redis. Ranges use `signedReadUrl` +
+  `Range`; a 200 is sliced locally. `@upstash/blob` is an optional peer (structural
+  `BlobBucketLike`). Live-Blob conformance runs with `UPSTASH_BLOB_TOKEN` (get it via the MCP's
+  `blob_bucket get` + `include_credentials`): 26/26 on 2026-09-28.
+- **Config types reuse core:** `UpstashLocksConfig = Omit<RedisLockConfig, "redis"> & {redis?}`,
+  `UpstashStreamConfig` from `EventLogConfig`, `ToolCacheMiddlewareConfig` from `ToolCacheConfig`,
+  `UpstashMemoryConfig` picks from `AgentMemoryConfig`, `CreateSearchToolsConfig` from
+  `SearchToolDefsConfig` — spread straight through, no per-field copying.
 - **Memory:** own keyspace `agentkit:tanstackMemory` (its schema adds an indexed `source` field, so
   it must not share `agentkit:memory` — see the eve memory-slot notes on why). Scope → `userId` via
   `memoryScopeKey`: per user across threads by default, parts escaped so `.`/`_`/`:` can't forge a

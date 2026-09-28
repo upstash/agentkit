@@ -11,7 +11,20 @@ import type {
   BlobRecord,
   BlobStore,
 } from "@tanstack/ai-persistence";
-import { decodeFields, encode, encodeFields } from "./codec.js";
+import { addTelemetry } from "./telemetry.js";
+import { KEY_LOCKING, loadDocs } from "./records.js";
+
+/**
+ * Write a blob record, keeping its original `createdAt` across overwrites, and index its key.
+ * KEYS: record document, key index. ARGV: record JSON (with a fresh createdAt), key.
+ */
+const PUT_RECORD = `${KEY_LOCKING}local created = redis.call("JSON.GET", KEYS[1], "$.createdAt")
+redis.call("JSON.SET", KEYS[1], "$", ARGV[1])
+if created and created ~= "[]" then
+  redis.call("JSON.SET", KEYS[1], "$.createdAt", string.sub(created, 2, -2))
+end
+redis.call("ZADD", KEYS[2], 0, ARGV[2])
+return redis.call("JSON.GET", KEYS[1])`;
 
 /**
  * The slice of an `@upstash/blob` `Bucket` this store uses — pass `Bucket.fromEnv()`. Structural,
@@ -34,6 +47,11 @@ export interface UpstashBlobStoreConfig {
   bucket: BlobBucketLike;
   /** Upstash Redis client holding each blob's record and the key index. */
   redis: Redis;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
   /** Redis key prefix for the records. */
   prefix: string;
   /**
@@ -123,6 +141,7 @@ function isNotFound(error: unknown): boolean {
  */
 export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
   const { bucket, redis, prefix } = config;
+  addTelemetry(redis, config.enableTelemetry);
   const pathPrefix = config.pathPrefix ?? "agentkit/tanstack/";
   const recordKey = (key: string) => `${prefix}:blob:${key}`;
   const indexKey = `${prefix}:blobKeys`;
@@ -137,7 +156,7 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
 
   const head = async (key: string): Promise<BlobRecord | null> => {
     assertKey(key);
-    return decodeFields<BlobRecord>(await redis.hgetall(recordKey(key)));
+    return (await redis.json.get<BlobRecord>(recordKey(key))) ?? null;
   };
 
   async function readBytes(key: string, record: BlobRecord, range?: BlobRange) {
@@ -172,24 +191,21 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
         (typeof Blob !== "undefined" && body instanceof Blob ? body.type || undefined : undefined);
       const stored = await bucket.put(pathFor(key), bytes, contentType ? { contentType } : {});
       const now = Date.now();
-      const fields = encodeFields({
+      // A full replace: omitted optional fields are cleared, and only createdAt survives an overwrite.
+      const record: BlobRecord = {
         key,
         size: bytes.byteLength,
         etag: stored.etag,
-        contentType,
-        customMetadata: options?.customMetadata ? { ...options.customMetadata } : undefined,
+        ...(contentType ? { contentType } : {}),
+        ...(options?.customMetadata ? { customMetadata: { ...options.customMetadata } } : {}),
+        createdAt: now,
         updatedAt: now,
-      });
-      const tx = redis.multi();
-      // createdAt is kept across overwrites; the optional fields are cleared when omitted.
-      tx.hsetnx(recordKey(key), "createdAt", encode(now));
-      tx.hset(recordKey(key), fields);
-      if (!contentType) tx.hdel(recordKey(key), "contentType");
-      if (!options?.customMetadata) tx.hdel(recordKey(key), "customMetadata");
-      tx.zadd(indexKey, { score: 0, member: key });
-      tx.hgetall(recordKey(key));
-      const results = (await tx.exec()) as unknown[];
-      return decodeFields<BlobRecord>(results[results.length - 1] as Record<string, unknown>)!;
+      };
+      return (await redis.eval(
+        PUT_RECORD,
+        [recordKey(key), indexKey],
+        [JSON.stringify(record), key],
+      )) as BlobRecord;
     },
 
     async get(key: string, options?: BlobGetOptions): Promise<BlobObject | null> {
@@ -267,14 +283,7 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
       }
       const truncated = limit !== undefined && keys.length > limit;
       const pageKeys = truncated ? keys.slice(0, limit) : keys;
-      const pipe = redis.pipeline();
-      for (const key of pageKeys) pipe.hgetall(recordKey(key));
-      const rows = pageKeys.length
-        ? ((await pipe.exec()) as (Record<string, unknown> | null)[])
-        : [];
-      const objects = rows
-        .map((row) => decodeFields<BlobRecord>(row))
-        .filter((r): r is BlobRecord => r !== null);
+      const objects = await loadDocs<BlobRecord>(redis, pageKeys.map(recordKey));
       return {
         objects,
         ...(truncated ? { cursor: pageKeys[pageKeys.length - 1], truncated } : {}),
