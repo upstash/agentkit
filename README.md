@@ -37,9 +37,11 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 ## Examples
 
 Runnable demos (real Upstash Redis + a mock/real model) live in [`examples/`](./examples):
-[`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo), and
+[`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo),
 [`eve-extension-demo`](./examples/eve-extension-demo) (an eve agent that mounts
-`@upstash/agentkit-eve-extension`).
+`@upstash/agentkit-eve-extension`), and [`tanstack-ai-demo`](./examples/tanstack-ai-demo) (a
+TanStack AI chat whose persistence, resumable stream and memory work across server instances, with
+a two-instance E2E suite).
 
 ## Development
 

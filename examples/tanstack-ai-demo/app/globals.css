@@ -1,0 +1,60 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+body {
+  margin: 0;
+}
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.status {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.hint {
+  font-size: 14px;
+  opacity: 0.8;
+}
+.thread {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.thread li {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.thread li.user {
+  background: color-mix(in srgb, royalblue 18%, transparent);
+}
+.thread p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.tool {
+  font-size: 13px;
+  opacity: 0.7;
+}
+form {
+  display: flex;
+  gap: 8px;
+}
+input {
+  flex: 1;
+  padding: 10px;
+  font: inherit;
+}
+button {
+  padding: 10px 16px;
+  font: inherit;
+}

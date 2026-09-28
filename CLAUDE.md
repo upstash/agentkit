@@ -1163,6 +1163,19 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   (Copilot review on #48; verified 2026-09-28 with a consumer that has only `@tanstack/ai` and
   `skipLibCheck: false` — the only errors are two pre-existing ones inside `@tanstack/ai`'s own
   `spawn.d.ts`.)
+- **Demo + E2E** (`examples/tanstack-ai-demo`): Next.js port of TanStack's `ts-react-chat` persistent-chat
+  route onto our backends (detached run, `resumeServerSentEventsResponse`, `reconstructChat`, memory),
+  with `RedisLock` replacing its process-local "one producer per run" set. `AGENTKIT_MOCK_MODEL=1` swaps in
+  a scripted model (`lib/model.ts`: word-by-word stream, `remember:` → `save_memory`, echoes recalled
+  memories). `pnpm e2e` (`e2e/`, files `*.e2e.ts` so root `pnpm test` skips them) starts **two** `next start`
+  servers on free ports, one Redis, a per-run `DEMO_PREFIX`, and checks cross-instance resume, mid-run
+  reconstruct, memory across threads, single production of a doubly-POSTed run, and a 400 on a bad body.
+  Gotchas hit building it: AG-UI bodies need a message `id`; Next.js route handlers don't return a thrown
+  `Response` (catch `chatParamsFromRequest`'s 400 yourself); spawn `node_modules/.bin/next` detached and
+  kill the process group (killing `npx` orphans `next`); backends are created lazily so `next build`
+  needs no credentials. CI runs it after "Build example apps"; skipped without Redis secrets.
+- **`src/package-exports.test.ts`** pins `package.json#exports` to the tsup entries — added after a
+  pushed commit shipped `dist/persistence.js` without exporting it (only the demo's build caught it).
 - **Layout** (`src/`): one folder per feature — `persistence/` (stores, `records.ts` plumbing,
   `blob-store.ts`), `stream/` (`upstashStream` + `EventLog`), `locks/` (`upstashLocks` + `RedisLock`),
   `memory/`, `middleware/`, `search/`, and `testing/` (scripted adapter, test bucket, env helpers —
