@@ -1,13 +1,9 @@
-// Chat state persistence — messages, runs, interrupts, metadata — for `withPersistence()`.
-export { upstashPersistence } from "./persistence/persistence.js";
-export type {
-  UpstashPersistenceConfig,
-  UpstashPersistenceStores,
-} from "./persistence/persistence.js";
-
-// Blob store (bytes in Upstash Blob, records in Redis) — included by upstashPersistence({ bucket }).
-export { upstashBlobStore } from "./persistence/blob-store.js";
-export type { BlobBucketLike, UpstashBlobStoreConfig } from "./persistence/blob-store.js";
+/**
+ * Root entry: everything that needs only `@tanstack/ai`. The features built on TanStack's optional
+ * packages have their own entry points, so their types never reach this one:
+ * `@upstash/agentkit-tanstack-ai/persistence` (needs `@tanstack/ai-persistence`) and
+ * `@upstash/agentkit-tanstack-ai/memory` (needs `@tanstack/ai-memory`).
+ */
 
 // Resumable delivery (`StreamDurability`) on Redis Streams — reload/reconnect/second device.
 export { upstashStream } from "./stream/stream.js";
@@ -17,16 +13,12 @@ export type { UpstashStreamConfig, UpstashStreamInit } from "./stream/stream.js"
 // fencing tokens, and a resumable append-only event log on Redis Streams.
 export { RedisLock, LockAcquireTimeoutError, LockLostError } from "./locks/redis-lock.js";
 export type { RedisLockConfig, LockLease } from "./locks/redis-lock.js";
-export { EventLog } from "./stream/event-log.js";
+export { EventLog, EventLogClosedError } from "./stream/event-log.js";
 export type { EventLogConfig, LogEntry } from "./stream/event-log.js";
 
 // Distributed `LockStore` for `withLocks()`.
 export { upstashLocks } from "./locks/locks.js";
 export type { UpstashLocksConfig } from "./locks/locks.js";
-
-// Long-term memory `MemoryAdapter` for `memoryMiddleware()`, ranked in Redis Search.
-export { upstashMemory, memoryScopeKey } from "./memory/memory.js";
-export type { UpstashMemoryConfig } from "./memory/memory.js";
 
 // Chat middlewares: tool-result caching and per-run rate limiting.
 export { toolCache, rateLimit, RateLimitExceededError } from "./middleware/middleware.js";

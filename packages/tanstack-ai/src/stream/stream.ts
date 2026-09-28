@@ -102,14 +102,16 @@ export function upstashStream(
 
   const resumeOffset =
     source instanceof Request ? readResumeOffset(source) : (source.offset ?? null);
+  // Object form is bound to its explicit `runId` (as `memoryStream` is): a mismatched offset is
+  // rejected by `read`, never silently re-targeted. Only a Request derives the run from its offset.
   let runId: string;
-  if (resumeOffset !== null && resumeOffset !== "-1" && resumeOffset !== "now") {
+  if (!(source instanceof Request)) {
+    runId = assertRunId(source.runId);
+  } else if (resumeOffset !== null && resumeOffset !== "-1" && resumeOffset !== "now") {
     runId = assertRunId(decodeOffset(resumeOffset).runId);
-  } else if (source instanceof Request) {
+  } else {
     const requested = resolveResumeRunId(source);
     runId = requested === null ? randomUUID() : assertRunId(requested);
-  } else {
-    runId = assertRunId(source.runId);
   }
 
   return {

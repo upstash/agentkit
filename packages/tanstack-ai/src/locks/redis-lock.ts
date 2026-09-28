@@ -109,7 +109,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * ownership-checked release/extend in Lua. Works over the REST API (every operation is a single
  * command or one `EVAL`, so it needs no connection-scoped state like `WATCH`).
  *
- * Keys: `<prefix>:<key>` (the lease) and `<prefix>:fence:<key>` (the never-expiring counter).
+ * Keys: `<prefix>:lease:<key>` (the lease) and `<prefix>:fence:<key>` (the never-expiring counter).
  *
  * ```ts
  * const lock = new RedisLock({ redis });
@@ -134,8 +134,10 @@ export class RedisLock {
     this.retryDelayMs = config.retryDelayMs ?? 100;
   }
 
+  // Leases and fencing counters live in separate namespaces so no user key can name the other's
+  // Redis key (the lease for "fence:x" must not be the counter for "x").
   private leaseKey(key: string): string {
-    return `${this.prefix}:${key}`;
+    return `${this.prefix}:lease:${key}`;
   }
 
   private fenceKey(key: string): string {

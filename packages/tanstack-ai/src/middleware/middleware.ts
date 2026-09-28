@@ -42,8 +42,12 @@ export function toolCache(config: ToolCacheMiddlewareConfig): ChatMiddleware {
   const allowed = new Set(tools);
   const resolveUserId = (ctx: ChatMiddlewareContext) =>
     typeof userId === "function" ? userId(ctx) : userId;
-  // Calls this middleware has seen, by id: the args to key the write with, or "hit" when served.
+  // Calls this middleware has seen: the args to key the write with, or "hit" when served. Keyed by
+  // request + call id, because one middleware instance can serve concurrent `chat()` calls and
+  // providers only guarantee call ids are unique within a request.
   const pending = new Map<string, { args: unknown } | "hit">();
+  const callKey = (ctx: ChatMiddlewareContext, toolCallId: string) =>
+    `${ctx.requestId}:${toolCallId}`;
 
   return {
     name: "upstash-tool-cache",
@@ -51,15 +55,15 @@ export function toolCache(config: ToolCacheMiddlewareConfig): ChatMiddleware {
       if (!allowed.has(hook.toolName)) return;
       const hit = await cache.get(resolveUserId(ctx), hook.toolName, hook.args);
       if (hit) {
-        pending.set(hook.toolCallId, "hit");
+        pending.set(callKey(ctx, hook.toolCallId), "hit");
         return { type: "skip", result: hit.value };
       }
-      pending.set(hook.toolCallId, { args: hook.args });
+      pending.set(callKey(ctx, hook.toolCallId), { args: hook.args });
       return;
     },
     async onAfterToolCall(ctx, info) {
-      const seen = pending.get(info.toolCallId);
-      pending.delete(info.toolCallId);
+      const seen = pending.get(callKey(ctx, info.toolCallId));
+      pending.delete(callKey(ctx, info.toolCallId));
       if (!seen || seen === "hit" || !info.ok || !allowed.has(info.toolName)) return;
       await cache.set(resolveUserId(ctx), info.toolName, seen.args, info.result);
     },

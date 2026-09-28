@@ -124,6 +124,16 @@ describe.skipIf(!hasRedisCreds)("upstashStream (live Redis)", () => {
     await expect(drain()).rejects.toThrow(/no entries/);
   });
 
+  it("object form stays bound to its runId when given another run's offset", async () => {
+    const a = upstashStream({ runId: "bind-a-" + randomUUID() }, cfg);
+    const [offset] = await a.append([text("q")]);
+    const b = upstashStream({ runId: "bind-b-" + randomUUID(), offset: offset! }, cfg);
+    const drain = async () => {
+      for await (const _ of b.read(b.resumeFrom()!)) void _;
+    };
+    await expect(drain()).rejects.toThrow(/belongs to run/);
+  });
+
   it("rejects an offset that belongs to a different run", async () => {
     const a = upstashStream({ runId: "run-a-" + randomUUID() }, cfg);
     const [offset] = await a.append([text("q")]);

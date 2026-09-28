@@ -53,7 +53,7 @@ describe.skipIf(!hasRedisCreds)("RedisLock (live Redis)", () => {
     );
     expect(maxInside).toBe(1);
     expect(order.sort()).toEqual([1, 2, 3]);
-    expect(await redis.exists(`${prefix}:k3`)).toBe(0);
+    expect(await redis.exists(`${prefix}:lease:k3`)).toBe(0);
   });
 
   it("releases the lease when the critical section throws", async () => {
@@ -78,11 +78,24 @@ describe.skipIf(!hasRedisCreds)("RedisLock (live Redis)", () => {
   it("aborts the signal when the lease is taken away", async () => {
     const lock = new RedisLock({ redis, prefix, leaseMs: 600 });
     const reason = await lock.withLock("k6", async (signal) => {
-      await redis.del(`${prefix}:k6`); // simulate expiry + takeover
+      await redis.del(`${prefix}:lease:k6`); // simulate expiry + takeover
       await sleep(800);
       return signal.reason;
     });
     expect(reason).toBeInstanceOf(LockLostError);
+  });
+
+  it("keeps leases and fencing counters apart for colliding-looking keys", async () => {
+    const lock = new RedisLock({ redis, prefix });
+    const x = await lock.tryAcquire("x");
+    expect(x).not.toBeNull();
+    const fenceX = await lock.tryAcquire("fence:x");
+    expect(fenceX).not.toBeNull(); // would be refused if its lease were x's fencing counter
+    expect(await x!.release()).toBe(true);
+    expect(await fenceX!.release()).toBe(true);
+    const again = await lock.tryAcquire("x");
+    expect(again!.fencingToken).toBeGreaterThan(x!.fencingToken);
+    await again!.release();
   });
 
   it("times out acquiring a held key", async () => {

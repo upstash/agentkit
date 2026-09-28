@@ -1,4 +1,5 @@
 /* global Blob */
+import { randomUUID } from "node:crypto";
 import type { Redis } from "@upstash/redis";
 import type {
   BlobBody,
@@ -15,16 +16,26 @@ import { addTelemetry } from "../telemetry.js";
 import { KEY_LOCKING, loadDocs } from "./records.js";
 
 /**
- * Write a blob record, keeping its original `createdAt` across overwrites, and index its key.
- * KEYS: record document, key index. ARGV: record JSON (with a fresh createdAt), key.
+ * Commit a put: point the key at its newly uploaded object version, write the record (keeping the
+ * original `createdAt` across overwrites) and index the key, all at once. Returns the stored record
+ * and the version it replaced, whose bytes the caller then deletes.
+ * KEYS: record document, key index, current-version pointer. ARGV: record JSON, key, version path.
  */
-const PUT_RECORD = `${KEY_LOCKING}local created = redis.call("JSON.GET", KEYS[1], "$.createdAt")
+const PUT_RECORD = `${KEY_LOCKING}local previous = redis.call("GET", KEYS[3]) or ""
+redis.call("SET", KEYS[3], ARGV[3])
+local created = redis.call("JSON.GET", KEYS[1], "$.createdAt")
 redis.call("JSON.SET", KEYS[1], "$", ARGV[1])
 if created and created ~= "[]" then
   redis.call("JSON.SET", KEYS[1], "$.createdAt", string.sub(created, 2, -2))
 end
 redis.call("ZADD", KEYS[2], 0, ARGV[2])
-return redis.call("JSON.GET", KEYS[1])`;
+return {redis.call("JSON.GET", KEYS[1]), previous}`;
+
+/** Remove a key's record, pointer and index entry at once; returns the version path to delete. */
+const DELETE_RECORD = `${KEY_LOCKING}local previous = redis.call("GET", KEYS[3]) or ""
+redis.call("DEL", KEYS[1], KEYS[3])
+redis.call("ZREM", KEYS[2], ARGV[1])
+return previous`;
 
 /**
  * The slice of an `@upstash/blob` `Bucket` this store uses — pass `Bucket.fromEnv()`. Structural,
@@ -144,9 +155,21 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
   addTelemetry(redis, config.enableTelemetry);
   const pathPrefix = config.pathPrefix ?? "agentkit/tanstack/";
   const recordKey = (key: string) => `${prefix}:blob:${key}`;
+  const versionKey = (key: string) => `${prefix}:blobVersion:${key}`;
   const indexKey = `${prefix}:blobKeys`;
   // One path segment per key, whatever characters the key holds.
-  const pathFor = (key: string) => `${pathPrefix}${encodeURIComponent(key)}`;
+  // Every put uploads to a fresh, immutable version path, so concurrent writers never share an
+  // object: whichever commits last wins the pointer, and a record never describes another
+  // writer's bytes. The replaced version is deleted only after the commit.
+  const newVersionPath = (key: string) => `${pathPrefix}${encodeURIComponent(key)}/${randomUUID()}`;
+  const dropVersion = async (path: unknown) => {
+    if (typeof path !== "string" || path === "") return;
+    try {
+      await bucket.del(path);
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  };
 
   const assertKey = (key: string) => {
     if (typeof key !== "string" || key === "") {
@@ -159,11 +182,10 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
     return (await redis.json.get<BlobRecord>(recordKey(key))) ?? null;
   };
 
-  async function readBytes(key: string, record: BlobRecord, range?: BlobRange) {
+  async function readBytes(path: string, record: BlobRecord, range?: BlobRange) {
     const size = record.size ?? 0;
     const served = range ? resolveRange(size, range) : { offset: 0, length: size };
     if (served.length === 0) return { bytes: new Uint8Array(0), served };
-    const path = pathFor(key);
     if (range && bucket.signedReadUrl) {
       const { url } = await bucket.signedReadUrl(path);
       const end = served.offset + served.length - 1;
@@ -189,7 +211,8 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
       const contentType =
         options?.contentType ??
         (typeof Blob !== "undefined" && body instanceof Blob ? body.type || undefined : undefined);
-      const stored = await bucket.put(pathFor(key), bytes, contentType ? { contentType } : {});
+      const path = newVersionPath(key);
+      const stored = await bucket.put(path, bytes, contentType ? { contentType } : {});
       const now = Date.now();
       // A full replace: omitted optional fields are cleared, and only createdAt survives an overwrite.
       const record: BlobRecord = {
@@ -201,19 +224,27 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
         createdAt: now,
         updatedAt: now,
       };
-      return (await redis.eval(
+      const [stored_, previous] = (await redis.eval(
         PUT_RECORD,
-        [recordKey(key), indexKey],
-        [JSON.stringify(record), key],
-      )) as BlobRecord;
+        [recordKey(key), indexKey, versionKey(key)],
+        [JSON.stringify(record), key, path],
+      )) as [BlobRecord, string];
+      if (previous !== path) await dropVersion(previous);
+      return stored_;
     },
 
     async get(key: string, options?: BlobGetOptions): Promise<BlobObject | null> {
-      const record = await head(key);
-      if (!record) return null;
+      assertKey(key);
+      // The record and its version pointer are read together, so the bytes fetched are the ones
+      // the record describes even while another writer commits.
+      const tx = redis.multi();
+      tx.json.get(recordKey(key));
+      tx.get(versionKey(key));
+      const [record, path] = (await tx.exec()) as [BlobRecord | null, string | null];
+      if (!record || !path) return null;
       let read;
       try {
-        read = await readBytes(key, record, options?.range);
+        read = await readBytes(path, record, options?.range);
       } catch (error) {
         if (error instanceof RangeError) throw error;
         if (isNotFound(error)) return null;
@@ -239,15 +270,12 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
 
     async delete(key: string): Promise<void> {
       assertKey(key);
-      const tx = redis.multi();
-      tx.del(recordKey(key));
-      tx.zrem(indexKey, key);
-      await tx.exec();
-      try {
-        await bucket.del(pathFor(key));
-      } catch (error) {
-        if (!isNotFound(error)) throw error;
-      }
+      const previous = await redis.eval(
+        DELETE_RECORD,
+        [recordKey(key), indexKey, versionKey(key)],
+        [key],
+      );
+      await dropVersion(previous);
     },
 
     async list(options?: BlobListOptions): Promise<BlobListPage> {

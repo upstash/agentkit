@@ -36,6 +36,21 @@ redis.call("ZADD", KEYS[4], ARGV[4], ARGV[5])
 return 1`;
 
 /**
+ * Delete an artifact and unindex it, but only from the indexes it is actually in: the caller reads
+ * the side hash, declares those index keys, and the script compare-and-swaps (0 = a concurrent save
+ * moved it; retry), so a racing move can never leave a dangling index entry.
+ * KEYS: document, side hash, run index, thread index. ARGV: expected run index, expected thread
+ * index, id.
+ */
+const DELETE_ARTIFACT = `${KEY_LOCKING}local curRun = redis.call("HGET", KEYS[2], "run") or ""
+local curThread = redis.call("HGET", KEYS[2], "thread") or ""
+if curRun ~= ARGV[1] or curThread ~= ARGV[2] then return 0 end
+redis.call("DEL", KEYS[1], KEYS[2])
+redis.call("ZREM", KEYS[3], ARGV[3])
+redis.call("ZREM", KEYS[4], ARGV[3])
+return 1`;
+
+/**
  * `GenerationRunStore`: one record per one-shot generation job (image, video, speech,
  * transcription), written by `withGenerationPersistence`. A JSON document per run and a per-thread
  * sorted set by `startedAt`, so `findLatestForThread` is one index read.
@@ -96,12 +111,29 @@ export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore 
   };
   const load = async (ids: string[]) => loadDocs<ArtifactRecord>(redis, ids.map(k.artifact));
 
-  async function remove(record: ArtifactRecord): Promise<void> {
-    const tx = redis.multi();
-    tx.del(k.artifact(record.artifactId), k.where(record.artifactId));
-    tx.zrem(k.run(record.runId), record.artifactId);
-    tx.zrem(k.thread(record.threadId), record.artifactId);
-    await tx.exec();
+  const readIndexes = async (id: string) => {
+    const where = await redis.hmget<Record<string, string | null>>(k.where(id), "run", "thread");
+    return { run: where?.run ?? null, thread: where?.thread ?? null };
+  };
+
+  async function remove(id: string): Promise<void> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const { run, thread } = await readIndexes(id);
+      if (!run || !thread) {
+        // Not indexed: at most a bare document is left (e.g. from a crashed save) — drop it.
+        await redis.del(k.artifact(id), k.where(id));
+        return;
+      }
+      const deleted = await redis.eval(
+        DELETE_ARTIFACT,
+        [k.artifact(id), k.where(id), run, thread],
+        [run, thread, id],
+      );
+      if (Number(deleted) === 1) return;
+    }
+    throw new Error(
+      `@upstash/agentkit-tanstack-ai: artifact ${JSON.stringify(id)} kept changing during delete.`,
+    );
   }
 
   const store: ArtifactStore = {
@@ -111,13 +143,7 @@ export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore 
       assertId(record.threadId, "threadId");
       const id = record.artifactId;
       for (let attempt = 0; attempt < 5; attempt++) {
-        const where = await redis.hmget<Record<string, string | null>>(
-          k.where(id),
-          "run",
-          "thread",
-        );
-        const oldRun = where?.run ?? null;
-        const oldThread = where?.thread ?? null;
+        const { run: oldRun, thread: oldThread } = await readIndexes(id);
         const saved = await redis.eval(
           SAVE_ARTIFACT,
           [
@@ -152,12 +178,13 @@ export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore 
     },
 
     async delete(artifactId) {
-      const record = await store.get(artifactId);
-      if (record) await remove(record);
+      assertId(artifactId, "artifactId");
+      await remove(artifactId);
     },
 
     async deleteForRun(runId) {
-      for (const record of await store.list(runId)) await remove(record);
+      assertId(runId, "runId");
+      for (const id of await redis.zrange<string[]>(k.run(runId), 0, -1)) await remove(id);
     },
   };
   return store;

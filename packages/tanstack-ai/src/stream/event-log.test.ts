@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { EventLog } from "./event-log.js";
+import { EventLog, EventLogClosedError } from "./event-log.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -90,6 +90,20 @@ describe.skipIf(!hasRedisCreds)("EventLog (live Redis)", () => {
     const read: number[] = [];
     for await (const e of log.read("big")) read.push(e.event);
     expect(read).toEqual(big);
+  });
+
+  it("refuses appends after close, so nothing lands after readers' final drain", async () => {
+    const log = new EventLog<number>({ redis, prefix, ttlSeconds: 60 });
+    await log.append("closed", [1]);
+    await log.close("closed");
+    await expect(log.append("closed", [2])).rejects.toBeInstanceOf(EventLogClosedError);
+    expect((await log.snapshot("closed")).map((e) => e.event)).toEqual([1]);
+    // The flag and the stream keep the same expiry, so the flag cannot lapse first.
+    const [streamTtl, flagTtl] = await Promise.all([
+      redis.ttl(`${prefix}:events:closed`),
+      redis.ttl(`${prefix}:closed:closed`),
+    ]);
+    expect(Math.abs(streamTtl - flagTtl)).toBeLessThanOrEqual(1);
   });
 
   it("expires logs whose producer never closed", async () => {

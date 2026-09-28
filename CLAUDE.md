@@ -1155,6 +1155,14 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 
 ## tanstack-ai (`packages/tanstack-ai`)
 
+- **Entry points** (tsup + `exports`): `.` = everything that needs only `@tanstack/ai` (stream, locks,
+  middleware, search, `RedisLock`/`EventLog`); `./persistence` (`src/persistence/index.ts`, needs
+  `@tanstack/ai-persistence`) and `./memory` (`src/memory/index.ts`, needs `@tanstack/ai-memory`).
+  Rule: **the root entry must never import types from an optional peer** — check `dist/index.d.ts`
+  has no `@tanstack/ai-persistence` / `@tanstack/ai-memory` / `@upstash/blob` import after a build.
+  (Copilot review on #48; verified 2026-09-28 with a consumer that has only `@tanstack/ai` and
+  `skipLibCheck: false` — the only errors are two pre-existing ones inside `@tanstack/ai`'s own
+  `spawn.d.ts`.)
 - **Layout** (`src/`): one folder per feature — `persistence/` (stores, `records.ts` plumbing,
   `blob-store.ts`), `stream/` (`upstashStream` + `EventLog`), `locks/` (`upstashLocks` + `RedisLock`),
   `memory/`, `middleware/`, `search/`, and `testing/` (scripted adapter, test bucket, env helpers —
@@ -1206,8 +1214,11 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   compare-and-swaps, retrying on a race.
 - Metadata: one doc per pair, key `meta:<encodeURIComponent(ns)>:<encodeURIComponent(key)>`, value
   wrapped as `{ v }` so a bare string round-trips.
-- **Blobs** (`blob-store.ts`, only when `upstashPersistence({ bucket })`): bytes in Upstash Blob at
-  `<pathPrefix><encodeURIComponent(key)>`; the record is a JSON doc plus a lexical zset of keys.
+- **Blobs** (`blob-store.ts`, only when `upstashPersistence({ bucket })`): bytes in Upstash Blob at an
+  immutable **versioned** path `<pathPrefix><encodeURIComponent(key)>/<uuid>`; `blobVersion:<key>` points
+  at the current one and is swapped in the same script as the record (`PUT_RECORD` returns the replaced
+  path, deleted after commit; `DELETE_RECORD` likewise), and `get` reads record + pointer in one
+  `MULTI`, so concurrent puts can never leave a record describing another writer's bytes; the record is a JSON doc plus a lexical zset of keys.
   `PUT_RECORD` replaces the doc but restores the old `createdAt` (read via `JSON.GET $.createdAt`).
   Blob listings omit content type + metadata, hence records in Redis. Ranges use `signedReadUrl` +
   `Range`; a 200 is sliced locally. `@upstash/blob` is an optional peer (structural

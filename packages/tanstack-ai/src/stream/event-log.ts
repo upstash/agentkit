@@ -1,5 +1,6 @@
 import type { Redis } from "@upstash/redis";
 import { addTelemetry } from "../telemetry.js";
+import { KEY_LOCKING } from "../persistence/records.js";
 
 /**
  * Every stored event carries this prefix. `@upstash/redis` auto-deserializes replies, so a field
@@ -7,6 +8,28 @@ import { addTelemetry } from "../telemetry.js";
  * stored value unparseable as JSON and guarantees a byte-exact round trip.
  */
 const MARKER = "agentkit-event-v1:";
+
+/**
+ * Append a batch in one script: refuse a closed log (an event appended after `close` would land
+ * after readers' final drain and never be delivered), add every entry, refresh the stream's expiry.
+ * Under `allow-key-locking` both keys are declared.
+ * KEYS: stream, closed flag. ARGV: ttlSeconds (0 = none), encoded events… Returns the entry ids.
+ */
+const APPEND = `${KEY_LOCKING}if redis.call("EXISTS", KEYS[2]) == 1 then
+  return redis.error_reply("EVENTLOG_CLOSED")
+end
+local ids = {}
+for i = 2, #ARGV do ids[#ids + 1] = redis.call("XADD", KEYS[1], "*", "e", ARGV[i]) end
+if tonumber(ARGV[1]) > 0 then redis.call("EXPIRE", KEYS[1], ARGV[1]) end
+return ids`;
+
+/** Thrown by `append` on a log that has been closed. */
+export class EventLogClosedError extends Error {
+  constructor(readonly logId: string) {
+    super(`EventLog: log ${JSON.stringify(logId)} is closed; nothing more can be appended.`);
+    this.name = "EventLogClosedError";
+  }
+}
 
 export interface EventLogConfig {
   /** Upstash Redis client. */
@@ -50,7 +73,8 @@ const PAGE = 500;
  * An append-only, resumable event log on Upstash Redis Streams — the storage under resumable
  * streaming (reload mid-answer, a second device joining), fan-out to several readers, and replay.
  *
- * - `append` writes a batch atomically (one `MULTI`) and returns one position per event, in order.
+ * - `append` writes a batch atomically (one script) and returns one position per event, in order;
+ *   it refuses a closed log with {@link EventLogClosedError}.
  * - `read` yields everything **after** a position and keeps tailing until the log is closed.
  * - `snapshot` returns what is stored right now and never waits.
  * - `close` terminalizes the log; readers drain what is left and stop.
@@ -91,12 +115,19 @@ export class EventLog<T = unknown> {
   async append(logId: string, events: T[]): Promise<string[]> {
     assertLogId(logId);
     if (events.length === 0) return [];
-    const key = this.streamKey(logId);
-    const tx = this.redis.multi();
-    for (const event of events) tx.xadd(key, "*", { e: MARKER + JSON.stringify(event) });
-    if (this.ttlSeconds > 0) tx.expire(key, this.ttlSeconds);
-    const results = (await tx.exec()) as unknown[];
-    return results.slice(0, events.length).map(String);
+    try {
+      const ids = (await this.redis.eval(
+        APPEND,
+        [this.streamKey(logId), this.closedKey(logId)],
+        [String(this.ttlSeconds), ...events.map((event) => MARKER + JSON.stringify(event))],
+      )) as unknown[];
+      return ids.map(String);
+    } catch (error) {
+      if (/EVENTLOG_CLOSED/.test(String((error as Error)?.message ?? error))) {
+        throw new EventLogClosedError(logId);
+      }
+      throw error;
+    }
   }
 
   /** One page of entries strictly after `after` (`"0"` = from the start). */

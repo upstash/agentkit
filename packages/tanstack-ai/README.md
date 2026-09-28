@@ -10,7 +10,7 @@ instances, reloads and devices.
 | --- | --- | --- |
 | `withPersistence()` / `withGenerationPersistence()` stores | `upstashPersistence()` | Transcripts, runs, human-in-the-loop interrupts, metadata, generation jobs, artifacts and (with Upstash Blob) their bytes |
 | `StreamDurability` | `upstashStream()` | Reload mid-answer or open the thread on another device and pick up where the stream is |
-| `withLocks()` `LockStore` | `upstashLocks()` | One writer per thread across instances (lease + renewal, aborts on loss) |
+| `withLocks()` `LockStore` | `upstashLocks()` | Distributed locks for TanStack AI middleware, e.g. so concurrent requests never create duplicate sandboxes |
 | `memoryMiddleware()` adapter | `upstashMemory()` | Long-term memory ranked in Redis Search (BM25, typo-tolerant), no per-turn full scan |
 | chat middleware | `toolCache()`, `rateLimit()` | Skip repeated deterministic tool calls; throttle users before the model runs |
 | tools | `createSearchTools()` | `search` / `aggregate` / `count` over your own documents for RAG |
@@ -26,6 +26,9 @@ npm install @upstash/agentkit-tanstack-ai @tanstack/ai
 npm install @tanstack/ai-persistence @tanstack/ai-memory
 ```
 
+Persistence and memory have their own entry points, `@upstash/agentkit-tanstack-ai/persistence` and
+`@upstash/agentkit-tanstack-ai/memory`, so the root entry never needs those optional packages.
+
 Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`; every factory defaults to
 `Redis.fromEnv()` and accepts `redis` to pass a client explicitly.
 
@@ -34,7 +37,7 @@ Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`; every factory defau
 ```ts
 import { chat } from "@tanstack/ai";
 import { withPersistence } from "@tanstack/ai-persistence";
-import { upstashPersistence } from "@upstash/agentkit-tanstack-ai";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
 
 const persistence = upstashPersistence({
   messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: expire idle transcripts
@@ -92,15 +95,21 @@ import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
 chat({ adapter, messages, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
 ```
 
-A lease (`leaseMs`, default 30 s) renewed while the section runs; the section's `signal` aborts if
-the lease is lost. Built on `RedisLock`, exported from this package too, which also exposes a
+`withLocks` doesn't lock anything by itself: it hands the lock store to later middleware, which
+take a lock around the one step they must not run twice. `withSandbox` does this so two concurrent
+requests for a thread don't both create a sandbox, and your own middleware can do the same via
+`getLocks(ctx)`. It does not serialize whole chat turns. TanStack's built-in `InMemoryLockStore` only
+coordinates inside one process; `upstashLocks()` works across instances.
+
+Each lock is a lease (`leaseMs`, default 30 s) renewed while the section runs; the section's `signal`
+aborts if the lease is lost. Built on `RedisLock`, exported from this package too, which also exposes a
 fencing token (`EventLog`, the Redis Streams log under `upstashStream`, is exported as well).
 
 ## Long-term memory
 
 ```ts
 import { memoryMiddleware } from "@tanstack/ai-memory";
-import { upstashMemory } from "@upstash/agentkit-tanstack-ai";
+import { upstashMemory } from "@upstash/agentkit-tanstack-ai/memory";
 
 chat({
   adapter,

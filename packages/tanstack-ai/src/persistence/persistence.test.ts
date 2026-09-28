@@ -43,10 +43,53 @@ describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
     expect(await slice!.text()).toBe("3456");
     expect(slice!.range).toEqual({ offset: 3, length: 4 });
     expect(bucket.rangeHits).toBe(before + 1);
-    expect(bucket.paths()).toContain("r/video.bin");
+    const version = (p: string) => p.startsWith("r/video.bin/");
+    expect(bucket.paths().filter(version)).toHaveLength(1);
     await blobs!.delete("video.bin");
-    expect(bucket.paths()).not.toContain("r/video.bin");
+    expect(bucket.paths().filter(version)).toHaveLength(0);
     expect(await blobs!.head("video.bin")).toBeNull();
+  });
+
+  it("concurrent puts of one key never leave a record describing another writer's bytes", async () => {
+    const { blobs } = upstashPersistence({
+      redis,
+      prefix: `${prefix}:race`,
+      bucket,
+      blobPathPrefix: "race/",
+    }).stores;
+    const bodies = ["a", "bb", "ccc", "dddd", "eeeee"];
+    await Promise.all(bodies.map((body) => blobs!.put("k", body)));
+    const got = await blobs!.get("k");
+    const text = await got!.text();
+    expect(bodies).toContain(text);
+    expect(got!.size).toBe(text.length); // record and bytes are the same version
+    // Every replaced version was cleaned up: exactly one object remains for the key.
+    expect(bucket.paths().filter((p) => p.startsWith("race/k/"))).toHaveLength(1);
+  });
+
+  it("deleting an artifact while it is re-saved elsewhere leaves no dangling index entry", async () => {
+    const { artifacts } = upstashPersistence({ redis, prefix: `${prefix}:artdel` }).stores;
+    const base = { artifactId: "x", name: "n", mimeType: "text/plain", size: 1, createdAt: 1 };
+    await artifacts.save({ ...base, runId: "r1", threadId: "t1" });
+    await Promise.all([
+      artifacts.delete("x"),
+      artifacts.save({ ...base, runId: "r2", threadId: "t2" }),
+    ]);
+    const record = await artifacts.get("x");
+    const listed = [
+      ...(await artifacts.list("r1")),
+      ...(await artifacts.list("r2")),
+      ...(await artifacts.listForThread("t1")),
+      ...(await artifacts.listForThread("t2")),
+    ];
+    if (record) {
+      // The save won: it is indexed exactly where the record says.
+      expect(listed.map((a) => a.runId + "/" + a.threadId)).toEqual(["r2/t2", "r2/t2"]);
+    } else {
+      // The delete won: nothing points at it anywhere.
+      expect(listed).toEqual([]);
+      expect(await redis.zcard(`${prefix}:artdel:runArtifacts:r2`)).toBe(0);
+    }
   });
 
   it("omits the blobs store when no bucket is given", () => {
