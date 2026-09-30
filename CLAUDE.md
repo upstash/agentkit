@@ -121,9 +121,12 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.65.0**, stamps formatVersion 2; extension 1 /
-  **tool 55** / **dynamicTool 52** / **hook 25** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.65.0** — 0.65.0 is the first release accepting tool 55 (the 0.64.1 build stamped tool 54), because eve now
+  supported list — the current dist, built with **eve 0.68.0**, stamps formatVersion 2; extension 1 /
+  **tool 59** / **dynamicTool 56** / **hook 29** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.68.0** — 0.68.0 is the first release accepting tool 59 and hook 29 (0.67.0–0.67.2 accept
+  dynamicTool 56 but neither of the others; 0.65.0–0.66.3 accept none of the three). The previous dist,
+  built with 0.65.0, stamped tool 55 / dynamicTool 52 / hook 25 (floor 0.65.0; the 0.64.1 build stamped
+  tool 54), because eve now
   **drops** mid-range contracts rather than only adding new ones (0.64.0's supported `tool` list is
   [1–13, 29–32, 34, 35, 54], its `dynamicTool` list [1–20, 22, 31–33, 52] and its `hook` list
   [10–15, 17–23, 25] — 0.64.0 dropped **tool 53, dynamicTool 51 AND hook 24 in one release**, which is
@@ -151,7 +154,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.65.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.68.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -474,7 +477,7 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 through 0.65.0 alike)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 through 0.68.0 alike)
   declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
   `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
   the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
@@ -617,6 +620,9 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   distinguishing detail in a failing eval gate: `observed <tool> calls: {}` means the tool **mounted and
   ran** (and Redis failed underneath), whereas `observed tools: [<other>]` means the tool **never
   mounted** — only the latter is a real code problem.
+  **Idle control settles it:** provision one more DB, run nothing against it, PING it every 15s. On
+  2026-09-30 an untouched DB passed 6/6 warm-up PINGs and was dead 25s later; when that happens, no
+  live result from that box means anything.
 - **The read-your-writes sync-token bug is FIXED as of `@upstash/redis@1.38.4`** (the repo is pinned
   `^1.38.4`; `packages/eve`'s peer floor is `>=1.38.4`). Historically, in **1.38.0 and earlier back to
   1.34.5**, `HttpClient.request()` built `requestHeaders` from `this.headers` and only *then* copied
@@ -647,9 +653,11 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- **One eve everywhere again: `eve@0.65.0`** in every package and demo (2026-09-23), and **every package
-  requires it** — `packages/eve` and `packages/eve-extension` both declare `eve: ">=0.65.0"`. (For one
-  day the repo was split: the extension on 0.64.1, `packages/eve` on 0.63.0, because eve 0.64.0 removed
+- **The repo is split again (2026-09-30): `packages/eve-extension` + `examples/eve-extension-demo` are
+  on `eve@0.68.0` (extension peer `>=0.68.0`); `packages/eve` + `examples/eve-demo` stay on
+  `eve@0.65.0` (peer `>=0.65.0`)** — see the 0.65.0 → 0.68.0 bump note below. Before that (2026-09-23)
+  it was one `eve@0.65.0` everywhere, with both packages declaring `eve: ">=0.65.0"`. (For one
+  day the repo was also split earlier: the extension on 0.64.1, `packages/eve` on 0.63.0, because eve 0.64.0 removed
   the `SandboxBackend*` authoring types that `packages/eve/src/sandbox.ts` implemented.) eve 0.64
   replaced sandbox **backends** with **providers** (`eve/sandbox/provider`: `defineSandboxProvider`,
   `SandboxProvider*`, `SandboxDeleteOptions`) and object-form `defineSandbox({ backend, bootstrap,
@@ -832,6 +840,18 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
   Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
   `packages/eve-extension/dist` that differs from published `0.10.0`.**
+- **The 0.65.0 → 0.68.0 bump (2026-09-30) is EXTENSION-ONLY again.** `packages/eve` cannot take it
+  without a source migration: eve **0.66.0** (ee286fe) removed `MutableNetworkSandboxSession` from
+  `eve/sandbox` (network policy became provider-specific; `SandboxSession` lost `setNetworkPolicy`), and
+  `packages/eve/src/sandbox.ts` + `sandbox.test.ts` import it — tsup's DTS step and `tsc` fail with
+  `TS2305 … has no exported member 'MutableNetworkSandboxSession'` plus a cascade of implicit-`any`
+  errors. (Knock-on: `examples/eve-demo`'s `next build` then fails on implicit-`any` in
+  `agent/channels/eve.ts`, because `@upstash/agentkit-eve` has no `.d.ts`.) The extension needed no source
+  change: its rebuild re-stamps **tool 55→59, dynamicTool 52→56, hook 25→29**, and the floor moved
+  `>=0.65.0` → **`>=0.68.0`**, read off each 0.65.0–0.68.0 tarball's
+  `dist/src/compiler/extension-compatibility.js`. eve 0.68.0 still accepts the old 55/52/25 stamps, so
+  published `0.13.0` keeps working on it. eve ≥0.64's scaffold also needs `just-bash` for a plain
+  `eve build`; the extension demo side-steps that with `--skip-sandbox-prewarm` (see its section).
 - **The 0.64.1 → 0.65.0 bump (2026-09-23, same PR #46) finished what 0.64.1 couldn't: the whole repo
   is on 0.65.0 and every package requires it.** `packages/eve`'s sandbox was ported from the removed
   backend API to an eve **provider** (`UpstashSandbox`, see Known issues) — the only source change;
