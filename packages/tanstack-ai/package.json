@@ -1,6 +1,6 @@
 {
   "name": "@upstash/agentkit-tanstack-ai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Upstash AgentKit backends for TanStack AI: chat persistence, resumable streams, distributed locks, long-term memory, tool caching, rate limiting, and Redis-Search tools — all on one Upstash Redis.",
   "license": "MIT",
   "repository": {
