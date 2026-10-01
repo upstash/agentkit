@@ -1,0 +1,34 @@
+{
+  "name": "tanstack-ai-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "e2e": "vitest run --config e2e/vitest.config.ts"
+  },
+  "dependencies": {
+    "@tanstack/ai": "0.63.0",
+    "@tanstack/ai-client": "0.36.0",
+    "@tanstack/ai-memory": "0.2.8",
+    "@tanstack/ai-openai": "0.25.1",
+    "@tanstack/ai-persistence": "0.7.1",
+    "@tanstack/ai-react": "0.29.3",
+    "@upstash/agentkit-tanstack-ai": "workspace:*",
+    "@upstash/redis": "^1.38.4",
+    "next": "16.2.9",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "19.2.15",
+    "@types/react-dom": "19.2.3",
+    "dotenv": "^16.4.5",
+    "typescript": "^5",
+    "vitest": "^2.0.0"
+  }
+}

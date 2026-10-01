@@ -17,11 +17,14 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-sdk` (`packages/sdk`) | Core, framework-agnostic primitives. **No `ai` dependency** (redis-only). |
 | `@upstash/agentkit-ai-sdk` (`packages/ai-sdk`) | Vercel AI SDK adapter. |
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
+| `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
-`langchain` and `tanstack-ai` packages were **removed** — don't reintroduce them.
+`langchain` was **removed** — don't reintroduce it. A first `tanstack-ai` adapter was removed in June 2026
+(it only wrapped memory + a model cache); the current `packages/tanstack-ai` is a different package that
+implements TanStack AI's own backend contracts (see its section below) — keep it.
 
 ### Core SDK exports (`@upstash/agentkit-sdk`)
 - `AgentMemory`, `ToolCache`, `ChatHistory`, `createSearchToolDefs` (the framework-agnostic search-tool
@@ -418,6 +421,20 @@ and `eve-extension-demo` (a minimal eve scaffold that mounts the extension).
   completes, per Vercel plan, so don't rely on it for long-term history).
 - **Removed entirely:** the model cache (`ModelCache`/`SemanticCache`, `cachedModel`, `modelCacheMiddleware`),
   Telemetry, the generic Sandbox (sandbox is eve-only), and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
+
+## Lua scripts: always `allow-key-locking`
+
+- **Every `EVAL` script starts with `#!lua flags=allow-key-locking` on its very first line** (same as
+  `@upstash/ratelimit` since #154). Upstash then locks only the keys the script declares instead of the
+  whole database. The price: **every key a script touches must be in `KEYS`** — a key built or read
+  inside Lua fails with `ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is
+  set` (verified live 2026-09-27). Don't pass placeholder keys for optional indexes either; make `KEYS`
+  variable-length and test `if KEYS[n]` in the script.
+- Scripts that need a key they can only learn by reading (the artifact store's old run/thread index)
+  read it first, declare it, and compare-and-swap inside the script, retrying on a mismatch.
+- Current scripts: `RedisLock` acquire/release/extend (tanstack-ai), eve `redisDocuments()` CAS, and the
+  tanstack-ai persistence/generation stores. Upstash tolerates a leading newline before the shebang,
+  standard Redis does not — keep it on line 1.
 
 ## API conventions
 - **Naming of the knobs (consistent across all features):**
@@ -1155,3 +1172,116 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 - ~~`gpt-5.4-mini` (demo model) may not exist~~ — verified live (2026-08): it exists and responds in
   both demos. No swap needed.
 - The `19.2.17` `@types/react` may linger as an unpruned orphan in `.pnpm`; harmless (nothing links it).
+
+## tanstack-ai (`packages/tanstack-ai`)
+
+- **Entry points** (tsup + `exports`): `.` = everything that needs only `@tanstack/ai` (stream, locks,
+  middleware, search, `RedisLock`/`EventLog`); `./persistence` (`src/persistence/index.ts`, needs
+  `@tanstack/ai-persistence`) and `./memory` (`src/memory/index.ts`, needs `@tanstack/ai-memory`).
+  Rule: **the root entry must never import types from an optional peer** — check `dist/index.d.ts`
+  has no `@tanstack/ai-persistence` / `@tanstack/ai-memory` / `@upstash/blob` import after a build.
+  (Copilot review on #48; verified 2026-09-28 with a consumer that has only `@tanstack/ai` and
+  `skipLibCheck: false` — the only errors are two pre-existing ones inside `@tanstack/ai`'s own
+  `spawn.d.ts`.)
+- **Demo + E2E** (`examples/tanstack-ai-demo`): Next.js port of TanStack's `ts-react-chat` persistent-chat
+  route onto our backends (detached run, `resumeServerSentEventsResponse`, `reconstructChat`, memory),
+  with `RedisLock` replacing its process-local "one producer per run" set: `withLock(runId, fn,
+  { acquireTimeoutMs: 0 })` (timeout = someone else produces it, just tail), lease renewed for the run,
+  and on lease loss the run is aborted and the producer neither appends nor closes the log (the new
+  owner may be writing). The producer promise goes to Next.js `after()` (+ `maxDuration`) so it
+  survives the response on serverless; truly durable background runs (QStash) are a follow-up. `AGENTKIT_MOCK_MODEL=1` swaps in
+  a scripted model (`lib/model.ts`: word-by-word stream, `remember:` → `save_memory`, echoes recalled
+  memories). `pnpm e2e` (`e2e/`, files `*.e2e.ts` so root `pnpm test` skips them) starts **two** `next start`
+  servers on free ports, one Redis, a per-run `DEMO_PREFIX`, and checks cross-instance resume, mid-run
+  reconstruct, memory across threads, single production of a doubly-POSTed run, single production of
+  a run that outlives its lease (`PRODUCER_LEASE_MS=1000` + a `long:` ~6s mock answer), and a 400 on a
+  bad body. Count `TEXT_MESSAGE_START` to detect a second producer: two producers **interleave** their
+  words in one log, so text regexes miss it (a no-renewal build passed a regex check and failed this).
+  Gotchas hit building it: AG-UI bodies need a message `id`; Next.js route handlers don't return a thrown
+  `Response` (catch `chatParamsFromRequest`'s 400 yourself); spawn `node_modules/.bin/next` detached and
+  kill the process group (killing `npx` orphans `next`); backends are created lazily so `next build`
+  needs no credentials. CI runs it after "Build example apps"; skipped without Redis secrets.
+- **`src/package-exports.test.ts`** pins `package.json#exports` to the tsup entries — added after a
+  pushed commit shipped `dist/persistence.js` without exporting it (only the demo's build caught it).
+- **Layout** (`src/`): one folder per feature — `persistence/` (stores, `records.ts` plumbing,
+  `blob-store.ts`), `stream/` (`upstashStream` + `EventLog`), `locks/` (`upstashLocks` + `RedisLock`),
+  `memory/`, `middleware/`, `search/`, and `testing/` (scripted adapter, test bucket, env helpers —
+  never imported by `index.ts`). Root: `index.ts`, `telemetry.ts`, `version.ts`, `integration.test.ts`.
+- **Redis primitives** (`src/locks/redis-lock.ts`, `src/stream/event-log.ts`; moved here from core 2026-09-28, exported from this package): `RedisLock` (+ `LockLease`, `LockAcquireTimeoutError`,
+  `LockLostError`) — `SET NX PX` lease + a never-expiring `INCR` fencing counter, release/extend are
+  ownership-checked Lua; `withLock` renews every `leaseMs/3` and aborts the section's signal on loss.
+  `EventLog` (+ `LogEntry`, `EventLogClosedError`) — Redis Streams: `append` is one `EVAL` script of `XADD`s (atomic,
+  ordered ids) that refuses a closed log and refreshes the stream TTL,
+  `read` resumes with an **exclusive** `XRANGE (id` and tails by polling (REST keeps no blocking
+  reads), `close` sets a separate `:closed` key and readers do a final drain after seeing it, so
+  nothing appended before close is lost. Values carry an `agentkit-event-v1:` marker because
+  `@upstash/redis` auto-deserializes stream fields (`"123"` would come back as `123`). Both verified
+  live over REST (2026-09-27): `MULTI`+`XADD`, `XRANGE (`, `EVAL`, `SET NX PX` all work.
+- **Why it exists:** TanStack AI (≥0.61) defines backend contracts for production state and ships
+  only in-memory implementations (`memoryPersistence`, `memoryStream`, `InMemoryLockStore`,
+  `InMemoryRunStore`, the ai-memory `inMemory()`/ioredis-shaped `redis()` adapters). As of 2026-09
+  there were no Redis/Postgres persistence backends on npm. This package fills the seams; it does
+  **not** wrap models or reinvent TanStack features.
+- **Already upstream, don't duplicate:** `@tanstack/ai-sandbox-upstash-box` (Box sandbox provider)
+  is TanStack's own package.
+- Exports: `upstashPersistence` (messages/runs/interrupts/metadata), `upstashStream`
+  (`StreamDurability`, offsets `upstash:v1:<encodeURIComponent(runId)>:<streamId>`), `upstashLocks`
+  (`LockStore` over `RedisLock`, `src/locks/`), `upstashMemory` + `memoryScopeKey` (`MemoryAdapter` over core
+  `AgentMemory`), `toolCache`/`rateLimit` middlewares + `RateLimitExceededError`, `createSearchTools`
+  (returns a `Tool[]` built with `toolDefinition().server()`), re-exported `createRateLimit`/`Ratelimit`.
+- **Peers:** `@tanstack/ai` required; `@tanstack/ai-persistence` and `@tanstack/ai-memory` optional
+  (only their *types* are imported, so the runtime never needs them). `@tanstack/ai` is pinned exactly
+  as a devDep (0.61.0) — TanStack AI is pre-1.0 and moves fast; re-run the conformance suite on bumps.
+- **Persistence layout** (`agentkit:tanstack:*`): every record (run, interrupt, generation run,
+  artifact, blob record, metadata value, transcript) is a **RedisJSON document**, so values keep their
+  JSON types and need no codec. Shared plumbing is in `src/records.ts`:
+  - `CREATE`: `JSON.SET … NX` + `ZADD` into each index, returns the stored doc (idempotent
+    `createOrResume`). `PATCH`: `EXISTS` guard (a bare `JSON.MERGE` on a missing key *creates* it,
+    verified live 2026-09-28) then `JSON.MERGE`.
+  - `toMergePatches` turns `{...existing, ...patch}` semantics into two merge patches: a key present
+    with `undefined` becomes `null` (merge-patch delete); object-valued fields are nulled in the first
+    patch and set in the second, because merge patches *merge* nested objects instead of replacing
+    them. A literal `null` in a patch therefore deletes the field.
+  - `checkRun` validates run status at read time (TanStack's readers act destructively on it).
+- Indexes: `threadRuns:<id>`/`parentRuns:<id>` (zset by `startedAt`), `detachedRuns` (by
+  `detachedSince`, a **candidate** list — `listReclaimable` re-checks each record),
+  `threadInterrupts`/`runInterrupts` (by `requestedAt`), `threadGenerationRuns`,
+  `runArtifacts`/`threadArtifacts` (by `createdAt`, ties byte-ordered like the reference store).
+  `commitBatch` checks every interrupt is present and pending (`JSON.GET $.status`) and applies all
+  patches in one script.
+- Artifacts: which indexes a doc is in lives in a side hash `artifactIndexes:<id>` (raw index-key
+  strings) so the doc stays exactly the record. Re-saving under another run/thread: the caller reads
+  the side hash, declares the old index keys (required by `allow-key-locking`), and the script
+  compare-and-swaps, retrying on a race.
+- Metadata: one doc per pair, key `meta:<encodeURIComponent(ns)>:<encodeURIComponent(key)>`, value
+  wrapped as `{ v }` so a bare string round-trips.
+- **Blobs** (`blob-store.ts`, only when `upstashPersistence({ bucket })`): bytes in Upstash Blob at an
+  immutable **versioned** path `<pathPrefix><encodeURIComponent(key)>/<uuid>`; `blobVersion:<key>` points
+  at the current one and is swapped in the same script as the record (`PUT_RECORD` returns the replaced
+  path, deleted after commit; `DELETE_RECORD` likewise), and `get` reads record + pointer in one
+  `MULTI`, so concurrent puts can never leave a record describing another writer's bytes; the record is a JSON doc plus a lexical zset of keys.
+  `PUT_RECORD` replaces the doc but restores the old `createdAt` (read via `JSON.GET $.createdAt`).
+  Blob listings omit content type + metadata, hence records in Redis. Ranges use `signedReadUrl` +
+  `Range`; a 200 is sliced locally. `@upstash/blob` is an optional peer (structural
+  `BlobBucketLike`). Live-Blob conformance runs with `UPSTASH_BLOB_TOKEN` (get it via the MCP's
+  `blob_bucket get` + `include_credentials`): 26/26 on 2026-09-28.
+- **Config types reuse the primitives and core:** `UpstashLocksConfig = Omit<RedisLockConfig, "redis"> & {redis?}`,
+  `UpstashStreamConfig` from `EventLogConfig`, `ToolCacheMiddlewareConfig` from `ToolCacheConfig`,
+  `UpstashMemoryConfig` picks from `AgentMemoryConfig`, `CreateSearchToolsConfig` from
+  `SearchToolDefsConfig` — spread straight through, no per-field copying.
+- **Memory:** own keyspace `agentkit:tanstackMemory` (its schema adds an indexed `source` field, so
+  it must not share `agentkit:memory` — see the eve memory-slot notes on why). Scope → `userId` via
+  `memoryScopeKey`: per user across threads by default, parts escaped so `.`/`_`/`:` can't forge a
+  collision. Recalled lines are labelled by source like eve's `redisMemory()`.
+- **Testing:** `persistence.test.ts` runs TanStack's `runPersistenceConformance` (from
+  `@tanstack/ai-persistence/testkit`; it declares a vitest ^4 peer but runs fine on the repo's vitest
+  2) with a fresh prefix per case — all seven stores, nothing skipped, 26/26 on 2026-09-27. `memory.test.ts` also runs
+  `runMemoryAdapterContract` (`@tanstack/ai-memory/testkit`), each scope pinned under a unique
+  tenant — it needs `waitForIndexing` (save provisions the index once, writes, then waits), exactly
+  like eve's `redisMemory()` capture. Middleware/memory/search tests drive a real
+  `chat()` agent loop through `src/test-adapter.ts` (a scripted `TextAdapter` emitting AG-UI
+  `TOOL_CALL_*`/`TEXT_MESSAGE_*`/`RUN_FINISHED` chunks) — no model provider needed.
+- **Not built yet (proposed):** Code Mode isolate driver on Box (port of `@tanstack/ai-isolate-daytona`'s
+  need_tools/replay loop), Redis `SandboxInstanceStore`/`SandboxCheckpointStore` (+ Upstash Blob
+  `BlobStore`), QStash-backed background runs writing to `upstashStream`, and a QStash schedule for
+  `reapDetachedRuns`. 

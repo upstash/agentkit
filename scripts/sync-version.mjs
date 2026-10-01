@@ -18,6 +18,7 @@ const TARGETS = {
   "packages/ai-sdk": "src/version.ts",
   "packages/eve": "src/version.ts",
   "packages/eve-extension": "extension/lib/version.ts",
+  "packages/tanstack-ai": "src/version.ts",
 };
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

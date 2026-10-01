@@ -135,7 +135,7 @@ const CONTENT_MARKER = "eve-memory-document-v1:";
  * caller turns the second case into eve's `MemoryDocumentConflictError`. Returning the *current*
  * version rather than a bare `0` keeps the failure debuggable.
  */
-const CAS_SCRIPT = `
+const CAS_SCRIPT = `#!lua flags=allow-key-locking
 local current = redis.call('HGET', KEYS[1], 'version')
 if current == false then current = '' end
 if current ~= ARGV[2] then return {0, current} end

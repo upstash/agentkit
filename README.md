@@ -13,6 +13,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-sdk`](./packages/sdk) | Core, framework-agnostic primitives. |
 | [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
+| [`@upstash/agentkit-tanstack-ai`](./packages/tanstack-ai) | Production backends for [TanStack AI](https://tanstack.com/ai) — chat persistence, resumable streams, distributed locks, memory, tool caching, rate limiting and search tools. |
 | [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
 
 ## Core features
@@ -36,9 +37,11 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 ## Examples
 
 Runnable demos (real Upstash Redis + a mock/real model) live in [`examples/`](./examples):
-[`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo), and
+[`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo),
 [`eve-extension-demo`](./examples/eve-extension-demo) (an eve agent that mounts
-`@upstash/agentkit-eve-extension`).
+`@upstash/agentkit-eve-extension`), and [`tanstack-ai-demo`](./examples/tanstack-ai-demo) (a
+TanStack AI chat whose persistence, resumable stream and memory work across server instances, with
+a two-instance E2E suite).
 
 ## Development
 
