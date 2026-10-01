@@ -1,5 +1,11 @@
 # @upstash/agentkit-tanstack-ai
 
+## 0.1.1
+
+### Patch Changes
+
+- e526e5b: The telemetry header now reports the package's real version. 0.1.0 was built before its version constant was stamped, so it reported `0.0.0`.
+
 ## 0.1.0
 
 ### Minor Changes
