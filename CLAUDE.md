@@ -124,10 +124,12 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.68.0**, stamps formatVersion 2; extension 1 /
-  **tool 59** / **dynamicTool 56** / **hook 29** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.68.0** — 0.68.0 is the first release accepting tool 59 and hook 29 (0.67.0–0.67.2 accept
-  dynamicTool 56 but neither of the others; 0.65.0–0.66.3 accept none of the three). The previous dist,
+  supported list — the current dist, built with **eve 0.69.0**, stamps formatVersion 2; extension 1 /
+  **tool 71** / **dynamicTool 68** / **hook 35** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.69.0** — 0.69.0 is the first release accepting any of the three (0.65.0–0.68.0 accept none
+  of them), and 0.69.0 in turn **dropped** tool 59 / dynamicTool 56 / hook 29, the stamps of the 0.68.0
+  build (published `0.14.0`). The 0.68.0 build stamped tool 59 / dynamicTool 56 / hook 29 (floor
+  0.68.0: 0.67.0–0.67.2 accept dynamicTool 56 but neither of the others). The dist before that,
   built with 0.65.0, stamped tool 55 / dynamicTool 52 / hook 25 (floor 0.65.0; the 0.64.1 build stamped
   tool 54), because eve now
   **drops** mid-range contracts rather than only adding new ones (0.64.0's supported `tool` list is
@@ -157,7 +159,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.68.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.69.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -494,7 +496,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 through 0.68.0 alike)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 through 0.69.0 alike)
   declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
   `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
   the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
@@ -613,6 +615,11 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   failures are timeouts rather than assertions is an infrastructure death, not a regression;
   confirm with `curl … '["PING"]'` before believing it. (`curl -X POST https://upstash.com/start-redis`
   returns the same kind of database as the CLI.)
+  **But `start-redis` is rate-limited:** measured 2026-10-01, ~20 provisions inside a few minutes (one per
+  test file) got `HTTP 429` with an empty body and **no `Retry-After`**, and it stayed 429 for 10+ minutes.
+  A 429 makes the Endpoint/Token greps come back empty, so a script that doesn't check the status code
+  silently runs the suite with **no** Redis. Reuse one database and reprovision only when its PING fails;
+  check for `200` before parsing.
   On a box where `npm i -g` is not writable, install the CLI to a prefix:
   `npm i -g @upstash/cli --prefix /tmp/upstash-cli` → `/tmp/upstash-cli/bin/upstash`.
 - **A brand-new throwaway DB is often DEAD ON ARRIVAL — always `PING` it before writing it to `.env`.**
@@ -670,9 +677,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## Eve framework facts
-- **The repo is split again (2026-09-30): `packages/eve-extension` + `examples/eve-extension-demo` are
-  on `eve@0.68.0` (extension peer `>=0.68.0`); `packages/eve` + `examples/eve-demo` stay on
-  `eve@0.65.0` (peer `>=0.65.0`)** — see the 0.65.0 → 0.68.0 bump note below. Before that (2026-09-23)
+- **The repo is split (since 2026-09-30): `packages/eve-extension` + `examples/eve-extension-demo` are
+  on `eve@0.69.0` (extension peer `>=0.69.0`, since 2026-10-01; 0.68.0 / `>=0.68.0` before that);
+  `packages/eve` + `examples/eve-demo` stay on `eve@0.65.0` (peer `>=0.65.0`)** — see the 0.68.0 → 0.69.0
+  and 0.65.0 → 0.68.0 bump notes below. Before that (2026-09-23)
   it was one `eve@0.65.0` everywhere, with both packages declaring `eve: ">=0.65.0"`. (For one
   day the repo was also split earlier: the extension on 0.64.1, `packages/eve` on 0.63.0, because eve 0.64.0 removed
   the `SandboxBackend*` authoring types that `packages/eve/src/sandbox.ts` implemented.) eve 0.64
@@ -857,6 +865,20 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
   Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
   `packages/eve-extension/dist` that differs from published `0.10.0`.**
+- **The 0.68.0 → 0.69.0 bump (2026-10-01) is EXTENSION-ONLY, for the same reason as 0.68.0.** eve 0.69.0
+  **dropped tool 59, dynamicTool 56 and hook 29** — exactly the stamps of published
+  `@upstash/agentkit-eve-extension@0.14.0` (built with 0.68.0) — one day after it shipped, while its peer
+  `>=0.68.0` still admitted 0.69.0: a fresh `npm i eve@latest @upstash/agentkit-eve-extension@latest`
+  installed clean and then failed `eve build` with the obtuse *"Selected module binding
+  "extensions/agentkit.ts" has no compile or runtime usage."*. eve's `dropped` reasons: tool 59 — "Workflow
+  tools no longer accept execution or return background task receipts…"; dynamicTool 56 / hook 29 —
+  "Background task execution was removed…". No source change: the rebuild re-stamps **tool 59→71,
+  dynamicTool 56→68, hook 29→35**, and the floor moved `>=0.68.0` → **`>=0.69.0`** — read off every
+  0.65.0–0.69.0 tarball's `extension-compatibility.js` (only 0.69.0 accepts any of 71/68/35) and proven
+  with the packed tarball in fresh npm consumers: 0.69.0 builds and mounts every tool + the hook; 0.68.0
+  is refused at install (`ERESOLVE … peer eve@">=0.69.0"`) and, forced with `--legacy-peer-deps`,
+  fails `eve build` with the same obtuse error. eve 0.69.0's `ai` peer is still `^7.0.105`.
+  `packages/eve` still cannot move: `MutableNetworkSandboxSession` (below) is still imported.
 - **The 0.65.0 → 0.68.0 bump (2026-09-30) is EXTENSION-ONLY again.** `packages/eve` cannot take it
   without a source migration: eve **0.66.0** (ee286fe) removed `MutableNetworkSandboxSession` from
   `eve/sandbox` (network policy became provider-specific; `SandboxSession` lost `setNetworkPolicy`), and

@@ -216,13 +216,13 @@ importers:
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.68.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.69.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
       ai:
         specifier: 7.0.107
         version: 7.0.107(zod@4.4.3)
       eve:
-        specifier: ^0.68.0
-        version: 0.68.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.69.0
+        version: 0.69.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -361,8 +361,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: ^0.68.0
-        version: 0.68.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.69.0
+        version: 0.69.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -3544,8 +3544,8 @@ packages:
       microsandbox:
         optional: true
 
-  eve@0.68.0:
-    resolution: {integrity: sha512-1cvxOdbfESdhZjAdhjUwFJSx0B6uWkbaEvwmau6vNhHNX9A+SZaathd79acDzQNYbOa+5WjsypOx4wa8KjKtgQ==}
+  eve@0.69.0:
+    resolution: {integrity: sha512-UxWzU4C1+MlTvHQsQ2wi75k+lrxX8sNN4Dz0xVtITmDj/+mR47RUyHHXl8ojAkFv7DCG/dmNSXLCKfTcqCj0cQ==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -5011,6 +5011,10 @@ packages:
   undici@7.29.1:
     resolution: {integrity: sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q==}
     engines: {node: '>=20.18.1'}
+
+  undici@8.10.2:
+    resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
+    engines: {node: '>=22.19.0'}
 
   undici@8.9.0:
     resolution: {integrity: sha512-aWZpUj7XoGonMClx4gdDRfgBjqeA+F473aDmROQQbM9n6PRfK/u1q/a0X4wMTgcHfT8H6fpbt98PFuDUwFg2YA==}
@@ -7510,13 +7514,13 @@ snapshots:
       ai: 7.0.107(zod@4.4.3)
       eve: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
 
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.68.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))':
+  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.69.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))':
     dependencies:
       '@vercel/oidc': 3.6.1
     optionalDependencies:
       '@ai-sdk/mcp': 2.0.54(zod@4.4.3)
       ai: 7.0.107(zod@4.4.3)
-      eve: 0.68.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+      eve: 0.69.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -8137,11 +8141,11 @@ snapshots:
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
 
-  eve@0.68.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)):
+  eve@0.69.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)):
     dependencies:
       ai: 7.0.107(zod@4.4.3)
       nitro: 3.0.260903-beta
-      undici: 8.9.0
+      undici: 8.10.2
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
 
@@ -9948,6 +9952,8 @@ snapshots:
   undici-types@7.18.2: {}
 
   undici@7.29.1: {}
+
+  undici@8.10.2: {}
 
   undici@8.9.0: {}
 
