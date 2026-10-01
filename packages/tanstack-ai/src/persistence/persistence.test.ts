@@ -193,6 +193,59 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
     expect(await redis.exists(`${prefix}:parentRuns:_`)).toBe(0);
   });
 
+  it("keeps the detached-runs index in step with the run in the same script", async () => {
+    const { runs } = upstashPersistence({ redis, prefix }).stores;
+    const detached = `${prefix}:detachedRuns`;
+    const since = 1_727_000_000_123;
+    await runs.createOrResume({ runId: "d", threadId: "t", startedAt: 1 });
+
+    await runs.update("d", { detachedSince: since });
+    expect(await redis.zscore(detached, "d")).toBe(since);
+
+    await runs.update("d", { detachedSince: undefined });
+    expect(await redis.zscore(detached, "d")).toBeNull();
+
+    await runs.update("d", { detachedSince: since });
+    await runs.update("d", { status: "completed", finishedAt: since + 1 });
+    expect(await redis.zscore(detached, "d")).toBeNull();
+
+    await runs.update("missing", { detachedSince: since });
+    expect(await redis.zscore(detached, "missing")).toBeNull();
+    expect(await runs.get("missing")).toBeNull();
+  });
+
+  it("a detach is indexed by the same request that writes it", async () => {
+    // A client that dies after its first request: any follow-up call fails, as it would if the
+    // process crashed or ran out of retries between the patch and a separate index write.
+    let used = false;
+    const gone = () => {
+      throw new Error("client gone");
+    };
+    const oneShot = new Proxy(redis, {
+      get(target, prop) {
+        if (prop === "eval") {
+          return (...args: Parameters<typeof redis.eval>) => {
+            if (used) gone();
+            used = true;
+            return target.eval(...args);
+          };
+        }
+        if (used && (prop === "zadd" || prop === "zrem" || prop === "json")) gone();
+        return Reflect.get(target, prop, target);
+      },
+    });
+    const { runs } = upstashPersistence({ redis, prefix }).stores;
+    await runs.createOrResume({ runId: "crash", threadId: "t", startedAt: 1 });
+
+    const dying = upstashPersistence({ redis: oneShot, prefix }).stores.runs;
+    await dying.update("crash", { detachedSince: 5_000 });
+
+    expect((await runs.get("crash"))?.detachedSince).toBe(5_000);
+    expect(
+      (await runs.listReclaimable!({ now: 10_000, ttlMs: 1_000 })).map((r) => r.runId),
+    ).toContain("crash");
+  });
+
   it("moves a re-saved artifact between run and thread indexes", async () => {
     const { artifacts } = upstashPersistence({ redis, prefix }).stores;
     const base = {

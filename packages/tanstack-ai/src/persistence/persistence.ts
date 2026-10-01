@@ -74,6 +74,23 @@ for i = 1, #KEYS do redis.call("JSON.MERGE", KEYS[i], "$", ARGV[i]) end
 return #KEYS`;
 
 /**
+ * {@link PATCH} for a run that also keeps the detached-runs index in step with the patched record, in
+ * the same script, so a crash or a racing update can never leave a detached run out of the index.
+ * KEYS: run document, detached index. ARGV: the two merge patches, runId.
+ */
+const UPDATE_RUN = `${KEY_LOCKING}if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
+redis.call("JSON.MERGE", KEYS[1], "$", ARGV[1])
+if ARGV[2] ~= "{}" then redis.call("JSON.MERGE", KEYS[1], "$", ARGV[2]) end
+local status = redis.call("JSON.GET", KEYS[1], "$.status")
+local since = string.sub(redis.call("JSON.GET", KEYS[1], "$.detachedSince"), 2, -2)
+if status == '["running"]' and tonumber(since) then
+  redis.call("ZADD", KEYS[2], since, ARGV[3])
+else
+  redis.call("ZREM", KEYS[2], ARGV[3])
+end
+return 1`;
+
+/**
  * Every TanStack AI persistence store on Upstash Redis — pass the result to `withPersistence()` or
  * `withGenerationPersistence()`.
  *
@@ -160,16 +177,14 @@ export function upstashPersistence(
 
     async update(runId, fields) {
       assertId(runId, "runId");
-      if (Number(await patch(k.run(runId), fields)) !== 1) return;
-      // Keep the reclaim index in step. It is only a candidate list (`listReclaimable` re-checks each
-      // record), so a racing update can at worst leave a stale member, never a wrong answer.
       if ("detachedSince" in fields || "status" in fields) {
-        const current = checkRun(await redis.json.get<RunRecord>(k.run(runId)));
-        if (current?.status === "running" && current.detachedSince !== undefined) {
-          await redis.zadd(k.detached, { score: current.detachedSince, member: runId });
-        } else {
-          await redis.zrem(k.detached, runId);
-        }
+        await redis.eval(
+          UPDATE_RUN,
+          [k.run(runId), k.detached],
+          [...toMergePatches(fields), runId],
+        );
+      } else {
+        await patch(k.run(runId), fields);
       }
     },
 
