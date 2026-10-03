@@ -124,11 +124,12 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.70.0**, stamps formatVersion 2; extension 1 /
+  supported list — the current dist, built with **eve 0.70.2**, stamps formatVersion 2; extension 1 /
   **tool 73** / **dynamicTool 70** / **hook 37** / instructions 2 / config 1, which needs consumers on
   **eve ≥0.70.0** — 0.70.0 is the first release accepting any of the three (0.69.0 tops out at
-  71 / 68 / 35). Unusually, 0.70.0 dropped **nothing**: it still accepts 71 / 68 / 35, the stamps of the
-  0.69.0 build (published `0.15.0`), so 0.15.0 keeps working on 0.70.0. The 0.69.0 build stamped tool
+  71 / 68 / 35; 0.70.0, 0.70.1 and 0.70.2 ship the identical capability table, so a 0.70.0 and a 0.70.2
+  build stamp the same numbers). Unusually, 0.70.0 dropped **nothing**: it still accepts 71 / 68 / 35, the stamps of the
+  0.69.0 build (published `0.15.0`), so 0.15.0 keeps working on 0.70.x. The 0.69.0 build stamped tool
   71 / dynamicTool 68 / hook 35 (floor 0.69.0: 0.65.0–0.68.0 accept none of them), and 0.69.0 in turn
   **dropped** tool 59 / dynamicTool 56 / hook 29, the stamps of the 0.68.0
   build (published `0.14.0`). The 0.68.0 build stamped tool 59 / dynamicTool 56 / hook 29 (floor
@@ -499,7 +500,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 through 0.70.0 alike)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.107`**. `eve` (0.63.0 through 0.70.2 alike)
   declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
   `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
   the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
@@ -681,7 +682,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 
 ## Eve framework facts
 - **The repo is split (since 2026-09-30): `packages/eve-extension` + `examples/eve-extension-demo` are
-  on `eve@0.70.0` (extension peer `>=0.70.0`, since 2026-10-02; 0.69.0 / `>=0.69.0` on 2026-10-01,
+  on `eve@0.70.2` (extension peer `>=0.70.0`, since 2026-10-02/03; 0.69.0 / `>=0.69.0` on 2026-10-01,
   0.68.0 / `>=0.68.0` before that);
   `packages/eve` + `examples/eve-demo` stay on `eve@0.65.0` (peer `>=0.65.0`)** — see the 0.69.0 → 0.70.0,
   0.68.0 → 0.69.0 and 0.65.0 → 0.68.0 bump notes below. Before that (2026-09-23)
@@ -883,6 +884,18 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `TS2305 … 'MutableNetworkSandboxSession'` (plus the implicit-`any` cascade in `sandbox.ts`
   334–392) is still its **only** break — with a local stand-in for that one type, `tsc`, the DTS build,
   `examples/eve-demo`'s `next build` and its mocked memory eval are all green on 0.70.0.
+  **Re-pinned to 0.70.2 (2026-10-03) before release, floor unchanged.** eve shipped 0.70.1 and 0.70.2 while
+  the 0.70.0 PR was open. Both carry the **identical** capability table to 0.70.0 (tool ≤73, dynamicTool
+  ≤70, hook ≤37, nothing dropped), so the 0.70.2 rebuild stamps the same 73 / 70 / 37 (only `builtWithEve`
+  changes) and the floor stays **`>=0.70.0`** — re-measured: the packed dist fails `eve build` on 0.69.0,
+  builds on 0.70.0 and 0.70.2, and npm refuses 0.69.0 with `ERESOLVE … peer eve@">=0.70.0"`. A patch
+  release *can* move contracts (0.45.1, 0.47.5, 0.52.3 did), so always re-read the tables rather than
+  assume. Everything else was re-run with **every** eve pin on 0.70.2: `packages/eve`'s only break is still
+  `src/sandbox.ts(63,3)` TS2305 (green with a stand-in type, incl. all tests and both evals).
+  **Consumer-side symptom of that break:** published `@upstash/agentkit-eve@0.14.1`'s `dist/sandbox.d.ts`
+  line 3 imports `MutableNetworkSandboxSession` from `eve/sandbox`, so a consumer on eve ≥0.66 that imports
+  `@upstash/agentkit-eve/sandbox` with `skipLibCheck: false` gets `sandbox.d.ts(3,10): error TS2305`;
+  with the usual `skipLibCheck: true` it typechecks, and `eve build` of the root entry is unaffected.
 - **The 0.68.0 → 0.69.0 bump (2026-10-01) is EXTENSION-ONLY, for the same reason as 0.68.0.** eve 0.69.0
   **dropped tool 59, dynamicTool 56 and hook 29** — exactly the stamps of published
   `@upstash/agentkit-eve-extension@0.14.0` (built with 0.68.0) — one day after it shipped, while its peer

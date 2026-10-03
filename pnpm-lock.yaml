@@ -216,13 +216,13 @@ importers:
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.70.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.70.2(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))
       ai:
         specifier: 7.0.107
         version: 7.0.107(zod@4.4.3)
       eve:
-        specifier: ^0.70.0
-        version: 0.70.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.70.2
+        version: 0.70.2(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -361,8 +361,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: ^0.70.0
-        version: 0.70.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+        specifier: ^0.70.2
+        version: 0.70.2(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -3544,8 +3544,8 @@ packages:
       microsandbox:
         optional: true
 
-  eve@0.70.0:
-    resolution: {integrity: sha512-qhWy8jOMIERFJZIlUeErcKp9SuFVvlymsQgdBvv1sDtLGiTXiz8+ueE1sal4rblCV8Esbijh2VFgWjuixR2byQ==}
+  eve@0.70.2:
+    resolution: {integrity: sha512-9VC2rk2oL6ftf+fDv14n/0Ems8Nl/OKme+7HpbhbGSxfue/EFB/y+ey8cOYi6NSuj1E0Rb8ZIKEvRTb0s5RknQ==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -7514,13 +7514,13 @@ snapshots:
       ai: 7.0.107(zod@4.4.3)
       eve: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
 
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.70.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))':
+  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.107(zod@4.4.3))(eve@0.70.2(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)))':
     dependencies:
       '@vercel/oidc': 3.6.1
     optionalDependencies:
       '@ai-sdk/mcp': 2.0.54(zod@4.4.3)
       ai: 7.0.107(zod@4.4.3)
-      eve: 0.70.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
+      eve: 0.70.2(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -8141,7 +8141,7 @@ snapshots:
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
 
-  eve@0.70.0(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)):
+  eve@0.70.2(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.4.3)):
     dependencies:
       ai: 7.0.107(zod@4.4.3)
       nitro: 3.0.260903-beta
