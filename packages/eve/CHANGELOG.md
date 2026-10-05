@@ -1,5 +1,12 @@
 # @upstash/agentkit-eve
 
+## 0.15.1
+
+### Patch Changes
+
+- Updated dependencies [37fb3c7]
+  - @upstash/agentkit-ai-sdk@0.15.1
+
 ## 0.14.1
 
 ### Patch Changes
