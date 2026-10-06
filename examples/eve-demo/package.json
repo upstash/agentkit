@@ -28,7 +28,7 @@
     "@upstash/box": "^0.7.5",
     "@upstash/redis": "^1.38.4",
     "@vercel/connect": "0.2.2",
-    "ai": "7.0.127",
+    "ai": "7.0.128",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",

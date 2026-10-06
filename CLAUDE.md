@@ -124,9 +124,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.69.0**, stamps formatVersion 2; extension 1 /
-  **tool 71** / **dynamicTool 68** / **hook 35** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.69.0** — 0.69.0 is the first release accepting any of the three (0.65.0–0.68.0 accept none
+  supported list — the current dist, built with **eve 0.71.2**, stamps formatVersion 2; extension 1 /
+  **tool 73** / **dynamicTool 70** / **hook 37** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.70.0** — 0.70.0 is the first release accepting all three (0.69.0 tops out at 71/68/35; the
+  previous dist, built with 0.69.0, stamped 71/68/35 with floor 0.69.0, and 0.70.0–0.71.2 still accept it). Earlier: 0.69.0 was the first release accepting any of 71/68/35 (0.65.0–0.68.0 accept none
   of them), and 0.69.0 in turn **dropped** tool 59 / dynamicTool 56 / hook 29, the stamps of the 0.68.0
   build (published `0.14.0`). The 0.68.0 build stamped tool 59 / dynamicTool 56 / hook 29 (floor
   0.68.0: 0.67.0–0.67.2 accept dynamicTool 56 but neither of the others). The dist before that,
@@ -159,7 +160,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.69.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.70.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -678,7 +679,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 
 ## Eve framework facts
 - **The repo is split (since 2026-09-30): `packages/eve-extension` + `examples/eve-extension-demo` are
-  on `eve@0.69.0` (extension peer `>=0.69.0`, since 2026-10-01; 0.68.0 / `>=0.68.0` before that);
+  on `eve@0.71.2` (extension peer `>=0.70.0`, since 2026-10-06; 0.69.0 / `>=0.69.0` before that);
   `packages/eve` + `examples/eve-demo` stay on `eve@0.65.0` (peer `>=0.65.0`)** — see the 0.68.0 → 0.69.0
   and 0.65.0 → 0.68.0 bump notes below. Before that (2026-09-23)
   it was one `eve@0.65.0` everywhere, with both packages declaring `eve: ">=0.65.0"`. (For one
@@ -865,6 +866,11 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
   Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
   `packages/eve-extension/dist` that differs from published `0.10.0`.**
+- **The 0.69.0 → 0.71.2 bump (2026-10-06) is EXTENSION-ONLY** (`packages/eve` still imports the removed
+  `MutableNetworkSandboxSession`; verified on 0.71.2: `TS2305` in `src/sandbox.ts`/`sandbox.test.ts`). The rebuild
+  re-stamps **tool 71→73, dynamicTool 68→70, hook 35→37**; read off every 0.69.0–0.71.2 tarball's
+  `extension-compatibility.js`, only ≥0.70.0 accepts them, so the floor moved `>=0.69.0` → **`>=0.70.0`**.
+  Published 0.15.0 (71/68/35) was verified in a fresh npm consumer: `eve@0.71.2` builds it clean.
 - **The 0.68.0 → 0.69.0 bump (2026-10-01) is EXTENSION-ONLY, for the same reason as 0.68.0.** eve 0.69.0
   **dropped tool 59, dynamicTool 56 and hook 29** — exactly the stamps of published
   `@upstash/agentkit-eve-extension@0.14.0` (built with 0.68.0) — one day after it shipped, while its peer
