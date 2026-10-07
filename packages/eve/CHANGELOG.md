@@ -1,5 +1,157 @@
 # @upstash/agentkit-eve
 
+## 0.15.1
+
+### Patch Changes
+
+- Updated dependencies [37fb3c7]
+  - @upstash/agentkit-ai-sdk@0.15.1
+
+## 0.14.1
+
+### Patch Changes
+
+- 1651ae2: `redisDocuments()` now runs its compare-and-swap Lua script with the `allow-key-locking` flag, so Upstash locks only the document's key instead of the whole database while the script runs.
+
+## 0.13.0
+
+### Minor Changes
+
+- 8b8163e: feat!: port the Upstash Box sandbox to eve's sandbox **provider** API (`UpstashSandbox`), and require
+  `eve` `>=0.65.0` and `@upstash/box` `>=0.7.1`
+
+  eve 0.64.0 removed sandbox **backends**: the `SandboxBackend*` types `upstash()` implemented and the
+  object form `defineSandbox({ backend, bootstrap, onSession })` it plugged into. On eve ≥0.64,
+  `@upstash/agentkit-eve/sandbox` could still be imported, but nothing could use it, and its types
+  no longer compiled. It is replaced by an eve **sandbox provider**, used like eve's `VercelSandbox`:
+
+  ```ts
+  // agent/sandbox.ts
+  import { defineSandbox } from "eve/sandbox";
+  import { UpstashSandbox } from "@upstash/agentkit-eve/sandbox";
+
+  export const environment = UpstashSandbox.environment({
+    runtime: "node",
+    async prepare(sandbox) {
+      await sandbox.setNetworkPolicy("allow-all");
+      await sandbox.run({ command: "sudo apt-get install -y jq" });
+    },
+  });
+
+  export default defineSandbox(() => environment.open());
+  ```
+
+  Migrating from `upstash()`: `bootstrap` becomes the environment's `prepare`, `onSession`'s
+  `use({ networkPolicy })` becomes `environment.open({ networkPolicy })`, and `revalidationKey` goes away.
+  The `redis`, `templatePrefix` and `enableTelemetry` options are removed: the prepared Box snapshot id is
+  now stored in eve's build output, so the Redis template registry is no longer needed. `name` is no
+  longer accepted, because every session gets its own uniquely named box.
+
+  Behaviour changes, all following eve's provider contract:
+
+  - **Prepare** runs at `eve build` and bakes eve's workspace seeds, **skills** (`$HOME/.agents/skills`,
+    new) and your `prepare` hook into one Box snapshot. With nothing to bake, no box is created.
+  - **Resume** reattaches to the session's box and **fails if it is gone**, instead of silently creating
+    an empty one; `sandbox.delete()` starts a fresh box. A deleted prepared snapshot also fails loudly
+    with rebuild/redeploy guidance, instead of falling back to an empty box.
+  - **Commands** run over Box's streaming exec sessions: stdout and stderr are separate (previously the
+    combined output was reported as stderr on failure), `env` reaches every command in a `&&` chain, and
+    **a cancelled turn kills the running command** (previously it kept running). `spawn` streams output
+    live instead of replaying it after exit.
+  - Network egress stays deny-all by default; Box keeps the policy on the box across pause/resume.
+
+  The package's `eve` peer moves `>=0.45.2` → **`>=0.65.0`** for all entry points; memory, tools, auth
+  and search are otherwise unchanged. `@upstash/box` (optional peer) moves `>=0.5.0` → **`>=0.7.1`**.
+
+  Verified against real Upstash Box: the full prepare → start → stop → resume → delete cycle, streaming
+  and kill, abort, and network policies. Also verified end to end: `eve build` plus a two-turn eval in
+  which eve's built-in `bash` tool read the seeded workspace, a skill and the `prepare` output, and read a
+  file written in turn 1 back in turn 2.
+
+## 0.12.0
+
+### Minor Changes
+
+- 2318132: fix!: correct the `eve` peer floor to `>=0.45.2` — `0.9.0` declares an eve range its own `./memory`
+  subpath cannot run on
+
+  `0.9.0` declares `eve: ">=0.32.0"`, but the `@upstash/agentkit-eve/memory` subpath it shipped
+  imports `eve/memory` and `eve/memory/file`, which eve added in **0.45.1** and **0.45.2**. So on any
+  eve from 0.32.0 through 0.45.1 the install succeeds — the declared range says it is fine — and then
+  the first `import { redisMemory } from "@upstash/agentkit-eve/memory"` dies at module load with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED: Package subpath './memory/file' is not defined by "exports" in
+.../eve/package.json`. Nothing catches it earlier: npm has no complaint to make, and `tsc` with
+  `skipLibCheck: true` — what the `eve` scaffold ships — type-checks the app clean. Only with
+  `skipLibCheck: false` do the two `TS2307: Cannot find module 'eve/memory'` / `'eve/memory/file'`
+  errors surface from `dist/memory.d.ts`.
+
+  The peer moves `">=0.32.0"` → `">=0.45.2"`, so that install is now the error it always should have
+  been. Verified on real installs of the published `0.9.0`: eve 0.45.1 fails, eve 0.45.2 imports the
+  subpath fine.
+
+  **This is the range being corrected, not the code being restricted — no runtime behaviour changed.**
+  The root `.` (`defineSearchTools`, `defineCachedTool`, `defineMemoryRecallTool` /
+  `defineMemorySaveTool`, `createRateLimitAuth`) and `./sandbox` (`upstash()`) entry points still load
+  and type-check on eve as far back as 0.32.0, exactly as they did in `0.9.0`; a package has one peer
+  range for its whole public surface, so it has to name the highest floor any entry point needs. If
+  you only use those entry points and are pinned below eve 0.45.2, `0.9.0` keeps working — you will
+  just see a peer warning on install, or stay on `0.9.0`.
+
+  `@upstash/agentkit-eve-extension` is untouched: its own `eve` floor (`>=0.63.0`) is set by its built
+  extension manifest and is already correct.
+
+## 0.9.0
+
+### Minor Changes
+
+- 0117c2e: feat(eve): add `@upstash/agentkit-eve/memory` — Upstash Redis behind eve's memory slots
+
+  A new subpath with two integrations for eve's [memory](https://eve.dev/docs/memory) feature
+  (`agent/memory/<slot>.ts`), because eve exposes two different seams:
+
+  - **`redisDocuments()`** — a `MemoryDocumentBackend` for eve's built-in `fileMemory()`, replacing its
+    Vercel Blob storage: `fileMemory({ backend: redisDocuments() })`. Without a `backend`,
+    `fileMemory()` only resolves storage under `eve dev` and on Vercel with a Blob store attached.
+  - **`redisMemory()`** — a full `MemoryProvider` over the SDK's `AgentMemory`: ranked BM25 recall at
+    `turn.started` / `compaction.completed`, capture at `turn.completed`, and the tools
+    `<slot>__save_memory`, `<slot>__search_memory`, `<slot>__read_session` and `<slot>__forget_memory`,
+    bound to the slot's locked scope. Where `fileMemory()` replays one curated document, this recalls
+    the top-K memories relevant to the current turn and needs no tool call to remember anything.
+
+  Both are additive: `defineMemoryRecallTool` / `defineMemorySaveTool` are unchanged and remain the
+  right choice for model-driven memory with no slot.
+
+  **Requirements.** The subpath imports `eve/memory` and `eve/memory/file` (added in eve 0.45.1 and
+  0.45.2), so it needs **eve ≥ 0.45.2** — the package's `eve` peer stays `>=0.32.0` because the root
+  and `./sandbox` entry points still work further back. The `@upstash/redis` peer floor moves to
+  **`>=1.38.4`**, whose read-your-writes fix `redisDocuments()` relies on.
+
+  **`redisMemory()` options:** `rememberMessages` (default `true`, meaning `"fromUser"`; also `"all"`,
+  `"fromModel"`, `false`), `maxRecallCharacters` (4000), `maxMemoryCharacters` (2048), plus `topK`,
+  `minScore`, `prefix`, `indexName`.
+
+  Three behaviours worth knowing before you configure it:
+
+  - **Automatic recall injects saved facts only.** Captured messages share the store but not the
+    ranking, and are reached on demand through `search_memory` / `read_session`. Otherwise a stored
+    _"What do you remember?"_ outranks real facts on the next identical question.
+  - **`forget_memory` redacts rather than deletes.** The text is erased and the entry marked deleted,
+    so it can never be recalled or searched again, but `read_session` renders it as `[redacted]` — a
+    silent gap invites re-deriving the very thing that was removed.
+  - **`"all"` and `"fromModel"` do not get `forget_memory`.** Those modes store the assistant's
+    replies, and a reply confirming a deletion quotes the text it deleted — so erasing something would
+    write a fresh copy of it. They contribute `save_memory`, `search_memory` and `read_session` only.
+
+  Everything the slot keeps lives in one keyspace of its own (`agentkit:memorySlot`) with `sessionId`,
+  `source` and `deleted` indexed, so there is no separate transcript store to fall out of sync.
+  Recalled memories are tagged `session=<id>`, and `read_session` replays that session in order.
+
+### Patch Changes
+
+- Updated dependencies [0117c2e]
+  - @upstash/agentkit-sdk@0.9.0
+  - @upstash/agentkit-ai-sdk@0.9.0
+
 ## 0.8.0
 
 ### Minor Changes

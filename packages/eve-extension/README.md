@@ -15,7 +15,7 @@ no repeated schemas; upgrades come through the package manager.
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
-Start from an eve project (eve ≥ 0.47.0 — the prebuilt extension is built with eve 0.47.3 and its compatibility manifest requires tool contract v21 (dynamicTool v21, hook v16), which eve 0.47.0 is the first release to support; the package declares this as its `eve` peer range), then:
+Start from an eve project (eve ≥ 0.69.0 — the prebuilt extension is built with eve 0.69.0 and its compatibility manifest requires tool contract v71 (dynamicTool v68, hook v35), which eve 0.69.0 is the first release to support; the package declares this as its `eve` peer range), then:
 
 ```bash
 pnpm add @upstash/agentkit-eve-extension
@@ -26,13 +26,13 @@ Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` in your env (the exten
 
 ## Mount it
 
-Every field is optional. The smallest mount gives the agent memory tools:
+Every field is optional, so the smallest mount is an empty config — it gives the agent memory tools:
 
 ```ts
 // agent/extensions/agentkit.ts
 import agentkit from "@upstash/agentkit-eve-extension";
 
-export default agentkit();
+export default agentkit({});
 ```
 
 Add `search` to turn on the search tools over one index. The schema is built with `s` from

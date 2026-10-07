@@ -1,7 +1,7 @@
 {
   "name": "@upstash/agentkit-eve",
-  "version": "0.8.0",
-  "description": "Upstash AgentKit adapter for the Vercel Eve agent framework: memory tools, Redis-Search tools, a rate-limit gate, an Upstash Box sandbox backend, and cached tools.",
+  "version": "0.15.1",
+  "description": "Upstash AgentKit adapter for the Vercel Eve agent framework: memory tools, an Upstash Redis memory backend and provider for eve memory slots, Redis-Search tools, a rate-limit gate, an Upstash Box sandbox backend, and cached tools.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -24,6 +24,10 @@
     "./sandbox": {
       "types": "./dist/sandbox.d.ts",
       "import": "./dist/sandbox.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js"
     }
   },
   "files": [
@@ -54,16 +58,16 @@
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
-    "@upstash/box": "^0.5.1",
-    "@upstash/redis": "^1.38.0",
-    "ai": "7.0.58",
+    "@upstash/box": "^0.7.5",
+    "@upstash/redis": "^1.38.4",
+    "ai": "7.0.127",
     "dotenv": "^16.4.5",
-    "eve": "^0.47.3"
+    "eve": "^0.65.0"
   },
   "peerDependencies": {
-    "@upstash/box": ">=0.5.0",
-    "@upstash/redis": ">=1.38.0",
-    "eve": ">=0.32.0"
+    "@upstash/box": ">=0.7.1",
+    "@upstash/redis": ">=1.38.4",
+    "eve": ">=0.65.0"
   },
   "peerDependenciesMeta": {
     "@upstash/box": {

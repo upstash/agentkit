@@ -71,8 +71,8 @@ export function defineMemoryRecallTool(
         ),
     }),
     execute: async ({ query }, ctx) => {
-      // recall() falls back to "everything for the user" when a query matches nothing, so a
-      // model that passes a placeholder like "everything" still gets results.
+      // A query that matches nothing returns nothing — `recall()` has no "everything for the
+      // user" fallback, because a miss answered with unrelated memories reads as a hit.
       const hits = await memory.recall({
         query,
         userId: resolveUserId(config, { query }, ctx),

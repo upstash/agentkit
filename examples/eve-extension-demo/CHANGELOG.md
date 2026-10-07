@@ -1,5 +1,54 @@
 # eve-extension-demo
 
+## 0.0.14
+
+### Patch Changes
+
+- Updated dependencies [2a8ec7e]
+  - @upstash/agentkit-eve-extension@0.15.0
+
+## 0.0.13
+
+### Patch Changes
+
+- Updated dependencies [e89a0dd]
+  - @upstash/agentkit-eve-extension@0.14.0
+
+## 0.0.12
+
+### Patch Changes
+
+- Updated dependencies [8b8163e]
+  - @upstash/agentkit-eve-extension@0.13.0
+
+## 0.0.11
+
+### Patch Changes
+
+- Updated dependencies [ae3db83]
+  - @upstash/agentkit-eve-extension@0.12.0
+
+## 0.0.10
+
+### Patch Changes
+
+- Updated dependencies [3a6b0b5]
+  - @upstash/agentkit-eve-extension@0.11.0
+
+## 0.0.9
+
+### Patch Changes
+
+- Updated dependencies [b524fcf]
+  - @upstash/agentkit-eve-extension@0.10.0
+
+## 0.0.8
+
+### Patch Changes
+
+- Updated dependencies [35e3d69]
+  - @upstash/agentkit-eve-extension@0.9.0
+
 ## 0.0.7
 
 ### Patch Changes

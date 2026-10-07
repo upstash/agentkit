@@ -1,6 +1,6 @@
 {
   "name": "@upstash/agentkit-ai-sdk",
-  "version": "0.6.0",
+  "version": "0.15.1",
   "description": "Upstash AgentKit adapter for the Vercel AI SDK: chat history, memory tools, Redis-Search tools, rate limiting, and cached tools.",
   "license": "MIT",
   "repository": {
@@ -46,18 +46,18 @@
   ],
   "dependencies": {
     "@upstash/agentkit-sdk": "workspace:*",
-    "@upstash/redis": "^1.38.0",
+    "@upstash/redis": "^1.38.4",
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "^4.0.37",
-    "@ai-sdk/provider": "^4.0.7",
-    "@upstash/redis": "^1.38.0",
-    "ai": "7.0.58",
+    "@ai-sdk/openai": "^4.0.71",
+    "@ai-sdk/provider": "^4.0.17",
+    "@upstash/redis": "^1.38.4",
+    "ai": "7.0.127",
     "dotenv": "^16.4.5"
   },
   "peerDependencies": {
-    "ai": ">=7.0.0-beta"
+    "ai": ">=7.0.0-beta.57"
   },
   "peerDependenciesMeta": {}
 }

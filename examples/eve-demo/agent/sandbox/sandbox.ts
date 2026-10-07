@@ -1,5 +1,5 @@
 import { defineSandbox } from "eve/sandbox";
-import { upstash } from "@upstash/agentkit-eve/sandbox";
+import { UpstashSandbox } from "@upstash/agentkit-eve/sandbox";
 
 // Gives the agent an isolated /workspace bash environment, backed by Upstash Box.
 // Defining a sandbox is all it takes — eve automatically exposes the built-in
@@ -7,24 +7,22 @@ import { upstash } from "@upstash/agentkit-eve/sandbox";
 // rooted at /workspace. No custom tool wrapper is needed.
 //
 // This is the folder layout (agent/sandbox/sandbox.ts): files under
-// agent/sandbox/workspace/ are seeded into /workspace at session start (e.g.
-// workspace/README.txt lands at /workspace/README.txt).
+// agent/sandbox/workspace/ are baked into the environment when eve prepares it
+// (e.g. workspace/README.txt lands at /workspace/README.txt).
 //
-// Runtime note: the Upstash Box backend reads UPSTASH_BOX_API_KEY at run time.
-export default defineSandbox({
-  // `upstash()` is a drop-in replacement for eve's `vercel()` backend.
-  backend: upstash({
-    // The Upstash Box `BoxConfig`, verbatim (whatever you'd pass to `Box.create({...})`):
-    runtime: "node", // optional: Box runtime (node | python | golang | ruby | rust)
-    size: "small", // optional: Box resource size (small | medium | large)
-    // optional: name, apiKey (defaults to UPSTASH_BOX_API_KEY), keepAlive,
-    // initCommand, env, skills, mcpServers, timeout, … — all BoxConfig fields.
-    // (networkPolicy is not a config knob — egress is deny-all by default, set per-session below.)
-  }),
-  // optional: durable-session-scoped, runs once per session. A good place to lock
-  // down the network before the agent runs any commands. (Add a `bootstrap` hook
-  // for one-time template setup — it's required if you set a `revalidationKey`.)
-  async onSession({ use }) {
-    await use({ networkPolicy: "deny-all" }); // block all egress (incl. DNS) for this session
-  },
+// The Upstash Box provider reads UPSTASH_BOX_API_KEY when eve prepares the
+// environment (at `eve build`) and at run time.
+
+// The environment export is required: eve prepares it before any session exists.
+export const environment = UpstashSandbox.environment({
+  // The Upstash Box `BoxConfig`, verbatim (whatever you'd pass to `Box.create({...})`):
+  runtime: "node", // optional: Box runtime (node | python | golang | ruby | rust)
+  size: "small", // optional: Box resource size (small | medium | large)
+  // optional: apiKey (defaults to UPSTASH_BOX_API_KEY), keepAlive, initCommand,
+  // env, skills, mcpServers, attachHeaders, timeout, … — all BoxConfig fields,
+  // plus `prepare(sandbox)` for setup every session inherits and `baseSnapshot`.
 });
+
+// Runs once per durable session. Egress is deny-all by default; pass a
+// networkPolicy ("allow-all" or a domain allow-list) to open it.
+export default defineSandbox(() => environment.open({ networkPolicy: "deny-all" }));

@@ -1,5 +1,214 @@
 # @upstash/agentkit-eve-extension
 
+## 0.15.0
+
+### Minor Changes
+
+- 2a8ec7e: fix!: rebuild the extension against `eve` 0.69.0 and raise the `eve` peer floor to `>=0.69.0`
+
+  eve 0.69.0 dropped tool contract 59, dynamicTool 56 and hook 29, which are the contracts
+  `@upstash/agentkit-eve-extension@0.14.0` (built with eve 0.68.0) requires. On eve 0.69.0, 0.14.0
+  installs cleanly and then fails `eve build` with
+  `Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.`
+
+  The dist is now built with **eve 0.69.0** and its `dist/extension/_manifest.json` stamps tool
+  contract **71**, dynamicTool **68** and hook **35** (previously 59 / 56 / 29). 0.69.0 is the first eve
+  that accepts them (0.65.0–0.68.0 accept none of the three), so the peer range moves `">=0.68.0"` →
+  **`">=0.69.0"`**: an eve that cannot run this dist is rejected at install (`ERESOLVE`) instead of
+  failing at `eve build`.
+
+  **Upgrading:** move your app to `eve@^0.69.0` together with this release. If you must stay on eve 0.68,
+  stay on `@upstash/agentkit-eve-extension@0.14.0` (it does not work on eve 0.69).
+
+  **No behaviour or API changed**: the same extension source recompiled against a newer eve. The mount,
+  its options, every contributed tool and hook, and everything written to Redis are unchanged.
+
+## 0.14.0
+
+### Minor Changes
+
+- e89a0dd: fix!: rebuild the extension against `eve` 0.68.0 and raise the `eve` peer floor to `>=0.68.0`
+
+  The dist is now built with **eve 0.68.0** and its `dist/extension/_manifest.json` stamps tool
+  contract **59**, dynamicTool **56** and hook **29** (previously 55 / 52 / 25, built with 0.65.0).
+  0.68.0 is the first eve that accepts all three: 0.67.0–0.67.2 accept dynamicTool 56 but not tool 59 or
+  hook 29, and 0.65.0–0.66.3 accept none of them. The peer range therefore moves `">=0.65.0"` →
+  **`">=0.68.0"`**, so an eve that cannot run this dist is rejected at install (`ERESOLVE`) instead of
+  installing cleanly and then failing at `eve build` with
+  `Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.`
+
+  **Upgrading:** move your app to `eve@^0.68.0` together with this release. If you must stay on
+  eve 0.65–0.67, stay on `@upstash/agentkit-eve-extension@0.13.0`, which also keeps working on eve 0.68.
+
+  **No behaviour or API changed**: the same extension source recompiled against a newer eve. The mount,
+  its options, every contributed tool and hook, and everything written to Redis are unchanged.
+
+## 0.13.0
+
+### Minor Changes
+
+- 8b8163e: fix!: rebuild the extension against `eve` 0.65.0 and raise the `eve` peer floor to `>=0.65.0` —
+  `0.12.0` cannot build on any eve released after it
+
+  `0.12.0` ships a `dist/extension/_manifest.json` built with **eve 0.63.0**, stamping tool contract
+  **53**, dynamicTool **51** and hook **24**. **eve 0.64.0 dropped all three at once**, while
+  `0.12.0`'s peer range `">=0.63.0"` still admits it. So
+  `npm install eve@latest @upstash/agentkit-eve-extension@latest` resolves cleanly, and then the first
+  `eve build` fails with the one-line error eve reports for a mount it cannot use:
+
+  ```
+  Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.
+  ```
+
+  Nothing catches it earlier: the install is silent, and the error never mentions contracts, versions
+  or the extension package. `eve dev`, `eve eval` and `eve start` fail the same way. Verified on a fresh
+  consumer with eve 0.64.1 and 0.65.0 (the current `latest`).
+
+  The rebuilt dist stamps **tool 55 / dynamicTool 52 / hook 25** (`builtWithEve` 0.65.0). 0.65.0 is the
+  first eve accepting tool 55, so the peer moves `">=0.63.0"` → **`">=0.65.0"`** and an eve that cannot
+  run this dist is rejected at install (`ERESOLVE`) instead of failing at build time.
+
+  **No behaviour changed and no API changed**: the same extension source recompiled against a newer
+  eve. Every contribution is unchanged (`recall_memory` / `save_memory`, the dynamic `search` /
+  `search_aggregate` / `search_count` and `search_chat_history` / `read_chat_history` tools, the
+  `chat_history` hook and the memory instructions fragment), and the `zod: "^4.4.3"` range `0.12.0`
+  shipped for the dual-zod dedupe fix is kept.
+
+  If you are pinned to eve 0.63.0, stay on `0.12.0`.
+
+## 0.12.0
+
+### Patch Changes
+
+- ae3db83: fix: widen the `zod` dependency to `^4.4.3` so the search tools stop silently disappearing
+
+  **If you mount this extension with `search` configured, `0.11.0` almost certainly lost all three of its
+  search tools without telling you.** `agentkit__search`, `agentkit__search_aggregate` and
+  `agentkit__search_count` never got registered, so the agent simply behaved as though searching was not
+  available. `eve build` stayed green, the mount reported no error, and the extension's other
+  contributions (`recall_memory`, `save_memory`, the chat-history hook and the instructions fragment) kept
+  working — which made this look like a modelling or prompting problem rather than a broken install. The
+  only visible trace was a line in the server log at the start of every session:
+
+  ```
+  [eve:dynamic-tools] Dynamic tool resolver (session.started) failed — skipping its complete result.
+    { error: "Cannot read properties of undefined (reading 'push')" }
+  ```
+
+  The cause was this package's own dependency range, not your app. `0.11.0` pinned `"zod": "4.4.3"`
+  **exactly**, while its sibling `@upstash/agentkit-sdk` asks for `"^3.23.8 || ^4"`. npm and pnpm both
+  satisfy those two ranges with **two different copies of zod**: the sdk gets whatever `zod@4` is current
+  (today 4.6.5) and this package gets its own nested 4.4.3. zod changed its internal schema
+  representation in **4.6.0**, so a schema object built by zod ≥4.6.0 cannot be read by zod <4.6.0. The
+  search tools build their input schemas through the sdk and then convert them with this package's zod, so
+  across two copies that conversion threw, the resolver failed, and eve dropped the tools.
+
+  The fix is one character of dependency metadata: `"zod": "4.4.3"` → **`"zod": "^4.4.3"`**. Normal
+  resolution now dedupes both packages onto a single shared zod instance and the conversion succeeds. No
+  source code, no API and no runtime behaviour changed — the same build output ships, and the extension
+  still requires zod 4.
+
+  You do not need to change anything in your app. Upgrade, reinstall so the tree dedupes, and the three
+  search tools come back. If you want to confirm it, a single turn that calls `agentkit__search_count` is
+  enough — and note that `eve build` succeeding never proved these tools were mounted, because eve only
+  resolves dynamic tools when a session starts.
+
+  This affected every consumer install regardless of package manager, and was invisible to this repo's own
+  test suite and CI: the workspace lockfile happens to resolve both packages to the same zod, so the
+  in-repo end-to-end eval passed while real installs were broken.
+
+## 0.11.0
+
+### Minor Changes
+
+- 3a6b0b5: fix: work on eve 0.63.0 — rebuild against it, raise the `eve` peer floor to `>=0.63.0`, and make the
+  schema-derived search tools replayable
+
+  **`0.10.0` is broken on `eve@latest`.** eve 0.63.0 (2026-09-19) dropped the `dynamicTool` 29 contract
+  that `0.10.0`'s manifest (built with eve 0.52.2) requires, so a fresh consumer installing `eve@latest` +
+  `@upstash/agentkit-eve-extension@latest` installs cleanly and then fails `eve build` with
+  `Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.` — every one of the
+  extension's contributions is gone. eve 0.55.0 through 0.62.0 still accepted `0.10.0`; 0.63.0 is the first
+  release that does not.
+
+  The `dist` is rebuilt with **eve 0.63.0**, which re-stamps `dist/extension/_manifest.json` from
+  **tool 30 / dynamicTool 29 / hook 20** to **tool 53 / dynamicTool 51 / hook 24** (`extension` 1,
+  `instructions` 2, `config` 1 and `formatVersion` 2 unchanged). 0.63.0 is the only release accepting the new
+  stamps — 0.62.0 rejects tool 53 / dynamicTool 51 — so the `eve` peer moves `">=0.55.0"` → `">=0.63.0"`.
+  Verified by packing the rebuilt extension into a real eve app: on eve 0.62.0 it fails `eve build` with the
+  same _"has no compile or runtime usage"_, on eve 0.63.0 it builds and mounts all seven tools plus the
+  chat-history hook. Anyone pinned to an eve below 0.63.0 should stay on `0.10.0`.
+
+  **One source change, also a fix:** since eve 0.59.0 dynamic tools are replayed from a durable JSON
+  snapshot, and a live schema captured from a resolver is rejected at session start (`Dynamic tool
+"agentkit__search" callback "inputSchema" has a non-serializable capture` — logged, and the tool silently
+  never mounts). `search`, `search_aggregate` and `search_count` passed eve the live zod schema derived from
+  your `search.schema`, so on eve 0.59–0.62 the extension mounted without its three search tools. They now
+  hand eve plain JSON Schema (`z.toJSONSchema(...)`, computed in the resolver), which eve rehydrates into its
+  own validator; the model sees the same fields and descriptions as before. The mocked smoke eval in
+  `examples/eve-extension-demo` now calls `agentkit__search_count` so a dynamic tool that fails to mount
+  fails the eval instead of a log line nobody reads.
+
+  `@upstash/agentkit-eve` gets no release here: its `dist` is byte-identical to the published `0.9.0`, so
+  only its devDependency moved.
+
+## 0.10.0
+
+### Minor Changes
+
+- b524fcf: fix!: rebuild against eve 0.52.2 and raise the `eve` peer floor to `>=0.52.2`
+
+  The extension is now built with **eve 0.52.2**, whose
+  `dist/extension/_manifest.json` stamps formatVersion 2 and contracts
+  extension 1 / **tool 30** / **dynamicTool 29** / **hook 20** / instructions 2 /
+  config 1 — up from **tool 24 / dynamicTool 21 / hook 16** in the published `0.9.0`
+  build (eve 0.49.0). All three moving contracts advanced this time.
+
+  **This release fixes a real break in `0.9.0`.** eve 0.50.0 and every release above
+  it _dropped_ the contracts the published dist requires, so `0.9.0` installs cleanly
+  against its `">=0.48.0"` peer and then fails `eve build` with
+  `Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.`
+  Anyone on eve ≥0.50.0 needs this version.
+
+  eve 0.52.2 is the only release whose `EXTENSION_CAPABILITY_CONTRACTS` accept the new
+  stamps (0.52.0/0.52.1 top out at tool 29, 0.51.1 at tool 27, 0.51.0 at tool 25 /
+  hook 18, 0.50.0 at dynamicTool 22 / hook 17), so the `eve` peer moves from
+  `">=0.48.0"` to `">=0.52.2"`. Verified by packing the rebuilt extension into a real
+  eve app: on eve 0.52.1 it installs cleanly and then fails `eve build` with the message
+  above, while eve 0.52.2 builds and mounts all seven tools plus the chat-history hook.
+
+  Note that eve now **drops** contracts out of the middle of its supported range rather
+  than only adding new ones — 0.52.2 supports `tool` [1–13, 28, 29, 30] and drops 14–27.
+  A newer eve is therefore no longer automatically compatible, and a floored peer with no
+  ceiling is not by itself a guarantee; always re-derive the floor from the freshly built
+  manifest.
+
+  No extension source changed: the `chat_history` hook subscribes only to
+  `message.received`/`message.completed` (not the append events cited in eve's drop
+  reasons), and nothing here uses `TaskExec.delegated`. All packages build, typecheck and
+  pass their tests against eve 0.52.2, and the demo's mocked-model eval is green.
+
+## 0.9.0
+
+### Minor Changes
+
+- 35e3d69: fix!: rebuild against eve 0.49.0 and raise the `eve` peer floor to `>=0.48.0`
+
+  No source changed. The extension's `dist` is rebuilt with eve 0.49.0, which re-stamps the manifest's
+  tool contract 21 → 24 (every other contribution contract is unchanged). eve 0.48.0 is the first
+  release accepting tool 24, so the `eve` peer moves `">=0.47.0"` → `">=0.48.0"`.
+
+  No 0.47.x works, including 0.47.7 — the tool contract moved twice in three releases (22 → 23 in
+  0.47.7, 23 → 24 in 0.48.0). On an unsupported eve the mount contributes nothing and `eve build`
+  fails with `Selected module binding "extensions/agentkit.ts" has no compile or runtime usage.`
+
+  This supersedes the unreleased 0.47.6 rebuild (tool 22, floor `>=0.47.5`), which never shipped.
+
+### Patch Changes
+
+- Updated dependencies [0117c2e]
+  - @upstash/agentkit-sdk@0.9.0
+
 ## 0.8.0
 
 ### Minor Changes

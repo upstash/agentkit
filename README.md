@@ -13,6 +13,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-sdk`](./packages/sdk) | Core, framework-agnostic primitives. |
 | [`@upstash/agentkit-ai-sdk`](./packages/ai-sdk) | Adapter for the [Vercel AI SDK](https://ai-sdk.dev). |
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
+| [`@upstash/agentkit-tanstack-ai`](./packages/tanstack-ai) | Production backends for [TanStack AI](https://tanstack.com/ai) — chat persistence, resumable streams, distributed locks, memory, tool caching, rate limiting and search tools. |
 | [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
 | [`@upstash/mcp-tasks`](./packages/mcp-tasks) | Durable long-running tools for MCP servers on the official TypeScript SDK: a tool answers with a task id, the model polls `task_status`, the record lives in Redis, and the work runs through QStash or Workflow. Works in every client today. |
 
@@ -26,8 +27,12 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 - **Search tools** — schema-driven `search`/`aggregate`/`count` tools over Upstash Redis Search; the
   index is created reactively on first use. Use these over your own documents for RAG-style retrieval.
 - **Rate limiting** — a configured Upstash Ratelimit factory (`createRateLimit`) you call before the model.
-- **Code sandbox** (Eve only) — a drop-in [Upstash Box](https://github.com/upstash/box) backend for
-  Eve's `defineSandbox`.
+- **Eve memory slots** (Eve only) — Upstash Redis behind Eve's native
+  [memory](https://eve.dev/docs/memory) feature: `redisDocuments()` stores Eve's own `fileMemory()`
+  documents (so they work off Vercel), and `redisMemory()` is a full provider with ranked recall and
+  automatic capture.
+- **Code sandbox** (Eve only) — an [Upstash Box](https://github.com/upstash/box) sandbox provider for
+  Eve's `defineSandbox` (`UpstashSandbox`, eve ≥ 0.65).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
 - **Durable MCP tasks** (`@upstash/mcp-tasks`) — a long-running MCP tool returns a task id
   instead of blocking, and the model polls `task_status`; the record lives in Redis and the work runs
@@ -38,8 +43,10 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 Runnable demos (real Upstash Redis + a mock/real model) live in [`examples/`](./examples):
 [`ai-sdk-demo`](./examples/ai-sdk-demo), [`eve-demo`](./examples/eve-demo),
 [`eve-extension-demo`](./examples/eve-extension-demo) (an eve agent that mounts
-`@upstash/agentkit-eve-extension`), and [`mcp-tasks-demo`](./examples/mcp-tasks-demo) (an MCP server
-whose long-running tool returns a task handle, with the client's wire log on screen).
+`@upstash/agentkit-eve-extension`), [`tanstack-ai-demo`](./examples/tanstack-ai-demo) (a
+TanStack AI chat whose persistence, resumable stream and memory work across server instances, with
+a two-instance E2E suite), and [`mcp-tasks-demo`](./examples/mcp-tasks-demo) (an MCP server whose
+long-running tool returns a task id the model polls, with the client's wire log on screen).
 
 ## Development
 

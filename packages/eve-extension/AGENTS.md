@@ -15,6 +15,11 @@ unavailable, use https://eve.dev/docs/extensions as a fallback.
 - Declare the extension in `extension/extension.ts` with `defineExtension` from
   `eve/extension`. Config is optional; read bound values via the handle's
   `.config` in tools and hooks.
+  Note: even when every config *field* is optional, eve types the mount handle's
+  call signature as `(values: InferInput<S>)` — a **required** parameter — so
+  `agentkit()` fails `tsc` with TS2554 and docs must show `agentkit({})`. That
+  signature lives in the `eve` peer dep, not here; `.optional()` on the schema
+  does not fix it (it only makes `extension.config` possibly-undefined).
 - Add contributions under `extension/` the same way as in an agent:
   `tools/`, `channels/`, `connections/`, `skills/`, `schedules/`, `subagents/`,
   `hooks/`, and optional instruction fragments (eve ≥0.41 supports the full set;
@@ -32,7 +37,7 @@ unavailable, use https://eve.dev/docs/extensions as a fallback.
 agent-shaped source tree into `dist/extension/`, emits type declarations and a
 compatibility manifest, and fills the package `exports` map. Ship `dist/` only.
 `eve` is a required peer so the consumer's eve is the one that runs, but NOT a
-wildcard: keep the floor (`>=0.47.0`) in sync with what the built manifest's
+wildcard: keep the floor (`>=0.69.0`) in sync with what the built manifest's
 contracts require, so an incompatible eve fails at install instead of at
 `eve build` (see issue #22). eve validates the real compatibility from the
 generated manifest.

@@ -2,7 +2,7 @@
  * The runtime, exercised through a real `McpServer` and a real transport — the requests below are
  * genuine JSON-RPC `tools/call`s over the wire, not direct calls into the layer.
  */
-import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it } from "vitest";
 import * as z from "zod";
 import { createTaskLayer } from "./core.js";
@@ -46,26 +46,22 @@ async function harness(
     (layer.dispatcher as InlineTaskDispatcher | undefined) ?? new InlineTaskDispatcher();
   const tasks = createTaskLayer({ store, ...layer, dispatcher });
 
-  const server = new McpServer(
-    { name: "test", version: "1.0.0" },
-    { supportedProtocolVersions: [PROTOCOL_VERSION] },
-  );
-  tasks.registerTask(
-    server,
-    "generate_report",
-    {
-      description: "Generates a report.",
-      inputSchema: z.object({ topic: z.string() }),
-      ...tool,
-    },
-    handler,
-  );
-
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
+  // A fresh server per request, the way `createMcpHandler` serves stateless traffic — the same
+  // path the demo uses. Registering on each one is cheap; the task layer's state is the store.
+  const handlerFor = createMcpHandler(() => {
+    const server = new McpServer({ name: "test", version: "1.0.0" });
+    tasks.registerTask(
+      server,
+      "generate_report",
+      {
+        description: "Generates a report.",
+        inputSchema: z.object({ topic: z.string() }),
+        ...tool,
+      },
+      handler,
+    );
+    return server;
   });
-  await server.connect(transport);
 
   let id = 0;
   const rpc = async (method: string, params: Record<string, unknown>, user?: string) => {
@@ -76,7 +72,7 @@ async function harness(
       "mcp-method": method,
     };
     if (typeof params.name === "string") headers["mcp-name"] = params.name;
-    const response = await transport.handleRequest(
+    const response = await handlerFor.fetch(
       new Request("http://localhost/mcp", {
         method: "POST",
         headers,
@@ -119,7 +115,7 @@ async function harness(
     store,
     dispatcher,
     close: async () => {
-      await transport.close();
+      await handlerFor.close();
       store.clear();
     },
   };
