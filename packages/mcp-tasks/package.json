@@ -1,6 +1,6 @@
 {
   "name": "@upstash/mcp-tasks",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Durable long-running tools for MCP servers on the official TypeScript SDK: start, status and cancel tools over a pluggable task store and dispatcher, with Upstash Redis, QStash and Workflow backends.",
   "license": "MIT",
   "repository": {
