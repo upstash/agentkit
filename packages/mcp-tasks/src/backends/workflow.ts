@@ -45,7 +45,7 @@ type WorkflowPayload = { taskId?: string };
 /**
  * Runs each task as an Upstash Workflow run, one invocation per step.
  *
- * Cancellation composes: `tasks/cancel` settles the record and calls {@link cancel}, which stops
+ * Cancellation composes: `task_cancel` settles the record and calls {@link cancel}, which stops
  * the run itself rather than waiting for the handler to notice at its next `isCancelled()` check.
  */
 export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<WorkflowPayload>> {

@@ -1,19 +1,15 @@
 # @upstash/mcp-tasks
 
-A durable [MCP Tasks](https://github.com/modelcontextprotocol/ext-tasks) runtime for the official
-TypeScript SDK.
+Durable long-running tools for MCP servers on the official TypeScript SDK.
 
-A long-running tool answers with a task handle instead of blocking. The task record lives in
-Upstash Redis; the work runs through QStash or Upstash Workflow, so it survives the process that
-accepted the call.
+A long-running tool answers immediately with a task id instead of blocking. The model polls a
+shared `task_status` tool for progress and, once it completes, the result. The task record lives
+in Upstash Redis; the work runs through QStash or Upstash Workflow, so it survives the process that
+accepted the call, and it is not bound by your function's time limit or the client's tool timeout.
 
-> `@modelcontextprotocol/server` v2 ships the 2026-07-28 wire schemas for tasks but no runtime
-> behind them — the v1 experimental task APIs were removed with no migration path. This is that
-> runtime.
->
-> **Wondering what of this belongs in `@modelcontextprotocol/server` itself?** See
-> [Could this be part of the TypeScript SDK?](#could-this-be-part-of-the-typescript-sdk) — three
-> gaps worth closing upstream, two of which no library can work around.
+Everything is served as **ordinary MCP tools**, so it works in every client today — Claude Code,
+Codex, Cursor, OpenCode, ChatGPT — with no client capability required. See
+[Why tools, not the Tasks extension?](#why-tools-not-the-tasks-extension)
 
 ## Install
 
@@ -24,8 +20,9 @@ npm install @upstash/mcp-tasks @modelcontextprotocol/server @upstash/redis @upst
 ## Usage
 
 ```ts
+// lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer, TASKS_PROTOCOL_VERSION } from "@upstash/mcp-tasks";
+import { createTaskLayer } from "@upstash/mcp-tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-tasks/upstash";
 import * as z from "zod";
 
@@ -35,15 +32,12 @@ export const tasks = createTaskLayer({
 });
 
 export function createServer() {
-  const server = new McpServer(
-    { name: "reports", version: "1.0.0" },
-    { supportedProtocolVersions: [TASKS_PROTOCOL_VERSION] },
-  );
+  const server = new McpServer({ name: "reports", version: "1.0.0" });
 
   tasks.registerTask(
     server,
     "generate_report",
-    { description: "Generates a report", inputSchema: z.object({ topic: z.string() }) },
+    { description: "Generates a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
     async ({ topic }) => ({ content: [{ type: "text", text: await writeReport(topic) }] }),
   );
 
@@ -51,7 +45,38 @@ export function createServer() {
 }
 ```
 
-Everything above is required. Progress messages and cancellation are opt-in:
+Then two routes — the MCP endpoint, which is the SDK's own handler unchanged, and the one the work
+is delivered to:
+
+```ts
+// app/api/mcp/route.ts
+import { createMcpHandler } from "@modelcontextprotocol/server";
+import { createServer } from "../../lib/tasks";
+
+const handler = createMcpHandler(() => createServer());
+export const POST = (request: Request) => handler.fetch(request);
+```
+
+```ts
+// app/api/execute/route.ts
+import { tasks } from "../../lib/tasks";
+
+export const POST = tasks.createExecuteHandler();
+```
+
+That second route is deliberately not yours to write — the dispatcher owns it. See the
+[FAQ](#faq) for what it does. Because the layer only registers tools, it works the same with
+[`mcp-handler`](https://www.npmjs.com/package/mcp-handler) or any transport.
+
+`tools/list` now shows three tools:
+
+| Tool | What it does |
+| --- | --- |
+| `generate_report` | Starts the task and answers with its `taskId` at once |
+| `task_status` | Progress while `working`; the handler's own result once `completed` |
+| `task_cancel` | Asks the task to stop; idempotent |
+
+`task_status` and `task_cancel` are shared by every task tool on the server.
 
 <details>
 <summary><b>Reporting progress and honouring cancellation</b></summary>
@@ -70,38 +95,67 @@ async ({ topic }, task) => {
 };
 ```
 
-`task.update(...)` is what the client sees as `statusMessage` on its next poll. Cancellation is
-cooperative: `tasks/cancel` flips the record and stops a pending delivery, but running code only
-stops where it checks.
+`task.update(...)` is what the model sees as `statusMessage` on its next `task_status`.
+Cancellation is cooperative: `task_cancel` flips the record and stops a pending delivery, but
+running code only stops where it checks.
 
 </details>
 
-Then two routes — the MCP endpoint, and the one the work is delivered to:
+## Multi-user servers: set `principal`
+
+Without it, anyone holding a task id can read and cancel that task. With it, each task records its
+owner, and `task_status` / `task_cancel` answer only for the caller who started it — another
+caller's id reads exactly like an unknown one.
 
 ```ts
-// app/api/mcp/route.ts
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { createServer } from "../../lib/tasks";
-
-export async function POST(request: Request) {
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
-  await createServer().connect(transport);
-  return transport.handleRequest(request);
-}
+const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  // Receives the AuthInfo your auth middleware attached to the request.
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+});
 ```
+
+Key on the *user*, not `auth.clientId`: the client id identifies the OAuth app, which is often one
+id shared by every user of a host like ChatGPT.
+
+## Retries without duplicates: `idempotencyKey`
+
+Agents retry tool calls, especially ones that seemed to time out. Give a task tool an
+`idempotencyKey`, and a second call from the same caller with the same key returns the existing
+task instead of starting another:
 
 ```ts
-// app/api/execute/route.ts
-import { tasks } from "../../lib/tasks";
-
-export const POST = tasks.createExecuteHandler();
+tasks.registerTask(server, "generate_report", {
+  description: "Generates a report on a topic.",
+  inputSchema: z.object({ topic: z.string() }),
+  idempotencyKey: ({ topic }) => topic,
+}, handler);
 ```
 
-That second route is deliberately not yours to write — the dispatcher owns it. See the
-[FAQ](#faq) for what it does.
+Keys are scoped by caller and tool, and last as long as the task is retained (`ttlMs`). Return
+`undefined` to opt a call out.
+
+## What the model sees
+
+```jsonc
+// generate_report  →  a handle, immediately
+{ "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
+  "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 300000, "pollIntervalMs": 2000 } }
+
+// task_status  →  progress…
+{ "content": [{ "type": "text", "text": "Task 0e30… is working: Reading source 2. Check again in about 2s." }],
+  "structuredContent": { "taskId": "0e30…", "status": "working", "statusMessage": "Reading source 2" } }
+
+// …then the handler's own content, as if the tool had run synchronously
+{ "content": [{ "type": "text", "text": "Task 0e30… is completed: Completed" },
+              { "type": "text", "text": "Report on coffee" }],
+  "structuredContent": { "taskId": "0e30…", "status": "completed", "result": { "content": [ … ] } } }
+```
+
+The states are `working`, `completed`, `failed` and `cancelled` (plus `input_required`, reserved);
+the last three are terminal and never change again. The task object is the same shape as the
+protocol's Tasks extension, so a native adapter can serve these records unchanged later.
 
 ## Choosing a dispatcher
 
@@ -156,21 +210,6 @@ step body executed exactly once.**
 
 </details>
 
-## What the client sees
-
-```jsonc
-// tools/call  →  a handle, immediately
-{ "resultType": "task", "taskId": "0e30…", "status": "working", "ttlMs": 300000, "pollIntervalMs": 2000 }
-
-// tasks/get   →  progress, then the result inline
-{ "resultType": "complete", "taskId": "0e30…", "status": "working", "statusMessage": "Researching coffee" }
-{ "resultType": "complete", "taskId": "0e30…", "status": "completed",
-  "result": { "content": [{ "type": "text", "text": "Report on coffee" }] } }
-```
-
-Five states — `working`, `input_required`, `completed`, `failed`, `cancelled` — of which the last
-three are terminal and never change again.
-
 ## How it fits together
 
 <details>
@@ -178,7 +217,7 @@ three are terminal and never change again.
 
 | | Owns |
 | --- | --- |
-| **`@upstash/mcp-tasks`** | The protocol: creating the record before replying, serving `tasks/get` / `tasks/cancel`, the capability check, the redelivery guard, settling `completed`/`cancelled` |
+| **`@upstash/mcp-tasks`** | The tools: creating the record before replying, `task_status` / `task_cancel`, ownership and idempotency, the redelivery guard, settling `completed`/`cancelled` |
 | **`TaskStore`** | Durability of the *record*: create-before-response, TTL, and the atomic terminal transition so a cancel and a completion cannot clobber each other |
 | **`TaskDispatcher`** | Durability of the *work*: delivering it, retrying it, cancelling a pending delivery, authenticating its own endpoint, and deciding when a failure is final |
 | **Your handler** | The work, and checking `isCancelled()` at step boundaries |
@@ -188,27 +227,24 @@ The split is the whole design: a durable task id does not make the underlying wo
 </details>
 
 <details>
-<summary><b>Flow: <code>tools/call</code> → a task handle</b></summary>
+<summary><b>Flow: starting a task</b></summary>
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
+    participant M as Model
     participant S as mcp-tasks
     participant St as TaskStore
     participant D as TaskDispatcher
 
-    C->>S: tools/call (declares tasks capability)
-    S->>S: capability present? else structured tool error (-32021)
+    M->>S: tools/call generate_report
     S->>St: create(task)
-    Note over St: must commit before the reply —<br/>a tasks/get may hit another instance
+    Note over St: must commit before the reply —<br/>the next poll may hit another instance
     St-->>S: ok
     S->>D: dispatch(taskId)
     D-->>S: dispatchId
     S->>St: update({ dispatchId })
-    S-->>C: resultType "task" + handle
+    S-->>M: taskId + "call task_status"
 ```
-
-Order is the spec's, not a preference: the record must be durable before the handle goes out.
 
 </details>
 
@@ -224,7 +260,6 @@ sequenceDiagram
     participant St as TaskStore
 
     D->>E: deliver the task (authenticated by the transport)
-    E->>E: reject if it does not authenticate
     E->>S: executeTask(taskId)
     S->>St: get(taskId)
     S->>S: already terminal? → stop (redelivery guard)
@@ -242,120 +277,44 @@ retrying.
 </details>
 
 <details>
-<summary><b>Flow: <code>tasks/get</code> and <code>tasks/cancel</code></b></summary>
+<summary><b>Flow: <code>task_status</code> and <code>task_cancel</code></b></summary>
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
+    participant M as Model
     participant S as mcp-tasks
     participant St as TaskStore
     participant D as TaskDispatcher
 
-    C->>S: tasks/get { taskId }
+    M->>S: task_status { taskId }
     S->>St: get(taskId)
-    St-->>S: task (or null → -32602)
-    S-->>C: resultType "complete" + public fields
+    S->>S: owner matches? else "unknown task"
+    S-->>M: status, or the result once completed
 
-    C->>S: tasks/cancel { taskId }
+    M->>S: task_cancel { taskId }
     S->>St: settle(cancelled)
     Note over St: refused if already terminal —<br/>first terminal write wins
     S->>D: cancel(dispatchId)
-    S-->>C: the cancelled task
+    S-->>M: the cancelled task
 ```
-
-`tasks/get` is a pure read — nothing about it advances the work. Cancellation is cooperative: the
-store flips the status, the dispatcher stops a pending delivery, and the handler stops where it
-checks.
 
 </details>
 
-## Could this be part of the TypeScript SDK?
+## Why tools, not the Tasks extension?
 
-Most of it need not be. This package is additive over `@modelcontextprotocol/server` — no fork, no
-patches — which is itself the useful finding: a tasks runtime can live outside that package. Three
-gaps are worth closing upstream anyway.
+The 2026-07-28 spec defines a Tasks extension (`io.modelcontextprotocol/tasks`): a `tools/call`
+answers with `resultType: "task"`, and the client polls `tasks/get`. It is the right long-term
+shape — the *client* polls, so the model spends no turns on it. But a server must never return a
+task to a client that has not declared the extension, and as of October 2026 none of the clients
+people actually use do: not Claude Code, Codex, Cursor or OpenCode. Of the official SDKs only Rust
+and C# implement it; TypeScript and Python have it on their roadmaps.
 
-Everything below was verified against `@modelcontextprotocol/server@2.0.0` and `main` as of
-2026-09.
+Plain tools trade some polling turns for working everywhere today. The model is told to poll, gets
+a suggested interval, and receives the result in the same shape it would have synchronously.
 
-### Three gaps
-
-The first two are blockers: no library can work around them. The third is not — this package
-implements it — but every task server has to, and getting it wrong is a security bug rather than a
-missing feature.
-
-**1. `tasks/get` and `tasks/cancel` are undispatchable on the 2026-07-28 era.** They sit in that
-package's 2025 method registry and were dropped from the 2026 one, so `isSpecRequestMethod` returns
-true, the request is era-gated, and the gate answers `-32601` **before your handler is looked up**.
-A `fallbackRequestHandler` does not help; the gate returns first.
-
-That leaves two workarounds, both bad:
-
-- Serve through `WebStandardStreamableHTTPServerTransport`, which stays on the 2025 era where the
-  methods still dispatch. This is what this package does by default — but it means serving a
-  2026-era extension off the legacy codec, and it rules out `createMcpHandler`, and with it
-  [`mcp-handler`](https://www.npmjs.com/package/mcp-handler), the usual way to run MCP on Next.js.
-- Rename the methods (`methods: { get: "upstash/tasks.get" }`). Anything outside both registries is
-  treated as a consumer-owned extension method and dispatches unconditionally — but they are no
-  longer the spec's wire names, so a conforming client calls `tasks/get`, receives `-32601`, and
-  can never poll a task it was just handed a valid id for.
-
-Either the 2026 registry should carry the task methods, or extension-owned methods should be able
-to claim names the registries have released.
-
-**2. A tool callback cannot return a JSON-RPC error.** `McpServer` catches everything a tool
-callback throws — `ProtocolError` and `MissingRequiredClientCapabilityError` included — and
-flattens it into `{ content, isError: true }`, dropping the code. The spec says a server must not
-hand a task to a client that did not declare the capability, and `-32021` is the signal for it; as
-things stand that code cannot reach the client. This package answers with a structured tool error
-carrying the code in `structuredContent`, which is a workaround, not the contract.
-
-**3. The callback endpoint has no home.** Once work runs outside the request, something has to call
-*back in* to run it, so a task server needs a second route the spec never describes. Every
-implementation invents its own, and each re-implements the same delicate parts: authenticating the
-caller, telling a delivery from a failure notification, and picking the status code that decides
-whether the transport retries. Miss the first and anyone who can reach the route can run your
-tasks.
-
-None of that is application knowledge — it belongs to whatever transport is driving the work. Given
-a dispatcher seam it collapses to one line, and it need not even be a second route: because the
-transport authenticates its own deliveries, the same handler can sit behind the MCP endpoint.
-
-```ts
-export const POST = tasks.createExecuteHandler(); // the entire second route
-```
-
-### And, less urgently, a shape
-
-The three above are gaps. This is only a suggestion, for whenever a runtime does land.
-
-<details>
-<summary><b>The shape that survives serverless</b></summary>
-
-**Two interfaces, not one** — a durable task id does not make the underlying work durable, and
-those are separate problems:
-
-```ts
-interface TaskStore {
-  create(task): Promise<void>;      // must commit before tools/call replies
-  get(taskId): Promise<Task | null>;
-  update(taskId, patch): Promise<Task>;
-  settle(taskId, patch): Promise<Task | null>;   // atomic, first terminal write wins
-}
-
-interface TaskDispatcher {
-  dispatch(taskId): Promise<string | undefined>; // hand the work to something that will run it
-  cancel(dispatchId): Promise<void>;
-}
-```
-
-The store half has precedent — the C# SDK ships `IMcpTaskStore`. The dispatcher half exists in no
-official SDK: execution is in-process everywhere (`Task.Run`, `tokio::spawn`, `.subscribe()`,
-Python's PR awaits the tool inline), which leaves a durable record and non-durable work. Fine on a
-host that keeps a process alive; not on serverless. An in-process dispatcher as the default would
-change nothing for anyone who does not need one.
-
-</details>
+The store and dispatcher do not care which surface sits on top. When clients declare the
+extension, a native adapter can answer the same records over `tasks/get` / `tasks/cancel` for those
+clients, and keep the tools for everyone else.
 
 ## Reference
 
@@ -396,12 +355,12 @@ neither is durable, which is exactly the failure this package is about.
 | --- | --- |
 | `store`, `dispatcher` | Required. |
 | `defaults.ttlMs` | Retention window, `null` for unlimited. Default 5 min. |
-| `defaults.pollIntervalMs` | Poll interval to suggest to clients. Default 2s. |
-| `onMissingCapability` | `"error"` (default) or `"run-inline"` — run the handler and answer normally for a client that cannot poll. |
-| `methods` | Rename the task methods. Needed only with `createMcpHandler`; see the FAQ. |
+| `defaults.pollIntervalMs` | Poll interval suggested to the model. Default 2s. |
+| `principal` | `(auth) => string \| undefined` — scopes tasks to their caller. Set it on any multi-user server. |
+| `toolNames` | Rename `task_status` / `task_cancel`, e.g. to namespace them. |
 
 **`registerTask` config** — `description`, `inputSchema`, plus optional `title`, `ttlMs`,
-`pollIntervalMs`, `queuedMessage`, `completedMessage`.
+`pollIntervalMs`, `queuedMessage`, `completedMessage`, `idempotencyKey`.
 
 **`RedisTaskStore`** — `redis` (defaults to `Redis.fromEnv()`), `prefix`, `enableTelemetry`.
 
@@ -416,12 +375,12 @@ neither is durable, which is exactly the failure this package is about.
 
 | Export | What it is |
 | --- | --- |
-| `createTaskLayer(options)` | `{ registerTask, executeTask, failTask, createExecuteHandler, getTask, store, dispatcher }` |
+| `createTaskLayer(options)` | `{ registerTask, executeTask, failTask, createExecuteHandler, getTask, cancelTask, store, dispatcher }` |
 | `TaskStore`, `TaskDispatcher`, `TaskContext` | The two seams, and what a handler is handed |
 | `TaskEndpoints`, `TaskJournal` | What a dispatcher calls back into, and how it journals this package's own writes |
-| `Task`, `WireTask`, `TaskStatus`, `TaskError` | The record, and the subset that goes on the wire |
+| `Task`, `WireTask`, `TaskStatus`, `TaskError` | The record, and the subset the model sees |
 | `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type |
-| `TASKS_EXTENSION`, `TASKS_PROTOCOL_VERSION`, `TASK_METHODS` | The extension id, `"2026-07-28"`, the method names |
+| `DEFAULT_TOOL_NAMES`, `CallerAuth` | `{ status: "task_status", cancel: "task_cancel" }`, and what `principal` receives |
 | `MemoryTaskStore`, `InlineTaskDispatcher` | Non-durable backends for tests |
 | `@upstash/mcp-tasks/upstash` | `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher` |
 
@@ -455,62 +414,12 @@ A dispatcher that runs work in-process — `InlineTaskDispatcher` — has no end
 </details>
 
 <details>
-<summary><b>Does it work with <code>mcp-handler</code>?</b></summary>
+<summary><b>Won't the model give up polling?</b></summary>
 
-Yes, with one line of config. [`mcp-handler`](https://www.npmjs.com/package/mcp-handler) wraps the
-SDK's own `createMcpHandler`, which serves the 2026-07-28 era — and on that era `tasks/get` and
-`tasks/cancel` are answered with **-32601 before your handler is looked up**. Rename them and
-everything dispatches:
-
-```ts
-import { createMcpHandler } from "mcp-handler";
-
-const tasks = createTaskLayer({
-  store: new RedisTaskStore(),
-  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  methods: { get: "upstash/tasks.get", cancel: "upstash/tasks.cancel" },
-});
-
-export const POST = createMcpHandler((server) => {
-  tasks.registerTask(server, "generate_report", { /* … */ }, handler);
-});
-```
-
-Task *creation* needs no change — `tools/call` returns `resultType: "task"` through `mcp-handler`
-as-is. Only the two task methods move, and the cost is that they are no longer the spec's wire
-names, so a client has to know yours.
-
-</details>
-
-<details>
-<summary><b>Why the transport instead of <code>createMcpHandler</code>?</b></summary>
-
-Same reason. `tasks/get` and `tasks/cancel` sit in `@modelcontextprotocol/server`'s **2025**
-method registry and were
-dropped from the **2026** one, so on the modern era they are neither dispatchable nor treated as
-free-form extension methods — the gate returns `-32601` before your handler runs. Serving through
-`WebStandardStreamableHTTPServerTransport` leaves the instance on the 2025 era, where they dispatch
-normally and the per-request `_meta` envelope is still lifted, so nothing else changes.
-
-Verified against the real SDK: the registered handler never runs on `createMcpHandler`, while a
-namespaced method on the same server dispatches fine.
-
-</details>
-
-<details>
-<summary><b>Why does a missing capability come back as a tool error, not <code>-32021</code>?</b></summary>
-
-Because a tool callback cannot return a JSON-RPC error. `McpServer` catches everything a tool
-callback throws — `ProtocolError` and `MissingRequiredClientCapabilityError` included — and
-flattens it into `{ content, isError: true }`, dropping the code. So the code and the capability
-you are missing are put where a client can actually read them:
-
-```jsonc
-{ "isError": true,
-  "content": [{ "type": "text", "text": "\"generate_report\" answers with a task handle, which requires …" }],
-  "structuredContent": { "code": -32021,
-    "requiredCapabilities": { "extensions": { "io.modelcontextprotocol/tasks": {} } } } }
-```
+Sometimes, which is why every response says what to do next in words — "call `task_status` in
+about 2s" — and `task_status` tells the model not to start the task again. If it does start it
+again, `idempotencyKey` turns the retry into a read of the existing task. Nothing is lost if the
+model stops polling: the work finishes anyway, and the result stays readable until the task's TTL.
 
 </details>
 
@@ -532,18 +441,17 @@ id and the failed response attached. The message is in the QStash DLQ, not lost.
 <details>
 <summary><b>Is the task id a secret?</b></summary>
 
-Effectively, yes. Ids are `randomUUID` (~122 bits), and the spec permits treating them as bearer
-tokens. But `tasks/get` and `tasks/cancel` resolve by id alone, so anyone who learns one can read
-*and cancel* that task. The spec also says servers **MUST** authorize each task request — if your
-server has auth, add that check in your route.
+Without `principal`, effectively yes: ids are random (~122 bits for `randomUUID`), but anyone who
+learns one can read *and cancel* that task. With `principal` set, an id is useless to anyone but
+its owner. Idempotent task ids are a hash of caller, tool and key, so they are not guessable either.
 
 </details>
 
 ## Not implemented
 
-`tasks/update` (the client answering an `input_required` task) and `tasks/list`. The latter is
-absent from the spec on purpose — without sessions a server cannot scope a list to one caller
-without leaking that other people's tasks exist.
-
-The `ext-tasks` repo labels itself experimental and its schema is a draft, so these wire shapes may
-change before Tasks lands in core.
+- `input_required` — a handler asking the user something mid-task. It would be the same shape:
+  write the question into the record, let the handler read the answer at a step boundary.
+- Listing tasks. Deliberately absent: without sessions, a list is only safe once scoped by
+  `principal`, and the model rarely needs it.
+- A native Tasks-extension adapter and an MCP Events bridge (push a `task.completed` event instead
+  of polling). Both sit on the same store; they wait on client support.

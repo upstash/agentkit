@@ -1,5 +1,5 @@
 /**
- * `@upstash/mcp-tasks` — a durable MCP Tasks runtime for the official TypeScript SDK.
+ * `@upstash/mcp-tasks` — durable long-running tools for MCP servers on the official TypeScript SDK.
  *
  * The core here is storage-agnostic. The Upstash Redis + QStash backends live behind the
  * `@upstash/mcp-tasks/upstash` entry point, so bringing your own store costs you nothing.
@@ -7,10 +7,8 @@
 export {
   createTaskLayer,
   toWire,
-  TASK_METHODS,
-  TASKS_EXTENSION,
-  TASKS_PROTOCOL_VERSION,
-  type MissingCapabilityBehavior,
+  DEFAULT_TOOL_NAMES,
+  type CallerAuth,
   type TaskHandler,
   type TaskLayer,
   type TaskLayerOptions,

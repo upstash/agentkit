@@ -1,9 +1,11 @@
-/** The MCP endpoint for the **Workflow** server. Same transport, different task layer. */
+/** The MCP endpoint for the **Workflow** server. Same handler, different task layer. */
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import { createServer } from "../../lib/workflow-server";
-import { serveMcp } from "../../lib/serve-mcp";
 
 export const dynamic = "force-dynamic";
 
+const handler = createMcpHandler(() => createServer());
+
 export async function POST(request: Request): Promise<Response> {
-  return serveMcp(createServer(), request);
+  return handler.fetch(request);
 }

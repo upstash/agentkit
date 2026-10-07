@@ -1,14 +1,11 @@
 /**
  * A hand-rolled MCP client for the browser.
  *
- * The official `@modelcontextprotocol/client` validates `tools/call` responses against its own
- * result schemas, which do not yet accept the tasks extension's `resultType: "task"` discriminator
- * — so a task handle comes back as a validation error rather than a handle. Until that lands,
- * talking raw JSON-RPC is the honest way to demo the extension, and it has the side benefit of
- * showing exactly what a stateless MCP request looks like now.
+ * It only ever sends `tools/list` and `tools/call` — the three task tools are ordinary MCP tools,
+ * which is the point: any client, including ones that declare no extensions at all, can drive
+ * them. Raw JSON-RPC is used so the wire log shows exactly what a stateless MCP request looks like.
  */
 export const PROTOCOL_VERSION = "2026-07-28";
-export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 /** The two servers this demo runs: same tool, different execution transport. */
 export const SERVERS = {
   qstash: { endpoint: "/api/mcp", label: "QStash", blurb: "one delivery, one invocation" },
@@ -64,9 +61,8 @@ export type RpcOptions = {
  * Sends one stateless JSON-RPC request.
  *
  * There is no initialize handshake and no session header any more: the protocol version, who the
- * client is, and which extensions it supports all ride in `_meta` on every single request. The
- * server reads the capabilities from there to decide whether it may answer a tool call with a
- * task handle.
+ * client is, and its capabilities all ride in `_meta` on every single request. This client
+ * declares no capabilities — the task tools need none.
  */
 export async function rpc<T = Record<string, unknown>>(
   method: string,
@@ -82,9 +78,7 @@ export async function rpc<T = Record<string, unknown>>(
       _meta: {
         "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
         "io.modelcontextprotocol/clientInfo": { name: "mcp-tasks-demo", version: "0.1.0" },
-        "io.modelcontextprotocol/clientCapabilities": {
-          extensions: { [TASKS_EXTENSION]: {} },
-        },
+        "io.modelcontextprotocol/clientCapabilities": {},
       },
     },
   };
@@ -95,12 +89,8 @@ export async function rpc<T = Record<string, unknown>>(
     "mcp-protocol-version": PROTOCOL_VERSION,
     "mcp-method": method,
   };
-  // The spec routes on a name header so a load balancer never has to parse the body: the tool
-  // name for a call, the task id for the task methods.
+  // The spec routes on a name header so a load balancer never has to parse the body.
   if (method === "tools/call" && typeof params.name === "string") headers["mcp-name"] = params.name;
-  if (method.startsWith("tasks/") && typeof params.taskId === "string") {
-    headers["mcp-name"] = params.taskId;
-  }
 
   options.onFrame?.({ id: ++frameId, direction: "out", method, payload: body, at: Date.now() });
 
@@ -122,6 +112,26 @@ export async function rpc<T = Record<string, unknown>>(
   if (message?.error) throw new RpcError(method, message.error);
   if (!response.ok) throw new Error(`${method} failed with HTTP ${response.status}`);
   return message?.result as T;
+}
+
+/**
+ * Calls a tool and returns its `structuredContent` — for the task tools, the task object.
+ * A tool-level error (`isError: true`) is thrown, with its text as the message.
+ */
+export async function callTool<T = Record<string, unknown>>(
+  name: string,
+  args: Record<string, unknown>,
+  options: RpcOptions = {},
+): Promise<T> {
+  const result = await rpc<{
+    content?: { type: string; text?: string }[];
+    structuredContent?: T;
+    isError?: boolean;
+  }>("tools/call", { name, arguments: args }, options);
+  if (result.isError) {
+    throw new Error(result.content?.map(part => part.text).join(" ") ?? `${name} failed`);
+  }
+  return result.structuredContent as T;
 }
 
 export class RpcError extends Error {

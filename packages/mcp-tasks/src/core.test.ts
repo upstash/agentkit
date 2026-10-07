@@ -1,51 +1,63 @@
 /**
  * The runtime, exercised through a real `McpServer` and a real transport — the requests below are
- * genuine JSON-RPC over the wire, not direct calls into the layer.
+ * genuine JSON-RPC `tools/call`s over the wire, not direct calls into the layer.
  */
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it } from "vitest";
 import * as z from "zod";
-import { createTaskLayer, TASKS_EXTENSION, TASKS_PROTOCOL_VERSION } from "./core.js";
+import { createTaskLayer } from "./core.js";
 import { InlineTaskDispatcher, MemoryTaskStore } from "./backends/memory.js";
-import type { TaskContext, TaskLayer, WireTask } from "./index.js";
+import type { TaskContext, TaskLayer, TaskToolConfig, WireTask } from "./index.js";
 import { sleep } from "./test-support.js";
 
-type Rpc = (
-  method: string,
-  params?: Record<string, unknown>,
-  options?: { withTasksCapability?: boolean },
-) => Promise<{ result?: Record<string, unknown>; error?: { code: number; message: string } }>;
+const PROTOCOL_VERSION = "2026-07-28";
+
+type ToolResult = {
+  content?: { type: string; text?: string }[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
+
+type Call = (name: string, args: Record<string, unknown>, user?: string) => Promise<ToolResult>;
 
 type Harness = {
-  rpc: Rpc;
+  call: Call;
+  /** Starts the report tool and returns the task id it answered with. */
+  start: (topic?: string, user?: string) => Promise<string>;
+  status: (taskId: string, user?: string) => Promise<ToolResult>;
+  cancel: (taskId: string, user?: string) => Promise<ToolResult>;
+  listTools: () => Promise<string[]>;
   tasks: TaskLayer;
   store: MemoryTaskStore;
   dispatcher: InlineTaskDispatcher;
   close: () => Promise<void>;
 };
 
+type ReportArgs = { topic: string };
+
 /** Builds a server with one task tool backed by `handler`. */
 async function harness(
-  handler: (args: { topic: string }, task: TaskContext) => Promise<Record<string, unknown>>,
+  handler: (args: ReportArgs, task: TaskContext) => Promise<Record<string, unknown>>,
   layer: Partial<Parameters<typeof createTaskLayer>[0]> = {},
+  tool: Partial<TaskToolConfig<z.ZodObject<{ topic: z.ZodString }>>> = {},
 ): Promise<Harness> {
   const store = new MemoryTaskStore();
-  // `createTaskLayer` attaches the layer's endpoints to the dispatcher, so there is nothing to
-  // late-bind here.
   const dispatcher =
     (layer.dispatcher as InlineTaskDispatcher | undefined) ?? new InlineTaskDispatcher();
   const tasks = createTaskLayer({ store, ...layer, dispatcher });
 
-  // The transport validates the request's `mcp-protocol-version` header against this list, which
-  // otherwise defaults to the 2025-era versions and rejects every 2026-07-28 request.
   const server = new McpServer(
     { name: "test", version: "1.0.0" },
-    { supportedProtocolVersions: [TASKS_PROTOCOL_VERSION] },
+    { supportedProtocolVersions: [PROTOCOL_VERSION] },
   );
   tasks.registerTask(
     server,
     "generate_report",
-    { description: "Generates a report", inputSchema: z.object({ topic: z.string() }) },
+    {
+      description: "Generates a report.",
+      inputSchema: z.object({ topic: z.string() }),
+      ...tool,
+    },
     handler,
   );
 
@@ -56,17 +68,14 @@ async function harness(
   await server.connect(transport);
 
   let id = 0;
-  const rpc: Rpc = async (method, params = {}, options = {}) => {
-    const { withTasksCapability = true } = options;
+  const rpc = async (method: string, params: Record<string, unknown>, user?: string) => {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      "mcp-protocol-version": TASKS_PROTOCOL_VERSION,
+      "mcp-protocol-version": PROTOCOL_VERSION,
       "mcp-method": method,
     };
     if (typeof params.name === "string") headers["mcp-name"] = params.name;
-    if (typeof params.taskId === "string") headers["mcp-name"] = params.taskId;
-
     const response = await transport.handleRequest(
       new Request("http://localhost/mcp", {
         method: "POST",
@@ -78,21 +87,34 @@ async function harness(
           params: {
             ...params,
             _meta: {
-              "io.modelcontextprotocol/protocolVersion": TASKS_PROTOCOL_VERSION,
+              "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
               "io.modelcontextprotocol/clientInfo": { name: "test", version: "1.0.0" },
-              "io.modelcontextprotocol/clientCapabilities": withTasksCapability
-                ? { extensions: { [TASKS_EXTENSION]: {} } }
-                : {},
+              // A client that declares nothing at all: the layer must not need any capability.
+              "io.modelcontextprotocol/clientCapabilities": {},
             },
           },
         }),
       }),
+      user
+        ? { authInfo: { token: "t", clientId: "chatgpt", scopes: [], extra: { userId: user } } }
+        : undefined,
     );
-    return JSON.parse(await response.text());
+    const body = JSON.parse(await response.text());
+    if (body.error) throw new Error(`${body.error.code}: ${body.error.message}`);
+    return body.result as Record<string, unknown>;
   };
 
+  const call: Call = async (name, args, user) =>
+    (await rpc("tools/call", { name, arguments: args }, user)) as ToolResult;
+
   return {
-    rpc,
+    call,
+    start: async (topic = "coffee trends", user) =>
+      String((await call("generate_report", { topic }, user)).structuredContent?.taskId),
+    status: (taskId, user) => call("task_status", { taskId }, user),
+    cancel: (taskId, user) => call("task_cancel", { taskId }, user),
+    listTools: async () =>
+      ((await rpc("tools/list", {})).tools as { name: string }[]).map((t) => t.name),
     tasks,
     store,
     dispatcher,
@@ -106,7 +128,7 @@ async function harness(
 /** A four-step handler that cooperates with cancellation, like the demo's. */
 const steppedHandler =
   (steps = 4, stepMs = 20) =>
-  async ({ topic }: { topic: string }, task: TaskContext) => {
+  async ({ topic }: ReportArgs, task: TaskContext) => {
     for (let step = 1; step <= steps; step++) {
       if (await task.isCancelled()) return {};
       await task.update(`Step ${step}/${steps}: processing ${topic}`);
@@ -115,6 +137,8 @@ const steppedHandler =
     return { content: [{ type: "text", text: `Report complete: ${topic}` }] };
   };
 
+const text = (result: ToolResult) => (result.content ?? []).map((c) => c.text).join("\n");
+
 describe("createTaskLayer over MCP", () => {
   let live: Harness | undefined;
   afterEach(async () => {
@@ -122,168 +146,188 @@ describe("createTaskLayer over MCP", () => {
     live = undefined;
   });
 
-  it("answers tools/call with a task handle and no result", async () => {
+  it("registers the task tool plus the shared status and cancel tools, once", async () => {
     live = await harness(steppedHandler());
-    const { result, error } = await live.rpc("tools/call", {
-      name: "generate_report",
-      arguments: { topic: "coffee trends" },
-    });
+    expect((await live.listTools()).sort()).toEqual(
+      ["generate_report", "task_cancel", "task_status"].sort(),
+    );
+  });
 
-    expect(error).toBeUndefined();
-    expect(result?.resultType).toBe("task");
-    expect(result?.status).toBe("working");
-    expect(result?.statusMessage).toBe("Queued for durable execution");
-    expect(typeof result?.taskId).toBe("string");
-    expect(result?.ttlMs).toBe(300_000);
-    expect(result?.pollIntervalMs).toBe(2_000);
-    // The wire object must never leak the server's own bookkeeping.
-    expect(result).not.toHaveProperty("name");
-    expect(result).not.toHaveProperty("args");
-    expect(result).not.toHaveProperty("dispatchId");
+  it("answers the tool call with a task handle, as an ordinary tool result", async () => {
+    live = await harness(steppedHandler());
+    const result = await live.call("generate_report", { topic: "coffee trends" });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent?.status).toBe("working");
+    expect(result.structuredContent?.statusMessage).toBe("Queued for durable execution");
+    expect(typeof result.structuredContent?.taskId).toBe("string");
+    expect(result.structuredContent?.pollIntervalMs).toBe(2_000);
+    // The model is told what to do next, in words.
+    expect(text(result)).toMatch(/task_status/);
+    // The handle must never leak the server's own bookkeeping.
+    expect(result.structuredContent).not.toHaveProperty("name");
+    expect(result.structuredContent).not.toHaveProperty("args");
+    expect(result.structuredContent).not.toHaveProperty("dispatchId");
+    expect(result.structuredContent).not.toHaveProperty("owner");
   });
 
   it("has the task durably readable the instant the handle is returned", async () => {
     live = await harness(steppedHandler());
-    const { result } = await live.rpc("tools/call", {
-      name: "generate_report",
-      arguments: { topic: "coffee trends" },
-    });
+    const taskId = await live.start();
     // No awaiting, no sleeping: the create must have committed before the response went out.
-    const stored = await live.store.get(String(result?.taskId));
-    expect(stored?.taskId).toBe(result?.taskId);
+    const stored = await live.store.get(taskId);
     expect(stored?.name).toBe("generate_report");
     expect(stored?.args).toEqual({ topic: "coffee trends" });
   });
 
-  it("rejects a client that has not declared the tasks extension", async () => {
+  it("returns the handler's own result content from task_status once completed", async () => {
     live = await harness(steppedHandler());
-    const { result } = await live.rpc(
-      "tools/call",
-      { name: "generate_report", arguments: { topic: "tea" } },
-      { withTasksCapability: false },
-    );
-    // McpServer flattens anything a tool callback throws into an isError result and drops the
-    // code, so the refusal is a structured tool error rather than a JSON-RPC one.
-    expect(result?.isError).toBe(true);
-    expect(result?.resultType).not.toBe("task");
-    expect(result?.structuredContent).toEqual({
-      code: -32021,
-      requiredCapabilities: { extensions: { "io.modelcontextprotocol/tasks": {} } },
-    });
-    expect(String((result?.content as { text: string }[])[0]?.text)).toMatch(/capability/i);
-    // Nothing was created or dispatched for a call that was refused.
-    expect(live.dispatcher.dispatched).toBe(0);
-  });
-
-  it("runs inline for such a client when configured to", async () => {
-    live = await harness(steppedHandler(1, 1), { onMissingCapability: "run-inline" });
-    const { result, error } = await live.rpc(
-      "tools/call",
-      { name: "generate_report", arguments: { topic: "tea" } },
-      { withTasksCapability: false },
-    );
-    expect(error).toBeUndefined();
-    expect(result?.resultType).not.toBe("task");
-    expect(result?.content).toEqual([{ type: "text", text: "Report complete: tea" }]);
-  });
-
-  it("polls through to a completed task carrying its result inline", async () => {
-    live = await harness(steppedHandler());
-    const created = await live.rpc("tools/call", {
-      name: "generate_report",
-      arguments: { topic: "coffee trends" },
-    });
-    const taskId = String(created.result?.taskId);
-
+    const taskId = await live.start();
     await live.dispatcher.drain();
 
-    const polled = await live.rpc("tasks/get", { taskId });
-    expect(polled.result?.resultType).toBe("complete");
-    expect(polled.result?.status).toBe("completed");
-    expect(polled.result?.statusMessage).toBe("Completed");
-    expect(polled.result?.result).toEqual({
+    const polled = await live.status(taskId);
+    expect(polled.structuredContent?.status).toBe("completed");
+    expect(polled.structuredContent?.result).toEqual({
       content: [{ type: "text", text: "Report complete: coffee trends" }],
+    });
+    // The model reads the answer exactly as if the tool had run synchronously.
+    expect(polled.content?.at(-1)).toEqual({
+      type: "text",
+      text: "Report complete: coffee trends",
     });
   });
 
   it("reports progress between steps", async () => {
     live = await harness(steppedHandler(4, 40));
-    const created = await live.rpc("tools/call", {
-      name: "generate_report",
-      arguments: { topic: "coffee trends" },
-    });
-    const taskId = String(created.result?.taskId);
+    const taskId = await live.start();
 
     await sleep(50);
-    const midway = await live.rpc("tasks/get", { taskId });
-    expect(midway.result?.status).toBe("working");
-    expect(String(midway.result?.statusMessage)).toMatch(/^Step \d\/4: processing coffee trends$/);
-
+    const midway = await live.status(taskId);
+    expect(midway.structuredContent?.status).toBe("working");
+    expect(String(midway.structuredContent?.statusMessage)).toMatch(
+      /^Step \d\/4: processing coffee trends$/,
+    );
+    expect(text(midway)).toMatch(/Check again/);
     await live.dispatcher.drain();
   });
 
-  it("errors with -32602 for an unknown task id", async () => {
+  it("answers an unknown task id with a tool error, not a protocol error", async () => {
     live = await harness(steppedHandler());
-    const { error } = await live.rpc("tasks/get", { taskId: "nope" });
-    expect(error?.code).toBe(-32602);
-    expect(error?.message).toMatch(/Unknown task/);
+    const result = await live.status("nope");
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/Unknown task/);
   });
 
   describe("cancellation", () => {
     it("flips the task to cancelled and stops the handler at its next check", async () => {
       live = await harness(steppedHandler(4, 60));
-      const created = await live.rpc("tools/call", {
-        name: "generate_report",
-        arguments: { topic: "coffee trends" },
-      });
-      const taskId = String(created.result?.taskId);
+      const taskId = await live.start();
 
       await sleep(70);
-      const cancelled = await live.rpc("tasks/cancel", { taskId });
-      expect(cancelled.result?.resultType).toBe("complete");
-      expect(cancelled.result?.status).toBe("cancelled");
+      const cancelled = await live.cancel(taskId);
+      expect(cancelled.structuredContent?.status).toBe("cancelled");
 
       await live.dispatcher.drain();
-
-      // The handler ran on past the cancel and returned, but a terminal state is final: its
-      // completion must not have overwritten the cancellation.
-      const after = await live.rpc("tasks/get", { taskId });
-      expect(after.result?.status).toBe("cancelled");
-      expect(after.result?.result).toBeUndefined();
+      // A terminal state is final: the handler's late return must not overwrite it.
+      const after = await live.status(taskId);
+      expect(after.structuredContent?.status).toBe("cancelled");
+      expect(after.structuredContent?.result).toBeUndefined();
     });
 
     it("is idempotent", async () => {
       live = await harness(steppedHandler(4, 30));
-      const created = await live.rpc("tools/call", {
-        name: "generate_report",
-        arguments: { topic: "x" },
-      });
-      const taskId = String(created.result?.taskId);
-
-      await live.rpc("tasks/cancel", { taskId });
-      const second = await live.rpc("tasks/cancel", { taskId });
-      expect(second.error).toBeUndefined();
-      expect(second.result?.status).toBe("cancelled");
+      const taskId = await live.start("x");
+      await live.cancel(taskId);
+      const second = await live.cancel(taskId);
+      expect(second.isError).toBeFalsy();
+      expect(second.structuredContent?.status).toBe("cancelled");
       await live.dispatcher.drain();
     });
 
     it("never lets a completion overwrite a cancellation that landed first", async () => {
-      // The race, made deterministic: the handler finishes its work, and the cancel arrives while
-      // it is between finishing and being settled.
       live = await harness(async (_args, task) => {
         await live!.store.settle(task.taskId, { status: "cancelled" });
         return { content: [{ type: "text", text: "too late" }] };
       });
-      const created = await live.rpc("tools/call", {
-        name: "generate_report",
-        arguments: { topic: "x" },
-      });
-      const taskId = String(created.result?.taskId);
+      const taskId = await live.start("x");
       await live.dispatcher.drain();
 
-      const after = await live.rpc("tasks/get", { taskId });
-      expect(after.result?.status).toBe("cancelled");
-      expect(after.result?.result).toBeUndefined();
+      const after = await live.status(taskId);
+      expect(after.structuredContent?.status).toBe("cancelled");
+      expect(after.structuredContent?.result).toBeUndefined();
+    });
+  });
+
+  describe("ownership", () => {
+    const principal = (auth: { extra?: Record<string, unknown> } | undefined) =>
+      auth?.extra?.userId as string | undefined;
+
+    it("lets the owner read and cancel its task", async () => {
+      live = await harness(steppedHandler(4, 30), { principal });
+      const taskId = await live.start("x", "alice");
+      expect((await live.store.get(taskId))?.owner).toBe("alice");
+      expect((await live.status(taskId, "alice")).structuredContent?.status).toBe("working");
+      expect((await live.cancel(taskId, "alice")).structuredContent?.status).toBe("cancelled");
+      await live.dispatcher.drain();
+    });
+
+    it("reports another caller's task as unknown, and refuses to cancel it", async () => {
+      live = await harness(steppedHandler(4, 30), { principal });
+      const taskId = await live.start("x", "alice");
+
+      const peek = await live.status(taskId, "mallory");
+      expect(peek.isError).toBe(true);
+      expect(text(peek)).toMatch(/Unknown task/);
+
+      const stop = await live.cancel(taskId, "mallory");
+      expect(stop.isError).toBe(true);
+      expect((await live.store.get(taskId))?.status).not.toBe("cancelled");
+
+      // Nor does an anonymous caller get through.
+      expect((await live.status(taskId)).isError).toBe(true);
+      await live.dispatcher.drain();
+    });
+
+    it("leaves tasks unscoped when no principal is configured", async () => {
+      live = await harness(steppedHandler(1, 1));
+      const taskId = await live.start("x", "alice");
+      expect((await live.store.get(taskId))?.owner).toBeUndefined();
+      expect((await live.status(taskId, "bob")).isError).toBeFalsy();
+      await live.dispatcher.drain();
+    });
+  });
+
+  describe("idempotency", () => {
+    it("returns the same task for a retried call with the same key", async () => {
+      live = await harness(steppedHandler(4, 30), {}, { idempotencyKey: (args) => args.topic });
+      const first = await live.call("generate_report", { topic: "x" });
+      const retry = await live.call("generate_report", { topic: "x" });
+
+      expect(retry.structuredContent?.taskId).toBe(first.structuredContent?.taskId);
+      expect(text(retry)).toMatch(/already exists/);
+      expect(live.dispatcher.dispatched).toBe(1);
+
+      const other = await live.call("generate_report", { topic: "y" });
+      expect(other.structuredContent?.taskId).not.toBe(first.structuredContent?.taskId);
+      await live.dispatcher.drain();
+    });
+
+    it("scopes keys by owner, so two callers never share a task", async () => {
+      live = await harness(
+        steppedHandler(1, 1),
+        { principal: (auth) => auth?.extra?.userId as string | undefined },
+        { idempotencyKey: (args) => args.topic },
+      );
+      const alice = await live.start("x", "alice");
+      const bob = await live.start("x", "bob");
+      expect(alice).not.toBe(bob);
+      await live.dispatcher.drain();
+    });
+
+    it("starts a fresh task on every call without a key", async () => {
+      live = await harness(steppedHandler(1, 1));
+      expect(await live.start("x")).not.toBe(await live.start("x"));
+      await live.dispatcher.drain();
     });
   });
 
@@ -294,11 +338,7 @@ describe("createTaskLayer over MCP", () => {
         runs += 1;
         return { content: [{ type: "text", text: "done" }] };
       });
-      const created = await live.rpc("tools/call", {
-        name: "generate_report",
-        arguments: { topic: "x" },
-      });
-      const taskId = String(created.result?.taskId);
+      const taskId = await live.start("x");
       await live.dispatcher.drain();
       expect(runs).toBe(1);
 
@@ -306,6 +346,12 @@ describe("createTaskLayer over MCP", () => {
       await live.tasks.executeTask(taskId);
       await live.tasks.executeTask(taskId);
       expect(runs).toBe(1);
+    });
+
+    it("acknowledges a delivery for a task that no longer exists", async () => {
+      live = await harness(steppedHandler(1, 1));
+      // Expired or never created: a retry cannot fix that, so it must not throw and be retried.
+      await expect(live.tasks.executeTask("gone")).resolves.toBeNull();
     });
 
     it("leaves a thrown task retryable rather than settling it failed", async () => {
@@ -318,24 +364,15 @@ describe("createTaskLayer over MCP", () => {
         },
         { dispatcher: new InlineTaskDispatcher({ autoRun: false }) },
       );
-      const created = await live.rpc("tools/call", {
-        name: "generate_report",
-        arguments: { topic: "x" },
-      });
-      const taskId = String(created.result?.taskId);
+      const taskId = await live.start("x");
 
-      // Redeliveries are driven by hand here, to prove `executeTask` itself never makes a
-      // failure terminal — that decision belongs to the transport.
+      // Redeliveries are driven by hand, to prove `executeTask` itself never makes a failure
+      // terminal — that decision belongs to the transport.
       await expect(live.tasks.executeTask(taskId)).rejects.toThrow("boom 1");
-      let current = await live.rpc("tasks/get", { taskId });
-      expect(current.result?.status).toBe("working");
-
+      expect((await live.status(taskId)).structuredContent?.status).toBe("working");
       await expect(live.tasks.executeTask(taskId)).rejects.toThrow("boom 2");
-      expect((await live.rpc("tasks/get", { taskId })).result?.status).toBe("working");
-
       await live.tasks.executeTask(taskId);
-      current = await live.rpc("tasks/get", { taskId });
-      expect(current.result?.status).toBe("completed");
+      expect((await live.status(taskId)).structuredContent?.status).toBe("completed");
       expect(attempts).toBe(3);
     });
 
@@ -343,34 +380,28 @@ describe("createTaskLayer over MCP", () => {
       live = await harness(async () => {
         throw new Error("permanent");
       });
-      const created = await live.rpc("tools/call", {
-        name: "generate_report",
-        arguments: { topic: "x" },
-      });
-      const taskId = String(created.result?.taskId);
+      const taskId = await live.start("x");
       await live.dispatcher.drain();
 
-      const after = await live.rpc("tasks/get", { taskId });
-      expect(after.result?.status).toBe("failed");
-      expect(after.result?.statusMessage).toBe("Execution failed");
-      expect(after.result?.error).toMatchObject({ code: -32603, message: "permanent" });
+      const after = await live.status(taskId);
+      expect(after.structuredContent?.status).toBe("failed");
+      expect(after.structuredContent?.error).toMatchObject({ code: -32603, message: "permanent" });
+      expect(text(after)).toMatch(/permanent/);
     });
   });
 
-  it("serves the task methods under custom names when asked", async () => {
+  it("registers the shared tools under custom names when asked", async () => {
     live = await harness(steppedHandler(1, 1), {
-      methods: { get: "upstash/tasks.get", cancel: "upstash/tasks.cancel" },
+      toolNames: { status: "upstash_task_status", cancel: "upstash_task_cancel" },
     });
-    const created = await live.rpc("tools/call", {
-      name: "generate_report",
-      arguments: { topic: "x" },
-    });
-    const taskId = String(created.result?.taskId);
+    expect(await live.listTools()).toEqual(
+      expect.arrayContaining(["upstash_task_status", "upstash_task_cancel"]),
+    );
+    const taskId = await live.start("x");
     await live.dispatcher.drain();
-
-    expect((await live.rpc("tasks/get", { taskId })).error?.code).toBe(-32601);
-    const custom = await live.rpc("upstash/tasks.get", { taskId });
-    expect(custom.result?.status).toBe("completed");
+    expect((await live.call("upstash_task_status", { taskId })).structuredContent?.status).toBe(
+      "completed",
+    );
   });
 
   it("infers handler argument types from the input schema", async () => {
@@ -379,20 +410,14 @@ describe("createTaskLayer over MCP", () => {
     live = await harness(async (args) => ({
       content: [{ type: "text", text: args.topic.toUpperCase() }],
     }));
-    const created = await live.rpc("tools/call", {
-      name: "generate_report",
-      arguments: { topic: "coffee" },
-    });
+    const taskId = await live.start("coffee");
     await live.dispatcher.drain();
-    const after = await live.rpc("tasks/get", { taskId: String(created.result?.taskId) });
-    expect((after.result?.result as { content: { text: string }[] }).content[0]?.text).toBe(
-      "COFFEE",
-    );
+    expect((await live.status(taskId)).content?.at(-1)?.text).toBe("COFFEE");
   });
 });
 
 describe("wire shape", () => {
-  it("keeps a WireTask assignable from what tasks/get returns", () => {
+  it("keeps a WireTask assignable from what task_status returns", () => {
     const wire: WireTask = {
       taskId: "t",
       status: "working",

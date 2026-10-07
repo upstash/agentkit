@@ -1,20 +1,21 @@
 # MCP Tasks demo
 
 A Next.js app showing `@upstash/mcp-tasks` end to end: an MCP tool that answers with a task handle
-instead of blocking, a task record in Upstash Redis, and the work running through QStash so it
-survives the process that accepted the call.
+instead of blocking, a task record in Upstash Redis, and the work running through QStash (or
+Upstash Workflow) so it survives the process that accepted the call.
 
-The page is the MCP client. It speaks raw stateless JSON-RPC to `/api/mcp` — no initialize
-handshake, no session id — and shows every frame it sends and receives in a wire log next to the
-tasks, so you can watch the protocol rather than just the result.
+The page is the MCP client, and it does exactly what a model would: call `generate_report`, then
+poll `task_status` and maybe call `task_cancel` — three ordinary tools, from a client that declares
+no capabilities at all. It speaks raw stateless JSON-RPC and shows every frame in a wire log.
 
 ## What's here
 
 | File | What it does |
 | --- | --- |
-| `app/lib/tasks.ts` | The whole server wiring: the store, the dispatcher (`TASKS_DRIVER` picks one), and the `generate_report` task tool |
-| `app/api/mcp/route.ts` | The MCP endpoint, over `WebStandardStreamableHTTPServerTransport` |
-| `app/api/execute/route.ts` | Where the work is delivered. One line: the dispatcher owns the endpoint |
+| `app/lib/qstash-server.ts` | Server one: Redis store, QStash dispatcher, and the `generate_report` task tool |
+| `app/lib/workflow-server.ts` | Server two: the same tool on Upstash Workflow, one invocation per step |
+| `app/api/mcp/route.ts`, `app/api/mcp-workflow/route.ts` | The MCP endpoints — the SDK's own `createMcpHandler`, unchanged |
+| `app/api/execute/route.ts`, `app/api/execute-workflow/route.ts` | Where the work is delivered. One line each: the dispatcher owns the endpoint |
 | `app/page.tsx` | The client: call the tool, poll, cancel, and the wire log |
 | `scripts/smoke.mjs` | Drives the same flow from the terminal and asserts on it |
 
@@ -40,28 +41,26 @@ so a deployed app needs its real URL (or a tunnel) there.
 To check everything from the terminal instead:
 
 ```bash
-pnpm smoke     # happy path, cancel mid-flight, a client without the capability, unknown task id
+pnpm smoke     # happy path, cancel mid-flight, unknown task id
+MCP_PATH=/api/mcp-workflow pnpm smoke   # the same against the Workflow server
 ```
 
-## Swapping the transport
+## Two transports
 
-`TASKS_DRIVER` chooses which dispatcher runs the work. The route, the tool and the handler are
-identical either way — only durability changes:
+The demo runs two servers side by side, picked in the UI. They expose the same tools; only
+durability differs:
 
-```bash
-TASKS_DRIVER=qstash     # default: one delivery, one invocation
-TASKS_DRIVER=workflow   # one invocation per step, replayed from a journal
-```
-
-On `workflow`, each `task.run(...)` in the handler becomes its own request, so the task can run
-far longer than the route's `maxDuration`. Watch the server log with either value and the tool
-behaves the same; only the number of invocations differs.
+- **QStash** (`/api/mcp`): one delivery, one invocation. Survives a crash, but the whole handler
+  has to finish inside the route's `maxDuration`.
+- **Workflow** (`/api/mcp-workflow`): each `task.run(...)` becomes its own request, replayed from a
+  journal, so the task can run far longer than any one invocation.
 
 ## The three things worth watching
 
-**A tool call returns immediately.** `tools/call` comes back in milliseconds with
-`resultType: "task"` and a `working` status. The four-step report takes about ten seconds; none of
-it happens inside that request.
+**A tool call returns immediately.** `generate_report` comes back in milliseconds with a
+`taskId` and a `working` status in `structuredContent`, plus a sentence telling the model to call
+`task_status`. The four-step report takes about ten seconds; none of it happens inside that
+request. Once it completes, `task_status` returns the report's own content.
 
 **Cancel is cooperative, in three layers.** Hit **cancel** mid-run and the store flips the status
 to `cancelled`, the dispatcher cancels the pending QStash message, and the handler stops at its
@@ -91,9 +90,7 @@ get dead-lettered, it is in the QStash DLQ, not lost.
 
 ## Notes
 
-- The tool is an ordinary MCP tool. Nothing in `tools/list` marks it as a task; the server decides
-  per call, from the capabilities the request carries.
-- A client that has not declared `io.modelcontextprotocol/tasks` gets a structured tool error
-  telling it what to declare, instead of a task it cannot poll.
-- The route uses `WebStandardStreamableHTTPServerTransport` rather than `createMcpHandler` on
-  purpose — see the note in `app/api/mcp/route.ts` and the package README.
+- All three tools are ordinary MCP tools, so this works in every client today — Claude Code,
+  Codex, Cursor, OpenCode, ChatGPT — none of which declare the protocol's Tasks extension yet.
+- The demo leaves tasks unscoped. A multi-user server should pass `principal` to
+  `createTaskLayer` so one user cannot read or cancel another's task — see the package README.

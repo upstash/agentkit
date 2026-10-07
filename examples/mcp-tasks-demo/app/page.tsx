@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  callTool,
   rpc,
   SERVERS,
-  TASKS_EXTENSION,
   TERMINAL,
   type Frame,
   type ServerKey,
@@ -37,8 +37,8 @@ export default function Page() {
     setFrames(previous => [frame, ...previous].slice(0, 80));
   }, []);
 
-  // A plain `tools/list` — the task tool is an ordinary MCP tool. Nothing about its declaration
-  // says "task"; the server decides per call whether to answer with a handle.
+  // A plain `tools/list`: the report tool plus the shared `task_status` and `task_cancel` tools,
+  // all ordinary MCP tools.
   useEffect(() => {
     rpc<{ tools: { name: string }[] }>("tools/list", {}, { onFrame, server })
       .then(result => setTools(result.tools.map(tool => tool.name)))
@@ -54,7 +54,7 @@ export default function Page() {
   const tasksRef = useRef<TrackedTask[]>(tasks);
   tasksRef.current = tasks;
 
-  // The client polls; the server has nothing to push. Each task carries its own
+  // The client polls `task_status`, exactly as a model would. Each task carries its own
   // `pollIntervalMs`, so the server sets the pace rather than the UI guessing.
   useEffect(() => {
     const id = setInterval(() => {
@@ -78,7 +78,7 @@ export default function Page() {
 
   async function poll(taskId: string, from: ServerKey) {
     try {
-      const wire = await rpc<WireTask>("tasks/get", { taskId }, { onFrame, server: from });
+      const wire = await callTool<WireTask>("task_status", { taskId }, { onFrame, server: from });
       setTasks(previous =>
         previous.map(task =>
           task.taskId === taskId ? { ...task, wire, polls: task.polls + 1 } : task,
@@ -95,11 +95,11 @@ export default function Page() {
     setStarting(true);
     setError(null);
     try {
-      // A normal `tools/call`. Because the request declared the tasks extension in its
-      // capabilities, the server answers with a handle instead of blocking for ten seconds.
-      const wire = await rpc<WireTask>(
-        "tools/call",
-        { name: TOOL_NAME, arguments: { topic: topic.trim() } },
+      // A normal `tools/call`. The tool answers with a task handle at once instead of blocking
+      // for ten seconds — no client capability required.
+      const wire = await callTool<WireTask>(
+        TOOL_NAME,
+        { topic: topic.trim() },
         { onFrame, server },
       );
       setTasks(previous => [
@@ -123,7 +123,7 @@ export default function Page() {
 
   async function cancel(taskId: string, from: ServerKey) {
     try {
-      await rpc("tasks/cancel", { taskId }, { onFrame, server: from });
+      await callTool("task_cancel", { taskId }, { onFrame, server: from });
       await poll(taskId, from);
     } catch (cause) {
       setError(String(cause));
@@ -140,7 +140,7 @@ export default function Page() {
           nothing but stateless JSON-RPC — no initialize handshake, no session id.
         </p>
         <div style={{ marginTop: 12 }}>
-          <span className="pill">{TASKS_EXTENSION}</span>
+          <span className="pill">task_status · task_cancel</span>
           <span className="pill">2026-07-28</span>
           <span className="pill">
             tools/list → {tools ? (tools.join(", ") || "none") : "…"}

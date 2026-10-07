@@ -8,7 +8,7 @@
  * Compare with `workflow-server.ts`, which runs the same-looking tool with no time limit at all.
  */
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer, TASKS_PROTOCOL_VERSION } from "@upstash/mcp-tasks";
+import { createTaskLayer } from "@upstash/mcp-tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-tasks/upstash";
 import * as z from "zod";
 
@@ -34,19 +34,14 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const STEPS = 4;
 
 export function createServer(): McpServer {
-  const server = new McpServer(
-    { name: "mcp-tasks-demo-qstash", version: "0.1.0" },
-    // Without this the transport validates the request's `mcp-protocol-version` header against
-    // the SDK's 2025-era list and rejects every 2026-07-28 request before it reaches a handler.
-    { supportedProtocolVersions: [TASKS_PROTOCOL_VERSION] },
-  );
+  const server = new McpServer({ name: "mcp-tasks-demo-qstash", version: "0.1.0" });
 
   tasks.registerTask(
     server,
     "generate_report",
     {
       title: "Generate report",
-      description: `Generates a report on a topic in ${STEPS} steps, on QStash. Returns a task handle immediately.`,
+      description: `Generates a report on a topic in ${STEPS} steps, on QStash.`,
       inputSchema: z.object({ topic: z.string().describe("What the report should be about") }),
       completedMessage: "Report ready",
     },

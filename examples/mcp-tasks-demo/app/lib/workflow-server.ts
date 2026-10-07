@@ -10,7 +10,7 @@
  * `task.sleep(...)`, `task.call(...)` (the engine's) sit on one object.
  */
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer, TASKS_PROTOCOL_VERSION } from "@upstash/mcp-tasks";
+import { createTaskLayer } from "@upstash/mcp-tasks";
 import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-tasks/upstash";
 import type { WorkflowContext } from "@upstash/workflow";
 import * as z from "zod";
@@ -34,17 +34,14 @@ export const tasks = createTaskLayer<WorkflowContext>({
 const STEPS = 4;
 
 export function createServer(): McpServer {
-  const server = new McpServer(
-    { name: "mcp-tasks-demo-workflow", version: "0.1.0" },
-    { supportedProtocolVersions: [TASKS_PROTOCOL_VERSION] },
-  );
+  const server = new McpServer({ name: "mcp-tasks-demo-workflow", version: "0.1.0" });
 
   tasks.registerTask(
     server,
     "generate_report",
     {
       title: "Generate report",
-      description: `Generates a report on a topic in ${STEPS} durable steps, on Upstash Workflow. Returns a task handle immediately.`,
+      description: `Generates a report on a topic in ${STEPS} durable steps, on Upstash Workflow.`,
       inputSchema: z.object({ topic: z.string().describe("What the report should be about") }),
       completedMessage: "Report ready",
     },

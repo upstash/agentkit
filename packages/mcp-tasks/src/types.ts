@@ -9,8 +9,9 @@
  */
 
 /**
- * The five states of the `io.modelcontextprotocol/tasks` extension. `completed`, `failed` and
- * `cancelled` are terminal: once a task reaches one, its status never changes again.
+ * A task's five states, borrowed from the `io.modelcontextprotocol/tasks` extension so a native
+ * adapter can serve the same records later. `completed`, `failed` and `cancelled` are terminal:
+ * once a task reaches one, its status never changes again.
  */
 export type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
 
@@ -50,8 +51,9 @@ export type TaskError = {
 };
 
 /**
- * Exactly the object a client sees, straight from the extension's draft schema. Everything the
- * server keeps for itself lives on {@link Task} instead, and is stripped on the way out.
+ * Exactly the object the model sees in a task tool's `structuredContent` — the same shape as the
+ * Tasks extension's task object. Everything the server keeps for itself lives on {@link Task}
+ * instead, and is stripped on the way out.
  */
 export type WireTask = {
   taskId: string;
@@ -63,7 +65,7 @@ export type WireTask = {
   lastUpdatedAt: string;
   /** Retention window in milliseconds. `null` means unlimited. */
   ttlMs: number | null;
-  /** How long the client should wait between `tasks/get` polls. */
+  /** How long the model should wait between `task_status` polls. */
   pollIntervalMs?: number;
   /** Present once the task is `completed`: the tool result, inline. */
   result?: Record<string, unknown>;
@@ -72,8 +74,8 @@ export type WireTask = {
 };
 
 /**
- * The stored task: the wire object plus the three fields the server needs and the client never
- * sees — which tool to run, what to run it with, and which dispatch to cancel.
+ * The stored task: the wire object plus the fields the server needs and the model never sees —
+ * which tool to run, what to run it with, which dispatch to cancel, and who owns it.
  */
 export type Task = WireTask & {
   /** The registered task name, so the executor knows which handler to run. */
@@ -82,6 +84,11 @@ export type Task = WireTask & {
   args: unknown;
   /** The dispatcher's handle for the pending delivery, so cancel can stop retries. */
   dispatchId?: string;
+  /**
+   * The caller that started the task, from `TaskLayerOptions.principal`. When set, only the same
+   * caller can read or cancel it through the tools.
+   */
+  owner?: string;
 };
 
 /** The fields a caller may patch on a stored task. */
@@ -94,7 +101,7 @@ export type TerminalTaskPatch = TaskPatch & { status: TerminalTaskStatus };
  * Durable storage for the task record.
  *
  * The one hard requirement comes from the spec: a `tools/call` must not return the task handle
- * until the task is durably created, because the client may immediately `tasks/get` it against a
+ * until the task is durably created, because the model may immediately poll it against a
  * different instance. So {@link create} must have committed before it resolves.
  */
 export interface TaskStore {
@@ -121,7 +128,7 @@ export interface TaskStore {
    * this call performed the transition, or `null` when the task was already terminal.
    *
    * This is the one operation that must not be a read-modify-write, because two writers race for
-   * it by design: a client's `tasks/cancel` and the executor finishing at the same moment. First
+   * it by design: a `task_cancel` and the executor finishing at the same moment. First
    * terminal write wins, and a late `completed` can never overwrite a `cancelled`.
    */
   settle(taskId: string, patch: TerminalTaskPatch): Promise<Task | null>;

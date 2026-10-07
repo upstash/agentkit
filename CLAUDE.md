@@ -19,7 +19,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
 
-| `@upstash/mcp-tasks` (`packages/mcp-tasks`) | A durable **MCP Tasks** runtime for the official `@modelcontextprotocol/server` v2. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `@upstash/mcp-tasks` (`packages/mcp-tasks`) | Durable **long-running MCP tools** (start + `task_status` + `task_cancel`) for the official `@modelcontextprotocol/server` v2. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-tasks-demo`
@@ -313,41 +313,30 @@ Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## MCP Tasks facts (`packages/mcp-tasks`) — IMPORTANT
-Verified empirically against `@modelcontextprotocol/server@2.0.0`; don't re-derive them from the docs.
-- **The SDK has schemas but no tasks runtime.** v2 ships `Task`/`GetTaskRequest`/`CreateTaskResult`
-  etc. and `isTaskAugmentedRequestParams`, but registers **no** `tasks/*` handler and has no store.
-  v1's experimental task APIs were removed with no migration path. That gap is what this package fills.
-- **`createMcpHandler` cannot serve `tasks/get`/`tasks/cancel`.** It pins the request to the
-  2026-07-28 era from the client's `_meta` protocol-version claim, and that era's dispatch gate
-  returns **`-32601` before the handler is looked up**: those strings are in the SDK's *2025* method
-  registry (so `isSpecRequestMethod` is true) and absent from the *2026* one. A `fallbackRequestHandler`
-  does not help — the gate returns first. Proven: the registered handler never runs, while a
-  namespaced `upstash/tasks.get` on the same server dispatches fine.
-  **So the demo and the docs use `WebStandardStreamableHTTPServerTransport` + `transport.handleRequest`**,
-  which leaves the instance on the 2025 era where `tasks/*` dispatch normally. `createTaskLayer`'s
-  `methods` option is the escape hatch for `createMcpHandler` users.
-- **`supportedProtocolVersions: [TASKS_PROTOCOL_VERSION]` on the `McpServer` is required**, or the
-  transport rejects every 2026-07-28 request with "Unsupported protocol version" (its default list is
-  the 2025 era's). There is no *public* 2026 constant in the SDK — `SUPPORTED_PROTOCOL_VERSIONS` is
-  legacy-only and `LATEST_PROTOCOL_VERSION` is `"2025-11-25"`.
-- **The per-request envelope works on both eras:** `ctx.mcpReq.envelope[CLIENT_CAPABILITIES_META_KEY]`
-  carries the lifted client capabilities. That is the capability check — there is no session to ask.
-- **A tool callback cannot return a JSON-RPC error.** `McpServer` catches everything a tool callback
-  throws — `ProtocolError` and `MissingRequiredClientCapabilityError` included — and flattens it to
-  `{content, isError:true}`, **dropping the code**. So the missing-capability refusal is a structured
-  tool error with `structuredContent: { code: -32021, requiredCapabilities }`, not a thrown error.
-- **`resultType: "task"` from `tools/call` is allowed** (`tools/call` is in the SDK's
-  `EXTENDED_RESULT_TYPE_METHODS`, forwarded verbatim). We return the task **flattened**, not under a
-  `task` key: `"task"` is a hard-coded "foreign family" key that blocks the SDK's contentless-result
-  default, so `{resultType:"task", task:{…}}` without `content` is rejected — the flattened form gets
-  `content: []` filled in automatically.
+- **Tools mode, not the Tasks extension (since 2026-10).** A task tool answers with an ordinary tool
+  result (`structuredContent` = the task object, plus a text line telling the model to poll); two
+  shared tools, `task_status` and `task_cancel`, are registered once per server. No `tasks/*`
+  methods, no capability check, no custom transport — the demo serves through `createMcpHandler`.
+  Reason: no mainstream client (Claude Code, Codex, Cursor, OpenCode) declares
+  `io.modelcontextprotocol/tasks` as of 2026-10-07, and a server must not return a task to a client
+  that did not. A native adapter can sit on the same store/dispatcher later — don't reintroduce the
+  old `methods`/`onMissingCapability`/`-32021` machinery into the core.
+- **Ownership:** `createTaskLayer({ principal })` receives `ctx.http.authInfo` (that is where the
+  SDK v2 puts transport auth on the handler context) and stamps `task.owner`; `task_status` /
+  `task_cancel` report a non-owned task as *unknown* (no existence oracle). Owners compare as strings
+  because Redis auto-deserialization turns numeric-looking owners into numbers.
+- **Idempotency:** `registerTask(..., { idempotencyKey: (args) => string })` makes the task id
+  `sha256([owner, tool, key])`; a hit returns the existing task. Racing first calls both write the
+  same record and the dispatchers dedupe on task id (QStash `deduplicationId`, Workflow
+  `workflowRunId`) — acceptable, documented.
+- `executeTask` on a missing/expired task returns `null` (QStash acks 200) instead of throwing — a
+  retry cannot fix it.
 - **Design choices that differ from the naive version** (all covered by tests):
-  `TaskStore.settle` is a *guarded, atomic* terminal transition (a Lua script on Redis) so a client's
-  `tasks/cancel` and the executor completing cannot clobber each other — first terminal write wins;
+  `TaskStore.settle` is a *guarded, atomic* terminal transition (a Lua script on Redis) so a
+  `task_cancel` and the executor completing cannot clobber each other — first terminal write wins;
   the store keeps **one hash field per task property** (not one JSON blob) so a progress `update` and
-  a cancel never overwrite each other's fields; and `executeTask(id, {isFinalAttempt})` keeps a task
-  **`working`** until the dispatcher's last delivery, because settling `failed` on the first error
-  makes it terminal and every retry then no-ops on the redelivery guard.
+  a cancel never overwrite each other's fields; and the core never settles `failed` itself — only the
+  dispatcher does, once it has stopped retrying.
 - **Redis encoding:** every hash field is written `JSON.stringify`d and read back with **no decode of
   our own** — `@upstash/redis` auto-`JSON.parse`s responses, so the single parse is the exact inverse.
   Decoding again turns a `statusMessage` of `"123"` into the number `123` (this actually happened).
@@ -384,7 +373,7 @@ Verified empirically against `@modelcontextprotocol/server@2.0.0`; don't re-deri
   `.subscribe()` in-process, i.e. durable record, non-durable work. So this package's
   `TaskStore` + `TaskDispatcher` split is not a port of prior MCP art — the closest analogue is
   Vercel Workflow's `World = Storage + Queue + Streamer`.
-- Tests: `src/core.test.ts` drives a real `McpServer` + real transport over genuine JSON-RPC;
+- Tests: `src/core.test.ts` drives a real `McpServer` + real transport over genuine JSON-RPC `tools/call`s;
   `src/upstash.test.ts` hits real Redis. Both run under the root vitest config.
 - **Local dev needs the QStash dev server** (`npx @upstash/qstash-cli dev`) — it prints deterministic
   creds. `APP_URL` must be reachable *from QStash*.
