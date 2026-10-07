@@ -43,6 +43,10 @@ export function createServer() {
 
   return server;
 }
+
+// Registers the handler in every process, including an /api/execute instance that never serves an
+// MCP request: the execute route finds a task's handler by the name stored on the task.
+createServer();
 ```
 
 Then two routes — the MCP endpoint, which is the SDK's own handler unchanged, and the one the work
