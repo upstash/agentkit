@@ -234,14 +234,14 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
-  examples/mcp-tasks-demo:
+  examples/mcp-toolkit-demo:
     dependencies:
       '@modelcontextprotocol/server':
         specifier: ^2.0.0
         version: 2.3.1
-      '@upstash/mcp-tasks':
+      '@upstash/mcp-toolkit':
         specifier: workspace:*
-        version: link:../../packages/mcp-tasks
+        version: link:../../packages/mcp-toolkit
       '@upstash/qstash':
         specifier: ^2.11.3
         version: 2.12.0
@@ -410,7 +410,7 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
-  packages/mcp-tasks:
+  packages/mcp-toolkit:
     dependencies:
       zod:
         specifier: ^4.2.0

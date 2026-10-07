@@ -19,10 +19,10 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
-| `@upstash/mcp-tasks` (`packages/mcp-tasks`) | Durable **long-running MCP tools** (start + `task_status` + `task_cancel`) for the official `@modelcontextprotocol/server` v2. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). Each has a `/upstash` entry point. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
-`eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-tasks-demo`
+`eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
 (Next.js; the MCP server plus a browser client that shows the JSON-RPC wire log).
 `langchain` was **removed** — don't reintroduce it. A first `tanstack-ai` adapter was removed in June 2026
 (it only wrapped memory + a model cache); the current `packages/tanstack-ai` is a different package that
@@ -436,8 +436,8 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   variable-length and test `if KEYS[n]` in the script.
 - Scripts that need a key they can only learn by reading (the artifact store's old run/thread index)
   read it first, declare it, and compare-and-swap inside the script, retrying on a mismatch.
-- Current scripts: `RedisLock` acquire/release/extend (tanstack-ai), eve `redisDocuments()` CAS, and the
-  tanstack-ai persistence/generation stores. Upstash tolerates a leading newline before the shebang,
+- Current scripts: `RedisLock` acquire/release/extend (tanstack-ai), eve `redisDocuments()` CAS, the
+  tanstack-ai persistence/generation stores, and mcp-toolkit's task update/settle and subscription put. Upstash tolerates a leading newline before the shebang,
   standard Redis does not — keep it on line 1.
 
 ## API conventions
@@ -678,7 +678,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `$and/$or/$must/$should/$mustNot`. Aggregations: `$terms`, `$stats`, `$sum`, `$avg`, `$min`, `$max`,
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
-## MCP Tasks facts (`packages/mcp-tasks`) — IMPORTANT
+## MCP toolkit facts (`packages/mcp-toolkit`) — IMPORTANT
+- **Layout:** `src/tasks/` and `src/events/`, each with `index.ts` (core, storage-agnostic) and
+  `upstash.ts` (Redis/QStash/Workflow backends), built to `dist/{tasks,events}/{index,upstash}.js`.
+  There is no root export. Shared: `src/telemetry.ts` (tag `@upstash/mcp-toolkit`), `src/version.ts`.
 - **Tools mode, not the Tasks extension (since 2026-10).** A task tool answers with an ordinary tool
   result (`structuredContent` = the task object, plus a text line telling the model to poll); two
   shared tools, `task_status` and `task_cancel`, are registered once per server. No `tasks/*`
@@ -739,8 +742,22 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `.subscribe()` in-process, i.e. durable record, non-durable work. So this package's
   `TaskStore` + `TaskDispatcher` split is not a port of prior MCP art — the closest analogue is
   Vercel Workflow's `World = Storage + Queue + Streamer`.
-- Tests: `src/core.test.ts` drives a real `McpServer` + real transport over genuine JSON-RPC `tools/call`s;
-  `src/upstash.test.ts` hits real Redis. Both run under the root vitest config.
+- Tests: `src/{tasks,events}/core.test.ts` drive a real `McpServer` through `createMcpHandler` over
+  genuine JSON-RPC; `src/*/backends/qstash.test.ts` hit real Redis. All run under the root vitest
+  config. The demo's `pnpm smoke` is the end-to-end check (QStash dev server + both servers + the
+  `task.finished` webhook into the demo's receiver).
+- **Events facts.** Wire format follows ChatGPT's MCP Events (webhook only): `events/list|subscribe|
+  unsubscribe` registered via `server.server.setRequestHandler(method, { params }, handler)` and
+  `registerCapabilities({ events: {} } as never)` (the SDK has no events types). Subscription id =
+  `sub_` + sha256(canonical `[owner, url, event, args]`). Matching = exact canonical args: emit
+  enumerates every subset of its args (cap 8 keys) and the store looks those keys up, so a
+  subscription to `{}` gets everything. Secrets are AES-256-GCM sealed under `secretKey`
+  (`MCP_EVENTS_SECRET_KEY`); a refresh with the same secret skips the challenge. Callback errors are
+  `ProtocolError(-32015, msg, { reason })`; bad params are `-32602` with a `reason`.
+  **QStash `deduplicationId` cannot contain `:`** (dev server answers 400) — ids are
+  `${eventId}_${subscriptionId}` sanitized; this was caught only by the e2e smoke.
+  The task bridge is `createTaskLayer({ onSettle })`, called only by the write that performed the
+  terminal transition; its errors are logged and swallowed because the task is already settled.
 - **Local dev needs the QStash dev server** (`npx @upstash/qstash-cli dev`) — it prints deterministic
   creds. `APP_URL` must be reachable *from QStash*.
 

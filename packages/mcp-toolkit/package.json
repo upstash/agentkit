@@ -1,0 +1,86 @@
+{
+  "name": "@upstash/mcp-toolkit",
+  "version": "0.0.0",
+  "description": "Durable building blocks for MCP servers on the official TypeScript SDK: long-running tools (tasks) and webhook events, with Upstash Redis, QStash and Workflow backends.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/mcp-toolkit"
+  },
+  "homepage": "https://github.com/upstash/agentkit/tree/main/packages/mcp-toolkit",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
+  "type": "module",
+  "exports": {
+    "./tasks": {
+      "types": "./dist/tasks/index.d.ts",
+      "import": "./dist/tasks/index.js"
+    },
+    "./tasks/upstash": {
+      "types": "./dist/tasks/upstash.d.ts",
+      "import": "./dist/tasks/upstash.js"
+    },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "import": "./dist/events/index.js"
+    },
+    "./events/upstash": {
+      "types": "./dist/events/upstash.d.ts",
+      "import": "./dist/events/upstash.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "upstash",
+    "redis",
+    "qstash",
+    "mcp",
+    "model-context-protocol",
+    "tasks",
+    "events",
+    "webhooks",
+    "durable",
+    "long-running",
+    "ai",
+    "agent"
+  ],
+  "dependencies": {
+    "zod": "^4.2.0"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@upstash/qstash": ">=2.11.0",
+    "@upstash/redis": ">=1.38.0",
+    "@upstash/workflow": ">=1.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@upstash/qstash": {
+      "optional": true
+    },
+    "@upstash/redis": {
+      "optional": true
+    },
+    "@upstash/workflow": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@upstash/qstash": "^2.11.3",
+    "@upstash/redis": "^1.38.0",
+    "dotenv": "^16.4.5",
+    "@upstash/workflow": "^1.3.3"
+  }
+}

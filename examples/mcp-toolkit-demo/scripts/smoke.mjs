@@ -1,0 +1,130 @@
+// Drives the demo the way a model would: plain tools/call, from a client that declares nothing.
+const BASE = process.env.BASE ?? "http://127.0.0.1:3000";
+// Which server to drive: the QStash one (/api/mcp) or the Workflow one (/api/mcp-workflow).
+const ENDPOINT = process.env.MCP_PATH ?? "/api/mcp";
+const PV = "2026-07-28";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+let id = 0;
+async function rpc(method, params = {}) {
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    "mcp-protocol-version": PV,
+    "mcp-method": method,
+  };
+  if (params.name) headers["mcp-name"] = params.name;
+  const response = await fetch(`${BASE}${ENDPOINT}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: ++id,
+      method,
+      params: {
+        ...params,
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": PV,
+          "io.modelcontextprotocol/clientInfo": { name: "e2e", version: "1.0.0" },
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      },
+    }),
+  });
+  const json = await response.json();
+  if (json.error) throw new Error(`${method}: ${JSON.stringify(json.error)}`);
+  return json.result;
+}
+
+const call = (name, args) => rpc("tools/call", { name, arguments: args });
+
+const brief = r =>
+  JSON.stringify({
+    status: r.structuredContent?.status,
+    statusMessage: r.structuredContent?.statusMessage,
+    ...(r.structuredContent?.result ? { result: r.structuredContent.result } : {}),
+  });
+
+console.log(`== tools/list (${ENDPOINT}) ==`);
+const names = (await rpc("tools/list")).tools.map(t => t.name);
+console.log(names.join(", "));
+for (const expected of ["generate_report", "task_status", "task_cancel"]) {
+  if (!names.includes(expected)) throw new Error(`missing tool ${expected}`);
+}
+
+console.log("\n== 1. happy path ==");
+const created = await call("generate_report", { topic: "coffee trends" });
+console.log("created", JSON.stringify(created));
+const taskId = created.structuredContent?.taskId;
+if (!taskId) throw new Error("expected a task handle");
+
+let last;
+for (let i = 0; i < 20; i++) {
+  await sleep(1500);
+  last = await call("task_status", { taskId });
+  console.log("poll  ", brief(last));
+  if (["completed", "failed", "cancelled"].includes(last.structuredContent?.status)) break;
+}
+if (last.structuredContent?.status !== "completed") {
+  throw new Error(`expected completed, got ${last.structuredContent?.status}`);
+}
+
+console.log("\n== 2. cancel mid-flight ==");
+const second = await call("generate_report", { topic: "tea rituals" });
+const secondId = second.structuredContent.taskId;
+console.log("created", secondId);
+await sleep(3000);
+console.log("cancel", brief(await call("task_cancel", { taskId: secondId })));
+await sleep(6000);
+const afterCancel = await call("task_status", { taskId: secondId });
+console.log("after ", brief(afterCancel));
+if (afterCancel.structuredContent?.status !== "cancelled") {
+  throw new Error(`expected cancelled, got ${afterCancel.structuredContent?.status}`);
+}
+if (afterCancel.structuredContent?.result) throw new Error("a cancelled task must not carry a result");
+
+console.log("\n== 3. unknown task ==");
+const unknown = await call("task_status", { taskId: "does-not-exist" });
+console.log("unknown", JSON.stringify(unknown));
+if (!unknown.isError) throw new Error("expected a tool error");
+
+if (ENDPOINT === "/api/mcp") {
+  console.log("\n== 4. task.finished event ==");
+  const { randomBytes } = await import("node:crypto");
+  const listed = (await rpc("events/list")).events.map(e => e.name);
+  console.log("events", listed.join(", "));
+  if (!listed.includes("task.finished")) throw new Error("missing task.finished event");
+
+  const receiverId = randomBytes(6).toString("hex");
+  const receiverUrl = `${BASE}/api/receiver?id=${receiverId}`;
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  await fetch(receiverUrl, { method: "PUT", body: JSON.stringify({ secret }) });
+  const subscription = await rpc("events/subscribe", {
+    name: "task.finished",
+    arguments: {},
+    delivery: { mode: "webhook", url: receiverUrl, secret },
+    ttlMs: 600_000,
+  });
+  console.log("subscribed", JSON.stringify(subscription));
+
+  const third = await call("generate_report", { topic: "events" });
+  const thirdId = third.structuredContent.taskId;
+  let delivery;
+  for (let i = 0; i < 30 && !delivery; i++) {
+    await sleep(1500);
+    const received = await (await fetch(receiverUrl)).json();
+    delivery = received.find(r => r.body.name === "task.finished" && r.body.data?.taskId === thirdId);
+  }
+  console.log("delivery", JSON.stringify(delivery));
+  if (!delivery) throw new Error("no task.finished delivery");
+  if (!delivery.valid) throw new Error("delivery signature did not verify");
+  if (delivery.body.data.status !== "completed") throw new Error("expected a completed task");
+
+  await rpc("events/unsubscribe", {
+    name: "task.finished",
+    arguments: {},
+    delivery: { mode: "webhook", url: receiverUrl },
+  });
+}
+
+console.log("\nALL E2E CHECKS PASSED");
