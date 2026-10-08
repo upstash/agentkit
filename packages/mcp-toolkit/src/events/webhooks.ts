@@ -13,21 +13,18 @@ import {
 } from "../shared/crypto.js";
 
 /** The secret length the MCP Events draft allows, in decoded bytes. */
-export const SECRET_MIN_BYTES = 24;
-export const SECRET_MAX_BYTES = 64;
+const SECRET_MIN_BYTES = 24;
+const SECRET_MAX_BYTES = 64;
+/** The least random key material `SecretBox` accepts, in decoded bytes. */
+const SECRET_KEY_MIN_BYTES = 32;
 
 /** The key bytes of a `whsec_<base64>` secret, or `null` when malformed or outside 24–64 bytes. */
 export function decodeSecret(secret: unknown): Uint8Array<ArrayBuffer> | null {
   if (typeof secret !== "string" || !secret.startsWith("whsec_")) return null;
-  const body = secret.slice("whsec_".length);
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body)) return null;
-  let bytes: Uint8Array<ArrayBuffer>;
-  try {
-    bytes = fromBase64(body);
-  } catch {
-    return null;
-  }
-  return bytes.length >= SECRET_MIN_BYTES && bytes.length <= SECRET_MAX_BYTES ? bytes : null;
+  const bytes = decodeBase64(secret.slice("whsec_".length));
+  return bytes && bytes.length >= SECRET_MIN_BYTES && bytes.length <= SECRET_MAX_BYTES
+    ? bytes
+    : null;
 }
 
 /**
@@ -79,14 +76,18 @@ type AesKey = Awaited<ReturnType<typeof crypto.subtle.importKey>>;
 
 /**
  * Encrypts the hosts' signing secrets with a server-side key (AES-256-GCM), so a leaked database
- * cannot forge events. Any string works as the key; it is hashed to 32 bytes. Rotating it makes
- * stored secrets unreadable, and hosts re-verify on their next refresh.
+ * cannot forge events. The key is base64 of at least 32 random bytes (`openssl rand -base64 32`).
+ * Rotating it makes stored secrets unreadable, and hosts re-verify on their next refresh.
  */
 export class SecretBox {
   private readonly key: Promise<AesKey>;
 
   constructor(secretKey: string) {
-    if (!secretKey) throw new Error("SecretBox needs a non-empty secretKey");
+    if ((decodeBase64(secretKey)?.length ?? 0) < SECRET_KEY_MIN_BYTES) {
+      throw new Error(
+        "The events secretKey must be base64 of at least 32 random bytes. Generate one with: openssl rand -base64 32",
+      );
+    }
     this.key = sha256(secretKey).then((raw) =>
       crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]),
     );
@@ -102,22 +103,27 @@ export class SecretBox {
     return `v1.${toBase64(iv)}.${toBase64(new Uint8Array(sealed))}`;
   }
 
-  async open(sealed: string): Promise<string> {
+  /** The secret, or `null` when it was sealed under another key or has been tampered with. */
+  async open(sealed: string): Promise<string | null> {
     const [version, iv, payload] = sealed.split(".");
-    if (version !== "v1" || !iv || !payload) throw new Error("Unrecognized sealed secret");
-    const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: fromBase64(iv) },
-      await this.key,
-      fromBase64(payload),
-    );
-    return fromUtf8(new Uint8Array(plain));
+    if (version !== "v1" || !iv || !payload) return null;
+    try {
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: fromBase64(iv) },
+        await this.key,
+        fromBase64(payload),
+      );
+      return fromUtf8(new Uint8Array(plain));
+    } catch {
+      return null;
+    }
   }
 }
 
 /**
  * Why a callback URL is refused, or `null` when it is acceptable. Refuses non-HTTPS, credentials,
- * and hosts on the server's own network: `localhost`, single-label, `.local` / `.internal`, and
- * private or reserved IP literals. It does not resolve DNS, so add egress filtering in production.
+ * every IP literal, and names on the server's own network: `localhost`, single-label hosts,
+ * `.local` and `.internal`. It does not resolve DNS, so add egress filtering in production.
  */
 export function callbackUrlProblem(raw: unknown, allowInsecure = false): string | null {
   if (typeof raw !== "string") return "callback URL is missing";
@@ -135,76 +141,21 @@ export function callbackUrlProblem(raw: unknown, allowInsecure = false): string 
   if (url.protocol !== "https:") return "callback URL must use https";
   if (url.username || url.password) return "callback URL must not contain credentials";
 
-  // `localhost.` resolves like `localhost`, so trailing dots go before any check.
+  // `localhost.` resolves like `localhost`, so trailing dots go before any check. The URL parser
+  // has already normalized every IPv4 form (hex, octal, short) to dotted decimal.
   const host = url.hostname.toLowerCase().replace(/\.+$/, "");
-  if (host.startsWith("[")) {
-    return isPrivateV6(host.slice(1, -1)) ? "callback URL must be a public host" : null;
-  }
-  // The URL parser has already normalized every IPv4 form (hex, octal, short) to dotted decimal.
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-    return isPrivateV4(host.split(".").map(Number)) ? "callback URL must be a public host" : null;
-  }
+  const ipLiteral = host.startsWith("[") || /^\d+\.\d+\.\d+\.\d+$/.test(host);
   if (
+    ipLiteral ||
     !host.includes(".") ||
     host === "localhost" ||
     host.endsWith(".localhost") ||
     host.endsWith(".local") ||
     host.endsWith(".internal")
   ) {
-    return "callback URL must be a public host";
+    return "callback URL must be a public host name";
   }
   return null;
-}
-
-function isPrivateV4([a = 0, b = 0, c = 0]: number[]): boolean {
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 192 && b === 0 && (c === 0 || c === 2)) || // IETF protocol assignments, TEST-NET-1
-    (a === 198 && (b === 18 || b === 19)) || // benchmarking
-    (a === 198 && b === 51 && c === 100) || // TEST-NET-2
-    (a === 203 && b === 0 && c === 113) || // TEST-NET-3
-    a >= 224 // multicast and reserved
-  );
-}
-
-function isPrivateV6(ip: string): boolean {
-  const g = expandV6(ip);
-  if (!g) return true; // unparseable: refuse
-  const v4 = (hi: number, lo: number) => isPrivateV4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
-  const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
-  if (zero(0, 5) && g[5] === 0xffff) return v4(g[6]!, g[7]!); // IPv4-mapped
-  if (zero(0, 6)) return v4(g[6]!, g[7]!); // IPv4-compatible, plus :: and ::1
-  if (g[0] === 0x64 && g[1] === 0xff9b) {
-    if (zero(2, 6)) return v4(g[6]!, g[7]!); // NAT64 64:ff9b::/96
-    if (g[2] === 1) return true; // local-use NAT64 64:ff9b:1::/48
-  }
-  if (g[0] === 0x2002) return v4(g[1]!, g[2]!); // 6to4
-  return (
-    (g[0]! & 0xfe00) === 0xfc00 || // unique local fc00::/7
-    (g[0]! & 0xffc0) === 0xfe80 || // link-local fe80::/10
-    (g[0]! & 0xff00) === 0xff00 || // multicast ff00::/8
-    (g[0] === 0x2001 && g[1] === 0x0db8) // documentation 2001:db8::/32
-  );
-}
-
-/** Expands a compressed IPv6 address (as the URL parser prints it) to eight 16-bit groups. */
-function expandV6(ip: string): number[] | null {
-  const halves = ip.split("::");
-  if (halves.length > 2) return null;
-  const parse = (part: string | undefined) =>
-    part ? part.split(":").map((x) => (/^[0-9a-f]{1,4}$/.test(x) ? parseInt(x, 16) : NaN)) : [];
-  const head = parse(halves[0]);
-  const tail = parse(halves[1]);
-  const missing = 8 - head.length - tail.length;
-  if (halves.length === 1 ? missing !== 0 : missing < 0) return null;
-  const groups = [...head, ...Array<number>(Math.max(missing, 0)).fill(0), ...tail];
-  return groups.some(Number.isNaN) ? null : groups;
 }
 
 /** POSTs a signed JSON body to a callback, never following redirects. */
@@ -214,14 +165,12 @@ export async function postSigned(options: {
   webhookId: string;
   body: string;
   subscriptionId: string;
-  timeoutMs: number;
-  fetch?: typeof fetch;
 }): Promise<Response> {
   const headers = await signWebhook(options.secret, options.webhookId, options.body);
-  return await (options.fetch ?? fetch)(options.url, {
+  return await fetch(options.url, {
     method: "POST",
     redirect: "manual",
-    signal: AbortSignal.timeout(options.timeoutMs),
+    signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
     headers: {
       "content-type": "application/json",
       "x-mcp-subscription-id": options.subscriptionId,
@@ -230,6 +179,9 @@ export async function postSigned(options: {
     body: options.body,
   });
 }
+
+/** How long a callback gets to answer one POST. */
+const CALLBACK_TIMEOUT_MS = 10_000;
 
 /** Reads at most `maxBytes` of a response body, then drops the rest. */
 export async function readCapped(response: Response, maxBytes: number): Promise<string> {
@@ -256,4 +208,14 @@ export async function readCapped(response: Response, maxBytes: number): Promise<
     if (offset >= bytes.length) break;
   }
   return fromUtf8(bytes);
+}
+
+/** Strict standard base64, or `null`. */
+function decodeBase64(value: string): Uint8Array<ArrayBuffer> | null {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+  try {
+    return fromBase64(value);
+  } catch {
+    return null;
+  }
 }

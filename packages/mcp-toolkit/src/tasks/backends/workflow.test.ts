@@ -11,16 +11,23 @@ import { describe, expect, it } from "vitest";
 import * as z from "zod";
 import { insideStep, WorkflowDispatcher } from "./workflow.js";
 import { createTaskLayer } from "../core.js";
-import { MemoryTaskStore } from "./memory.js";
 import type { Task, TaskContext } from "../types.js";
-import { ManualDispatcher } from "../../test-support.js";
+import {
+  ManualDispatcher,
+  MemoryTaskStore,
+  qstashRequest,
+  testReceiver,
+} from "../../test-support.js";
+
+const URL = "https://example.com/api/workflow";
 
 const task = (overrides: Partial<Task> = {}): Task => ({
   taskId: "task-1",
   status: "working",
   createdAt: "2026-10-08T10:00:00.000Z",
   lastUpdatedAt: "2026-10-08T10:00:00.000Z",
-  ttlMs: null,
+  ttlMs: 60_000,
+  pollIntervalMs: 2_000,
   name: "demo",
   args: {},
   owner: "local",
@@ -53,7 +60,7 @@ describe("WorkflowDispatcher", () => {
   it("gives handlers the Workflow API without a type argument", () => {
     const tasks = createTaskLayer({
       store: new MemoryTaskStore(),
-      dispatcher: new WorkflowDispatcher({ url: "https://example.com/api/workflow" }),
+      dispatcher: new WorkflowDispatcher({ url: URL }),
       principal: () => "local",
     });
     // Compiles only if `task` is inferred as TaskContext & WorkflowContext.
@@ -69,34 +76,26 @@ describe("WorkflowDispatcher", () => {
     );
   });
 
-  it("triggers a run named after the task record, so a double dispatch is deduplicated", async () => {
+  it("triggers a run named after the task, so a double dispatch is deduplicated", async () => {
     const { client, triggered } = stubClient();
-    const dispatcher = new WorkflowDispatcher({ url: "https://example.com/api/workflow", client });
+    const dispatcher = new WorkflowDispatcher({ url: URL, client });
 
-    const dispatchId = await dispatcher.dispatch(task());
+    await dispatcher.dispatch(task());
 
     expect(triggered).toHaveLength(1);
-    expect(triggered[0]?.url).toBe("https://example.com/api/workflow");
+    expect(triggered[0]?.url).toBe(URL);
     expect(triggered[0]?.body).toEqual({ taskId: "task-1" });
     expect(triggered[0]?.workflowRunId).toBe("task-1");
-    expect(dispatchId).toBe("task-1");
   });
 
   it("cancels the run itself, not just the task record", async () => {
     const { client, cancelled } = stubClient();
-    const dispatcher = new WorkflowDispatcher({ url: "https://example.com/api/workflow", client });
+    const dispatcher = new WorkflowDispatcher({ url: URL, client });
 
     await dispatcher.cancel("task-1");
 
     // Unlike a queue, a workflow run can be stopped mid-flight rather than only un-queued.
     expect(cancelled).toEqual(["task-1"]);
-  });
-
-  it("refuses to serve before it is attached to a layer", () => {
-    const { client } = stubClient();
-    const dispatcher = new WorkflowDispatcher({ url: "https://example.com/api/workflow", client });
-    // The handler itself builds fine; it throws when a request actually needs the endpoints.
-    expect(typeof dispatcher.createExecuteHandler()).toBe("function");
   });
 });
 
@@ -114,33 +113,29 @@ describe("the context a handler receives", () => {
     async sleep(): Promise<void> {}
   }
 
-  /** Runs one task through the layer with whatever context the dispatcher would supply. */
-  async function runWith<TContext>(
-    context: TContext | undefined,
+  /** A layer with one `demo` task stored and ready to run. */
+  async function layerWithTask<TContext>(
     handler: (task: TaskContext & TContext) => Promise<Record<string, unknown>>,
   ) {
     const store = new MemoryTaskStore();
     const dispatcher = new ManualDispatcher<TContext>();
     const tasks = createTaskLayer<TContext>({ store, dispatcher, principal: () => "local" });
-
-    const now = new Date().toISOString();
-    await store.create({
-      taskId: "t1",
-      status: "working",
-      createdAt: now,
-      lastUpdatedAt: now,
-      ttlMs: null,
-      name: "demo",
-      args: {},
-      owner: "local",
-    });
-
+    tasks.createExecuteHandler();
+    await store.create(task({ taskId: "t1" }));
     tasks.define(
       "demo",
       { description: "d", inputSchema: { "~standard": {} } as never },
       async (_args, task) => await handler(task),
     );
+    return { store, dispatcher };
+  }
 
+  /** Runs one task through the layer with whatever context the dispatcher would supply. */
+  async function runWith<TContext>(
+    context: TContext | undefined,
+    handler: (task: TaskContext & TContext) => Promise<Record<string, unknown>>,
+  ) {
+    const { store, dispatcher } = await layerWithTask<TContext>(handler);
     await dispatcher.run("t1", context);
     return await store.get("t1");
   }
@@ -174,29 +169,11 @@ describe("the context a handler receives", () => {
 
   it("journals the SDK's own writes, so a replay does not rewind the status message", async () => {
     const journaled: string[] = [];
-    const store = new MemoryTaskStore();
-    const dispatcher = new ManualDispatcher();
-    const tasks = createTaskLayer({ store, dispatcher, principal: () => "local" });
-    const now = new Date().toISOString();
-    await store.create({
-      taskId: "t1",
-      status: "working",
-      createdAt: now,
-      lastUpdatedAt: now,
-      ttlMs: null,
-      name: "demo",
-      args: {},
-      owner: "local",
+    const { dispatcher } = await layerWithTask<unknown>(async (task) => {
+      await task.update("one");
+      await task.update("two");
+      return {};
     });
-    tasks.define(
-      "demo",
-      { description: "d", inputSchema: { "~standard": {} } as never },
-      async (_args, task) => {
-        await task.update("one");
-        await task.update("two");
-        return {};
-      },
-    );
 
     await dispatcher.run("t1", undefined, async (name, fn) => {
       journaled.push(name);
@@ -206,8 +183,6 @@ describe("the context a handler receives", () => {
     // Stable, call-ordered names — a replay re-runs the handler the same way, so each write lands
     // on the same journal entry and is not repeated.
     expect(journaled).toEqual(["mcp-task:update:1", "mcp-task:update:2"]);
-    // Both writes went through the journal rather than around it.
-    expect(journaled).toHaveLength(2);
   });
 
   it("writes directly when the transport has no journal", async () => {
@@ -231,6 +206,13 @@ describe("the context a handler receives", () => {
 });
 
 describe("WorkflowDispatcher signature verification", () => {
+  const endpoints = (ran: string[]) => ({
+    run: async (taskId: string) => {
+      ran.push(taskId);
+    },
+    fail: async () => undefined,
+  });
+
   it("refuses to serve without signing keys, instead of running unverified", async () => {
     // The Workflow SDK's own default is to skip verification when the keys are missing.
     const saved = { ...process.env };
@@ -238,14 +220,40 @@ describe("WorkflowDispatcher signature verification", () => {
     delete process.env.QSTASH_NEXT_SIGNING_KEY;
     process.env.QSTASH_TOKEN = "test-token";
     try {
-      const dispatcher = new WorkflowDispatcher({ url: "https://example.com/api/workflow" });
-      const handler = dispatcher.createExecuteHandler(); // building the route must not throw
-      expect(() =>
-        handler(new Request("https://example.com/api/workflow", { method: "POST", body: "{}" })),
-      ).toThrow(/signing keys/);
+      const dispatcher = new WorkflowDispatcher({ url: URL });
+      const handler = dispatcher.createExecuteHandler(endpoints([])); // building must not throw
+      expect(() => handler(new Request(URL, { method: "POST", body: "{}" }))).toThrow(
+        /signing keys/,
+      );
     } finally {
       process.env = saved;
     }
+  });
+
+  it("refuses a signature QStash issued for another endpoint", async () => {
+    // Workflow verifies with only body and signature. Without the URL bound in, a delivery signed
+    // for any other route of the same QStash account would be accepted here.
+    const receiver = testReceiver();
+    const checkedUrls: (string | undefined)[] = [];
+    const verify = receiver.verify.bind(receiver);
+    receiver.verify = async (request) => {
+      checkedUrls.push(request.url);
+      return await verify(request);
+    };
+    const ran: string[] = [];
+    const handler = new WorkflowDispatcher({
+      url: URL,
+      receiver,
+      qstash: new QStashClient({ token: "test" }),
+    }).createExecuteHandler(endpoints(ran));
+
+    const response = await handler(
+      qstashRequest(URL, { taskId: "t1" }, { sub: "https://example.com/api/other" }),
+    );
+
+    expect(response.ok).toBe(false);
+    expect(ran).toEqual([]);
+    expect(checkedUrls).toEqual([URL]);
   });
 });
 
@@ -259,7 +267,7 @@ describe("insideStep", () => {
       workflowRunCreatedAt: Date.now(),
       headers: new Headers(),
       steps: [],
-      url: "https://example.com/api/workflow",
+      url: URL,
       initialPayload: {},
     });
     const executor = (context as unknown as { executor?: Record<string, unknown> }).executor;

@@ -4,39 +4,24 @@
  */
 export {
   createTaskLayer,
-  toWire,
-  DEFAULT_TOOL_NAMES,
-  type Caller,
-  type CallerAuth,
-  type TaskDefinition,
   type TaskHandler,
   type TaskLayer,
   type TaskLayerOptions,
   type TaskToolConfig,
 } from "./core.js";
 
-export type { Principal, PrincipalResolver } from "../shared/auth.js";
+export type { Caller, PrincipalResolver } from "../shared/auth.js";
 
-export {
-  isTerminal,
-  TERMINAL_STATUSES,
-  UnknownTaskError,
-  type SettleResult,
-  type Task,
-  type TaskContext,
-  type TaskDispatcher,
-  type TaskEndpoints,
-  type TaskError,
-  type TaskJournal,
-  type TaskPatch,
-  type TaskStatus,
-  type TaskStore,
-  type TerminalTaskPatch,
-  type TerminalTaskStatus,
-  type WireTask,
+export type {
+  Task,
+  TaskContext,
+  TaskDispatcher,
+  TaskEndpoints,
+  TaskError,
+  TaskJournal,
+  TaskPatch,
+  TaskStatus,
+  TaskStore,
+  TerminalTaskStatus,
+  WireTask,
 } from "./types.js";
-
-export { InlineTaskDispatcher, MemoryTaskStore } from "./backends/memory.js";
-
-export { SDK_TELEMETRY } from "../telemetry.js";
-export { VERSION } from "../version.js";

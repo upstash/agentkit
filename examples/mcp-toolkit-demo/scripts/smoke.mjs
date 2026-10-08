@@ -118,7 +118,7 @@ if (ENDPOINT === "/api/mcp") {
     (await fetch(`${BASE}${WATCH}/deploys`, { method: "POST", body: JSON.stringify(body) })).json();
   const staging = await report({ environment: "staging", commit: "staging only" });
   const production = await report({ environment: "production", status: "failed" });
-  console.log("reported", staging.deploy.id, "(staging,", staging.matched, "matched)", production.deploy.id, "(production,", production.matched, "matched)");
+  console.log("reported", staging.deploy.id, "(staging)", production.deploy.id, "(production)");
 
   let received = [];
   for (let i = 0; i < 20; i++) {

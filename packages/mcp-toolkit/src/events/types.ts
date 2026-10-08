@@ -21,40 +21,30 @@ export type Subscription = {
   /** Derived from the subscriber, callback URL, event name and arguments. */
   id: string;
   event: string;
-  /** The validated subscription arguments. */
+  /** The validated subscription arguments: an event matches when its payload has these values. */
   args: Record<string, unknown>;
-  /** Canonical JSON of {@link args}, which emits are matched on. */
-  argsKey: string;
   /** The callback URL the host gave. */
   url: string;
   /** The `whsec_` signing secret, encrypted with the layer's `secretKey`. */
   encryptedSecret: string;
   /** Who subscribed: the id `principal` returned. */
   subscriber: string;
-  /** Non-secret context `principal` returned, handed back to `authorize` before each delivery. */
-  context?: Record<string, unknown>;
   /** ISO-8601. */
   createdAt: string;
   /** Epoch milliseconds. */
   expiresAt: number;
 };
 
-/** The fields that locate a subscription in a store's index. */
-export type SubscriptionRef = Pick<Subscription, "id" | "event" | "argsKey">;
-
-/**
- * Durable storage for subscriptions, indexed by `(event, argsKey)`. The layer computes every key
- * an emit can match, so a store needs no matching logic of its own.
- */
+/** Durable storage for subscriptions. The layer does the matching, so a store only indexes by event. */
 export interface SubscriptionStore {
   /** Creates or replaces a subscription. Must have committed before it resolves. */
   put(subscription: Subscription): Promise<void>;
   /** A live subscription, or `null`. */
   get(id: string): Promise<Subscription | null>;
-  /** Removes a subscription and its index entry. A no-op when it does not exist. */
-  delete(subscription: SubscriptionRef): Promise<void>;
-  /** Every live subscription to `event` whose `argsKey` is one of `argsKeys`. */
-  find(event: string, argsKeys: readonly string[]): Promise<Subscription[]>;
+  /** Removes a subscription. A no-op when it does not exist. */
+  delete(subscription: Pick<Subscription, "id" | "event">): Promise<void>;
+  /** Every live subscription to `event`. */
+  find(event: string): Promise<Subscription[]>;
 }
 
 /** One envelope for one subscription. */
@@ -63,28 +53,15 @@ export type DeliveryJob = {
   envelope: EventEnvelope;
 };
 
-/** One POST to a callback, as the layer classifies it. */
-export type SendOutcome =
-  /** 2xx. */
-  | "delivered"
-  /** 410: the host dropped the subscription, and the layer deleted it. */
-  | "gone"
-  /** 413, a redirect, a missing subscription, or `authorize` now refuses it: retrying cannot help. */
-  | "dropped"
-  /** Anything else: retry. */
-  | "retry";
-
-/** The layer's entry point, handed to a transport by {@link EventDelivery.attach}. */
-export type DeliveryEndpoints = {
-  /** Re-checks `authorize`, signs the envelope fresh, POSTs it and classifies the answer. */
-  send(job: DeliveryJob): Promise<SendOutcome>;
-};
+/**
+ * Re-checks `authorize`, signs the envelope fresh and POSTs it. Resolves `true` when the job is
+ * finished (delivered, or retrying cannot help) and `false` when the transport should retry.
+ */
+export type SendJob = (job: DeliveryJob) => Promise<boolean>;
 
 export interface EventDelivery {
-  /** Accepts the jobs durably (or sends them) before resolving. */
+  /** Accepts the jobs durably before resolving. */
   enqueue(jobs: DeliveryJob[]): Promise<void>;
-  /** Receives the layer's entry point when passed to `createEventLayer`. */
-  attach?(endpoints: DeliveryEndpoints): void;
-  /** The transport's HTTP endpoint, when it delivers through one. */
-  createDeliveryHandler?(): (request: Request) => Promise<Response>;
+  /** The HTTP endpoint the transport delivers each job to. */
+  createDeliveryHandler(send: SendJob): (request: Request) => Promise<Response>;
 }

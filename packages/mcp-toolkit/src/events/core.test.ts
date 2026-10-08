@@ -1,20 +1,21 @@
 /**
- * The events runtime, exercised through a real `McpServer` over JSON-RPC. The "host" is a fake
- * `fetch` that plays the callback receiver: it answers the verification challenge and checks the
- * Standard Webhooks signature on every POST, the way ChatGPT's receiver does.
+ * The events runtime, exercised through a real `McpServer` over JSON-RPC. The "host" is a stubbed
+ * global `fetch` that plays the callback receiver: it answers the verification challenge and
+ * checks the Standard Webhooks signature on every POST, the way ChatGPT's receiver does.
  */
 import { randomBytes } from "node:crypto";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod";
-import { createTaskLayer } from "../tasks/core.js";
-import { InlineTaskDispatcher, MemoryTaskStore } from "../tasks/backends/memory.js";
-import { createEventLayer, matchKeys, type EventLayerOptions } from "./core.js";
-import { InlineDelivery, MemorySubscriptionStore } from "./backends/memory.js";
-import { taskFinishedEvent } from "./tasks.js";
-import { callbackUrlProblem, verifyWebhook } from "./webhooks.js";
-import type { EventEnvelope, SendOutcome } from "./types.js";
-import { userIdOf } from "../test-support.js";
+import { createEventLayer, type EventLayerOptions } from "./core.js";
+import { SecretBox, callbackUrlProblem, verifyWebhook } from "./webhooks.js";
+import type { EventEnvelope } from "./types.js";
+import {
+  InlineDelivery,
+  MemorySubscriptionStore,
+  TEST_SECRET_KEY,
+  userIdOf,
+} from "../test-support.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 const newSecret = () => `whsec_${randomBytes(32).toString("base64")}`;
@@ -68,7 +69,6 @@ function request(method: string, params: Record<string, unknown>, id: number): R
     "mcp-protocol-version": PROTOCOL_VERSION,
     "mcp-method": method,
   };
-  if (typeof params.name === "string" && method === "tools/call") headers["mcp-name"] = params.name;
   return new Request("http://localhost/mcp", {
     method: "POST",
     headers,
@@ -84,31 +84,46 @@ const as = (given?: string | null) => {
     : undefined;
 };
 
-function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {}) {
-  const { respond, ...layerOptions } = options;
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function setup(
+  options: Partial<EventLayerOptions> & { respond?: Respond; fetch?: typeof fetch } = {},
+) {
+  const { respond, fetch: fetchOverride, ...layerOptions } = options;
   const secrets = new Map<string, string>();
   const receiver = host(secrets, respond);
-  const outcomes: SendOutcome[] = [];
+  vi.stubGlobal("fetch", fetchOverride ?? receiver.fetch);
   const store = new MemorySubscriptionStore();
+  const delivery = new InlineDelivery();
   // Who may read which document. Documents not listed are readable by everyone, except secret-doc.
   const acl = new Map<string, Set<string>>();
-  const canRead = (user: string, documentId: string) =>
-    documentId !== "secret-doc" && (acl.get(documentId)?.has(user) ?? true);
+  const authorized: { args: unknown; phase: string; principal: string }[] = [];
+  const canRead = (user: string, documentId: string | undefined) =>
+    documentId !== "secret-doc" &&
+    (documentId === undefined || (acl.get(documentId)?.has(user) ?? true));
   const events = createEventLayer({
     store,
-    delivery: new InlineDelivery({ onOutcome: (_job, outcome) => outcomes.push(outcome) }),
-    secretKey: "test-key",
+    delivery,
+    secretKey: TEST_SECRET_KEY,
     principal: userIdOf,
-    fetch: receiver.fetch,
     ...layerOptions,
   });
 
   const commentCreated = events.define("comment.created", {
     description: "A new comment on a document.",
-    input: z.object({ documentId: z.string(), author: z.string().optional() }),
+    input: z.object({
+      documentId: z.string().optional(),
+      author: z.string().optional(),
+    }),
     payload: z.object({ documentId: z.string(), author: z.string(), text: z.string() }),
-    authorize: (args, { principal }) => canRead(principal, args.documentId),
+    authorize: (args, { principal, phase }) => {
+      authorized.push({ args, phase, principal });
+      return canRead(principal, args.documentId);
+    },
   });
+  events.createDeliveryHandler(); // connects the inline delivery, as serving the route does
 
   const handler = createMcpHandler(() => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
@@ -152,7 +167,27 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
     return { ...response, url, secret };
   };
 
-  return { events, store, rpc, subscribe, receiver, outcomes, commentCreated, acl };
+  const unsubscribe = (args: Record<string, unknown>, url: string, user?: string | null) =>
+    rpc(
+      "events/unsubscribe",
+      { name: "comment.created", arguments: args, delivery: { mode: "webhook", url } },
+      user,
+    );
+
+  const done = () => delivery.outcomes.map((o) => o.done);
+
+  return {
+    events,
+    store,
+    rpc,
+    subscribe,
+    unsubscribe,
+    receiver,
+    done,
+    commentCreated,
+    acl,
+    authorized,
+  };
 }
 
 describe("events/list and capability", () => {
@@ -167,7 +202,7 @@ describe("events/list and capability", () => {
       name: "comment.created",
       description: "A new comment on a document.",
       delivery: ["webhook"],
-      inputSchema: { type: "object", required: ["documentId"] },
+      inputSchema: { type: "object" },
       payloadSchema: { type: "object" },
     });
     expect(list.result?.nextCursor).toBeNull();
@@ -217,27 +252,29 @@ describe("events/subscribe", () => {
     const { subscribe, store } = setup({ respond: () => Response.json({ challenge: "nope" }) });
     const response = await subscribe({ documentId: "doc_1" });
     expect(response.error?.code).toBe(-32015);
-    expect(await store.find("comment.created", ['{"documentId":"doc_1"}'])).toHaveLength(0);
+    expect(await store.find("comment.created")).toHaveLength(0);
   });
 
   it("gives the same error whatever went wrong, so the network behind it cannot be probed", async () => {
-    const errors = await Promise.all(
-      [
-        setup({
-          fetch: (async () => {
-            throw new TypeError("fetch failed");
-          }) as typeof fetch,
-        }),
-        setup({
-          fetch: (async () => {
-            throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
-          }) as typeof fetch,
-        }),
-        setup({ respond: () => new Response("no", { status: 500 }) }),
-        setup({ respond: () => new Response(null, { status: 302 }) }),
-        setup({ respond: () => Response.json({ challenge: "nope" }) }),
-      ].map(async ({ subscribe }) => (await subscribe({ documentId: "d" })).error),
-    );
+    const outcomes = [
+      {
+        fetch: (async () => {
+          throw new TypeError("fetch failed");
+        }) as typeof fetch,
+      },
+      {
+        fetch: (async () => {
+          throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        }) as typeof fetch,
+      },
+      { respond: () => new Response("no", { status: 500 }) },
+      { respond: () => new Response(null, { status: 302 }) },
+      { respond: () => Response.json({ challenge: "nope" }) },
+    ];
+    const errors = [];
+    for (const options of outcomes) {
+      errors.push((await setup(options).subscribe({ documentId: "d" })).error);
+    }
     for (const error of errors) {
       expect(error).toEqual(errors[0]);
       expect(error?.code).toBe(-32015);
@@ -253,7 +290,7 @@ describe("events/subscribe", () => {
     const { subscribe, rpc } = setup();
     const reason = async (p: ReturnType<typeof subscribe>) => (await p).error?.data?.reason;
     expect(await reason(subscribe({ documentId: "d" }, { name: "nope" }))).toBe("unknown_event");
-    expect(await reason(subscribe({}))).toBe("invalid_arguments");
+    expect(await reason(subscribe({ documentId: 42 }))).toBe("invalid_arguments");
     expect(await reason(subscribe({ documentId: "d" }, { secret: "whsec_c2hvcnQ=" }))).toBe(
       "invalid_secret",
     );
@@ -272,16 +309,32 @@ describe("events/subscribe", () => {
     expect(poll.error?.data?.reason).toBe("unsupported_delivery_mode");
   });
 
-  it("grants the requested ttl, capped at the maximum", async () => {
-    const { subscribe, store } = setup({ defaults: { maxTtlMs: 60_000 } });
+  it("refuses the subscribe, and sends no challenge, when authorize throws", async () => {
+    const { events, subscribe, receiver } = setup();
+    events.define("flaky", {
+      description: "d",
+      payload: z.object({}),
+      authorize: () => {
+        throw new Error("permission service is down");
+      },
+    });
+    const result = await subscribe({}, { name: "flaky" });
+    expect(result.error).toBeDefined();
+    expect(result.result).toBeUndefined();
+    expect(receiver.received).toHaveLength(0);
+  });
+
+  it("grants the requested ttl, capped at 30 days", async () => {
+    const { subscribe, store } = setup();
+    const day = 24 * 60 * 60 * 1000;
     const short = await subscribe({ documentId: "a" }, { ttlMs: 10_000 });
-    const long = await subscribe({ documentId: "b" }, { ttlMs: 10 ** 10 });
+    const long = await subscribe({ documentId: "b" }, { ttlMs: 10 ** 12 });
     const unlimited = await subscribe({ documentId: "c" }, { ttlMs: null });
     const ttlOf = async (id: unknown) => (await store.get(String(id)))!.expiresAt - Date.now();
     expect(await ttlOf(short.result?.id)).toBeLessThanOrEqual(10_000);
-    expect(await ttlOf(long.result?.id)).toBeLessThanOrEqual(60_000);
-    expect(await ttlOf(long.result?.id)).toBeGreaterThan(50_000);
-    expect(await ttlOf(unlimited.result?.id)).toBeGreaterThan(50_000);
+    expect(await ttlOf(long.result?.id)).toBeLessThanOrEqual(30 * day);
+    expect(await ttlOf(long.result?.id)).toBeGreaterThan(29 * day);
+    expect(await ttlOf(unlimited.result?.id)).toBeGreaterThan(29 * day);
   });
 });
 
@@ -294,7 +347,6 @@ describe("emit", () => {
     await subscribe({ documentId: "doc_2" });
 
     const result = await commentCreated.emit({ documentId: "doc_1", author: "alice", text: "hi" });
-    expect(result.matched).toBe(2);
     const deliveries = receiver.deliveries();
     expect(deliveries.map((d) => d.url).sort()).toEqual([all.url, byAlice.url].sort());
     for (const delivery of deliveries) {
@@ -309,31 +361,15 @@ describe("emit", () => {
     }
   });
 
-  it("matches on explicit args and narrows to the users in `to`", async () => {
+  it("uses a given eventId, so a repeated emit can be deduplicated", async () => {
     const { subscribe, commentCreated, receiver } = setup();
-    await subscribe({ documentId: "doc_1" }, { user: "alice" });
-    const bob = await subscribe({ documentId: "doc_1" }, { user: "bob" });
+    await subscribe({ documentId: "d" });
     const result = await commentCreated.emit(
-      { documentId: "ignored", author: "x", text: "y" },
-      { args: { documentId: "doc_1" }, to: "bob" },
+      { documentId: "d", author: "a", text: "x" },
+      { eventId: "deploy_42" },
     );
-    expect(result.matched).toBe(1);
-    expect(receiver.deliveries()[0]?.url).toBe(bob.url);
-  });
-
-  it("reaches every matching subscriber without `to`, and only the named ones with it", async () => {
-    const { subscribe, commentCreated, receiver } = setup();
-    const alice = await subscribe({ documentId: "doc_1" }, { user: "alice" });
-    const bob = await subscribe({ documentId: "doc_1" }, { user: "bob" });
-    const payload = { documentId: "doc_1", author: "x", text: "y" };
-    const urls = () => receiver.deliveries().map((d) => d.url);
-
-    expect((await commentCreated.emit(payload)).matched).toBe(2);
-    expect(urls().sort()).toEqual([alice.url, bob.url].sort());
-    expect((await commentCreated.emit(payload, { to: "alice" })).matched).toBe(1);
-    expect(urls().at(-1)).toBe(alice.url);
-    expect((await commentCreated.emit(payload, { to: ["mallory"] })).matched).toBe(0);
-    expect((await commentCreated.emit(payload, { to: [] })).matched).toBe(0);
+    expect(result.eventId).toBe("deploy_42");
+    expect(receiver.deliveries()[0]?.headers.get("webhook-id")).toBe("deploy_42");
   });
 
   it("rejects an invalid payload and an oversized one", async () => {
@@ -344,42 +380,31 @@ describe("emit", () => {
     ).rejects.toThrow(/limit/);
   });
 
-  it("deletes the subscription on 410 and does not retry 413", async () => {
+  it("deletes the subscription on 410, drops 413 and redirects, and retries the rest", async () => {
     let status = 410;
-    const { subscribe, commentCreated, outcomes, store } = setup({
+    const { subscribe, commentCreated, done, store } = setup({
       respond: (r) => (r.body.type === "verification" ? undefined : new Response(null, { status })),
     });
     const sub = await subscribe({ documentId: "d" });
     await commentCreated.emit({ documentId: "d", author: "a", text: "1" });
-    expect(outcomes).toEqual(["gone"]);
+    expect(done()).toEqual([true]);
     expect(await store.get(String(sub.result?.id))).toBeNull();
 
-    status = 413;
     await subscribe({ documentId: "d" });
-    await commentCreated.emit({ documentId: "d", author: "a", text: "2" });
-    status = 503;
-    await commentCreated.emit({ documentId: "d", author: "a", text: "3" });
+    for (const next of [413, 503, 307, 400]) {
+      status = next;
+      await commentCreated.emit({ documentId: "d", author: "a", text: String(next) });
+    }
     // A redirect is never followed, so retrying it cannot help either.
-    status = 307;
-    await commentCreated.emit({ documentId: "d", author: "a", text: "4" });
-    expect(outcomes).toEqual(["gone", "dropped", "retry", "dropped"]);
+    expect(done()).toEqual([true, true, false, true, false]);
   });
 
   it("stops delivering after unsubscribe", async () => {
-    const { subscribe, rpc, commentCreated } = setup();
+    const { subscribe, unsubscribe, commentCreated, receiver } = setup();
     const sub = await subscribe({ documentId: "d" }, { user: "alice" });
-    const response = await rpc(
-      "events/unsubscribe",
-      {
-        name: "comment.created",
-        arguments: { documentId: "d" },
-        delivery: { mode: "webhook", url: sub.url },
-      },
-      "alice",
-    );
-    expect(response.result).toBeDefined();
-    const after = await commentCreated.emit({ documentId: "d", author: "a", text: "x" });
-    expect(after.matched).toBe(0);
+    expect((await unsubscribe({ documentId: "d" }, sub.url, "alice")).result).toBeDefined();
+    await commentCreated.emit({ documentId: "d", author: "a", text: "x" });
+    expect(receiver.deliveries()).toHaveLength(0);
   });
 
   it("keeps secrets encrypted at rest", async () => {
@@ -411,25 +436,51 @@ describe("access across users", () => {
     const mallory = await subscribe({ documentId: "doc_shared" }, { user: "mallory" });
     expect(mallory.error?.data?.reason).toBe("not_authorized");
     expect(receiver.received).toHaveLength(challengesBefore);
-    expect(await store.find("comment.created", ['{"documentId":"doc_shared"}'])).toHaveLength(1);
+    expect(await store.find("comment.created")).toHaveLength(1);
 
     const carol = await subscribe({ documentId: "doc_shared" }, { user: "carol" });
     expect(carol.error).toBeUndefined();
 
     // One emit, no recipients named: both readers hear it, each on their own signed callback.
     const result = await commentCreated.emit(comment);
-    expect(result.matched).toBe(2);
     const deliveries = receiver.deliveries();
     expect(deliveries.map((d) => d.url).sort()).toEqual([alice.url, carol.url].sort());
     for (const delivery of deliveries) {
       expect(delivery.valid).toBe(true);
       expect(delivery.body).toMatchObject({ eventId: result.eventId, data: comment });
     }
-    expect(deliveries.some((d) => d.url === mallory.url)).toBe(false);
+  });
+
+  it("checks a subscriber without a filter against each event's own values", async () => {
+    // The hazard this guards: a subscription with no arguments matches every emit, so checking
+    // only its (empty) arguments at delivery would hand mallory comments on documents she cannot
+    // read. authorize is asked about the event's documentId instead.
+    const { subscribe, commentCreated, receiver, authorized } = shared();
+    const mallory = await subscribe({}, { user: "mallory" });
+    expect(mallory.error).toBeUndefined();
+
+    await commentCreated.emit(comment);
+    await commentCreated.emit({ documentId: "doc_public", author: "dave", text: "Hello" });
+
+    expect(receiver.deliveries().map((d) => (d.body.data as { text: string }).text)).toEqual([
+      "Hello",
+    ]);
+    expect(authorized.filter((a) => a.phase === "deliver")).toEqual([
+      {
+        phase: "deliver",
+        principal: "mallory",
+        args: { documentId: "doc_shared", author: "dave" },
+      },
+      {
+        phase: "deliver",
+        principal: "mallory",
+        args: { documentId: "doc_public", author: "dave" },
+      },
+    ]);
   });
 
   it("stops delivering to a subscriber whose access was revoked after subscribing", async () => {
-    const { subscribe, commentCreated, receiver, outcomes, acl } = shared();
+    const { subscribe, commentCreated, receiver, done, acl } = shared();
     const alice = await subscribe({ documentId: "doc_shared" }, { user: "alice" });
     await subscribe({ documentId: "doc_shared" }, { user: "carol" });
 
@@ -437,64 +488,65 @@ describe("access across users", () => {
     await commentCreated.emit(comment);
 
     expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
-    expect(outcomes.sort()).toEqual(["delivered", "dropped"]);
+    // A refusal is final: retrying would be refused again.
+    expect(done()).toEqual([true, true]);
   });
 
-  it("hands authorize the principal's context at subscribe and again at delivery", async () => {
-    const seen: { phase: string; principal: string; org: unknown; hasAuth: boolean }[] = [];
-    const { events, subscribe, receiver } = setup({
-      principal: (caller) => {
-        const userId = userIdOf(caller);
-        return { id: userId, context: { org: `org-of-${userId}` } };
-      },
-    });
+  it("retries a delivery, rather than dropping it, when authorize throws", async () => {
+    const { events, subscribe, receiver, done } = setup();
+    let down = true;
     const memo = events.define("memo.posted", {
-      description: "A memo was posted to an org.",
-      input: z.object({ org: z.string() }),
-      payload: z.object({ org: z.string(), text: z.string() }),
-      authorize: ({ org }, caller) => {
-        seen.push({
-          phase: caller.phase,
-          principal: caller.principal,
-          org: caller.context.org,
-          hasAuth: caller.auth !== undefined,
-        });
-        return caller.context.org === org;
+      description: "d",
+      payload: z.object({ text: z.string() }),
+      authorize: (_args, { phase }) => {
+        if (phase === "deliver" && down) throw new Error("permission service is down");
+        return true;
       },
     });
+    await subscribe({}, { name: "memo.posted" });
+    await memo.emit({ text: "hi" });
+    expect(done()).toEqual([false]);
+    expect(receiver.deliveries()).toHaveLength(0);
+    down = false;
+  });
 
-    const alice = await subscribe({ org: "org-of-alice" }, { user: "alice", name: "memo.posted" });
-    const bob = await subscribe({ org: "org-of-alice" }, { user: "bob", name: "memo.posted" });
-    expect(alice.error).toBeUndefined();
-    expect(bob.error?.data?.reason).toBe("not_authorized");
-
-    await memo.emit({ org: "org-of-alice", text: "Offsite on Friday" });
-    expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
+  it("gives authorize the verified auth at subscribe time only", async () => {
+    const seen: { phase: string; hasAuth: boolean }[] = [];
+    const { events, subscribe } = setup();
+    const memo = events.define("memo.posted", {
+      description: "d",
+      payload: z.object({ text: z.string() }),
+      authorize: (_args, caller) => {
+        seen.push({ phase: caller.phase, hasAuth: caller.auth !== undefined });
+        return true;
+      },
+    });
+    await subscribe({}, { name: "memo.posted" });
+    await memo.emit({ text: "hi" });
     // The token is never stored, so only the subscribe-time check sees `auth`.
     expect(seen).toEqual([
-      { phase: "subscribe", principal: "alice", org: "org-of-alice", hasAuth: true },
-      { phase: "subscribe", principal: "bob", org: "org-of-bob", hasAuth: true },
-      { phase: "deliver", principal: "alice", org: "org-of-alice", hasAuth: false },
+      { phase: "subscribe", hasAuth: true },
+      { phase: "deliver", hasAuth: false },
     ]);
   });
 
-  it("sends a personal event only to the users in `to`, and requires `to`", async () => {
-    const { events, subscribe, receiver } = setup();
-    const exportFinished = events.define("export.finished", {
-      description: "Your export finished.",
-      payload: z.object({ exportId: z.string() }),
-      personal: true,
-      authorize: () => true,
-    });
-    const alice = await subscribe({}, { user: "alice", name: "export.finished" });
-    await subscribe({}, { user: "bob", name: "export.finished" });
-
-    // @ts-expect-error `to` is required for a personal event
-    const withoutTo = () => exportFinished.emit({ exportId: "e1" });
-    await expect(withoutTo()).rejects.toThrow(/personal/);
-
-    expect((await exportFinished.emit({ exportId: "e1" }, { to: "alice" })).matched).toBe(1);
+  it("never lets one user unsubscribe another's subscription", async () => {
+    const { subscribe, unsubscribe, commentCreated, receiver } = setup();
+    const alice = await subscribe({ documentId: "d" }, { user: "alice" });
+    // mallory knows the event, the arguments and even the callback URL.
+    expect((await unsubscribe({ documentId: "d" }, alice.url, "mallory")).result).toBeDefined();
+    await commentCreated.emit({ documentId: "d", author: "a", text: "still here" });
     expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
+  });
+
+  it("never lets one user overwrite another's subscription by re-subscribing", async () => {
+    const { subscribe, commentCreated, receiver, store } = setup();
+    const alice = await subscribe({ documentId: "d" }, { user: "alice" });
+    const mallory = await subscribe({ documentId: "d" }, { user: "mallory", url: alice.url });
+    expect(mallory.result?.id).not.toBe(alice.result?.id);
+    expect((await store.get(String(alice.result?.id)))?.subscriber).toBe("alice");
+    await commentCreated.emit({ documentId: "d", author: "a", text: "x" });
+    expect(receiver.deliveries()).toHaveLength(2);
   });
 });
 
@@ -506,53 +558,67 @@ describe("define", () => {
     ).toThrow(/authorize/);
   });
 
-  it("requires args when the payload does not carry every input field", async () => {
-    const { events, subscribe, receiver } = setup();
-    const replied = events.define("reply.posted", {
-      description: "A reply was posted in a thread.",
-      input: z.object({ threadId: z.string() }),
-      payload: z.object({ text: z.string() }), // no threadId in the payload
-      authorize: () => true,
-    });
-    const sub = await subscribe({ threadId: "t1" }, { name: "reply.posted" });
-
-    // @ts-expect-error args is required: the payload has no threadId to match on
-    const withoutArgs = () => replied.emit({ text: "hi" });
-    await expect(withoutArgs()).rejects.toThrow(/threadId/);
-
-    expect((await replied.emit({ text: "hi" }, { args: { threadId: "t1" } })).matched).toBe(1);
-    expect(receiver.deliveries().map((d) => d.url)).toEqual([sub.url]);
+  it("requires every input field to be a payload field, so emits are routed by the payload", () => {
+    const { events } = setup();
+    expect(() =>
+      events.define("reply.posted", {
+        description: "A reply was posted in a thread.",
+        input: z.object({ threadId: z.string() }),
+        payload: z.object({ text: z.string() }), // no threadId in the payload
+        authorize: () => true,
+      }),
+    ).toThrow(/threadId.*payload/);
   });
 
-  it("derives the match values from the payload when it carries every input field", async () => {
+  it("routes an emit by the payload's values", async () => {
     const { subscribe, commentCreated, receiver } = setup();
     const sub = await subscribe({ documentId: "doc_9" });
-    // No options at all: documentId comes from the payload.
-    expect(
-      (await commentCreated.emit({ documentId: "doc_9", author: "a", text: "t" })).matched,
-    ).toBe(1);
-    expect(receiver.deliveries()[0]?.url).toBe(sub.url);
+    await subscribe({ documentId: "doc_8" });
+    await commentCreated.emit({ documentId: "doc_9", author: "a", text: "t" });
+    expect(receiver.deliveries().map((d) => d.url)).toEqual([sub.url]);
   });
 });
 
 describe("principal", () => {
   it("refuses to subscribe or unsubscribe a caller it cannot identify", async () => {
-    const { subscribe, rpc, receiver } = setup();
+    const { subscribe, unsubscribe, receiver } = setup();
     const anonymous = await subscribe({ documentId: "d" }, { user: null });
     expect(anonymous.error?.data?.reason).toBe("not_authenticated");
     // Refused before the challenge: nothing was posted to the callback.
     expect(receiver.received).toHaveLength(0);
 
-    const off = await rpc(
-      "events/unsubscribe",
-      {
-        name: "comment.created",
-        arguments: { documentId: "d" },
-        delivery: { mode: "webhook", url: anonymous.url },
-      },
-      null,
-    );
+    const off = await unsubscribe({ documentId: "d" }, anonymous.url, null);
     expect(off.error?.data?.reason).toBe("not_authenticated");
+  });
+
+  it("refuses before validating anything, so an anonymous caller learns nothing", async () => {
+    const { subscribe } = setup();
+    const unknown = await subscribe({ documentId: "d" }, { user: null, name: "nope" });
+    expect(unknown.error?.data?.reason).toBe("not_authenticated");
+    const badUrl = await subscribe({}, { user: null, url: "https://10.0.0.1/x" });
+    expect(badUrl.error?.data?.reason).toBe("not_authenticated");
+  });
+
+  it("refuses when principal throws, rejects, or returns no usable id", async () => {
+    const resolvers = [
+      () => {
+        throw new Error("no session");
+      },
+      async () => {
+        throw new Error("session store is down");
+      },
+      () => "",
+      () => undefined,
+      () => ({ id: "alice" }),
+      () => 42,
+    ];
+    for (const resolver of resolvers) {
+      const { subscribe, receiver, store } = setup({ principal: resolver as never });
+      const result = await subscribe({ documentId: "d" });
+      expect(result.error?.data?.reason).toBe("not_authenticated");
+      expect(receiver.received).toHaveLength(0);
+      expect(await store.find("comment.created")).toHaveLength(0);
+    }
   });
 
   it("has no default secret key: a missing one fails the first subscribe", async () => {
@@ -587,76 +653,61 @@ describe("principal", () => {
       createEventLayer({
         store: new MemorySubscriptionStore(),
         delivery: new InlineDelivery(),
-        secretKey: "k",
+        secretKey: TEST_SECRET_KEY,
       } as unknown as EventLayerOptions),
     ).toThrow(/principal/);
   });
 });
 
-describe("task.finished", () => {
-  it("fires once when a task settles, only to the owner's subscriptions", async () => {
-    const { events, subscribe, receiver } = setup();
-    const taskFinished = taskFinishedEvent(events);
-    const tasks = createTaskLayer({
-      store: new MemoryTaskStore(),
-      dispatcher: new InlineTaskDispatcher(),
-      principal: userIdOf,
-      onSettle: taskFinished.onSettle,
-    });
-    tasks.define("slow", { description: "slow", inputSchema: z.object({}) }, async () => ({
-      content: [{ type: "text", text: "done" }],
-    }));
-    const handler = createMcpHandler(() => {
-      const server = new McpServer({ name: "t", version: "1.0.0" });
-      tasks.register(server);
-      return server;
-    });
+describe("the secret key", () => {
+  it("must be base64 of at least 32 random bytes", () => {
+    for (const weak of ["test-key", "hunter2", Buffer.alloc(16).toString("base64"), ""]) {
+      expect(() => new SecretBox(weak), weak).toThrow(/32 random bytes/);
+    }
+    expect(() => new SecretBox(TEST_SECRET_KEY)).not.toThrow();
+  });
 
-    const alice = await subscribe({}, { user: "alice", name: "task.finished" });
-    await subscribe({}, { user: "bob", name: "task.finished" });
-    expect(alice.error).toBeUndefined();
+  it("refuses a weak key at the first subscribe", async () => {
+    const { subscribe } = setup({ secretKey: "password" });
+    expect((await subscribe({ documentId: "d" })).error?.message).toMatch(/32 random bytes/);
+  });
 
-    const response = await handler.fetch(
-      request("tools/call", { name: "slow", arguments: {} }, 1),
-      as("alice"),
-    );
-    const taskId = (
-      JSON.parse(await response.text()) as { result: { structuredContent: { taskId: string } } }
-    ).result.structuredContent.taskId;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  it("opens nothing that was tampered with or sealed under another key", async () => {
+    const box = new SecretBox(TEST_SECRET_KEY);
+    const sealed = await box.seal("whsec_abc");
+    expect(await box.open(sealed)).toBe("whsec_abc");
+    const [version, iv, payload] = sealed.split(".");
+    const flipped = Buffer.from(payload!, "base64");
+    flipped[0]! ^= 1;
+    expect(await box.open(`${version}.${iv}.${flipped.toString("base64")}`)).toBeNull();
+    expect(await new SecretBox(Buffer.alloc(32, 9).toString("base64")).open(sealed)).toBeNull();
+    expect(await box.open("garbage")).toBeNull();
+  });
 
-    const deliveries = receiver.deliveries();
-    expect(deliveries).toHaveLength(1);
-    expect(deliveries[0]?.url).toBe(alice.url);
-    expect(deliveries[0]?.body).toMatchObject({
-      name: "task.finished",
-      eventId: `evt_task_${taskId}`,
-      data: { taskId, status: "completed", result: { content: [{ type: "text", text: "done" }] } },
-    });
+  it("drops deliveries for secrets sealed under a rotated key, until the host refreshes", async () => {
+    const { subscribe, store, receiver, done, commentCreated } = setup();
+    const sub = await subscribe({ documentId: "d" });
+    const stored = (await store.get(String(sub.result?.id)))!;
+    const otherKey = new SecretBox(Buffer.alloc(32, 9).toString("base64"));
+    await store.put({ ...stored, encryptedSecret: await otherKey.seal(sub.secret) });
 
-    // A cancel after completion settles nothing, so nothing fires.
-    await tasks.cancelTask(taskId);
-    expect(receiver.deliveries()).toHaveLength(1);
+    await commentCreated.emit({ documentId: "d", author: "a", text: "x" });
+    expect(receiver.deliveries()).toHaveLength(0);
+    expect(done()).toEqual([true]);
   });
 });
 
-describe("helpers", () => {
-  it("enumerates every subset of the emitted arguments", () => {
-    expect(matchKeys({ a: 1, b: 2 }).sort()).toEqual(
-      ['{"a":1,"b":2}', '{"a":1}', '{"b":2}', "{}"].sort(),
-    );
-    const tooMany = Object.fromEntries([...Array(9).keys()].map((i) => [`k${i}`, i]));
-    expect(() => matchKeys(tooMany)).toThrow();
-  });
-
-  it("refuses callback URLs that point at the server's own network", () => {
+describe("callback URLs", () => {
+  it("refuses every IP literal and every name on the server's own network", () => {
     for (const url of [
       "http://example.com",
       "https://localhost/x",
       "https://10.0.0.1/x",
       "https://192.168.1.1/x",
+      "https://8.8.8.8/cb",
       "https://[::1]/x",
       "https://[::ffff:127.0.0.1]/x",
+      "https://[2606:4700:4700::1111]/cb",
       "https://metadata.google.internal/x",
       "https://user:pw@example.com/x",
       "https://intranet/x",
@@ -664,28 +715,15 @@ describe("helpers", () => {
       "https://localhost./x",
       "https://foo.internal./x",
       "https://x.local./x",
-      // IPv4 written another way, or embedded in IPv6.
+      // IPv4 written another way: the URL parser normalizes it to a literal, which is refused.
       "https://0x7f000001/x",
-      "https://[::127.0.0.1]/x",
-      "https://[64:ff9b::127.0.0.1]/x",
-      "https://[64:ff9b:1::1]/x",
-      "https://[2002:7f00:1::]/x",
-      "https://[fe80::1]/x",
-      "https://[fd00::1]/x",
-      // Reserved and documentation ranges.
-      "https://198.18.0.1/x",
-      "https://192.0.0.1/x",
-      "https://192.0.2.1/x",
-      "https://198.51.100.1/x",
-      "https://203.0.113.1/x",
+      "https://2130706433/x",
+      "https://127.1/x",
     ]) {
       expect(callbackUrlProblem(url), url).not.toBeNull();
     }
     expect(callbackUrlProblem("https://receiver.example.com/cb")).toBeNull();
-    expect(callbackUrlProblem("https://8.8.8.8/cb")).toBeNull();
     expect(callbackUrlProblem("https://receiver.example.com./cb")).toBeNull();
-    expect(callbackUrlProblem("https://[2606:4700:4700::1111]/cb")).toBeNull();
-    expect(callbackUrlProblem("https://[64:ff9b::8.8.8.8]/cb")).toBeNull();
     expect(callbackUrlProblem("http://localhost:3000/cb", true)).toBeNull();
   });
 });

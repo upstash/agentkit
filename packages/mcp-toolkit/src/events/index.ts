@@ -1,53 +1,26 @@
 /**
  * `@upstash/mcp-toolkit/events`: MCP Events (webhook delivery) for servers on the official
- * TypeScript SDK, with in-memory backends for tests. The Upstash backends are in
- * `@upstash/mcp-toolkit/upstash`.
+ * TypeScript SDK. The Upstash backends are in `@upstash/mcp-toolkit/upstash`.
  */
 export {
   createEventLayer,
-  canonicalJson,
-  matchKeys,
-  subscriptionId,
-  EventPayloadTooLargeError,
-  CALLBACK_ENDPOINT_ERROR,
-  MAX_PAYLOAD_BYTES,
-  type Caller,
-  type Principal,
-  type CallerAuth,
-  type EmitOptions,
   type AuthorizeCaller,
-  type Recipients,
-  type EmitResult,
   type EventConfig,
-  type EventDescriptor,
   type EventHandle,
   type EventInputSchema,
   type EventLayer,
   type EventLayerOptions,
 } from "./core.js";
 
-export type { PrincipalResolver } from "../shared/auth.js";
+export type { Caller, PrincipalResolver } from "../shared/auth.js";
 
 export type {
-  DeliveryEndpoints,
   DeliveryJob,
   EventDelivery,
   EventEnvelope,
-  SendOutcome,
+  SendJob,
   Subscription,
-  SubscriptionRef,
   SubscriptionStore,
 } from "./types.js";
 
-export {
-  signWebhook,
-  verifyWebhook,
-  decodeSecret,
-  callbackUrlProblem,
-  SecretBox,
-} from "./webhooks.js";
-export { taskFinishedEvent, type TaskFinishedPayload } from "./tasks.js";
-export { InlineDelivery, MemorySubscriptionStore } from "./backends/memory.js";
-
-export { SDK_TELEMETRY } from "../telemetry.js";
-export { VERSION } from "../version.js";
+export { verifyWebhook } from "./webhooks.js";
