@@ -27,7 +27,7 @@ export type WireTask = {
   /** Retention window in milliseconds, from creation. */
   ttlMs: number;
   pollIntervalMs: number;
-  /** The tool result, once `completed`. */
+  /** The tool result, once `completed`, or once `failed` because the handler returned `isError`. */
   result?: Record<string, unknown>;
   /** Once `failed`. */
   error?: TaskError;

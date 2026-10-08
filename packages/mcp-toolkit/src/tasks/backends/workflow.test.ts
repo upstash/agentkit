@@ -6,8 +6,8 @@
  * `task.run(...)` becomes a journaled step under Workflow and a plain call without it.
  */
 import { Client as QStashClient } from "@upstash/qstash";
-import { WorkflowContext } from "@upstash/workflow";
-import { describe, expect, it } from "vitest";
+import { Client as WorkflowClient, WorkflowContext } from "@upstash/workflow";
+import { describe, expect, it, vi } from "vitest";
 import * as z from "zod";
 import { insideStep, WorkflowDispatcher, workflowRoute } from "./workflow.js";
 import { createTaskLayer } from "../core.js";
@@ -95,7 +95,41 @@ describe("WorkflowDispatcher", () => {
     await dispatcher.cancel("task-1");
 
     // Unlike a queue, a workflow run can be stopped mid-flight rather than only un-queued.
-    expect(cancelled).toEqual(["task-1"]);
+    expect(cancelled).toEqual(["wfr_task-1"]);
+  });
+
+  it("cancels the run it triggered, with the real Workflow client", async () => {
+    // The real client, only its HTTP stubbed: a stubbed client can't catch how the real one
+    // names runs (`trigger` prefixes `wfr_`, `cancel` doesn't).
+    const requests: { method: string; url: string; body: string; headers: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      async (input: string | URL | Request, init?: Parameters<typeof fetch>[1]) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = init?.method ?? "GET";
+        const headers = JSON.stringify(Object.fromEntries(new Headers(init?.headers).entries()));
+        requests.push({ method, url, body: String(init?.body ?? ""), headers });
+        return method === "DELETE"
+          ? Response.json({ cancelled: 1 })
+          : Response.json([{ messageId: "msg_1" }]);
+      },
+    );
+    try {
+      const client = new WorkflowClient({ token: "test-token", baseUrl: "https://qstash.test" });
+      const dispatcher = new WorkflowDispatcher({ url: URL, client });
+      const taskId = "6f1c2c5e-0000-4000-8000-000000000000";
+
+      await dispatcher.dispatch(task({ taskId }));
+      await dispatcher.cancel(taskId);
+
+      const runId = `wfr_${taskId}`;
+      const trigger = requests.find((r) => r.method !== "DELETE");
+      const cancel = requests.find((r) => r.method === "DELETE");
+      expect(`${trigger?.body}${trigger?.headers}`).toContain(runId);
+      expect(new globalThis.URL(cancel!.url).searchParams.get("workflowRunIds")).toBe(runId);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
