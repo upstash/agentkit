@@ -94,13 +94,14 @@ export function createServer() {
 
 ```ts
 // app/api/mcp/route.ts
-import { createMcpHandler } from "@modelcontextprotocol/server";
+import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
 import { createServer } from "../../lib/tasks";
 
 const handler = createMcpHandler(() => createServer());
 
 export async function POST(request: Request) {
-  const authInfo = await verifyToken(request); // Clerk, WorkOS, Auth0, your own
+  // Clerk, WorkOS, Auth0, your own. `principal` reads the user id from `authInfo.extra`.
+  const authInfo: AuthInfo | undefined = await verifyToken(request);
   if (!authInfo) return new Response("Unauthorized", { status: 401 });
   return handler.fetch(request, { authInfo });
 }
