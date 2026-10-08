@@ -18,8 +18,8 @@
     "@upstash/agentkit-eve-extension": "workspace:*",
     "@upstash/redis": "^1.38.4",
     "@vercel/connect": "0.2.2",
-    "ai": "7.0.107",
-    "eve": "^0.69.0",
+    "ai": "7.0.133",
+    "eve": "^0.74.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
