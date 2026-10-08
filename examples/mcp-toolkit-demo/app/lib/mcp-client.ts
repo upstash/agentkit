@@ -18,7 +18,7 @@ export const SERVERS = {
 
 export type ServerKey = keyof typeof SERVERS;
 
-export type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "working" | "completed" | "failed" | "cancelled";
 
 export type WireTask = {
   taskId: string;
@@ -26,8 +26,8 @@ export type WireTask = {
   statusMessage?: string;
   createdAt: string;
   lastUpdatedAt: string;
-  ttlMs: number | null;
-  pollIntervalMs?: number;
+  ttlMs: number;
+  pollIntervalMs: number;
   result?: Record<string, unknown>;
   error?: { code: number; message: string; data?: unknown };
 };

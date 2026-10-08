@@ -11,13 +11,18 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
+import { principal } from "./auth";
+import { ALWAYS_FAIL, E2E, alwaysFail } from "./e2e";
 
 /** Where QStash delivers. Must be reachable *from QStash*, not just from your browser. */
 export const EXECUTE_URL = `${process.env.APP_URL ?? "http://127.0.0.1:3000"}/api/execute`;
 
 // `retries` and `retryDelay` are left at their defaults — five attempts over ~2 minutes, so a task
-// outlives a restart instead of dead-lettering while its record still reads `working`.
-export const dispatcher = new QStashDispatcher({ url: EXECUTE_URL });
+// outlives a restart instead of failing while the server is down. (The e2e run shortens them.)
+export const dispatcher = new QStashDispatcher({
+  url: EXECUTE_URL,
+  ...(E2E ? { retries: 1, retryDelay: "1000" } : {}),
+});
 
 /**
  * No type argument: a queue adds nothing to the handler's context, so the handler receives just
@@ -26,10 +31,8 @@ export const dispatcher = new QStashDispatcher({ url: EXECUTE_URL });
 export const tasks = createTaskLayer({
   store: new RedisTaskStore({ prefix: "mcp:task:qstash:" }),
   dispatcher,
-  // Who is calling. The demo has no login, so every caller is the same user — said explicitly,
-  // because there is no anonymous default. A real server returns its user id from `auth`, and
-  // throws when there is none (see "Who is calling" in the toolkit README).
-  principal: () => "demo-user",
+  // Who is calling: the user id the MCP route verified (see `auth.ts`). Throws when there is none.
+  principal,
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,6 +78,8 @@ tasks.define(
     };
   },
 );
+
+if (E2E) tasks.define("always_fail", { ...ALWAYS_FAIL, inputSchema: z.object({}) }, alwaysFail);
 
 /** A fresh server per request: the defined task tool plus `task_status` and `task_cancel`. */
 export function createServer(): McpServer {

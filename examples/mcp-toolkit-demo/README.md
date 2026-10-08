@@ -21,8 +21,11 @@ no capabilities at all. It speaks raw stateless JSON-RPC and shows every frame i
 | `app/api/deploy-watch/events/route.ts` | Where QStash delivers each event. One line: the delivery owns the endpoint |
 | `app/api/deploy-watch/deploys/route.ts` | Report a deploy (stands in for your CI), which fires `deploy.finished` |
 | `app/api/receiver/route.ts` | A stand-in for the host's webhook receiver, so events can be seen without a public URL |
+| `app/lib/auth.ts` | Stand-in authentication: `Bearer demo-<name>` is user `demo-<name>`, no header is `demo-user` |
 | `app/page.tsx` | The client: call the tool, poll, cancel, and the wire log |
-| `scripts/smoke.mjs` | Drives the same flow from the terminal and asserts on it |
+| `scripts/smoke.mjs` | The e2e checks, as raw JSON-RPC against a running app |
+| `scripts/e2e.mjs` | Starts the QStash dev server and the built app, and runs the checks against both task servers |
+| `app/lib/e2e.ts` | Test hooks for `scripts/e2e.mjs` only (`MCP_TOOLKIT_E2E=1`) |
 
 ## Run it
 
@@ -44,12 +47,24 @@ Then open http://localhost:3000, type a topic, and hit **Run tool**.
 be reachable *from QStash*. The local dev server can reach `127.0.0.1`; the hosted service cannot,
 so a deployed app needs its real URL (or a tunnel) there.
 
-To check everything from the terminal instead:
+## Tests
+
+No model and no QStash account: the checks speak raw JSON-RPC, as a model and a host would.
 
 ```bash
-pnpm smoke     # tasks: happy path, cancel, unknown id · events: a filtered deploy.finished webhook
-MCP_PATH=/api/mcp-workflow pnpm smoke   # the same against the Workflow server
+pnpm build && pnpm e2e    # starts the QStash dev server and the app, runs everything, stops them
 ```
+
+Against both task servers it checks a task running to completion, cancel, another user's task
+reading as unknown (`Bearer demo-alice` vs `Bearer demo-bob`), a bad token getting 401, a task that
+throws ending `failed`, and unsigned or forged deliveries being refused. Against Deploy Watch: a
+filtered subscription getting exactly one validly signed webhook, another user's unsubscribe
+changing nothing, `authorize` refusing `demo-intern` production deploys at subscribe time and at
+delivery, and a host's 410 deleting the subscription. CI runs it on every PR.
+
+Against an app you already have running (`pnpm dev` + `pnpm qstash`), `pnpm smoke` runs the same
+checks, and `MCP_PATH=/api/mcp-workflow pnpm smoke` the Workflow ones. The failure check is
+skipped there unless the app was started with `MCP_TOOLKIT_E2E=1`.
 
 ## Two separate tests
 
@@ -83,8 +98,8 @@ durability differs:
 request. Once it completes, `task_status` returns the report's own content.
 
 **Cancel is cooperative, in three layers.** Hit **cancel** mid-run and the store flips the status
-to `cancelled`, the dispatcher cancels the pending QStash message, and the handler stops at its
-next step boundary. The last layer is the one you cannot skip: running code only stops where it
+to `cancelled`, any redelivery finds the task settled and does nothing (on Workflow the run itself
+is cancelled), and the handler stops at its next step boundary. The last layer is the one you cannot skip: running code only stops where it
 checks. A completion arriving after the cancel is refused — terminal states are final.
 
 **The work is durable, not just the record.** Start a task and kill the dev server mid-run:
@@ -101,17 +116,19 @@ record; QStash's redelivery is what finished the work. Replace the dispatcher wi
 fire-and-forget promise and the same test leaves a permanently `working` task instead.
 
 One caveat this demo learned the hard way: the retry budget has to outlast your restart. QStash
-retries on its configured schedule and dead-letters the message when they run out, so with a flat
-one-second delay every attempt is spent within a few seconds — long before a dev server is back up,
-leaving a task that reads `working` forever. The dispatcher's defaults spread five attempts over
-about two minutes (1s, 3s, 9s, 27s, 81s) for that reason; five is also the ceiling the local dev
-server and the free tier allow, so raising `retries` needs a plan that permits it. If a task does
-get dead-lettered, it is in the QStash DLQ, not lost.
+retries on its configured schedule, and when the attempts run out its failure callback marks the
+task `failed`. With a flat one-second delay every attempt is spent within a few seconds, long
+before a dev server is back up. The dispatcher's defaults spread five attempts over about two
+minutes (1s, 3s, 9s, 27s, 81s) for that reason; five is also the ceiling the local dev server and
+the free tier allow, so raising `retries` needs a plan that permits it. A failed message stays in
+the QStash DLQ.
 
 ## Notes
 
 - All three tools are ordinary MCP tools, so this works in every client today — Claude Code,
   Codex, Cursor, OpenCode, ChatGPT — none of which declare the protocol's Tasks extension yet.
-- The demo has no login, so both layers use `principal: () => "demo-user"`: every caller is the
-  same user. A multi-user server returns its user id from the request's auth instead, so one user
-  cannot read or cancel another's task or subscribe as someone else — see the package README.
+- The demo has no real login. `app/lib/auth.ts` stands in for one: the MCP routes turn
+  `Authorization: Bearer demo-<name>` into the user `demo-<name>` and pass it to the SDK as
+  `authInfo`, and `principal` reads it back, as a real server would with a verified token. With no
+  header the caller is the shared `demo-user`, so the page and an unauthenticated ChatGPT
+  connection keep working; a real server answers 401 instead.

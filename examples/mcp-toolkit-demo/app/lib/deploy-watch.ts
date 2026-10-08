@@ -14,17 +14,17 @@ import { createEventLayer } from "@upstash/mcp-toolkit/events";
 import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
 import { Redis } from "@upstash/redis";
 import * as z from "zod";
+import { principal } from "./auth";
 
 const APP_URL = process.env.APP_URL ?? "http://127.0.0.1:3000";
 const RECENT_KEY = "deploy-watch:recent";
-/** The demo has no login, so every caller is this one user. A real server returns its user id. */
-const DEMO_USER = "demo-user";
 
 export const events = createEventLayer({
   store: new RedisSubscriptionStore({ prefix: "deploy-watch:events:" }),
   delivery: new QStashDelivery({ url: `${APP_URL}/api/deploy-watch/events` }),
   // `secretKey` is read from MCP_EVENTS_SECRET_KEY (see .env.example). There is no fallback.
-  principal: () => DEMO_USER,
+  // Who is calling: the user id the MCP route verified (see `auth.ts`).
+  principal,
   // The demo's own receiver runs on localhost. Never set this in production: it disables the
   // checks that stop a subscriber from pointing your server at internal addresses.
   allowInsecureCallbacks: /^http:\/\/(127\.0\.0\.1|localhost)/.test(APP_URL),
@@ -51,9 +51,12 @@ export const deployFinished = events.define("deploy.finished", {
     environment: z.enum(["production", "staging"]).optional().describe("Only this environment"),
   }),
   payload: Deploy,
-  // Everyone may watch every deploy in the demo. A real server checks whether this user can see
-  // the service, and the check runs again before each delivery, so revoked access stops events.
-  authorize: () => true,
+  // The demo's permission rule, standing in for yours: `demo-intern` may not see production.
+  // At subscribe time `args` is the filter, so an intern can't ask for production. Before every
+  // delivery `args` is the deploy's own values, so an intern who subscribed to everything (`{}`)
+  // still only receives staging deploys.
+  authorize: (args, { principal }) =>
+    principal !== "demo-intern" || args.environment !== "production",
 });
 
 /** Records a deploy and fires `deploy.finished` to every matching subscription `authorize` allows. */

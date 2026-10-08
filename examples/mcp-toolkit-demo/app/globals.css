@@ -216,10 +216,6 @@ button.ghost:hover:not(:disabled) {
   color: var(--blue);
 }
 
-.badge.input_required {
-  color: var(--amber);
-}
-
 .badge.completed {
   color: var(--accent);
 }

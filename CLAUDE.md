@@ -729,6 +729,12 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   ids are always `crypto.randomUUID()`, so `TaskStore.create` is a plain `MULTI` (`HSET` +
   `PEXPIRE`) returning `void` — no create-if-absent script, since a collision cannot happen.
   `ttlMs` is always a positive number (`null` = unlimited was removed: it let tasks live forever).
+- **Workflow route steps first (fixed 2026-10-08, caught by the e2e failure check).** Workflow
+  authorizes every request, the failure callback included, by running the route function on a
+  `DisabledWorkflowContext` until its first step; a route that throws or returns before any step
+  is refused (`Not authorized to run the failure function`). A handler that threw before its first
+  `task.run` therefore never reached `failureFunction` and stayed `working` until its TTL.
+  `workflowRoute` now runs a `mcp-task:start` step before anything else.
 - **Default task TTL is 1 day (changed 2026-10-08 from 5 minutes).** The TTL counts from creation
   and is never extended, so 5 minutes let a slow task plus its QStash retries expire mid-run and
   read as "unknown task". The demo servers use the default.
@@ -825,9 +831,15 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   Vercel Workflow's `World = Storage + Queue + Streamer`.
 - Tests: `src/{tasks,events}/core.test.ts` drive a real `McpServer` through `createMcpHandler` over
   genuine JSON-RPC; `src/*/backends/qstash.test.ts` hit real Redis. All run under the root vitest
-  config. The demo's `pnpm smoke` is the end-to-end check (QStash dev server + both servers + the
-  filtered `deploy.finished` webhook from the Deploy Watch server into the demo's receiver). The demo
-  keeps tasks (Report Desk, `/api/mcp`) and events (Deploy Watch, `/api/deploy-watch`) in separate
+  config. The demo's `pnpm e2e` (`scripts/e2e.mjs`) is the end-to-end check and runs in CI after the
+  example build: it starts the QStash dev server (:8181) and `next start` (:3100) with
+  `MCP_TOOLKIT_E2E=1`, then runs `scripts/smoke.mjs` against `/api/mcp` and `/api/mcp-workflow`. No
+  model. Users are `Bearer demo-<name>` (`app/lib/auth.ts`; no header = `demo-user`). It covers
+  completion, cancel, cross-user isolation, 401, the failure path (`always_fail`, defined only under
+  `MCP_TOOLKIT_E2E` with retries cut), refused unsigned/forged deliveries, filtered and signed
+  webhooks, `authorize` at delivery (`demo-intern` never gets production), and 410 deleting the
+  subscription (checked in Redis). `pnpm smoke` alone runs the same checks against a running app.
+  The demo keeps tasks (Report Desk, `/api/mcp`) and events (Deploy Watch, `/api/deploy-watch`) in separate
   servers on purpose. The events tests stub the **global** `fetch` (`vi.stubGlobal`) — the layer
   has no `fetch` option.
 - **Events facts.** Wire format follows ChatGPT's MCP Events (webhook only): `events/list|subscribe|

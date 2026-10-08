@@ -6,6 +6,8 @@
  * - `POST ?id=…` is the callback: it checks the Standard Webhooks signature, answers the
  *   verification challenge, and records every event.
  * - `GET  ?id=…` returns what it received.
+ * - `DELETE ?id=…` forgets the receiver, so its next POST answers 410, which tells the server to
+ *   delete the subscription (the way a host drops one).
  *
  * State is in process memory: fine for `next dev`, not for anything real.
  */
@@ -34,6 +36,11 @@ export async function POST(request: Request): Promise<Response> {
   receiver.received.push({ valid, body });
   if (!valid) return new Response("bad signature", { status: 401 });
   if (body.type === "verification") return Response.json({ challenge: body.challenge });
+  return new Response(null, { status: 204 });
+}
+
+export async function DELETE(request: Request): Promise<Response> {
+  receivers.delete(idOf(request));
   return new Response(null, { status: 204 });
 }
 

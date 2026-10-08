@@ -13,11 +13,17 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
+import { principal } from "./auth";
+import { ALWAYS_FAIL, E2E, alwaysFail } from "./e2e";
 
 /** Where Workflow delivers each step. Must be reachable *from QStash*. */
 export const EXECUTE_URL = `${process.env.APP_URL ?? "http://127.0.0.1:3000"}/api/execute-workflow`;
 
-export const dispatcher = new WorkflowDispatcher({ url: EXECUTE_URL });
+export const dispatcher = new WorkflowDispatcher({
+  url: EXECUTE_URL,
+  // The e2e run fails fast; otherwise the Workflow SDK default applies.
+  ...(E2E ? { retries: 0 } : {}),
+});
 
 /**
  * No type argument needed: the context type is inferred from the dispatcher and flows into
@@ -26,10 +32,8 @@ export const dispatcher = new WorkflowDispatcher({ url: EXECUTE_URL });
 export const tasks = createTaskLayer({
   store: new RedisTaskStore({ prefix: "mcp:task:workflow:" }),
   dispatcher,
-  // Who is calling. The demo has no login, so every caller is the same user — said explicitly,
-  // because there is no anonymous default. A real server returns its user id from `auth`, and
-  // throws when there is none (see "Who is calling" in the toolkit README).
-  principal: () => "demo-user",
+  // Who is calling: the user id the MCP route verified (see `auth.ts`). Throws when there is none.
+  principal,
 });
 
 const STEPS = 4;
@@ -66,6 +70,8 @@ tasks.define(
     };
   },
 );
+
+if (E2E) tasks.define("always_fail", { ...ALWAYS_FAIL, inputSchema: z.object({}) }, alwaysFail);
 
 export function createServer(): McpServer {
   const server = new McpServer({ name: "mcp-toolkit-demo-workflow", version: "0.1.0" });

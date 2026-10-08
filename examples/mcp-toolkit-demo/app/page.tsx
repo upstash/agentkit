@@ -61,7 +61,7 @@ export default function Page() {
       const now = Date.now();
       for (const task of tasksRef.current) {
         if (TERMINAL.has(task.wire.status)) continue;
-        if (now - task.lastPolledAt < (task.wire.pollIntervalMs ?? 2000)) continue;
+        if (now - task.lastPolledAt < task.wire.pollIntervalMs) continue;
         markPolled(task.taskId);
         void poll(task.taskId, task.server);
       }
@@ -265,8 +265,8 @@ function TaskCard({ task, onCancel }: { task: TrackedTask; onCancel: () => void 
       <div className="meta">
         <span>{elapsed}s elapsed</span>
         <span>{task.polls} polls</span>
-        <span>ttl {wire.ttlMs === null ? "∞" : `${Math.round(wire.ttlMs / 1000)}s`}</span>
-        <span>every {wire.pollIntervalMs ?? 2000}ms</span>
+        <span>kept for {formatDuration(wire.ttlMs)}</span>
+        <span>every {wire.pollIntervalMs}ms</span>
       </div>
 
       {wire.result ? (
@@ -308,4 +308,12 @@ function readProgress(wire: WireTask): number {
   if (!match) return wire.status === "working" ? 4 : 0;
   const [, step, total] = match;
   return Math.round((Number(step) / Number(total)) * 100);
+}
+
+/** How long the task record is kept, e.g. "1d", "2h", "5min". */
+function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}min`;
+  const hours = Math.round(minutes / 60);
+  return hours % 24 === 0 ? `${hours / 24}d` : `${hours}h`;
 }
