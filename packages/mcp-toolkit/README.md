@@ -12,7 +12,7 @@ Durable building blocks for MCP servers built on the official TypeScript SDK
   `WorkflowDispatcher`, `RedisSubscriptionStore`, `QStashDelivery`.
 
 ```bash
-npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
 ```
 
 Environment variables:
@@ -20,6 +20,7 @@ Environment variables:
 ```bash
 UPSTASH_REDIS_REST_URL=...
 UPSTASH_REDIS_REST_TOKEN=...
+QSTASH_URL=...                   # your QStash region's URL, from the console
 QSTASH_TOKEN=...
 QSTASH_CURRENT_SIGNING_KEY=...   # required: delivery routes refuse to run without them
 QSTASH_NEXT_SIGNING_KEY=...
@@ -30,14 +31,24 @@ APP_URL=https://your-app.com     # used in the snippets below. QStash has to be 
 ## Who is calling
 
 Both layers need `principal`: a function that returns the id of the user making the call. Tasks
-belong to the user who started them, and subscriptions to the user who subscribed. Read it from the
-token your MCP route has verified, and throw when there is none:
+belong to the user who started them, and subscriptions to the user who subscribed. Keep it next to
+the function that verifies the token, so the whole path is in one file:
 
 ```ts
 // lib/auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
 
-// `auth` is the AuthInfo your MCP route verified and passed to the SDK (see below).
+// 1. Runs on every MCP request (wired up with withMcpAuth below). Returning undefined answers 401.
+export async function verifyToken(
+  req: Request,
+  bearerToken?: string,
+): Promise<AuthInfo | undefined> {
+  if (!bearerToken) return undefined;
+  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
+  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+}
+
+// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
 export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -52,8 +63,9 @@ export function principal({ auth }: { auth?: AuthInfo }): string {
   returns anything but a non-empty string, the call is refused as not authenticated.
 - **Use the user id, not `auth.clientId`.** The client id identifies the OAuth app, and every
   ChatGPT user shares the same one.
-- `auth` is only what your route passed to `handler.fetch(request, { authInfo })` (see below). The
-  SDK never fills it from headers.
+- `auth` is exactly what `verifyToken` returned: `withMcpAuth` runs it and the toolkit hands the
+  result to `principal`. Nothing is read from headers on its own. Without `mcp-handler`, pass it
+  yourself with the SDK's `createMcpHandler`: `handler.fetch(request, { authInfo })`.
 - `principal` also receives `request`, for cookie or session apps: type its argument as `Caller`
   (`{ auth, request }`, from `@upstash/mcp-toolkit/tasks` or `/events`). `request` is unverified,
   so check the session yourself, and never trust a header like `x-user-id`.
@@ -65,7 +77,6 @@ export function principal({ auth }: { auth?: AuthInfo }): string {
 
 ```ts
 // lib/tasks.ts
-import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
@@ -86,32 +97,26 @@ tasks.define(
     return { content: [{ type: "text", text: await writeReport(topic) }] };
   },
 );
-
-export function createServer() {
-  const server = new McpServer({ name: "reports", version: "1.0.0" });
-  tasks.register(server); // adds generate_report, task_status and task_cancel
-  return server;
-}
 ```
 
 ```ts
 // app/api/mcp/route.ts
-import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
-import { createServer } from "../../lib/tasks";
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { verifyToken } from "@/lib/auth";
+import { tasks } from "@/lib/tasks";
 
-const handler = createMcpHandler(() => createServer());
+const handler = createMcpHandler((server) => {
+  tasks.register(server); // adds generate_report, task_status and task_cancel
+});
 
-export async function POST(request: Request) {
-  // Clerk, WorkOS, Auth0, your own. `principal` reads the user id from `authInfo.extra`.
-  const authInfo: AuthInfo | undefined = await verifyToken(request);
-  if (!authInfo) return new Response("Unauthorized", { status: 401 });
-  return handler.fetch(request, { authInfo });
-}
+// Runs verifyToken before any tool sees the request; no AuthInfo means 401.
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+export { authHandler as GET, authHandler as POST };
 ```
 
 ```ts
 // app/api/execute/route.ts: QStash delivers the work here
-import { tasks } from "../../lib/tasks";
+import { tasks } from "@/lib/tasks";
 
 export const POST = tasks.createExecuteHandler();
 ```
@@ -238,6 +243,11 @@ can take longer.
   Without signing keys the route throws instead of running anything unverified.
 - When your handler throws, the task is not marked failed. Only the dispatcher marks it `failed`,
   and only after QStash has stopped retrying. The failed message stays in the QStash DLQ.
+- When your handler _returns_ a tool error (`isError: true`), the task is `failed` at once, with no
+  retry, and `task_status` returns your content with `isError`, as the synchronous tool would.
+- What a failure looks like to the model is `error.code` and `error.message`. The transport's
+  details (`error.data`: the DLQ id, the failing response) stay in Redis for you, and a dispatch
+  error is logged rather than returned.
 - By default QStash tries 5 times with backoff `min(pow(3, retried) * 1000, 300000)`, about two
   minutes in total, so a task survives a server restart. The free tier and the local dev server
   allow at most 5 retries.
@@ -279,12 +289,12 @@ export const commentCreated = events.define("comment.created", {
 });
 ```
 
-Call `events.register(server)` in `createServer()`, next to `tasks.register(server)`, and add the
+Call `events.register(server)` in the `createMcpHandler` callback, next to `tasks.register(server)`, and add the
 route QStash delivers to:
 
 ```ts
 // app/api/events/route.ts
-import { events } from "../../lib/events";
+import { events } from "@/lib/events";
 
 export const POST = events.createDeliveryHandler();
 ```

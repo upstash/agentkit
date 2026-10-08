@@ -250,7 +250,9 @@ export function createTaskLayer<TContext = unknown>(
           error: { code: INTERNAL_ERROR, message: "The task could not be dispatched" },
         })
         .catch(() => undefined);
-      throw error;
+      // The transport's error (a QStash response, a URL) is for your logs, not the model.
+      console.error(`[mcp-toolkit] could not dispatch task ${task.taskId}:`, error);
+      return errorResult("The task could not be queued. Try again later.");
     }
     return {
       content: [
@@ -294,6 +296,17 @@ export function createTaskLayer<TContext = unknown>(
 
     const result = await definition.handler(task.args, mergeContext(taskContext, context));
     // A cancel that landed meanwhile wins: settle refuses the second terminal write.
+    if (result?.isError === true) {
+      // The handler answered with a tool error, the way a synchronous tool would: the task failed,
+      // and its own content explains why. Not retried: it returned, it didn't throw.
+      await store.settle(taskId, {
+        status: "failed",
+        statusMessage: "Failed",
+        result,
+        error: { code: INTERNAL_ERROR, message: "The task returned an error" },
+      });
+      return;
+    }
     await store.settle(taskId, {
       status: "completed",
       statusMessage: definition.config.completedMessage ?? "Completed",
@@ -336,18 +349,28 @@ function errorResult(text: string): Record<string, unknown> {
   return { isError: true, content: [{ type: "text", text }] };
 }
 
-/** A status line, followed by the task's own result content once it completed. */
+/**
+ * A status line, followed by the task's own result content once it completed, or once it failed by
+ * returning a tool error. That last case also carries `isError`, as the synchronous tool would have.
+ */
 function statusResult(task: Task): Record<string, unknown> {
   const line = `Task ${task.taskId} is ${task.status}${task.statusMessage ? `: ${task.statusMessage}` : "."}`;
+  const handlerError = task.status === "failed" && task.result?.isError === true;
   const extra =
-    task.status === "completed" && Array.isArray(task.result?.content) ? task.result.content : [];
+    (task.status === "completed" || handlerError) && Array.isArray(task.result?.content)
+      ? task.result.content
+      : [];
   const text =
     task.status === "failed"
       ? `${line} Error: ${task.error?.message ?? "unknown"}`
       : task.status === "working"
         ? `${line} Check again in about ${seconds(task.pollIntervalMs)}.`
         : line;
-  return { content: [{ type: "text", text }, ...extra], structuredContent: toWire(task) };
+  return {
+    content: [{ type: "text", text }, ...extra],
+    structuredContent: toWire(task),
+    ...(handlerError ? { isError: true } : {}),
+  };
 }
 
 const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`;
@@ -364,8 +387,12 @@ function mergeContext<TContext>(
   return Object.assign(supplied as object, taskContext) as TaskContext & TContext;
 }
 
-/** Strips the server-only fields, leaving what the model sees in `structuredContent`. */
+/**
+ * Strips the server-only fields, leaving what the model sees in `structuredContent`. That includes
+ * `error.data`: transports put the failing response there (a stack trace, a database error), which
+ * stays in the store for your logs.
+ */
 function toWire(task: Task): WireTask {
-  const { name: _name, args: _args, owner: _owner, ...wire } = task;
-  return wire;
+  const { name: _name, args: _args, owner: _owner, error, ...wire } = task;
+  return error ? { ...wire, error: { code: error.code, message: error.message } } : wire;
 }

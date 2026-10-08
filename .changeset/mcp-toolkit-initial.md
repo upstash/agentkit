@@ -24,6 +24,10 @@ limit of live subscriptions per subscriber (8 by default), SSRF checks on callba
 secrets encrypted at rest. `QStashDelivery` signs each attempt with
 Standard Webhooks and lets QStash retry failures (`export const POST = events.createDeliveryHandler()`).
 
+A handler that returns a tool error (`isError: true`) fails its task without a retry, and
+`task_status` shows that error the way the synchronous tool would. The model only ever sees a
+failure's `code` and `message`: transport details stay in the store, and dispatch errors are logged.
+
 The package uses WebCrypto only, so it runs on Node and edge runtimes.
 
 `@upstash/mcp-toolkit/upstash` holds the Upstash backends for both: `RedisTaskStore`,

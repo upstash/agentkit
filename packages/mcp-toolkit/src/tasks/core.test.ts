@@ -543,6 +543,48 @@ describe("createTaskLayer over MCP", () => {
       expect(text(after)).toMatch(/permanent/);
     });
 
+    it("fails a task whose handler returns a tool error, and shows that error like a tool would", async () => {
+      live = await harness(async () => ({
+        isError: true,
+        content: [{ type: "text", text: "Workspace is read-only" }],
+      }));
+      const taskId = await live.start("x");
+      await live.dispatcher.drain();
+      const after = await live.status(taskId);
+      expect(after.isError).toBe(true);
+      expect(after.structuredContent).toMatchObject({
+        status: "failed",
+        // Settled by the layer, not by a retried throw (whose message would be the thrown one).
+        error: { message: "The task returned an error" },
+      });
+      expect(text(after)).toMatch(/Workspace is read-only/);
+    });
+
+    it("keeps a failure's details in the store but out of what the model sees", async () => {
+      live = await harness(steppedHandler(1, 1));
+      const taskId = await live.start("x");
+      await live.dispatcher.drain();
+      const stored = (await live.store.get(taskId))!;
+      await live.store.create({
+        ...stored,
+        status: "failed",
+        error: {
+          code: -32603,
+          message: "Workflow run failed",
+          data: { response: "pg: password auth failed" },
+        },
+      });
+      const after = await live.status(taskId);
+      expect(after.structuredContent?.error).toEqual({
+        code: -32603,
+        message: "Workflow run failed",
+      });
+      expect(JSON.stringify(after)).not.toMatch(/password auth/);
+      expect((await live.store.get(taskId))?.error?.data).toEqual({
+        response: "pg: password auth failed",
+      });
+    });
+
     it("fails the task when it cannot be dispatched, instead of leaving it working", async () => {
       const manual = new ManualDispatcher();
       manual.failNext = new Error("queue unavailable");
@@ -555,6 +597,9 @@ describe("createTaskLayer over MCP", () => {
       };
       const result = await live.call("generate_report", { topic: "x" });
       expect(result.isError).toBe(true);
+      // The transport's error goes to the logs, not to the model.
+      expect(text(result)).not.toMatch(/queue unavailable/);
+      expect(text(result)).toMatch(/could not be queued/);
       expect(await live.store.get(created!)).toMatchObject({
         status: "failed",
         statusMessage: "Could not be queued",
