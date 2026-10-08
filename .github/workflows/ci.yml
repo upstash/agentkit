@@ -78,6 +78,24 @@ jobs:
           fi
           pnpm e2e
 
+      - name: E2E (MCP toolkit demo, local QStash, no model)
+        # Starts the local QStash dev server and the demo built above, and drives it with raw JSON-RPC
+        # as a model and a host would (no model, no QStash account). Against both task servers: run to
+        # completion, cancel, another user's task reads as unknown, a throwing task ends `failed`,
+        # unsigned or forged deliveries are refused. Against Deploy Watch: filtered webhooks with
+        # valid signatures, per-user subscriptions, `authorize` checked at delivery, 410 deletes the
+        # subscription. Skipped without Redis secrets (e.g. fork PRs).
+        working-directory: examples/mcp-toolkit-demo
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: |
+          if [ -z "$UPSTASH_REDIS_REST_URL" ]; then
+            echo "No Redis secrets available — skipping the MCP toolkit e2e suite."
+            exit 0
+          fi
+          pnpm e2e
+
       - name: E2E eval (eve memory slots, mocked model)
         # Boots the eve demo's agent with a scripted mockModel (no model provider, no
         # OPENAI_API_KEY) and asserts both Upstash Redis memory integrations run at eve's real
