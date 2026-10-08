@@ -25,10 +25,6 @@
     "./events": {
       "types": "./dist/events/index.d.ts",
       "import": "./dist/events/index.js"
-    },
-    "./events/upstash": {
-      "types": "./dist/events/upstash.d.ts",
-      "import": "./dist/events/upstash.js"
     }
   },
   "files": [

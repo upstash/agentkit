@@ -5,8 +5,12 @@
  * Subscriptions live in Redis with their signing secrets encrypted; each delivery is a QStash
  * message to `/api/events`, which signs and POSTs it to the host and lets QStash retry failures.
  */
-import { createEventLayer, taskFinishedEvent } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events/upstash";
+import {
+  createEventLayer,
+  QStashDelivery,
+  RedisSubscriptionStore,
+  taskFinishedEvent,
+} from "@upstash/mcp-toolkit/events";
 
 const APP_URL = process.env.APP_URL ?? "http://127.0.0.1:3000";
 

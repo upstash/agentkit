@@ -17,7 +17,7 @@ fires once per finished task.
 `events.define(...)` handles with `emit(payload)`, `events/list`, `events/subscribe` and
 `events/unsubscribe` registered on your server, a signed verification challenge, deterministic
 subscription ids, expiry and refresh, SSRF checks on callback URLs, and signing secrets encrypted
-at rest. `/events/upstash` provides `RedisSubscriptionStore` and `QStashDelivery`, which signs each
+at rest. It ships `RedisSubscriptionStore` and `QStashDelivery` in the same entry point; the latter signs each
 attempt with Standard Webhooks and lets QStash retry failures (`export const POST =
 events.createDeliveryHandler()`). `taskFinishedEvent` bridges the two, so an event-capable host can
 stop polling.

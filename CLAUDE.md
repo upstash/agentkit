@@ -19,7 +19,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
-| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). Each has a `/upstash` entry point. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` has a `/tasks/upstash` entry point; `/events` exports its Redis/QStash backends directly (no `/events/upstash`). Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
@@ -679,8 +679,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## MCP toolkit facts (`packages/mcp-toolkit`) — IMPORTANT
-- **Layout:** `src/tasks/` and `src/events/`, each with `index.ts` (core, storage-agnostic) and
-  `upstash.ts` (Redis/QStash/Workflow backends), built to `dist/{tasks,events}/{index,upstash}.js`.
+- **Layout:** `src/tasks/` (`index.ts` core + `upstash.ts` backends) and `src/events/` (`index.ts`
+  exports core *and* Redis/QStash backends — one entry point by choice), built to
+  `dist/tasks/{index,upstash}.js` and `dist/events/index.js`.
   There is no root export. Shared: `src/telemetry.ts` (tag `@upstash/mcp-toolkit`), `src/version.ts`.
 - **Tools mode, not the Tasks extension (since 2026-10).** A task tool answers with an ordinary tool
   result (`structuredContent` = the task object, plus a text line telling the model to poll); two

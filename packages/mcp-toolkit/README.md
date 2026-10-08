@@ -8,8 +8,8 @@ QStash and Workflow.
 | [`@upstash/mcp-toolkit/tasks`](#tasks-long-running-tools)             | **Long-running tools.** A tool answers at once with a task id; the model polls `task_status` for progress and the result. Works in every client today.     |
 | [`@upstash/mcp-toolkit/events`](#events-webhooks-that-wake-the-agent) | **MCP Events.** Hosts subscribe to your events and get a signed webhook when one happens, so an agent wakes up instead of polling. Works in ChatGPT today. |
 
-Each has a storage-agnostic core plus a `/upstash` entry point with the Redis and QStash backends,
-and in-memory backends for tests. They also compose: a `task.finished` event tells an
+`/tasks` keeps its Upstash backends behind `/tasks/upstash`; `/events` ships them in the same
+entry point. Both include in-memory backends for tests. They also compose: a `task.finished` event tells an
 event-capable host that a task settled, so it can skip polling.
 
 ## Install
@@ -354,8 +354,7 @@ subscription ids, expiry and refresh, Standard Webhooks signing, and durable ret
 
 ```ts
 // lib/events.ts
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events/upstash";
+import { createEventLayer, QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
 import * as z from "zod";
 
 export const events = createEventLayer({
@@ -582,7 +581,7 @@ interface EventDelivery {
 | `callbackUrlProblem`, `decodeSecret`, `SecretBox`                           | The callback, secret and encryption checks the layer uses                  |
 | `EventPayloadTooLargeError`, `CALLBACK_ENDPOINT_ERROR`, `MAX_PAYLOAD_BYTES` | Limits and errors                                                          |
 | `MemorySubscriptionStore`, `InlineDelivery`                                 | Non-durable backends for tests                                             |
-| `@upstash/mcp-toolkit/events/upstash`                                       | `RedisSubscriptionStore`, `QStashDelivery`                                 |
+| `RedisSubscriptionStore`, `QStashDelivery` | The Upstash backends (need `@upstash/redis` and `@upstash/qstash`) |
 
 </details>
 
