@@ -37,12 +37,18 @@ export type Subscription = {
 
 /** Durable storage for subscriptions. The layer does the matching, so a store only indexes by event. */
 export interface SubscriptionStore {
-  /** Creates or replaces a subscription. Must have committed before it resolves. */
-  put(subscription: Subscription): Promise<void>;
+  /**
+   * Creates or replaces a subscription, and must have committed before it resolves. Atomically
+   * refuses a new one (resolves `false`, storing nothing) when its subscriber already has `limit`
+   * live subscriptions across all events; replacing one of theirs is always allowed.
+   */
+  put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
   /** A live subscription, or `null`. */
   get(id: string): Promise<Subscription | null>;
+  /** How many live subscriptions a subscriber has, across all events. */
+  count(subscriber: string): Promise<number>;
   /** Removes a subscription. A no-op when it does not exist. */
-  delete(subscription: Pick<Subscription, "id" | "event">): Promise<void>;
+  delete(subscription: Pick<Subscription, "id" | "event" | "subscriber">): Promise<void>;
   /** Every live subscription to `event`. */
   find(event: string): Promise<Subscription[]>;
 }

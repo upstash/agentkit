@@ -27,6 +27,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TTL_MS = 7 * DAY_MS;
 /** The most a subscription is granted. */
 const MAX_TTL_MS = 30 * DAY_MS;
+/** Live subscriptions one subscriber may hold, across all events, unless configured. */
+const DEFAULT_MAX_SUBSCRIPTIONS = 8;
 /** The challenge echo is tiny; never read more than this from a callback. */
 const MAX_CHALLENGE_RESPONSE_BYTES = 4096;
 
@@ -45,6 +47,13 @@ export type EventLayerOptions = {
   secretKey?: string;
   /** Accept `http://` and private callback URLs. Local development only: it disables the SSRF checks. */
   allowInsecureCallbacks?: boolean;
+  /**
+   * The most live subscriptions one subscriber may hold, across all events. A subscribe past it is
+   * refused before the callback is challenged; refreshing an existing subscription always works.
+   * Every subscription is a webhook per matching emit, so this bounds what one user can make your
+   * server send. Defaults to 8. `Infinity` turns the limit off.
+   */
+  maxSubscriptions?: number;
 };
 
 /** Subscription arguments are an object schema, so they can be matched field by field. */
@@ -91,7 +100,7 @@ export type EventHandle<Payload extends z.ZodType> = {
   /**
    * Validates the payload and hands it to every subscription whose arguments match the payload's
    * values. `authorize` is checked again before each delivery. Reuse an `eventId` (sent as
-   * `webhook-id`) to deduplicate an emit.
+   * `webhook-id`) and the host drops the repeat as a duplicate.
    */
   emit(payload: z.input<Payload>, options?: { eventId?: string }): Promise<{ eventId: string }>;
 };
@@ -141,6 +150,15 @@ const listParams = z.looseObject({ cursor: z.string().nullish() });
 export function createEventLayer(options: EventLayerOptions): EventLayer {
   const { store, delivery } = options;
   const principal = requirePrincipal(options.principal, "createEventLayer");
+  const maxSubscriptions = options.maxSubscriptions ?? DEFAULT_MAX_SUBSCRIPTIONS;
+  if (
+    maxSubscriptions !== Infinity &&
+    (!Number.isSafeInteger(maxSubscriptions) || maxSubscriptions < 1)
+  ) {
+    throw new Error(
+      "createEventLayer: maxSubscriptions must be a positive whole number or Infinity",
+    );
+  }
   const definitions = new Map<string, Definition>();
 
   // Resolved on first use, because layers are built at module scope during framework builds.
@@ -209,7 +227,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     if (bytes > MAX_PAYLOAD_BYTES) {
       throw new Error(`Event envelope is ${bytes} bytes; the limit is ${MAX_PAYLOAD_BYTES}.`);
     }
-    const values = valuesOf(definition.input, payload);
+    const values = projection(definition, name, payload);
     const targets = (await store.find(name)).filter((sub) => matches(sub.args, values));
     if (targets.length > 0) {
       await delivery.enqueue(targets.map((sub) => ({ subscriptionId: sub.id, envelope })));
@@ -226,7 +244,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     let allowed: boolean;
     try {
       allowed = await definition.config.authorize(
-        valuesOf(definition.input, job.envelope.data) as never,
+        projection(definition, sub.event, job.envelope.data) as never,
         { principal: sub.subscriber, phase: "deliver" },
       );
     } catch {
@@ -302,6 +320,10 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
 
     const id = await subscriptionId(subscriber, url, params.name, args);
     const existing = await store.get(id);
+    // Checked before the challenge, so a caller at the limit can't make this server POST anywhere.
+    if (!existing && (await store.count(subscriber)) >= maxSubscriptions) {
+      throw limitReached(maxSubscriptions);
+    }
     // A refresh with the same secret skips the challenge; a new secret proves the callback again.
     const verified =
       existing !== null && (await secretBox().open(existing.encryptedSecret)) === secret;
@@ -311,16 +333,21 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     const granted = Math.min(requested, MAX_TTL_MS);
     const now = Date.now();
     const expiresAt = now + granted;
-    await store.put({
-      id,
-      event: params.name,
-      args,
-      url,
-      encryptedSecret: verified ? existing.encryptedSecret : await secretBox().seal(secret),
-      subscriber,
-      createdAt: existing?.createdAt ?? new Date(now).toISOString(),
-      expiresAt,
-    });
+    const stored = await store.put(
+      {
+        id,
+        event: params.name,
+        args,
+        url,
+        encryptedSecret: verified ? existing.encryptedSecret : await secretBox().seal(secret),
+        subscriber,
+        createdAt: existing?.createdAt ?? new Date(now).toISOString(),
+        expiresAt,
+      },
+      { limit: maxSubscriptions },
+    );
+    // Two concurrent subscribes can both pass the check above; the store's own check is atomic.
+    if (!stored) throw limitReached(maxSubscriptions);
     return {
       id,
       refreshBefore: new Date(expiresAt - Math.min(granted / 10, DAY_MS)).toISOString(),
@@ -337,7 +364,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       // The id includes the caller, so a caller can only ever remove their own subscription.
       const args = parsed.data as Record<string, unknown>;
       const id = await subscriptionId(subscriber, params.delivery.url, params.name, args);
-      await store.delete({ id, event: params.name });
+      await store.delete({ id, event: params.name, subscriber });
     }
     return {};
   }
@@ -413,14 +440,30 @@ export async function subscriptionId(
   return `sub_${(await sha256Hex(canonicalJson([subscriber, url, event, args]))).slice(0, 32)}`;
 }
 
-/** The payload's values for the event's input fields: what an emit is routed and authorized by. */
-function valuesOf(input: EventInputSchema, payload: unknown): Record<string, unknown> {
+/**
+ * The payload's values for the event's input fields, parsed with the input schema: what an emit is
+ * routed and authorized by. Parsing applies the same transforms a subscription's arguments went
+ * through, so the two compare like for like, and `authorize` gets the type it declares. Throws
+ * when the payload's values don't fit the input schema, which means the definition is inconsistent.
+ */
+function projection(
+  definition: Definition,
+  name: string,
+  payload: unknown,
+): Record<string, unknown> {
   const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
-  return Object.fromEntries(
-    Object.keys(input.shape)
+  const values = Object.fromEntries(
+    Object.keys(definition.input.shape)
       .filter((key) => record[key] !== undefined)
       .map((key) => [key, record[key]]),
   );
+  const parsed = definition.input.safeParse(values);
+  if (!parsed.success) {
+    throw new Error(
+      `Event "${name}": the payload's input fields don't fit the input schema: ${parsed.error.message}`,
+    );
+  }
+  return parsed.data as Record<string, unknown>;
 }
 
 /** A subscription matches when the event has every value it filtered on. */
@@ -445,6 +488,13 @@ function jsonSchema(schema: z.ZodType, io: "input" | "output"): Record<string, u
 
 function invalid(message: string, reason: string): ProtocolError {
   return new ProtocolError(INVALID_PARAMS, message, { reason });
+}
+
+function limitReached(max: number): ProtocolError {
+  return invalid(
+    `Subscription limit reached: at most ${max} live subscriptions per subscriber`,
+    "subscription_limit",
+  );
 }
 
 function notAuthenticated(): ProtocolError {

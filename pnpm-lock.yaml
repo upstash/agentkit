@@ -416,7 +416,7 @@ importers:
         specifier: ^2.11.3
         version: 2.12.0
       '@upstash/redis':
-        specifier: ^1.38.0
+        specifier: ^1.38.4
         version: 1.38.4
       '@upstash/workflow':
         specifier: ^1.3.3

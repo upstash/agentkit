@@ -161,6 +161,7 @@ export default function Page() {
                     key={key}
                     type="button"
                     className={`driver ${server === key ? "on" : ""}`}
+                    aria-pressed={server === key}
                     onClick={() => setServer(key)}
                   >
                     {SERVERS[key].label}

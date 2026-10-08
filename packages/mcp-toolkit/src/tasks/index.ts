@@ -8,6 +8,7 @@ export {
   type TaskLayer,
   type TaskLayerOptions,
   type TaskToolConfig,
+  type TaskAuthorizeCaller,
 } from "./core.js";
 
 export type { Caller, PrincipalResolver } from "../shared/auth.js";

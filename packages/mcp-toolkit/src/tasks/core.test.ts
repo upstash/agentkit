@@ -416,6 +416,57 @@ describe("createTaskLayer over MCP", () => {
       expect(text(await live.status(taskId, "alice"))).toMatch(/Unknown task/);
     });
 
+    it("hands the handler the principal that started the task", async () => {
+      const seen: string[] = [];
+      live = await harness(async (_args, task) => {
+        seen.push(task.principal);
+        return {};
+      });
+      await live.start("x", "alice");
+      await live.start("x", "bob");
+      await live.dispatcher.drain();
+      expect(seen.sort()).toEqual(["alice", "bob"]);
+    });
+
+    it("runs authorize with the args, principal and auth before storing anything", async () => {
+      const calls: { args: unknown; principal: string; userId: unknown }[] = [];
+      const ran: string[] = [];
+      live = await harness(
+        async ({ topic }) => {
+          ran.push(topic);
+          return {};
+        },
+        {},
+        {
+          authorize: ({ topic }, { principal, auth }) => {
+            calls.push({ args: { topic }, principal, userId: auth?.extra?.userId });
+            return topic !== "secret";
+          },
+        },
+      );
+      const refused = await live.call("generate_report", { topic: "secret" }, "alice");
+      expect(refused.isError).toBe(true);
+      expect(text(refused)).toMatch(/Not authorized/);
+      expect(refused.structuredContent).toBeUndefined();
+
+      const allowed = await live.start("open", "alice");
+      await live.dispatcher.drain();
+      expect(ran).toEqual(["open"]);
+      expect((await live.store.get(allowed))?.status).toBe("completed");
+      expect(calls).toEqual([
+        { args: { topic: "secret" }, principal: "alice", userId: "alice" },
+        { args: { topic: "open" }, principal: "alice", userId: "alice" },
+      ]);
+    });
+
+    it("does not ask authorize for a caller it cannot identify", async () => {
+      let asked = false;
+      live = await harness(steppedHandler(1, 1), {}, { authorize: () => (asked = true) });
+      const result = await live.call("generate_report", { topic: "x" }, null);
+      expect(text(result)).toMatch(/Not authenticated/);
+      expect(asked).toBe(false);
+    });
+
     it("requires a principal", () => {
       expect(() =>
         createTaskLayer({
@@ -538,6 +589,16 @@ describe("createTaskLayer over MCP", () => {
     const result = await live.call("generate_report", { topic: "x" });
     expect(result.structuredContent).toMatchObject({ ttlMs: 60_000, pollIntervalMs: 5_000 });
     await live.dispatcher.drain();
+  });
+
+  it("refuses defaults that aren't positive whole milliseconds", () => {
+    const base = { store: new MemoryTaskStore(), dispatcher: new InlineDispatcher(), principal };
+    for (const bad of [0, -1, 1.5, Number.NaN, Infinity]) {
+      expect(() => createTaskLayer({ ...base, defaults: { ttlMs: bad } })).toThrow(/ttlMs/);
+      expect(() => createTaskLayer({ ...base, defaults: { pollIntervalMs: bad } })).toThrow(
+        /pollIntervalMs/,
+      );
+    }
   });
 
   it("infers handler argument types from the input schema", async () => {

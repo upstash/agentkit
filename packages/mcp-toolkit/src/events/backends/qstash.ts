@@ -35,8 +35,31 @@ export type RedisSubscriptionStoreConfig = {
 };
 
 /**
- * One key per subscription, expiring with it, plus one sorted set per event scored by expiry. An
- * emit reads the event's live subscriptions, and the layer keeps those whose arguments match.
+ * Stores a subscription unless that would put its subscriber over the limit. Keys: the record, the
+ * event's index, the subscriber's index. Args: record JSON, ttl ms, expiresAt, now, id, limit (-1:
+ * none). Both indexes are sorted sets scored by expiry; expired entries are pruned first, so only
+ * live subscriptions count. Returns 1 when stored, 0 when refused.
+ */
+const PUT_SCRIPT = `#!lua flags=allow-key-locking
+redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', ARGV[4])
+local limit = tonumber(ARGV[6])
+if limit >= 0 and not redis.call('ZSCORE', KEYS[3], ARGV[5])
+  and redis.call('ZCARD', KEYS[3]) >= limit then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+redis.call('ZADD', KEYS[2], ARGV[3], ARGV[5])
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[4])
+redis.call('ZADD', KEYS[3], ARGV[3], ARGV[5])
+local last = redis.call('ZRANGE', KEYS[3], -1, -1, 'WITHSCORES')
+redis.call('PEXPIREAT', KEYS[3], last[2])
+return 1
+`;
+
+/**
+ * One key per subscription, expiring with it, plus a sorted set per event and one per subscriber,
+ * scored by expiry. An emit reads the event's live subscriptions, and the layer keeps those whose
+ * arguments match; the subscriber's set enforces the per-subscriber limit.
  */
 export class RedisSubscriptionStore implements SubscriptionStore {
   private readonly prefix: string;
@@ -49,25 +72,48 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     );
   }
 
-  async put(subscription: Subscription): Promise<void> {
+  async put(subscription: Subscription, options: { limit: number }): Promise<boolean> {
     const now = Date.now();
     const ttl = subscription.expiresAt - now;
-    if (ttl <= 0) return;
-    const index = this.indexKey(subscription.event);
-    await this.redis()
-      .multi()
-      .set(this.subKey(subscription.id), JSON.stringify(subscription), { px: ttl })
-      .zadd(index, { score: subscription.expiresAt, member: subscription.id })
-      .zremrangebyscore(index, "-inf", now)
-      .exec();
+    if (ttl <= 0) return true; // already expired: nothing to keep, and not a limit problem
+    const stored = await this.redis().eval<string[], number>(
+      PUT_SCRIPT,
+      [
+        this.subKey(subscription.id),
+        this.indexKey(subscription.event),
+        this.subscriberKey(subscription.subscriber),
+      ],
+      [
+        JSON.stringify(subscription),
+        String(ttl),
+        String(subscription.expiresAt),
+        String(now),
+        subscription.id,
+        String(Number.isFinite(options.limit) ? options.limit : -1),
+      ],
+    );
+    return Number(stored) === 1;
   }
 
   async get(id: string): Promise<Subscription | null> {
     return parse(await this.redis().get<unknown>(this.subKey(id)));
   }
 
-  async delete({ id, event }: Pick<Subscription, "id" | "event">): Promise<void> {
-    await this.redis().multi().del(this.subKey(id)).zrem(this.indexKey(event), id).exec();
+  async count(subscriber: string): Promise<number> {
+    return await this.redis().zcount(this.subscriberKey(subscriber), Date.now(), "+inf");
+  }
+
+  async delete({
+    id,
+    event,
+    subscriber,
+  }: Pick<Subscription, "id" | "event" | "subscriber">): Promise<void> {
+    await this.redis()
+      .multi()
+      .del(this.subKey(id))
+      .zrem(this.indexKey(event), id)
+      .zrem(this.subscriberKey(subscriber), id)
+      .exec();
   }
 
   async find(event: string): Promise<Subscription[]> {
@@ -92,6 +138,10 @@ export class RedisSubscriptionStore implements SubscriptionStore {
   private indexKey(event: string): string {
     return `${this.prefix}idx:${event}`;
   }
+
+  private subscriberKey(subscriber: string): string {
+    return `${this.prefix}by:${subscriber}`;
+  }
 }
 
 function parse(raw: unknown): Subscription | null {
@@ -115,7 +165,7 @@ export type QStashDeliveryConfig = {
   enableTelemetry?: boolean;
 };
 
-/** Every webhook delivery as a QStash message: durable, deduplicated, retried with backoff. */
+/** Every webhook delivery as a QStash message: durable and retried with backoff. */
 export class QStashDelivery implements EventDelivery {
   private readonly config: QStashDeliveryConfig;
   private readonly qstash: () => QStashClient;
@@ -136,8 +186,6 @@ export class QStashDelivery implements EventDelivery {
           url: this.config.url,
           body: job,
           retries: DELIVERY_RETRIES,
-          // Emitting the same event id twice must not POST twice. QStash refuses ':' in ids.
-          deduplicationId: `${job.envelope.eventId}_${job.subscriptionId}`.replace(/[^\w.-]/g, "-"),
         })),
       );
     }

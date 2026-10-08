@@ -265,8 +265,17 @@ export class InlineDispatcher extends ManualDispatcher {
 export class MemorySubscriptionStore implements SubscriptionStore {
   readonly subscriptions = new Map<string, Subscription>();
 
-  async put(subscription: Subscription): Promise<void> {
+  async put(subscription: Subscription, options: { limit: number }): Promise<boolean> {
+    const replacing = this.subscriptions.has(subscription.id);
+    if (!replacing && (await this.count(subscription.subscriber)) >= options.limit) return false;
     this.subscriptions.set(subscription.id, { ...subscription });
+    return true;
+  }
+
+  async count(subscriber: string): Promise<number> {
+    return [...this.subscriptions.values()].filter(
+      (sub) => sub.subscriber === subscriber && sub.expiresAt > Date.now(),
+    ).length;
   }
 
   async get(id: string): Promise<Subscription | null> {

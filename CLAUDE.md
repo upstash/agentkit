@@ -762,11 +762,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `dispatcher.cancel(taskId)` when the returned status is `cancelled` — `cancel` must be
   idempotent. There is no `dispatchId`: `QStashDispatcher.cancel` is a no-op (a redelivery of a
   cancelled task finds it settled and does nothing), Workflow's run id is the task id.
-- **Dispatch dedupe on the task id:** QStash `deduplicationId` and Workflow `workflowRunId` are the
-  task id. That is only safe because ids
-  are random: if keyed (deterministic) ids ever come back, dedupe must move to a per-record key
-  (taskId + createdAt), since QStash keeps dedup ids for 10 minutes and Workflow refuses a reused
-  run id. A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
+- **No QStash `deduplicationId`** (tasks or events): the layer dispatches each task once, and an
+  event's id reaches the host as `webhook-id`, which is where Standard Webhooks dedupes. Workflow's
+  `workflowRunId` is the task id; that is only safe because ids are random (Workflow refuses a
+  reused run id). A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
 - **Workflow context is inferred** from the dispatcher (`TaskDispatcher<TContext>`), so
   `createTaskLayer({ dispatcher: new WorkflowDispatcher(...) })` types `task.run` / `task.sleep` with
   no type argument; a test in `workflow.test.ts` keeps it that way.
@@ -873,8 +872,14 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   **every IP literal** (v4 after the URL parser's normalization, and any `[…]` v6) plus
   localhost/single-label/`.local`/`.internal`; the old private-range/NAT64/6to4 parser is gone.
   It does not resolve DNS. Bad params are `-32602` with a `reason`.
-  **QStash `deduplicationId` cannot contain `:`** (dev server answers 400) — ids are
-  `${eventId}_${subscriptionId}` sanitized; this was caught only by the e2e smoke.
+  **Subscription limit:** `maxSubscriptions` (default 8, `Infinity` = off) live subscriptions per
+  subscriber across all events. The layer checks `store.count` before the challenge (no outbound
+  POST for a caller at the limit), and `put(sub, { limit })` re-checks atomically (Redis: one Lua
+  script over `idx:<event>` and `by:<subscriber>`). Refreshes never count. Routing and delivery-time
+  `authorize` use the payload's input fields *parsed with `input`* (`projection`), so transforms
+  match on both sides; a payload that doesn't fit `input` makes `emit` throw.
+  QStash `deduplicationId` cannot contain `:` (dev server answers 400), one more reason not to
+  derive it from caller-chosen event ids.
 - **Local dev needs the QStash dev server** (`npx @upstash/qstash-cli dev`) — it prints deterministic
   creds. `APP_URL` must be reachable *from QStash*.
 

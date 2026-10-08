@@ -154,7 +154,6 @@ export class QStashDispatcher implements TaskDispatcher {
       retryDelay: this.config.retryDelay ?? DEFAULT_RETRY_DELAY,
       // Comes back to the same route once retries are exhausted, and settles the task `failed`.
       failureCallback: this.config.url,
-      deduplicationId: task.taskId,
     });
   }
 

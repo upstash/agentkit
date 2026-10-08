@@ -361,7 +361,7 @@ describe("emit", () => {
     }
   });
 
-  it("uses a given eventId, so a repeated emit can be deduplicated", async () => {
+  it("uses a given eventId, so the host can drop a repeated emit", async () => {
     const { subscribe, commentCreated, receiver } = setup();
     await subscribe({ documentId: "d" });
     const result = await commentCreated.emit(
@@ -550,6 +550,53 @@ describe("access across users", () => {
   });
 });
 
+describe("subscription limit", () => {
+  it("allows 8 live subscriptions per subscriber by default, and refuses the 9th unchallenged", async () => {
+    const { subscribe, receiver } = setup();
+    for (let i = 0; i < 8; i++) {
+      expect((await subscribe({ documentId: `d${i}` })).error).toBeUndefined();
+    }
+    const challenges = receiver.received.length;
+    const ninth = await subscribe({ documentId: "d8" });
+    expect(ninth.error?.data?.reason).toBe("subscription_limit");
+    // Refused before the challenge: a caller at the limit can't make the server POST anywhere.
+    expect(receiver.received).toHaveLength(challenges);
+    // Other subscribers have their own allowance.
+    expect((await subscribe({ documentId: "d8" }, { user: "bob" })).error).toBeUndefined();
+  });
+
+  it("still lets a subscriber at the limit refresh, and frees a slot on unsubscribe", async () => {
+    const { subscribe, unsubscribe } = setup({ maxSubscriptions: 2 });
+    const first = await subscribe({ documentId: "a" });
+    await subscribe({ documentId: "b" });
+    expect((await subscribe({ documentId: "c" })).error?.data?.reason).toBe("subscription_limit");
+
+    const refresh = await subscribe({ documentId: "a" }, { url: first.url, secret: first.secret });
+    expect(refresh.error).toBeUndefined();
+
+    await unsubscribe({ documentId: "a" }, first.url);
+    expect((await subscribe({ documentId: "c" })).error).toBeUndefined();
+  });
+
+  it("counts only live subscriptions", async () => {
+    const { subscribe, store } = setup({ maxSubscriptions: 1 });
+    const first = await subscribe({ documentId: "a" });
+    const stored = (await store.get(String(first.result?.id)))!;
+    store.subscriptions.set(stored.id, { ...stored, expiresAt: Date.now() - 1 });
+    expect((await subscribe({ documentId: "b" })).error).toBeUndefined();
+  });
+
+  it("is configurable, and can be turned off", async () => {
+    const { subscribe } = setup({ maxSubscriptions: Infinity });
+    for (let i = 0; i < 12; i++) {
+      expect((await subscribe({ documentId: `d${i}` })).error).toBeUndefined();
+    }
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => setup({ maxSubscriptions: bad })).toThrow(/maxSubscriptions/);
+    }
+  });
+});
+
 describe("define", () => {
   it("requires authorize", () => {
     const { events } = setup();
@@ -576,6 +623,37 @@ describe("define", () => {
     await subscribe({ documentId: "doc_8" });
     await commentCreated.emit({ documentId: "doc_9", author: "a", text: "t" });
     expect(receiver.deliveries().map((d) => d.url)).toEqual([sub.url]);
+  });
+});
+
+describe("routing through the input schema", () => {
+  it("applies the input's transforms to the payload's values before matching and authorizing", async () => {
+    const { events, subscribe, receiver } = setup();
+    const seen: unknown[] = [];
+    const pushed = events.define("repo.pushed", {
+      description: "A push.",
+      input: z.object({ repo: z.string().trim().toLowerCase() }),
+      payload: z.object({ repo: z.string(), sha: z.string() }),
+      authorize: (args) => {
+        seen.push(args.repo);
+        return true;
+      },
+    });
+    await subscribe({ repo: "Upstash/AgentKit" }, { name: "repo.pushed" });
+    await pushed.emit({ repo: " UPSTASH/agentkit", sha: "abc" });
+    expect(receiver.deliveries()).toHaveLength(1);
+    expect(seen).toEqual(["upstash/agentkit", "upstash/agentkit"]);
+  });
+
+  it("refuses an emit whose values don't fit the input schema", async () => {
+    const { events } = setup();
+    const build = events.define("build.done", {
+      description: "A build.",
+      input: z.object({ id: z.number() }),
+      payload: z.object({ id: z.string() }),
+      authorize: () => true,
+    });
+    await expect(build.emit({ id: "x" })).rejects.toThrow(/don't fit the input schema/);
   });
 });
 
@@ -689,7 +767,10 @@ describe("the secret key", () => {
     const sub = await subscribe({ documentId: "d" });
     const stored = (await store.get(String(sub.result?.id)))!;
     const otherKey = new SecretBox(Buffer.alloc(32, 9).toString("base64"));
-    await store.put({ ...stored, encryptedSecret: await otherKey.seal(sub.secret) });
+    await store.put(
+      { ...stored, encryptedSecret: await otherKey.seal(sub.secret) },
+      { limit: Infinity },
+    );
 
     await commentCreated.emit({ documentId: "d", author: "a", text: "x" });
     expect(receiver.deliveries()).toHaveLength(0);

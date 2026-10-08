@@ -35,14 +35,14 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
 
   it("round-trips a subscription, keeping a numeric-looking subscriber a string", async () => {
     const sub = makeSub();
-    await store.put(sub);
+    await store.put(sub, { limit: Infinity });
     expect(await store.get(sub.id)).toEqual(sub);
     expect(await store.get("sub_missing")).toBeNull();
   });
 
   it("expires the record with the subscription", async () => {
     const sub = makeSub({ expiresAt: Date.now() + 30_000 });
-    await store.put(sub);
+    await store.put(sub, { limit: Infinity });
     const pttl = await redis.pttl(subKey(sub.id));
     expect(pttl).toBeGreaterThan(0);
     expect(pttl).toBeLessThanOrEqual(30_000);
@@ -53,7 +53,7 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     const one = makeSub({ event: "find", args: { repo: "a" } });
     const elsewhere = makeSub({ event: "other", args: {} });
     const expired = makeSub({ event: "find" });
-    for (const sub of [all, one, elsewhere]) await store.put(sub);
+    for (const sub of [all, one, elsewhere]) await store.put(sub, { limit: Infinity });
     // Written live, then left in the index past its expiry.
     await redis.zadd(indexKey("find"), { score: Date.now() - 1, member: expired.id });
 
@@ -68,7 +68,7 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
       makeSub({ event: "popular", args: {}, subscriber: `member-${i}` }),
     );
     for (let i = 0; i < subs.length; i += 100) {
-      await Promise.all(subs.slice(i, i + 100).map((sub) => store.put(sub)));
+      await Promise.all(subs.slice(i, i + 100).map((sub) => store.put(sub, { limit: Infinity })));
     }
     const found = await store.find("popular");
     expect(found).toHaveLength(1100);
@@ -77,21 +77,54 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
 
   it("refreshing replaces the record and keeps one index entry", async () => {
     const sub = makeSub({ event: "refresh", expiresAt: Date.now() + 10_000 });
-    await store.put(sub);
-    await store.put({ ...sub, expiresAt: Date.now() + 50_000 });
+    await store.put(sub, { limit: Infinity });
+    await store.put({ ...sub, expiresAt: Date.now() + 50_000 }, { limit: Infinity });
     expect((await store.get(sub.id))?.expiresAt).toBeGreaterThan(Date.now() + 40_000);
     expect(await store.find("refresh")).toHaveLength(1);
   });
 
   it("prunes expired index entries on the next write", async () => {
     await redis.zadd(indexKey("prune"), { score: Date.now() - 1000, member: "sub_old" });
-    await store.put(makeSub({ event: "prune" }));
+    await store.put(makeSub({ event: "prune" }), { limit: Infinity });
     expect(await redis.zscore(indexKey("prune"), "sub_old")).toBeNull();
+  });
+
+  it("refuses a new subscription past the subscriber's limit, atomically, but allows a refresh", async () => {
+    const subscriber = `limited-${Date.now()}`;
+    const [a, b, c] = [1, 2, 3].map((i) => makeSub({ event: `limit-${i}`, subscriber }));
+    expect(await store.put(a!, { limit: 2 })).toBe(true);
+    expect(await store.put(b!, { limit: 2 })).toBe(true);
+    expect(await store.count(subscriber)).toBe(2);
+    expect(await store.put(c!, { limit: 2 })).toBe(false);
+    expect(await store.get(c!.id)).toBeNull();
+    expect(await store.find("limit-3")).toEqual([]);
+    // Replacing one of theirs is not a new subscription.
+    expect(await store.put({ ...a!, expiresAt: Date.now() + 90_000 }, { limit: 2 })).toBe(true);
+    // Concurrent puts can't overshoot: the check and the write are one script.
+    const racers = Array.from({ length: 5 }, (_, i) =>
+      makeSub({ event: `race-${i}`, subscriber: `${subscriber}-race` }),
+    );
+    const results = await Promise.all(racers.map((sub) => store.put(sub, { limit: 2 })));
+    expect(results.filter(Boolean)).toHaveLength(2);
+    expect(await store.count(`${subscriber}-race`)).toBe(2);
+  });
+
+  it("frees a slot on delete and when a subscription expires", async () => {
+    const subscriber = `freed-${Date.now()}`;
+    const a = makeSub({ event: "freed", subscriber });
+    await store.put(a, { limit: 1 });
+    await store.delete(a);
+    expect(await store.count(subscriber)).toBe(0);
+    const b = makeSub({ event: "freed", subscriber, expiresAt: Date.now() + 1_500 });
+    expect(await store.put(b, { limit: 1 })).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 1_700));
+    expect(await store.count(subscriber)).toBe(0);
+    expect(await store.put(makeSub({ event: "freed", subscriber }), { limit: 1 })).toBe(true);
   });
 
   it("deletes the record and its index entry", async () => {
     const sub = makeSub({ event: "delete" });
-    await store.put(sub);
+    await store.put(sub, { limit: Infinity });
     await store.delete(sub);
     expect(await store.get(sub.id)).toBeNull();
     expect(await store.find("delete")).toEqual([]);
@@ -171,7 +204,7 @@ describe("QStashDelivery", () => {
     expect(sent).toEqual([]);
   });
 
-  it("publishes one deduplicated message per subscription, in batches of 100", async () => {
+  it("publishes one message per subscription, in batches of 100", async () => {
     const batches: Record<string, unknown>[][] = [];
     const qstash = {
       batchJSON: async (messages: Record<string, unknown>[]) => {
@@ -187,7 +220,7 @@ describe("QStashDelivery", () => {
       url: URL,
       body: jobs[0],
       retries: 3,
-      deduplicationId: "evt_1_sub_0",
     });
+    expect(batches[0]?.[0]).not.toHaveProperty("deduplicationId");
   });
 });

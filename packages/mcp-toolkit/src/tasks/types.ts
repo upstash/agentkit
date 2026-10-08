@@ -69,7 +69,7 @@ export interface TaskStore {
  * nothing for a queue, the `WorkflowContext` for Upstash Workflow.
  */
 export interface TaskDispatcher<TContext = unknown> {
-  /** Durably accepts a delivery. Must be idempotent per task id. */
+  /** Durably accepts a delivery. The layer calls it once per task. */
   dispatch(task: Task): Promise<void>;
 
   /** Stops pending deliveries, when the transport can. Idempotent. */
@@ -93,6 +93,11 @@ export type TaskJournal = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 /** What every handler is handed, whatever the transport. */
 export type TaskContext = {
   taskId: string;
+  /**
+   * The caller that started the task: what `principal` returned for that call. Use it to scope
+   * what the handler touches to that user; never take a user id from the tool arguments.
+   */
+  principal: string;
   /** Publishes a progress line that the next `task_status` poll will see. */
   update(statusMessage: string): Promise<void>;
   /** True once the client cancelled, or the record expired. Cooperative: check at step boundaries. */

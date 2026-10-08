@@ -320,7 +320,7 @@ describe("QStashDispatcher.createExecuteHandler", () => {
 });
 
 describe("QStashDispatcher.dispatch", () => {
-  it("deduplicates on the task id and publishes only the id", async () => {
+  it("publishes only the task id", async () => {
     const published: Record<string, unknown>[] = [];
     const qstash = {
       publishJSON: async (options: Record<string, unknown>) => {
@@ -332,8 +332,7 @@ describe("QStashDispatcher.dispatch", () => {
 
     const task = makeTask();
     await dispatcher.dispatch(task);
-    // Deduplicated on the task id, so a double dispatch of one task is delivered once.
-    expect(published[0]?.deduplicationId).toBe(task.taskId);
+    expect(published[0]).not.toHaveProperty("deduplicationId");
     expect(published[0]?.body).toEqual({ taskId: task.taskId });
     expect(published[0]?.failureCallback).toBe("https://example.com/api/execute");
   });

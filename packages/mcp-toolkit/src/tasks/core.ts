@@ -5,10 +5,12 @@
  */
 import type { McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import * as z from "zod";
+import type { AuthInfo } from "@modelcontextprotocol/server";
 import {
   callerOf,
   requirePrincipal,
   resolvePrincipal,
+  type Caller,
   type PrincipalResolver,
 } from "../shared/auth.js";
 import { INTERNAL_ERROR } from "../shared/env.js";
@@ -54,6 +56,23 @@ export type TaskToolConfig<Schema extends StandardSchemaWithJSON> = {
   inputSchema: Schema;
   /** Status message on success. Defaults to `"Completed"`. */
   completedMessage?: string;
+  /**
+   * Whether this caller may start the task with these arguments, e.g. whether they can write to
+   * the workspace the arguments name. Runs before anything is stored or queued; `false` refuses
+   * the call. Optional: without it, any authenticated caller may start the task. The handler also
+   * gets `task.principal`, for checks that belong in the work itself.
+   */
+  authorize?: (args: InferArgs<Schema>, caller: TaskAuthorizeCaller) => boolean | Promise<boolean>;
+};
+
+/** What a task's `authorize` is told about the caller. */
+export type TaskAuthorizeCaller = {
+  /** The caller's id, from `principal`. */
+  principal: string;
+  /** The verified `AuthInfo` your route passed to the SDK, if any. */
+  auth: AuthInfo | undefined;
+  /** The raw, unverified HTTP request. */
+  request: Request | undefined;
 };
 
 type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
@@ -103,15 +122,19 @@ export function createTaskLayer<TContext = unknown>(
 ): TaskLayer<TContext> {
   const { store, dispatcher } = options;
   const principal = requirePrincipal(options.principal, "createTaskLayer");
-  const ttlMs = options.defaults?.ttlMs ?? DEFAULT_TTL_MS;
-  const pollIntervalMs = options.defaults?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const ttlMs = positiveInteger(options.defaults?.ttlMs ?? DEFAULT_TTL_MS, "defaults.ttlMs");
+  const pollIntervalMs = positiveInteger(
+    options.defaults?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+    "defaults.pollIntervalMs",
+  );
   // Keyed by tool name: a delivery only carries a task id, and the record names its tool.
   const definitions = new Map<
     string,
     { config: TaskToolConfig<StandardSchemaWithJSON>; handler: TaskHandler<unknown, TContext> }
   >();
 
-  const callerId = (context: unknown) => resolvePrincipal(principal, callerOf(context));
+  const callerId = (context: unknown, caller: Caller = callerOf(context)) =>
+    resolvePrincipal(principal, caller);
 
   function define<Schema extends StandardSchemaWithJSON>(
     name: string,
@@ -194,8 +217,13 @@ export function createTaskLayer<TContext = unknown>(
   }
 
   async function startTask(name: string, args: unknown, context: unknown) {
-    const owner = await callerId(context);
+    const caller = callerOf(context);
+    const owner = await callerId(context, caller);
     if (!owner) return errorResult(NOT_AUTHENTICATED);
+    const authorize = definitions.get(name)?.config.authorize;
+    if (authorize && !(await authorize(args, { principal: owner, ...caller }))) {
+      return errorResult(NOT_AUTHORIZED);
+    }
     const now = new Date().toISOString();
     const task: Task = {
       taskId: crypto.randomUUID(),
@@ -256,6 +284,7 @@ export function createTaskLayer<TContext = unknown>(
     let writes = 0;
     const taskContext: TaskContext = {
       taskId,
+      principal: task.owner,
       update: async (statusMessage) => {
         const write = () => store.update(taskId, { statusMessage });
         await (journal ? journal(`mcp-task:update:${++writes}`, write) : write());
@@ -290,6 +319,15 @@ export function createTaskLayer<TContext = unknown>(
 }
 
 const NOT_AUTHENTICATED = "Not authenticated: this server could not identify the caller.";
+const NOT_AUTHORIZED = "Not authorized to start this task with these arguments.";
+
+/** Validates a duration option: a positive, finite whole number of milliseconds. */
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`createTaskLayer: ${name} must be a positive whole number of milliseconds`);
+  }
+  return value;
+}
 
 const unknownTask = (taskId: string) =>
   `Unknown task: ${taskId}. It may have expired, or the id may be wrong.`;

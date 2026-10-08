@@ -121,6 +121,27 @@ progress, then the handler's result) and `task_cancel`. To stop a cancelled task
 `await task.isCancelled()` between steps. Cancelling is cooperative, so running code only stops
 where it checks.
 
+**Check what the arguments point at.** The model fills in tool arguments, so a `workspaceId` in
+them is whatever it was told. Give the task an `authorize`, which runs before the task is stored or
+queued, and use `task.principal` (the user who started the task) inside the handler. Never take a
+user id from the arguments:
+
+```ts
+tasks.define(
+  "export_workspace",
+  {
+    description: "Exports a workspace to CSV.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    // May this user export this workspace? `false` refuses the call.
+    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const csv = await exportWorkspace(workspaceId, { as: task.principal });
+    return { content: [{ type: "text", text: csv }] };
+  },
+);
+```
+
 <details>
 <summary><b>What the model sees</b></summary>
 
@@ -166,9 +187,13 @@ export const tasks = createTaskLayer({
 
 tasks.define(
   "migrate_workspace",
-  { description: "Copies a workspace to new storage.", inputSchema: z.object({ workspaceId: z.string() }) },
+  {
+    description: "Copies a workspace to new storage.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+  },
   async ({ workspaceId }, task) => {
-    const batches = await task.run("plan", () => listBatches(workspaceId));
+    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
     for (const [i, batch] of batches.entries()) {
       if (await task.isCancelled()) return {};
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
@@ -278,8 +303,10 @@ the event id stays the same across retries so the host can drop duplicates.
 <summary><b>Matching and <code>authorize</code></b></summary>
 
 Every `input` field must also be a `payload` field: the payload is the one place an event's values
-come from, and the same values are used to route it and to authorize it. A subscription matches
-when each argument it gave equals the payload's value. Emitting
+come from, and the same values are used to route it and to authorize it. The payload's values for
+the input fields are parsed with the `input` schema, so its transforms apply on both sides and
+`authorize` gets the types it declares. A subscription matches when each argument it gave equals
+the payload's value. Emitting
 `{ documentId: "doc_123", text }` reaches subscribers of `{ documentId: "doc_123" }` and of `{}`.
 
 `authorize(args, caller)` runs twice:
@@ -294,8 +321,8 @@ when each argument it gave equals the payload's value. Emitting
 
 `() => true` lets every authenticated subscriber hear every matching event.
 
-Pass `{ eventId }` as the second argument to `emit` to deduplicate: emitting the same id twice
-delivers once.
+Pass `{ eventId }` as the second argument to `emit` to give an event a stable id. It is sent as
+`webhook-id`, so a host drops a second emit with the same id as a duplicate.
 
 </details>
 
@@ -318,6 +345,11 @@ delivers once.
   random bytes. A refresh with the same secret skips the challenge. If you rotate the key, stored
   subscriptions stop receiving events until the host refreshes them.
 - **Lifetime.** A subscription lasts 7 days by default and 30 days at most.
+- **How many.** A subscriber holds at most 8 live subscriptions across all events (set
+  `maxSubscriptions`; `Infinity` turns it off). Past that, a new subscribe is refused before the
+  callback is challenged, with reason `subscription_limit`; refreshing an existing one still works.
+  Each subscription is a webhook per matching emit, so this bounds what one user can make your
+  server send.
 - **Host answers.** `410` deletes the subscription, `413` and redirects drop the event, and any
   other error is retried.
 - **Not implemented:** the draft's poll and stream delivery modes (`events/subscribe` refuses
@@ -341,7 +373,9 @@ subscribe yet. The spec draft is
 <details>
 <summary><b>Who can see what</b></summary>
 
-**Tasks.** The server sets the owner from `principal`, and no tool argument can set it.
+**Tasks.** The server sets the owner from `principal`, and no tool argument can set it. Whether a
+caller may start a task with given arguments is your `authorize`; the handler gets the owner as
+`task.principal`.
 `task_status` and `task_cancel` only accept UUID task ids, and compare the stored owner with the
 caller. For anyone else, the task looks exactly like an unknown id, so they can't even tell it
 exists. Task ids are random UUIDs. No tool lists tasks, and the execute route only accepts signed
@@ -375,8 +409,9 @@ Treat the Redis credentials like any other production secret.
 - A Redis client built with `automaticDeserialization: false` is not supported.
 
 **`mcp-events:sub:<id>`**: the subscription (`event`, `args`, `url`, `encryptedSecret`,
-`subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`**: a sorted
-set of the event's subscription ids, scored by expiry.
+`subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** and
+**`mcp-events:by:<subscriber>`**: sorted sets of the event's and the subscriber's subscription ids,
+scored by expiry. The second one enforces the limit.
 
 **Not in Redis.** A task message in QStash carries only `{ taskId }`. An event message carries the
 full payload, which stays in QStash (and in its DLQ, if every retry fails) until it is delivered.
@@ -389,13 +424,13 @@ The toolkit never stores the caller's token, the request, the plaintext webhook 
 <summary><b>All options</b></summary>
 
 **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
-`defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2s).
+`defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2s), in positive whole milliseconds.
 
 **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
-`title`, `completedMessage`.
+`title`, `completedMessage`, `authorize(args, { principal, auth, request })`.
 
 **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
-unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `allowInsecureCallbacks`.
+unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8), `allowInsecureCallbacks`.
 
 **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
 Optional: `title`, `input`.
@@ -436,15 +471,17 @@ interface TaskStore {
 }
 
 interface TaskDispatcher<TContext = unknown> {
-  dispatch(task: Task): Promise<void>; // idempotent per task id
+  dispatch(task: Task): Promise<void>; // called once per task
   cancel(taskId: string): Promise<void>;
   createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
 }
 
 interface SubscriptionStore {
-  put(subscription: Subscription): Promise<void>;
+  // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+  put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
   get(id: string): Promise<Subscription | null>;
-  delete(subscription: { id: string; event: string }): Promise<void>;
+  count(subscriber: string): Promise<number>; // live subscriptions, across all events
+  delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
   find(event: string): Promise<Subscription[]>; // every live subscription to the event
 }
 
