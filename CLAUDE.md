@@ -729,6 +729,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   ids are always `crypto.randomUUID()`, so `TaskStore.create` is a plain `MULTI` (`HSET` +
   `PEXPIRE`) returning `void` — no create-if-absent script, since a collision cannot happen.
   `ttlMs` is always a positive number (`null` = unlimited was removed: it let tasks live forever).
+- **Default task TTL is 1 day (changed 2026-10-08 from 5 minutes).** The TTL counts from creation
+  and is never extended, so 5 minutes let a slow task plus its QStash retries expire mid-run and
+  read as "unknown task". The demo servers use the default.
 - **Signing keys required, no fail-open.** `QStashDispatcher`, `WorkflowDispatcher` and
   `QStashDelivery` verify with `receiver` or a `Receiver` from the `QSTASH_*_SIGNING_KEY` env vars,
   and throw on the first request when neither exists (resolved outside the verify `try`, so it is

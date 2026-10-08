@@ -22,7 +22,8 @@ import type {
   WireTask,
 } from "./types.js";
 
-const DEFAULT_TTL_MS = 300_000;
+/** One day: long enough for slow work plus retries, and for the model to come back for the result. */
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const STATUS_TOOL = "task_status";
 const CANCEL_TOOL = "task_cancel";
@@ -38,7 +39,7 @@ export type TaskLayerOptions<TContext = unknown> = {
    */
   principal: PrincipalResolver;
   defaults?: {
-    /** Retention window from creation. Defaults to 5 minutes. */
+    /** Retention window from creation. Defaults to 1 day. */
     ttlMs?: number;
     /** Poll interval suggested to the model. Defaults to 2s. */
     pollIntervalMs?: number;

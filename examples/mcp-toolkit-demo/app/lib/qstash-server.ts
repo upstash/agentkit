@@ -26,7 +26,6 @@ export const dispatcher = new QStashDispatcher({ url: EXECUTE_URL });
 export const tasks = createTaskLayer({
   store: new RedisTaskStore({ prefix: "mcp:task:qstash:" }),
   dispatcher,
-  defaults: { ttlMs: 300_000, pollIntervalMs: 2_000 },
   // Who is calling. The demo has no login, so every caller is the same user — said explicitly,
   // because there is no anonymous default. A real server returns its user id from `auth`, and
   // throws when there is none (see "Who is calling" in the toolkit README).

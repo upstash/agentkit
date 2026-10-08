@@ -127,7 +127,7 @@ where it checks.
 ```jsonc
 // generate_report: a handle, right away
 { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
-  "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 300000, "pollIntervalMs": 2000 } }
+  "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 86400000, "pollIntervalMs": 2000 } }
 
 // task_status: progress…
 { "content": [{ "type": "text", "text": "Task 0e30… is working: Reading sources. Check again in about 2s." }],
@@ -143,7 +143,7 @@ The states are `working`, `completed`, `failed` and `cancelled`; the last three 
 task object has the same shape as the one in the MCP Tasks extension.
 
 If the model stops polling, nothing is lost: the work finishes anyway, and the result can be read
-until the task expires (5 minutes by default; set `defaults: { ttlMs }` on the layer).
+until the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
 
 </details>
 
@@ -162,7 +162,6 @@ export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
   principal,
-  defaults: { ttlMs: 60 * 60 * 1000 }, // keep the record longer than the work takes
 });
 
 tasks.define(
@@ -191,7 +190,8 @@ every step, and finished steps are replayed from the journal:
 - Each step must still fit within your function's time limit.
 
 The task's TTL starts when the task is created and is never extended. When it runs out, the record
-is deleted and `isCancelled()` returns true, so set `ttlMs` longer than the work takes.
+is deleted and `isCancelled()` returns true. The default is 1 day; set `ttlMs` higher for work that
+can take longer.
 
 |                                    | `QStashDispatcher`         | `WorkflowDispatcher`            |
 | ---------------------------------- | -------------------------- | ------------------------------- |
@@ -389,7 +389,7 @@ The toolkit never stores the caller's token, the request, the plaintext webhook 
 <summary><b>All options</b></summary>
 
 **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
-`defaults.ttlMs` (5 min) and `defaults.pollIntervalMs` (2s).
+`defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2s).
 
 **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
 `title`, `completedMessage`.

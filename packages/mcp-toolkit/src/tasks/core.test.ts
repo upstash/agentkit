@@ -524,6 +524,13 @@ describe("createTaskLayer over MCP", () => {
     expect(manual.cancelled).toContain(taskId);
   });
 
+  it("defaults to a one-day ttl and a 2s poll interval", async () => {
+    live = await harness(steppedHandler(1, 1));
+    const result = await live.call("generate_report", { topic: "x" });
+    expect(result.structuredContent).toMatchObject({ ttlMs: 86_400_000, pollIntervalMs: 2_000 });
+    await live.dispatcher.drain();
+  });
+
   it("uses the layer's default ttl and poll interval", async () => {
     live = await harness(steppedHandler(1, 1), {
       defaults: { ttlMs: 60_000, pollIntervalMs: 5_000 },
