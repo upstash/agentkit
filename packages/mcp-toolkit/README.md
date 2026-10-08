@@ -246,8 +246,9 @@ can take longer.
 - When your handler _returns_ a tool error (`isError: true`), the task is `failed` at once, with no
   retry, and `task_status` returns your content with `isError`, as the synchronous tool would.
 - What a failure looks like to the model is `error.code` and `error.message`. The transport's
-  details (`error.data`: the DLQ id, the failing response) stay in Redis for you, and a dispatch
-  error is logged rather than returned.
+  details (`error.data`: the QStash DLQ id, the Workflow run id) stay in Redis for you. What your
+  handler threw (Workflow's failure response) and a dispatch error are logged, never stored or
+  returned.
 - By default QStash tries 5 times with backoff `min(pow(3, retried) * 1000, 300000)`, about two
   minutes in total, so a task survives a server restart. The free tier and the local dev server
   allow at most 5 retries.

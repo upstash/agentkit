@@ -63,14 +63,14 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
       url: this.config.url,
       body: { taskId: task.taskId } satisfies WorkflowPayload,
       retries: this.config.retries,
-      // One run per task: Workflow refuses a run id that was already used.
+      // One run per task: Workflow refuses a run id that was already used. It prefixes this with
+      // `wfr_` itself, so the run is `runIdOf(taskId)`.
       workflowRunId: task.taskId,
     });
   }
 
   async cancel(taskId: string): Promise<void> {
-    // The run id is the task id.
-    await this.client().cancel(taskId);
+    await this.client().cancel(runIdOf(taskId));
   }
 
   /** The workflow endpoint. Its `failureFunction` settles the task `failed` once retries run out. */
@@ -97,10 +97,16 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
       failureFunction: async ({ context, failStatus, failResponse }) => {
         const taskId = (context.requestPayload as WorkflowPayload | undefined)?.taskId;
         if (!taskId) return;
+        // `failResponse` is the thrown error's message: database errors, internal hosts, upstream
+        // responses. It goes to your logs, never into the task, which its owner can read.
+        console.error(
+          `[mcp-toolkit] task ${taskId} failed (workflow run ${context.workflowRunId}):`,
+          failResponse,
+        );
         await endpoints.fail(taskId, {
           code: INTERNAL_ERROR,
           message: `Workflow run failed${failStatus ? ` (status ${failStatus})` : ""}`,
-          data: { response: failResponse, workflowRunId: context.workflowRunId },
+          data: { workflowRunId: context.workflowRunId },
         });
       },
       // Workflow verifies only body and signature; binding the URL refuses a signature that
@@ -113,6 +119,12 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
     return handler;
   }
 }
+
+/**
+ * The Workflow run that serves a task. `Client.trigger` turns the `workflowRunId` it is given into
+ * `wfr_<id>`, while `Client.cancel` takes the run id as is, so a cancel must add the prefix.
+ */
+export const runIdOf = (taskId: string): string => `wfr_${taskId}`;
 
 /**
  * The workflow's route function. Its first act is always a step: Workflow authorizes every request,
