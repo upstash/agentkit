@@ -11,7 +11,6 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
 import * as z from "zod";
-import { events, taskFinished } from "./events";
 
 /** Where QStash delivers. Must be reachable *from QStash*, not just from your browser. */
 export const EXECUTE_URL = `${process.env.APP_URL ?? "http://127.0.0.1:3000"}/api/execute`;
@@ -28,18 +27,15 @@ export const tasks = createTaskLayer({
   store: new RedisTaskStore({ prefix: "mcp:task:qstash:" }),
   dispatcher,
   defaults: { ttlMs: 300_000, pollIntervalMs: 2_000 },
-  // Fires the `task.finished` event once per task, so event-capable hosts can skip polling.
-  onSettle: taskFinished.onSettle,
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const STEPS = 4;
+const STEP_NAMES = ["gathering sources", "reading", "outlining", "writing"];
+const STEPS = STEP_NAMES.length;
 
 export function createServer(): McpServer {
-  const server = new McpServer({ name: "mcp-toolkit-demo-qstash", version: "0.1.0" });
-  // events/list, events/subscribe, events/unsubscribe on the same endpoint as the tools.
-  events.register(server);
+  const server = new McpServer({ name: "report-desk", version: "0.1.0" });
 
   tasks.registerTask(
     server,
@@ -58,15 +54,23 @@ export function createServer(): McpServer {
           console.log(`[qstash] task=${task.taskId} cancelled before step ${step}`);
           return {};
         }
-        await task.update(`Step ${step}/${STEPS}: processing ${topic}`);
+        await task.update(`Step ${step}/${STEPS}: ${STEP_NAMES[step - 1]}`);
         // Plain sleep, inside the one invocation. Push this past the function limit and the work
         // is killed and restarted from step 1 — which is exactly what the workflow server fixes.
         await sleep(2_500);
       }
 
+      // A canned report: the demo is about the task lifecycle, not the writing.
+      const report = [
+        `# ${topic}`,
+        `Sources reviewed: 12 (4 primary, 8 secondary).`,
+        `Key finding: interest in ${topic} grew steadily over the last three years.`,
+        `Open question: which of the competing explanations holds up under more data.`,
+        `Recommendation: run a small follow-up study before committing budget.`,
+      ].join("\n");
       return {
-        content: [{ type: "text", text: `Report complete: ${topic}` }],
-        structuredContent: { report: `A concise report about ${topic}.` },
+        content: [{ type: "text", text: report }],
+        structuredContent: { topic, sources: 12, report },
       };
     },
   );

@@ -6,7 +6,7 @@ const PV = "2026-07-28";
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 let id = 0;
-async function rpc(method, params = {}) {
+async function rpc(method, params = {}, path = ENDPOINT) {
   const headers = {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
@@ -14,7 +14,7 @@ async function rpc(method, params = {}) {
     "mcp-method": method,
   };
   if (params.name) headers["mcp-name"] = params.name;
-  const response = await fetch(`${BASE}${ENDPOINT}`, {
+  const response = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -89,42 +89,58 @@ console.log("unknown", JSON.stringify(unknown));
 if (!unknown.isError) throw new Error("expected a tool error");
 
 if (ENDPOINT === "/api/mcp") {
-  console.log("\n== 4. task.finished event ==");
+  // Deploy Watch: the events server. No tasks involved.
+  const WATCH = "/api/deploy-watch";
+  console.log("\n== 4. Deploy Watch: deploy.finished ==");
   const { randomBytes } = await import("node:crypto");
-  const listed = (await rpc("events/list")).events.map(e => e.name);
+  const listed = (await rpc("events/list", {}, WATCH)).events.map(e => e.name);
   console.log("events", listed.join(", "));
-  if (!listed.includes("task.finished")) throw new Error("missing task.finished event");
+  if (!listed.includes("deploy.finished")) throw new Error("missing deploy.finished event");
 
   const receiverId = randomBytes(6).toString("hex");
   const receiverUrl = `${BASE}/api/receiver?id=${receiverId}`;
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
   await fetch(receiverUrl, { method: "PUT", body: JSON.stringify({ secret }) });
-  const subscription = await rpc("events/subscribe", {
-    name: "task.finished",
-    arguments: {},
-    delivery: { mode: "webhook", url: receiverUrl, secret },
-    ttlMs: 600_000,
-  });
-  console.log("subscribed", JSON.stringify(subscription));
+  // Only production deploys: the staging one below must not arrive.
+  const subscription = await rpc(
+    "events/subscribe",
+    {
+      name: "deploy.finished",
+      arguments: { environment: "production" },
+      delivery: { mode: "webhook", url: receiverUrl, secret },
+      ttlMs: 600_000,
+    },
+    WATCH,
+  );
+  console.log("subscribed", subscription.id);
 
-  const third = await call("generate_report", { topic: "events" });
-  const thirdId = third.structuredContent.taskId;
-  let delivery;
-  for (let i = 0; i < 30 && !delivery; i++) {
-    await sleep(1500);
-    const received = await (await fetch(receiverUrl)).json();
-    delivery = received.find(r => r.body.name === "task.finished" && r.body.data?.taskId === thirdId);
+  const report = async body =>
+    (await fetch(`${BASE}${WATCH}/deploys`, { method: "POST", body: JSON.stringify(body) })).json();
+  const staging = await report({ environment: "staging", commit: "staging only" });
+  const production = await report({ environment: "production", status: "failed" });
+  console.log("reported", staging.deploy.id, "(staging,", staging.matched, "matched)", production.deploy.id, "(production,", production.matched, "matched)");
+
+  let received = [];
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000);
+    received = (await (await fetch(receiverUrl)).json()).filter(r => r.body.name === "deploy.finished");
+    if (received.length) break;
   }
-  console.log("delivery", JSON.stringify(delivery));
-  if (!delivery) throw new Error("no task.finished delivery");
-  if (!delivery.valid) throw new Error("delivery signature did not verify");
-  if (delivery.body.data.status !== "completed") throw new Error("expected a completed task");
+  await sleep(2000);
+  received = (await (await fetch(receiverUrl)).json()).filter(r => r.body.name === "deploy.finished");
+  console.log("delivered", JSON.stringify(received.map(r => ({ valid: r.valid, id: r.body.data.id, env: r.body.data.environment }))));
+  if (received.length !== 1) throw new Error(`expected exactly one delivery, got ${received.length}`);
+  if (!received[0].valid) throw new Error("delivery signature did not verify");
+  if (received[0].body.data.id !== production.deploy.id) throw new Error("wrong deploy delivered");
 
-  await rpc("events/unsubscribe", {
-    name: "task.finished",
-    arguments: {},
-    delivery: { mode: "webhook", url: receiverUrl },
-  });
+  const recent = await rpc("tools/call", { name: "list_recent_deploys", arguments: { limit: 2 } }, WATCH);
+  console.log("recent", recent.content[0].text.split("\n").join(" | "));
+
+  await rpc(
+    "events/unsubscribe",
+    { name: "deploy.finished", arguments: { environment: "production" }, delivery: { mode: "webhook", url: receiverUrl } },
+    WATCH,
+  );
 }
 
 console.log("\nALL E2E CHECKS PASSED");

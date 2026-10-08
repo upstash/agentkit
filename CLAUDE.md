@@ -746,7 +746,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 - Tests: `src/{tasks,events}/core.test.ts` drive a real `McpServer` through `createMcpHandler` over
   genuine JSON-RPC; `src/*/backends/qstash.test.ts` hit real Redis. All run under the root vitest
   config. The demo's `pnpm smoke` is the end-to-end check (QStash dev server + both servers + the
-  `task.finished` webhook into the demo's receiver).
+  filtered `deploy.finished` webhook from the Deploy Watch server into the demo's receiver). The demo
+  keeps tasks (Report Desk, `/api/mcp`) and events (Deploy Watch, `/api/deploy-watch`) in separate
+  servers on purpose; `task.finished` is covered by unit tests only.
 - **Events facts.** Wire format follows ChatGPT's MCP Events (webhook only): `events/list|subscribe|
   unsubscribe` registered via `server.server.setRequestHandler(method, { params }, handler)` and
   `registerCapabilities({ events: {} } as never)` (the SDK has no events types). Subscription id =

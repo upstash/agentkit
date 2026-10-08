@@ -16,8 +16,10 @@ no capabilities at all. It speaks raw stateless JSON-RPC and shows every frame i
 | `app/lib/workflow-server.ts` | Server two: the same tool on Upstash Workflow, one invocation per step |
 | `app/api/mcp/route.ts`, `app/api/mcp-workflow/route.ts` | The MCP endpoints — the SDK's own `createMcpHandler`, unchanged |
 | `app/api/execute/route.ts`, `app/api/execute-workflow/route.ts` | Where the work is delivered. One line each: the dispatcher owns the endpoint |
-| `app/lib/events.ts` | MCP Events: Redis subscriptions, QStash delivery, and the `task.finished` event |
-| `app/api/events/route.ts` | Where QStash delivers each event. One line: the delivery owns the endpoint |
+| `app/lib/deploy-watch.ts` | **Deploy Watch**, the events server: the `deploy.finished` event and a `list_recent_deploys` tool |
+| `app/api/deploy-watch/route.ts` | Deploy Watch's MCP endpoint |
+| `app/api/deploy-watch/events/route.ts` | Where QStash delivers each event. One line: the delivery owns the endpoint |
+| `app/api/deploy-watch/deploys/route.ts` | Report a deploy (stands in for your CI), which fires `deploy.finished` |
 | `app/api/receiver/route.ts` | A stand-in for the host's webhook receiver, so events can be seen without a public URL |
 | `app/page.tsx` | The client: call the tool, poll, cancel, and the wire log |
 | `scripts/smoke.mjs` | Drives the same flow from the terminal and asserts on it |
@@ -44,9 +46,23 @@ so a deployed app needs its real URL (or a tunnel) there.
 To check everything from the terminal instead:
 
 ```bash
-pnpm smoke     # happy path, cancel mid-flight, unknown task id, task.finished webhook
+pnpm smoke     # tasks: happy path, cancel, unknown id · events: a filtered deploy.finished webhook
 MCP_PATH=/api/mcp-workflow pnpm smoke   # the same against the Workflow server
 ```
+
+## Two separate tests
+
+The demo serves two unrelated MCP servers, so tasks and events can be tried on their own:
+
+| | Report Desk (tasks) | Deploy Watch (events) |
+| --- | --- | --- |
+| Endpoint | `/api/mcp` | `/api/deploy-watch` |
+| What it has | `generate_report` + `task_status` / `task_cancel` | the `deploy.finished` event + `list_recent_deploys` |
+| Works in | every MCP client | hosts that support MCP Events (ChatGPT) |
+| Try it | ask the agent for a report; it polls until done | subscribe in a ChatGPT Work chat, then `POST /api/deploy-watch/deploys` |
+
+For ChatGPT, `APP_URL` stays `http://127.0.0.1:3000` (QStash runs next to the app), and the app
+needs a public URL for ChatGPT to reach the MCP endpoint, e.g. a tunnel or an Upstash Box preview.
 
 ## Two transports
 

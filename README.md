@@ -47,7 +47,7 @@ Runnable demos (real Upstash Redis + a mock/real model) live in [`examples/`](./
 `@upstash/agentkit-eve-extension`), [`tanstack-ai-demo`](./examples/tanstack-ai-demo) (a
 TanStack AI chat whose persistence, resumable stream and memory work across server instances, with
 a two-instance E2E suite), and [`mcp-toolkit-demo`](./examples/mcp-toolkit-demo) (an MCP server whose
-long-running tool returns a task id the model polls, plus a `task.finished` event, with the client's
+long-running tool returns a task id the model polls, plus a separate events server that fires `deploy.finished`, with the client's
 wire log on screen).
 
 ## Development
