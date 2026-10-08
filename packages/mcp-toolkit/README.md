@@ -35,9 +35,10 @@ token your MCP route has verified, and throw when there is none:
 
 ```ts
 // lib/auth.ts
-import type { Caller } from "@upstash/mcp-toolkit/tasks";
+import type { AuthInfo } from "@modelcontextprotocol/server";
 
-export function principal({ auth }: Caller): string {
+// `auth` is the AuthInfo your MCP route verified and passed to the SDK (see below).
+export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
   return userId;
@@ -53,8 +54,9 @@ export function principal({ auth }: Caller): string {
   ChatGPT user shares the same one.
 - `auth` is only what your route passed to `handler.fetch(request, { authInfo })` (see below). The
   SDK never fills it from headers.
-- `principal` also receives `request`, for cookie or session apps. It is unverified, so check the
-  session yourself, and never trust a header like `x-user-id`.
+- `principal` also receives `request`, for cookie or session apps: type its argument as `Caller`
+  (`{ auth, request }`, from `@upstash/mcp-toolkit/tasks` or `/events`). `request` is unverified,
+  so check the session yourself, and never trust a header like `x-user-id`.
 - A server with no users of its own passes `principal: () => "local"`.
 
 </details>

@@ -1,20 +1,12 @@
-/**
- * The SDK's `AuthInfo`, typed structurally so a principal resolver needs no SDK import. It is what
- * your route passes to `handler.fetch(request, { authInfo })` after verifying the token: the SDK
- * never fills it from headers itself.
- */
-export type CallerAuth = {
-  token?: string;
-  clientId?: string;
-  scopes?: string[];
-  expiresAt?: number;
-  extra?: Record<string, unknown>;
-};
+import type { AuthInfo } from "@modelcontextprotocol/server";
 
 /** What `principal` is handed for each call. */
 export type Caller = {
-  /** The verified `AuthInfo` your route passed to the SDK, if any. Prefer this. */
-  auth: CallerAuth | undefined;
+  /**
+   * The SDK's `AuthInfo`: what your route passed to `handler.fetch(request, { authInfo })` after
+   * verifying the token, if anything. The SDK never fills it from headers. Prefer this.
+   */
+  auth: AuthInfo | undefined;
   /**
    * The raw HTTP request, for apps that authenticate with a cookie or session. It is unverified:
    * check the session yourself, and never trust a header like `x-user-id` the caller can set.
@@ -31,7 +23,7 @@ export type PrincipalResolver = (caller: Caller) => string | Promise<string>;
 
 /** The auth and request an SDK request handler context carries. */
 export function callerOf(context: unknown): Caller {
-  const http = (context as { http?: { authInfo?: CallerAuth; req?: Request } } | undefined)?.http;
+  const http = (context as { http?: { authInfo?: AuthInfo; req?: Request } } | undefined)?.http;
   return { auth: http?.authInfo, request: http?.req };
 }
 

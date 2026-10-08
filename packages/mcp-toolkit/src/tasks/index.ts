@@ -10,7 +10,7 @@ export {
   type TaskToolConfig,
 } from "./core.js";
 
-export type { Caller, CallerAuth, PrincipalResolver } from "../shared/auth.js";
+export type { Caller, PrincipalResolver } from "../shared/auth.js";
 
 export type {
   Task,

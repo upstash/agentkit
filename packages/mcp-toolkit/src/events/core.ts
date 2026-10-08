@@ -3,13 +3,12 @@
  * `events/*` methods a host calls, and an `emit` that delivers signed Standard Webhooks POSTs to
  * the matching subscriptions `authorize` allows. Webhook delivery only, as ChatGPT ships it.
  */
-import { ProtocolError, type McpServer } from "@modelcontextprotocol/server";
+import { ProtocolError, type AuthInfo, type McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import {
   callerOf,
   requirePrincipal,
   resolvePrincipal,
-  type CallerAuth,
   type PrincipalResolver,
 } from "../shared/auth.js";
 import { env } from "../shared/env.js";
@@ -58,7 +57,7 @@ export type AuthorizeCaller = {
   /** `"subscribe"` on every subscribe and refresh, `"deliver"` before every delivery. */
   phase: "subscribe" | "deliver";
   /** Only at subscribe time: no request stands behind a delivery, and the token is never stored. */
-  auth?: CallerAuth;
+  auth?: AuthInfo;
   /** Only at subscribe time. */
   request?: Request;
 };
