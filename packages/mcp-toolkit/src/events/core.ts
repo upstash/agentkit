@@ -1,15 +1,17 @@
 /**
  * MCP Events for servers on the official TypeScript SDK: typed event definitions, the three
- * `events/*` methods a host calls, and an owner-scoped `emit` that delivers signed Standard
- * Webhooks POSTs. Webhook delivery only, as ChatGPT ships it.
+ * `events/*` methods a host calls, and an `emit` that delivers signed Standard Webhooks POSTs to
+ * the matching subscriptions `authorize` allows. Webhook delivery only, as ChatGPT ships it.
  */
 import { ProtocolError, type McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import {
   callerOf,
-  type Caller,
   requirePrincipal,
+  resolvePrincipal,
+  type Caller,
   type CallerAuth,
+  type Principal,
   type PrincipalResolver,
 } from "../shared/auth.js";
 import { randomBase64Url, randomHex, sha256Hex } from "../shared/crypto.js";
@@ -37,7 +39,7 @@ const MAX_MATCH_KEYS = 8;
 /** The challenge echo is tiny; never read more than this from a callback. */
 const MAX_CHALLENGE_RESPONSE_BYTES = 4096;
 
-export type { Caller, CallerAuth };
+export type { Caller, CallerAuth, Principal };
 
 export type EventLayerOptions = {
   store: SubscriptionStore;
@@ -48,8 +50,9 @@ export type EventLayerOptions = {
    */
   secretKey?: string;
   /**
-   * Who is calling, usually your user id. Required. Every subscription is owned by its caller,
-   * `undefined` refuses the subscribe, and `emit` only reaches the owners it names.
+   * Who is calling, usually your user id: `({ auth }) => auth?.extra?.userId`. Required;
+   * `undefined` refuses the subscribe. Return `{ id, context }` to store non-secret context (an
+   * org id) that `authorize` gets back before each delivery. Never put the token in it.
    */
   principal: PrincipalResolver;
   defaults?: {
@@ -69,7 +72,25 @@ export type EventLayerOptions = {
 /** Subscription arguments are an object schema, so they can be matched field by field. */
 export type EventInputSchema = z.ZodObject;
 
-export type EventConfig<Input extends EventInputSchema, Payload extends z.ZodType> = {
+/** What `authorize` is told about the subscriber. */
+export type AuthorizeCaller = {
+  /** The subscriber's id, from `principal`. */
+  principal: string;
+  /** The context `principal` returned at subscribe time, or `{}`. */
+  context: Record<string, unknown>;
+  /** `"subscribe"` on every subscribe and refresh, `"deliver"` before every delivery. */
+  phase: "subscribe" | "deliver";
+  /** Only at subscribe time: no request stands behind a delivery, and the token is never stored. */
+  auth?: CallerAuth;
+  /** Only at subscribe time. */
+  request?: Request;
+};
+
+export type EventConfig<
+  Input extends EventInputSchema,
+  Payload extends z.ZodType,
+  Personal extends boolean = false,
+> = {
   title?: string;
   /** What the event means, for the model and the user. */
   description: string;
@@ -78,31 +99,56 @@ export type EventConfig<Input extends EventInputSchema, Payload extends z.ZodTyp
   /** The shape of `data` in every delivery. */
   payload: Payload;
   /**
-   * Whether this caller may subscribe with these arguments, e.g. whether they can see that
-   * document. Runs on every subscribe and refresh. Unset allows any authenticated caller.
+   * Whether this subscriber may subscribe with these arguments and receive what they match, e.g.
+   * whether they can read that document. Required. Runs on every subscribe and refresh, and again
+   * before every delivery, so revoked access stops the events. Pass `() => true` for an event any
+   * authenticated caller may hear.
    */
-  authorize?: (
-    args: z.output<Input>,
-    caller: { principal: string } & Caller,
-  ) => boolean | Promise<boolean>;
+  authorize: (args: z.output<Input>, caller: AuthorizeCaller) => boolean | Promise<boolean>;
+  /**
+   * A personal event belongs to specific users ("your export finished"), so every `emit` must say
+   * who with `to`. The type makes `to` required, and so does a runtime check.
+   */
+  personal?: Personal;
   /** An extra filter for what exact argument matching cannot express. Runs per subscription. */
   match?: (args: z.output<Input>, payload: z.output<Payload>) => boolean;
 };
 
-/** Who receives an event: one owner, or several (e.g. everyone on a document). */
-export type EmitRecipients =
-  | { owner: string; owners?: never }
-  | { owners: readonly string[]; owner?: never };
+/** One user id, or several. */
+export type Recipients = string | readonly string[];
 
-export type EmitOptions<Args> = EmitRecipients & {
-  /**
-   * The values subscriptions are matched on. `{ repo: "a", branch: "main" }` reaches subscribers
-   * of `{ repo: "a" }`, of both, and of `{}`. Defaults to the payload fields named in the input.
-   */
-  args?: Partial<Args>;
-  /** Stable across retries and sent as `webhook-id`. Reuse an id to deduplicate an emit. */
+/**
+ * `args` is optional when every input field is also a payload field (the match values are read
+ * from the payload), and required otherwise, so a filter can never silently match nothing.
+ */
+type ArgsOption<Input, Payload> = string extends keyof Input
+  ? { args?: Partial<Input> } // no input schema: nothing to match on
+  : [Exclude<keyof Input, keyof Payload>] extends [never]
+    ? { args?: Partial<Input> }
+    : { args: Input };
+
+type ToOption<Personal extends boolean> = Personal extends true
+  ? { to: Recipients }
+  : { to?: Recipients };
+
+export type EmitOptions<Input, Payload, Personal extends boolean = false> = ArgsOption<
+  Input,
+  Payload
+> &
+  ToOption<Personal> & {
+    /** Stable across retries and sent as `webhook-id`. Reuse an id to deduplicate an emit. */
+    eventId?: string;
+    /** Defaults to now. */
+    timestamp?: Date;
+  };
+
+/** The options argument may be left out when none of its fields are required. */
+type OptionsArg<T> = Partial<T> extends T ? [options?: T] : [options: T];
+
+type AnyEmitOptions = {
+  args?: Record<string, unknown>;
+  to?: Recipients;
   eventId?: string;
-  /** Defaults to now. */
   timestamp?: Date;
 };
 
@@ -112,10 +158,20 @@ export type EmitResult = {
   matched: number;
 };
 
-export type EventHandle<Input extends EventInputSchema, Payload extends z.ZodType> = {
+export type EventHandle<
+  Input extends EventInputSchema,
+  Payload extends z.ZodType,
+  Personal extends boolean = false,
+> = {
   readonly name: string;
-  /** Validates the payload and delivers it to the named owners' matching subscriptions. */
-  emit(payload: z.input<Payload>, options: EmitOptions<z.output<Input>>): Promise<EmitResult>;
+  /**
+   * Validates the payload and hands it to every matching subscription, or only those of the users
+   * in `to`. `authorize` is checked again before each delivery.
+   */
+  emit(
+    payload: z.input<Payload>,
+    ...options: OptionsArg<EmitOptions<z.output<Input>, z.output<Payload>, Personal>>
+  ): Promise<EmitResult>;
 };
 
 /** What `events/list` returns for each event. */
@@ -133,10 +189,11 @@ export type EventLayer = {
   define<
     Input extends EventInputSchema = z.ZodObject<Record<string, never>>,
     Payload extends z.ZodType = z.ZodType,
+    Personal extends boolean = false,
   >(
     name: string,
-    config: EventConfig<Input, Payload>,
-  ): EventHandle<Input, Payload>;
+    config: EventConfig<Input, Payload, Personal>,
+  ): EventHandle<Input, Payload, Personal>;
   /** Declares the `events` capability and serves `events/list`, `/subscribe` and `/unsubscribe`. */
   register(server: McpServer): void;
   /** The transport's delivery endpoint: `export const POST = events.createDeliveryHandler()`. */
@@ -154,8 +211,10 @@ export class EventPayloadTooLargeError extends Error {
 }
 
 type Definition = {
-  config: EventConfig<EventInputSchema, z.ZodType>;
+  config: EventConfig<EventInputSchema, z.ZodType, boolean>;
   input: EventInputSchema;
+  /** Input fields a subscriber must give, so an emit must have a value for them. */
+  required: string[];
   descriptor: EventDescriptor;
 };
 
@@ -211,15 +270,27 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const definitions = new Map<string, Definition>();
 
-  function define<Input extends EventInputSchema, Payload extends z.ZodType>(
+  function define<
+    Input extends EventInputSchema,
+    Payload extends z.ZodType,
+    Personal extends boolean = false,
+  >(
     name: string,
-    config: EventConfig<Input, Payload>,
-  ): EventHandle<Input, Payload> {
+    config: EventConfig<Input, Payload, Personal>,
+  ): EventHandle<Input, Payload, Personal> {
     if (definitions.has(name)) throw new Error(`Event "${name}" is already defined`);
+    if (typeof config.authorize !== "function") {
+      throw new Error(
+        `Event "${name}" needs \`authorize\`: who may subscribe and receive it. Pass \`() => true\` for an event any authenticated caller may hear.`,
+      );
+    }
     const input = (config.input ?? z.object({})) as EventInputSchema;
     definitions.set(name, {
-      config: config as unknown as EventConfig<EventInputSchema, z.ZodType>,
+      config: config as unknown as EventConfig<EventInputSchema, z.ZodType, boolean>,
       input,
+      required: Object.entries(input.shape)
+        .filter(([, field]) => !(field as z.ZodType).safeParse(undefined).success)
+        .map(([key]) => key),
       descriptor: {
         name,
         ...(config.title ? { title: config.title } : {}),
@@ -231,29 +302,35 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     });
     return {
       name,
-      emit: (payload, emitOptions) => emit(name, payload, emitOptions as EmitOptions<unknown>),
+      emit: (payload, ...rest) => emit(name, payload, rest[0] as AnyEmitOptions | undefined),
     };
   }
 
   async function emit(
     name: string,
     rawPayload: unknown,
-    emitOptions: EmitOptions<unknown>,
+    emitOptions: AnyEmitOptions = {},
   ): Promise<EmitResult> {
     const definition = definitions.get(name);
     if (!definition) throw new Error(`Unknown event "${name}"`);
-    const owners =
-      emitOptions?.owners ?? (emitOptions?.owner === undefined ? undefined : [emitOptions.owner]);
-    if (!owners) {
-      throw new Error(
-        `emit("${name}") needs \`owner\` or \`owners\`: events only reach the subscriptions of the users you name.`,
-      );
+    const to = emitOptions.to;
+    const recipients = to === undefined ? undefined : new Set(typeof to === "string" ? [to] : to);
+    if (definition.config.personal && !recipients) {
+      throw new Error(`"${name}" is a personal event: emit it with \`to\`.`);
     }
     const payload = definition.config.payload.parse(rawPayload);
     const args = (emitOptions.args ?? pickArgs(definition.input, payload)) as Record<
       string,
       unknown
     >;
+    for (const key of definition.required) {
+      // Every subscriber filtered on it, so without a value the event could match nobody.
+      if (args[key] === undefined) {
+        throw new Error(
+          `emit("${name}") has no value for "${key}": put it in the payload or in \`args\`.`,
+        );
+      }
+    }
     const envelope: EventEnvelope = {
       eventId: emitOptions.eventId ?? `evt_${randomHex(12)}`,
       name,
@@ -263,13 +340,14 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     };
     const bytes = new TextEncoder().encode(JSON.stringify(envelope)).length;
     if (bytes > MAX_PAYLOAD_BYTES) throw new EventPayloadTooLargeError(bytes);
-    if (owners.length === 0) return { eventId: envelope.eventId, matched: 0 };
+    if (recipients?.size === 0) return { eventId: envelope.eventId, matched: 0 };
 
-    const candidates = await store.find(name, [...new Set(owners)], matchKeys(args));
     const match = definition.config.match;
-    const targets = match
-      ? candidates.filter((sub) => match(sub.args as never, payload as never))
-      : candidates;
+    const targets = (await store.find(name, matchKeys(args))).filter(
+      (sub) =>
+        (!recipients || recipients.has(sub.subscriber)) &&
+        (!match || match(sub.args as never, payload as never)),
+    );
     if (targets.length > 0) {
       await delivery.enqueue(targets.map((sub) => ({ subscriptionId: sub.id, envelope })));
     }
@@ -278,7 +356,20 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
 
   async function send(job: DeliveryJob): Promise<SendOutcome> {
     const sub = await store.get(job.subscriptionId);
-    if (!sub) return "dropped";
+    const definition = sub && definitions.get(sub.event);
+    if (!sub || !definition) return "dropped";
+    // Access can be revoked after subscribing, so ask again before every delivery.
+    let allowed: boolean;
+    try {
+      allowed = await definition.config.authorize(sub.args as never, {
+        principal: sub.subscriber,
+        context: sub.context ?? {},
+        phase: "deliver",
+      });
+    } catch {
+      return "retry";
+    }
+    if (!allowed) return "dropped";
     const secret = await openOrEmpty(sub.encryptedSecret);
     if (!secret) return "dropped"; // sealed under a rotated key: wait for the host's refresh
     let response: Response;
@@ -336,11 +427,18 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       throw invalid(problem ?? "callback URL is missing", "invalid_callback_url");
 
     const caller = callerOf(ctx);
-    const owner = await principal(caller);
-    if (owner === undefined) throw notAuthenticated();
+    const who = await resolvePrincipal(principal, caller);
+    if (who === undefined) throw notAuthenticated();
+    const owner = who.id;
     if (
       definition.config.authorize &&
-      !(await definition.config.authorize(args, { principal: owner, ...caller }))
+      !(await definition.config.authorize(args, {
+        principal: owner,
+        context: who.context,
+        phase: "subscribe",
+        auth: caller.auth,
+        request: caller.request,
+      }))
     ) {
       throw invalid("Not authorized to subscribe with these arguments", "not_authorized");
     }
@@ -364,7 +462,8 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       url,
       encryptedSecret:
         verified && existing ? existing.encryptedSecret : await secretBox().seal(secret),
-      owner,
+      subscriber: owner,
+      ...(Object.keys(who.context).length > 0 ? { context: who.context } : {}),
       createdAt: existing?.createdAt ?? new Date(now).toISOString(),
       expiresAt,
     });
@@ -377,7 +476,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
   }
 
   async function unsubscribe(params: z.output<typeof unsubscribeParams>, ctx: unknown) {
-    const owner = await principal(callerOf(ctx));
+    const owner = (await resolvePrincipal(principal, callerOf(ctx)))?.id;
     if (owner === undefined) throw notAuthenticated();
     const parsed = definitions.get(params.name)?.input.safeParse(params.arguments ?? {});
     if (parsed?.success && params.delivery.url) {
@@ -386,7 +485,6 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
         id: await subscriptionId(owner, params.delivery.url, params.name, args),
         event: params.name,
         argsKey: canonicalJson(args),
-        owner,
       });
     }
     return {};
@@ -485,14 +583,14 @@ export function matchKeys(args: Record<string, unknown>): string[] {
   return keys;
 }
 
-/** Deterministic, as the draft asks: same owner, callback, event and arguments give the same id. */
+/** Deterministic, as the draft asks: same subscriber, callback, event and arguments give the same id. */
 export async function subscriptionId(
-  owner: string,
+  subscriber: string,
   url: string,
   event: string,
   args: Record<string, unknown>,
 ): Promise<string> {
-  return `sub_${(await sha256Hex(canonicalJson([owner, url, event, args]))).slice(0, 32)}`;
+  return `sub_${(await sha256Hex(canonicalJson([subscriber, url, event, args]))).slice(0, 32)}`;
 }
 
 function pickArgs(input: EventInputSchema, payload: unknown): Record<string, unknown> {

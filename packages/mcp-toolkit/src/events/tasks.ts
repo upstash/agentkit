@@ -42,6 +42,10 @@ export function taskFinishedEvent(
       "A long-running task you started finished: completed, failed or was cancelled. Carries the result when it is small enough.",
     input: taskFinishedInput,
     payload: taskFinishedPayload,
+    // Personal: each emit goes `to` the task's owner, so a subscription with no arguments only
+    // hears about its own tasks. Nothing else to check.
+    personal: true,
+    authorize: () => true,
   });
 
   async function onSettle(task: Task): Promise<void> {
@@ -56,7 +60,7 @@ export function taskFinishedEvent(
       ...(task.error ? { error: task.error } : {}),
     };
     const emitOptions = {
-      owner: task.owner,
+      to: task.owner,
       args: { taskId: task.taskId },
       // Stable per task record, so a repeated settle hook cannot deliver twice, while a keyed task
       // re-created after expiry (same id, new createdAt) is not mistaken for a duplicate.

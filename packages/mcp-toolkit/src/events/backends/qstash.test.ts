@@ -13,7 +13,8 @@ const makeSub = (overrides: Partial<Subscription> = {}): Subscription => {
     argsKey: canonicalJson(args),
     url: "https://receiver.example.com/cb",
     encryptedSecret: "v1.aaa.bbb",
-    owner: "123",
+    subscriber: "123",
+    context: { org: "acme" },
     createdAt: new Date().toISOString(),
     expiresAt: Date.now() + 60_000,
     ...overrides,
@@ -29,7 +30,7 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     await cleanupKeys(redis, prefix);
   });
 
-  it("round-trips a subscription, keeping a numeric-looking owner a string", async () => {
+  it("round-trips a subscription, keeping a numeric-looking subscriber a string", async () => {
     const sub = makeSub();
     await store.put(sub);
     expect(await store.get(sub.id)).toEqual(sub);
@@ -51,30 +52,23 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     const other = makeSub({ event: "find", args: { repo: "b" } });
     for (const sub of [all, one, other]) await store.put(sub);
 
-    const found = await store.find("find", ["123"], ["{}", canonicalJson({ repo: "a" })]);
+    const found = await store.find("find", ["{}", canonicalJson({ repo: "a" })]);
     expect(found.map((s) => s.id).sort()).toEqual([all.id, one.id].sort());
-    expect(await store.find("find", ["123"], [])).toEqual([]);
-    expect(await store.find("other-event", ["123"], ["{}"])).toEqual([]);
+    expect(await store.find("find", [])).toEqual([]);
+    expect(await store.find("other-event", ["{}"])).toEqual([]);
   });
 
-  it("only finds the subscriptions of the owners asked for", async () => {
-    const alice = makeSub({ event: "owned", args: {}, owner: "alice" });
-    const bob = makeSub({ event: "owned", args: {}, owner: "bob" });
-    for (const sub of [alice, bob]) await store.put(sub);
-    expect((await store.find("owned", ["alice"], ["{}"])).map((s) => s.id)).toEqual([alice.id]);
-    expect(await store.find("owned", ["mallory"], ["{}"])).toEqual([]);
-    const both = await store.find("owned", ["alice", "bob"], ["{}"]);
-    expect(both.map((s) => s.id).sort()).toEqual([alice.id, bob.id].sort());
-  });
-
-  it("splits a lookup across many owners into bounded pipelines", async () => {
-    // 1,500 owners is 1,500 ZRANGEs: more than one pipeline's worth.
-    const owners = Array.from({ length: 1500 }, (_, i) => `member-${i}`);
-    const picked = [owners[3]!, owners[1100]!, owners[1499]!];
-    const subs = picked.map((owner) => makeSub({ event: "team", args: {}, owner }));
-    for (const sub of subs) await store.put(sub);
-    const found = await store.find("team", owners, ["{}"]);
-    expect(found.map((s) => s.id).sort()).toEqual(subs.map((s) => s.id).sort());
+  it("reads a large match in bounded batches", async () => {
+    // 1,100 matching subscriptions is more than one MGET's worth.
+    const subs = Array.from({ length: 1100 }, (_, i) =>
+      makeSub({ event: "popular", args: {}, subscriber: `member-${i}` }),
+    );
+    for (let i = 0; i < subs.length; i += 100) {
+      await Promise.all(subs.slice(i, i + 100).map((sub) => store.put(sub)));
+    }
+    const found = await store.find("popular", ["{}"]);
+    expect(found).toHaveLength(1100);
+    expect(new Set(found.map((s) => s.id))).toEqual(new Set(subs.map((s) => s.id)));
   });
 
   it("refreshing replaces the record and extends the index", async () => {
@@ -82,7 +76,7 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     await store.put(sub);
     await store.put({ ...sub, expiresAt: Date.now() + 50_000 });
     expect((await store.get(sub.id))?.expiresAt).toBeGreaterThan(Date.now() + 40_000);
-    expect(await store.find("refresh", [sub.owner], [sub.argsKey])).toHaveLength(1);
+    expect(await store.find("refresh", [sub.argsKey])).toHaveLength(1);
     expect(await redis.pttl(await store.indexKey(sub))).toBeGreaterThan(40_000);
   });
 
@@ -91,7 +85,7 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     await store.put(sub);
     await store.delete(sub);
     expect(await store.get(sub.id)).toBeNull();
-    expect(await store.find("delete", [sub.owner], [sub.argsKey])).toEqual([]);
+    expect(await store.find("delete", [sub.argsKey])).toEqual([]);
     expect(await redis.zcard(await store.indexKey(sub))).toBe(0);
     await store.delete(sub); // idempotent
   });

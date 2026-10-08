@@ -732,16 +732,16 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   that returns `[changed, ...HGETALL]`. `settle` returns `{ task, settled }` (null only when the task
   is missing): `settled` drives `onSettle` and dispatcher cancel, and the record comes back even when
   nothing changed, so `cancelTask` is one write. `SubscriptionStore.delete` takes
-  `{ id, event, argsKey, owner }` so the Redis store drops record + index in one pipeline.
+  `{ id, event, argsKey }` so the Redis store drops record + index in one pipeline.
 - **Dispatch dedupe is per record, not per task id:** `dispatchKey(task)` =
   `${taskId}-${createdAt ms}`. QStash remembers a `deduplicationId` for 10 minutes and Workflow
   refuses a reused `workflowRunId`, while a keyed task id comes back once its 5-minute record
   expires. A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
   The `task.finished` event id is `evt_task_${dispatchKey(task)}` for the same reason: QStash and
   hosts dedupe on it.
-- **`RedisSubscriptionStore.find` batches:** one `ZRANGE` per owner × argument subset (up to 256
-  per owner), split into pipelines and `MGET`s of at most 1,000 commands, so `emit({ owners })`
-  with a large team never sends one giant request.
+- **`RedisSubscriptionStore.find` batches:** one `ZRANGE` per argument subset (up to 256), then
+  `MGET`s of the matches, each split into requests of at most 1,000 commands, so a popular event
+  never sends one giant request.
 - **No secret defaults:** `MCP_EVENTS_SECRET_KEY` has no fallback, demo included; the event layer
   resolves it on first use (not at construction, so builds without env still work) and a missing key
   throws rather than dropping deliveries.
@@ -802,11 +802,19 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 - **Events facts.** Wire format follows ChatGPT's MCP Events (webhook only): `events/list|subscribe|
   unsubscribe` registered via `server.server.setRequestHandler(method, { params }, handler)` and
   `registerCapabilities({ events: {} } as never)` (the SDK has no events types). Subscription id =
-  `sub_` + sha256(canonical `[owner, url, event, args]`). Matching = exact canonical args: emit
-  enumerates every subset of its args (cap 8 keys) and the store looks those keys up. **Every `emit`
-  names `owner` or `owners`** (DX-3022 review S4) and the Redis index is per
-  `(event, owner, argsKey)`, so a `{}` subscription gets everything *of its own user* and nothing of
-  anyone else's. Secrets are AES-256-GCM sealed under `secretKey` (`MCP_EVENTS_SECRET_KEY`); a
+  `sub_` + sha256(canonical `[subscriber, url, event, args]`). Matching = exact canonical args: emit
+  enumerates every subset of its args (cap 8 keys) and the store looks those keys up (index per
+  `(event, argsKey)`). **Access model (replaced the review's "every emit names owners"):** the
+  filter says *what*, a **required** `authorize` says *who may* — it runs at subscribe/refresh
+  (`phase: "subscribe"`, with `auth`/`request`) and again in `send()` before every delivery
+  (`phase: "deliver"`, only the stored `principal` + `context`; the token is never stored), so
+  revoked access stops events; refused deliveries are `dropped`, a throwing `authorize` is `retry`.
+  `to` optionally narrows an emit; `personal: true` events make `to` required in the type and at
+  runtime (`task.finished` is personal, `to: task.owner`). `principal` may return
+  `{ id, context }`; context is non-secret JSON (≤ 4 KB) stored as `subscription.context`. The
+  stored field is `subscriber` (not "owner", which read like document ownership). `emit`'s `args`
+  is optional only when every input key is a payload key; otherwise the type requires it, and a
+  runtime check throws when a required input field has no value. Secrets are AES-256-GCM sealed under `secretKey` (`MCP_EVENTS_SECRET_KEY`); a
   refresh with the same secret skips the challenge. A failed challenge is always the same
   `ProtocolError(-32015, "Callback URL failed verification")` with no reason or status (no network
   probing); the detail is `console.warn`ed. The challenge answer is read capped at 4 KB, delivery

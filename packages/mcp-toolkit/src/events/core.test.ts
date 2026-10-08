@@ -89,6 +89,10 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
   const receiver = host(secrets, respond);
   const outcomes: SendOutcome[] = [];
   const store = new MemorySubscriptionStore();
+  // Who may read which document. Documents not listed are readable by everyone, except secret-doc.
+  const acl = new Map<string, Set<string>>();
+  const canRead = (user: string, documentId: string) =>
+    documentId !== "secret-doc" && (acl.get(documentId)?.has(user) ?? true);
   const events = createEventLayer({
     store,
     delivery: new InlineDelivery({ onOutcome: (_job, outcome) => outcomes.push(outcome) }),
@@ -102,7 +106,7 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
     description: "A new comment on a document.",
     input: z.object({ documentId: z.string(), author: z.string().optional() }),
     payload: z.object({ documentId: z.string(), author: z.string(), text: z.string() }),
-    authorize: (args) => args.documentId !== "secret-doc",
+    authorize: (args, { principal }) => canRead(principal, args.documentId),
   });
 
   const handler = createMcpHandler(() => {
@@ -147,7 +151,7 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
     return { ...response, url, secret };
   };
 
-  return { events, store, rpc, subscribe, receiver, outcomes, commentCreated };
+  return { events, store, rpc, subscribe, receiver, outcomes, commentCreated, acl };
 }
 
 describe("events/list and capability", () => {
@@ -212,9 +216,7 @@ describe("events/subscribe", () => {
     const { subscribe, store } = setup({ respond: () => Response.json({ challenge: "nope" }) });
     const response = await subscribe({ documentId: "doc_1" });
     expect(response.error?.code).toBe(-32015);
-    expect(await store.find("comment.created", ["alice"], ['{"documentId":"doc_1"}'])).toHaveLength(
-      0,
-    );
+    expect(await store.find("comment.created", ['{"documentId":"doc_1"}'])).toHaveLength(0);
   });
 
   it("gives the same error whatever went wrong, so the network behind it cannot be probed", async () => {
@@ -290,10 +292,7 @@ describe("emit", () => {
     await subscribe({ documentId: "doc_1", author: "bob" });
     await subscribe({ documentId: "doc_2" });
 
-    const result = await commentCreated.emit(
-      { documentId: "doc_1", author: "alice", text: "hi" },
-      { owner: "alice" },
-    );
+    const result = await commentCreated.emit({ documentId: "doc_1", author: "alice", text: "hi" });
     expect(result.matched).toBe(2);
     const deliveries = receiver.deliveries();
     expect(deliveries.map((d) => d.url).sort()).toEqual([all.url, byAlice.url].sort());
@@ -309,55 +308,38 @@ describe("emit", () => {
     }
   });
 
-  it("matches on explicit args and filters by owner", async () => {
+  it("matches on explicit args and narrows to the users in `to`", async () => {
     const { subscribe, commentCreated, receiver } = setup();
     await subscribe({ documentId: "doc_1" }, { user: "alice" });
     const bob = await subscribe({ documentId: "doc_1" }, { user: "bob" });
     const result = await commentCreated.emit(
       { documentId: "ignored", author: "x", text: "y" },
-      { args: { documentId: "doc_1" }, owner: "bob" },
+      { args: { documentId: "doc_1" }, to: "bob" },
     );
     expect(result.matched).toBe(1);
     expect(receiver.deliveries()[0]?.url).toBe(bob.url);
   });
 
-  it("only reaches the owners it names", async () => {
+  it("reaches every matching subscriber without `to`, and only the named ones with it", async () => {
     const { subscribe, commentCreated, receiver } = setup();
     const alice = await subscribe({ documentId: "doc_1" }, { user: "alice" });
     const bob = await subscribe({ documentId: "doc_1" }, { user: "bob" });
     const payload = { documentId: "doc_1", author: "x", text: "y" };
+    const urls = () => receiver.deliveries().map((d) => d.url);
 
-    expect((await commentCreated.emit(payload, { owner: "alice" })).matched).toBe(1);
-    expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
-    expect((await commentCreated.emit(payload, { owner: "mallory" })).matched).toBe(0);
-    expect((await commentCreated.emit(payload, { owners: ["alice", "bob"] })).matched).toBe(2);
-    expect(
-      receiver
-        .deliveries()
-        .map((d) => d.url)
-        .slice(1)
-        .sort(),
-    ).toEqual([alice.url, bob.url].sort());
-    expect((await commentCreated.emit(payload, { owners: [] })).matched).toBe(0);
-  });
-
-  it("refuses to emit without naming who receives it", async () => {
-    const { commentCreated } = setup();
-    await expect(
-      commentCreated.emit({ documentId: "d", author: "a", text: "x" }, {} as never),
-    ).rejects.toThrow(/owner/);
+    expect((await commentCreated.emit(payload)).matched).toBe(2);
+    expect(urls().sort()).toEqual([alice.url, bob.url].sort());
+    expect((await commentCreated.emit(payload, { to: "alice" })).matched).toBe(1);
+    expect(urls().at(-1)).toBe(alice.url);
+    expect((await commentCreated.emit(payload, { to: ["mallory"] })).matched).toBe(0);
+    expect((await commentCreated.emit(payload, { to: [] })).matched).toBe(0);
   });
 
   it("rejects an invalid payload and an oversized one", async () => {
     const { commentCreated } = setup();
+    await expect(commentCreated.emit({ documentId: "d" } as never)).rejects.toThrow();
     await expect(
-      commentCreated.emit({ documentId: "d" } as never, { owner: "alice" }),
-    ).rejects.toThrow();
-    await expect(
-      commentCreated.emit(
-        { documentId: "d", author: "a", text: "x".repeat(300 * 1024) },
-        { owner: "alice" },
-      ),
+      commentCreated.emit({ documentId: "d", author: "a", text: "x".repeat(300 * 1024) }),
     ).rejects.toThrow(/limit/);
   });
 
@@ -367,18 +349,18 @@ describe("emit", () => {
       respond: (r) => (r.body.type === "verification" ? undefined : new Response(null, { status })),
     });
     const sub = await subscribe({ documentId: "d" });
-    await commentCreated.emit({ documentId: "d", author: "a", text: "1" }, { owner: "alice" });
+    await commentCreated.emit({ documentId: "d", author: "a", text: "1" });
     expect(outcomes).toEqual(["gone"]);
     expect(await store.get(String(sub.result?.id))).toBeNull();
 
     status = 413;
     await subscribe({ documentId: "d" });
-    await commentCreated.emit({ documentId: "d", author: "a", text: "2" }, { owner: "alice" });
+    await commentCreated.emit({ documentId: "d", author: "a", text: "2" });
     status = 503;
-    await commentCreated.emit({ documentId: "d", author: "a", text: "3" }, { owner: "alice" });
+    await commentCreated.emit({ documentId: "d", author: "a", text: "3" });
     // A redirect is never followed, so retrying it cannot help either.
     status = 307;
-    await commentCreated.emit({ documentId: "d", author: "a", text: "4" }, { owner: "alice" });
+    await commentCreated.emit({ documentId: "d", author: "a", text: "4" });
     expect(outcomes).toEqual(["gone", "dropped", "retry", "dropped"]);
   });
 
@@ -395,10 +377,7 @@ describe("emit", () => {
       "alice",
     );
     expect(response.result).toBeDefined();
-    const after = await commentCreated.emit(
-      { documentId: "d", author: "a", text: "x" },
-      { owner: "alice" },
-    );
+    const after = await commentCreated.emit({ documentId: "d", author: "a", text: "x" });
     expect(after.matched).toBe(0);
   });
 
@@ -408,6 +387,150 @@ describe("emit", () => {
     const stored = await store.get(String(sub.result?.id));
     expect(stored?.encryptedSecret).toMatch(/^v1\./);
     expect(JSON.stringify(stored)).not.toContain(sub.secret.slice(6));
+  });
+});
+
+describe("access across users", () => {
+  /** alice and carol may read doc_shared; mallory may not. */
+  const shared = () => {
+    const env = setup();
+    env.acl.set("doc_shared", new Set(["alice", "carol"]));
+    return env;
+  };
+  const comment = { documentId: "doc_shared", author: "dave", text: "Ship it?" };
+
+  it("lets readers subscribe, refuses everyone else, and delivers to each reader", async () => {
+    const { subscribe, commentCreated, receiver, store } = shared();
+
+    const alice = await subscribe({ documentId: "doc_shared" }, { user: "alice" });
+    expect(alice.error).toBeUndefined();
+
+    // mallory can't read the document, so the subscribe is refused before any challenge.
+    const challengesBefore = receiver.received.length;
+    const mallory = await subscribe({ documentId: "doc_shared" }, { user: "mallory" });
+    expect(mallory.error?.data?.reason).toBe("not_authorized");
+    expect(receiver.received).toHaveLength(challengesBefore);
+    expect(await store.find("comment.created", ['{"documentId":"doc_shared"}'])).toHaveLength(1);
+
+    const carol = await subscribe({ documentId: "doc_shared" }, { user: "carol" });
+    expect(carol.error).toBeUndefined();
+
+    // One emit, no recipients named: both readers hear it, each on their own signed callback.
+    const result = await commentCreated.emit(comment);
+    expect(result.matched).toBe(2);
+    const deliveries = receiver.deliveries();
+    expect(deliveries.map((d) => d.url).sort()).toEqual([alice.url, carol.url].sort());
+    for (const delivery of deliveries) {
+      expect(delivery.valid).toBe(true);
+      expect(delivery.body).toMatchObject({ eventId: result.eventId, data: comment });
+    }
+    expect(deliveries.some((d) => d.url === mallory.url)).toBe(false);
+  });
+
+  it("stops delivering to a subscriber whose access was revoked after subscribing", async () => {
+    const { subscribe, commentCreated, receiver, outcomes, acl } = shared();
+    const alice = await subscribe({ documentId: "doc_shared" }, { user: "alice" });
+    await subscribe({ documentId: "doc_shared" }, { user: "carol" });
+
+    acl.set("doc_shared", new Set(["alice"])); // carol loses access
+    await commentCreated.emit(comment);
+
+    expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
+    expect(outcomes.sort()).toEqual(["delivered", "dropped"]);
+  });
+
+  it("hands authorize the principal's context at subscribe and again at delivery", async () => {
+    const seen: { phase: string; principal: string; org: unknown; hasAuth: boolean }[] = [];
+    const { events, subscribe, receiver } = setup({
+      principal: ({ auth }) => {
+        const userId = auth?.extra?.userId as string | undefined;
+        return userId && { id: userId, context: { org: `org-of-${userId}` } };
+      },
+    });
+    const memo = events.define("memo.posted", {
+      description: "A memo was posted to an org.",
+      input: z.object({ org: z.string() }),
+      payload: z.object({ org: z.string(), text: z.string() }),
+      authorize: ({ org }, caller) => {
+        seen.push({
+          phase: caller.phase,
+          principal: caller.principal,
+          org: caller.context.org,
+          hasAuth: caller.auth !== undefined,
+        });
+        return caller.context.org === org;
+      },
+    });
+
+    const alice = await subscribe({ org: "org-of-alice" }, { user: "alice", name: "memo.posted" });
+    const bob = await subscribe({ org: "org-of-alice" }, { user: "bob", name: "memo.posted" });
+    expect(alice.error).toBeUndefined();
+    expect(bob.error?.data?.reason).toBe("not_authorized");
+
+    await memo.emit({ org: "org-of-alice", text: "Offsite on Friday" });
+    expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
+    // The token is never stored, so only the subscribe-time check sees `auth`.
+    expect(seen).toEqual([
+      { phase: "subscribe", principal: "alice", org: "org-of-alice", hasAuth: true },
+      { phase: "subscribe", principal: "bob", org: "org-of-bob", hasAuth: true },
+      { phase: "deliver", principal: "alice", org: "org-of-alice", hasAuth: false },
+    ]);
+  });
+
+  it("sends a personal event only to the users in `to`, and requires `to`", async () => {
+    const { events, subscribe, receiver } = setup();
+    const exportFinished = events.define("export.finished", {
+      description: "Your export finished.",
+      payload: z.object({ exportId: z.string() }),
+      personal: true,
+      authorize: () => true,
+    });
+    const alice = await subscribe({}, { user: "alice", name: "export.finished" });
+    await subscribe({}, { user: "bob", name: "export.finished" });
+
+    // @ts-expect-error `to` is required for a personal event
+    const withoutTo = () => exportFinished.emit({ exportId: "e1" });
+    await expect(withoutTo()).rejects.toThrow(/personal/);
+
+    expect((await exportFinished.emit({ exportId: "e1" }, { to: "alice" })).matched).toBe(1);
+    expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
+  });
+});
+
+describe("define", () => {
+  it("requires authorize", () => {
+    const { events } = setup();
+    expect(() =>
+      events.define("open", { description: "d", payload: z.object({}) } as never),
+    ).toThrow(/authorize/);
+  });
+
+  it("requires args when the payload does not carry every input field", async () => {
+    const { events, subscribe, receiver } = setup();
+    const replied = events.define("reply.posted", {
+      description: "A reply was posted in a thread.",
+      input: z.object({ threadId: z.string() }),
+      payload: z.object({ text: z.string() }), // no threadId in the payload
+      authorize: () => true,
+    });
+    const sub = await subscribe({ threadId: "t1" }, { name: "reply.posted" });
+
+    // @ts-expect-error args is required: the payload has no threadId to match on
+    const withoutArgs = () => replied.emit({ text: "hi" });
+    await expect(withoutArgs()).rejects.toThrow(/threadId/);
+
+    expect((await replied.emit({ text: "hi" }, { args: { threadId: "t1" } })).matched).toBe(1);
+    expect(receiver.deliveries().map((d) => d.url)).toEqual([sub.url]);
+  });
+
+  it("derives the match values from the payload when it carries every input field", async () => {
+    const { subscribe, commentCreated, receiver } = setup();
+    const sub = await subscribe({ documentId: "doc_9" });
+    // No options at all: documentId comes from the payload.
+    expect(
+      (await commentCreated.emit({ documentId: "doc_9", author: "a", text: "t" })).matched,
+    ).toBe(1);
+    expect(receiver.deliveries()[0]?.url).toBe(sub.url);
   });
 });
 
@@ -452,7 +575,7 @@ describe("principal", () => {
     });
     const sub = await subscribe({ documentId: "d" }, { user: null });
     expect(sub.error).toBeUndefined();
-    expect((await store.get(String(sub.result?.id)))?.owner).toBe("session-user");
+    expect((await store.get(String(sub.result?.id)))?.subscriber).toBe("session-user");
   });
 
   it("is required", () => {

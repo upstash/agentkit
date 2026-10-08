@@ -50,8 +50,8 @@ return 1
 `;
 
 /**
- * One key per subscription, expiring with it, plus a sorted set per `(event, owner, argsKey)`
- * scored by expiry. An emit reads only the index entries of the owners it names.
+ * One key per subscription, expiring with it, plus a sorted set per `(event, argsKey)` scored by
+ * expiry. An emit reads only the index entries it can match.
  */
 export class RedisSubscriptionStore implements SubscriptionStore {
   private readonly prefix: string;
@@ -88,19 +88,9 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     await pipeline.exec();
   }
 
-  async find(
-    event: string,
-    owners: readonly string[],
-    argsKeys: readonly string[],
-  ): Promise<Subscription[]> {
-    if (owners.length === 0 || argsKeys.length === 0) return [];
-    const keys = await Promise.all(
-      owners.flatMap((owner) =>
-        argsKeys.map((argsKey) => this.indexKey({ event, owner, argsKey })),
-      ),
-    );
-    // One ZRANGE per owner and argument subset (up to 256 per owner), so a large `owners` list is
-    // split into bounded pipelines rather than sent as one huge request.
+  async find(event: string, argsKeys: readonly string[]): Promise<Subscription[]> {
+    if (argsKeys.length === 0) return [];
+    const keys = await Promise.all(argsKeys.map((argsKey) => this.indexKey({ event, argsKey })));
     const now = Date.now();
     const ids = new Set<string>();
     for (const batch of chunks(keys, MAX_BATCH)) {
@@ -108,6 +98,7 @@ export class RedisSubscriptionStore implements SubscriptionStore {
       for (const key of batch) pipeline.zrange(key, now, "+inf", { byScore: true });
       for (const id of (await pipeline.exec<string[][]>()).flat()) ids.add(String(id));
     }
+    // A popular event can match many subscriptions, so the reads are batched too.
     const found: Subscription[] = [];
     for (const batch of chunks([...ids], MAX_BATCH)) {
       const records = await this.redis().mget<unknown[]>(...batch.map((id) => this.subKey(id)));
@@ -124,14 +115,9 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     return `${this.prefix}sub:${id}`;
   }
 
-  /** The index key for one `(event, owner, argsKey)`. Hashed, because arguments can be long. */
-  async indexKey({
-    event,
-    owner,
-    argsKey,
-  }: Pick<Subscription, "event" | "owner" | "argsKey">): Promise<string> {
-    const digest = await sha256Hex(JSON.stringify([owner, argsKey]));
-    return `${this.prefix}idx:${event}:${digest.slice(0, 24)}`;
+  /** The index key for one `(event, argsKey)`. Hashed, because arguments can be long. */
+  async indexKey({ event, argsKey }: Pick<Subscription, "event" | "argsKey">): Promise<string> {
+    return `${this.prefix}idx:${event}:${(await sha256Hex(argsKey)).slice(0, 24)}`;
   }
 }
 

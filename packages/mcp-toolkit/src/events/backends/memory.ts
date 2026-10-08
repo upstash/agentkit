@@ -29,21 +29,13 @@ export class MemorySubscriptionStore implements SubscriptionStore {
     this.subscriptions.delete(id);
   }
 
-  async find(
-    event: string,
-    owners: readonly string[],
-    argsKeys: readonly string[],
-  ): Promise<Subscription[]> {
-    const ownerSet = new Set(owners);
+  async find(event: string, argsKeys: readonly string[]): Promise<Subscription[]> {
     const keys = new Set(argsKeys);
     return [...this.subscriptions.keys()]
       .map((id) => this.live(id))
       .filter(
         (sub): sub is Subscription =>
-          sub !== undefined &&
-          sub.event === event &&
-          ownerSet.has(sub.owner) &&
-          keys.has(sub.argsKey),
+          sub !== undefined && sub.event === event && keys.has(sub.argsKey),
       )
       .map((sub) => ({ ...sub }));
   }

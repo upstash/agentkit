@@ -15,7 +15,7 @@ export {
   type TaskToolConfig,
 } from "./core.js";
 
-export type { PrincipalResolver } from "../shared/auth.js";
+export type { Principal, PrincipalResolver } from "../shared/auth.js";
 
 export {
   dispatchKey,

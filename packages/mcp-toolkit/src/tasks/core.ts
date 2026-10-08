@@ -9,6 +9,7 @@ import {
   callerOf as callerFrom,
   type Caller,
   requirePrincipal,
+  resolvePrincipal,
   type CallerAuth,
   type PrincipalResolver,
 } from "../shared/auth.js";
@@ -144,7 +145,8 @@ export function createTaskLayer<TContext = unknown>(
   >();
   const wired = new WeakSet<McpServer>();
 
-  const callerOf = async (context: unknown) => await principal(callerFrom(context));
+  const callerOf = async (context: unknown) =>
+    (await resolvePrincipal(principal, callerFrom(context)))?.id;
 
   async function runSettleHook(task: Task): Promise<void> {
     if (!onSettle) return;

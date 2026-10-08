@@ -18,7 +18,7 @@ export type EventEnvelope<TData = unknown> = {
 
 /** One webhook subscription, as stored. */
 export type Subscription = {
-  /** Derived from the owner, callback URL, event name and arguments. */
+  /** Derived from the subscriber, callback URL, event name and arguments. */
   id: string;
   event: string;
   /** The validated subscription arguments. */
@@ -29,8 +29,10 @@ export type Subscription = {
   url: string;
   /** The `whsec_` signing secret, encrypted with the layer's `secretKey`. */
   encryptedSecret: string;
-  /** The caller that subscribed. Events only reach subscriptions of the owners they name. */
-  owner: string;
+  /** Who subscribed: the id `principal` returned. */
+  subscriber: string;
+  /** Non-secret context `principal` returned, handed back to `authorize` before each delivery. */
+  context?: Record<string, unknown>;
   /** ISO-8601. */
   createdAt: string;
   /** Epoch milliseconds. */
@@ -38,11 +40,11 @@ export type Subscription = {
 };
 
 /** The fields that locate a subscription in a store's index. */
-export type SubscriptionRef = Pick<Subscription, "id" | "event" | "argsKey" | "owner">;
+export type SubscriptionRef = Pick<Subscription, "id" | "event" | "argsKey">;
 
 /**
- * Durable storage for subscriptions, indexed by `(event, owner, argsKey)`. The layer computes
- * every key an emit can match, so a store needs no matching logic of its own.
+ * Durable storage for subscriptions, indexed by `(event, argsKey)`. The layer computes every key
+ * an emit can match, so a store needs no matching logic of its own.
  */
 export interface SubscriptionStore {
   /** Creates or replaces a subscription. Must have committed before it resolves. */
@@ -51,12 +53,8 @@ export interface SubscriptionStore {
   get(id: string): Promise<Subscription | null>;
   /** Removes a subscription and its index entry. A no-op when it does not exist. */
   delete(subscription: SubscriptionRef): Promise<void>;
-  /** Every live subscription to `event` owned by one of `owners`, with one of `argsKeys`. */
-  find(
-    event: string,
-    owners: readonly string[],
-    argsKeys: readonly string[],
-  ): Promise<Subscription[]>;
+  /** Every live subscription to `event` whose `argsKey` is one of `argsKeys`. */
+  find(event: string, argsKeys: readonly string[]): Promise<Subscription[]>;
 }
 
 /** One envelope for one subscription. */
@@ -71,14 +69,14 @@ export type SendOutcome =
   | "delivered"
   /** 410: the host dropped the subscription, and the layer deleted it. */
   | "gone"
-  /** 413, a redirect, or a subscription that no longer exists: retrying cannot help. */
+  /** 413, a redirect, a missing subscription, or `authorize` now refuses it: retrying cannot help. */
   | "dropped"
   /** Anything else: retry. */
   | "retry";
 
 /** The layer's entry point, handed to a transport by {@link EventDelivery.attach}. */
 export type DeliveryEndpoints = {
-  /** Signs the envelope fresh, POSTs it and classifies the answer. Call it once per attempt. */
+  /** Re-checks `authorize`, signs the envelope fresh, POSTs it and classifies the answer. */
   send(job: DeliveryJob): Promise<SendOutcome>;
 };
 

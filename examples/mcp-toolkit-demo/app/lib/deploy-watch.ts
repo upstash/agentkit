@@ -64,18 +64,18 @@ export const deployFinished = events.define("deploy.finished", {
     environment: z.enum(["production", "staging"]).optional().describe("Only this environment"),
   }),
   payload: Deploy,
+  // Everyone may watch every deploy in the demo. A real server checks whether this user can see
+  // the service, and the check runs again before each delivery, so revoked access stops events.
+  authorize: () => true,
 });
 
-/**
- * Records a deploy and fires `deploy.finished` to the matching subscriptions of the users who may
- * see it. Here that is the one demo user; a real server would pass the team's members as `owners`.
- */
+/** Records a deploy and fires `deploy.finished` to every matching subscription `authorize` allows. */
 export async function reportDeploy(deploy: Deploy) {
   const redis = Redis.fromEnv();
   await redis.lpush(RECENT_KEY, JSON.stringify(deploy));
   await redis.ltrim(RECENT_KEY, 0, 19);
   // The deploy id doubles as the event id, so reporting the same deploy twice delivers once.
-  return deployFinished.emit(deploy, { owner: DEMO_USER, eventId: `deploy_${deploy.id}` });
+  return deployFinished.emit(deploy, { eventId: `deploy_${deploy.id}` });
 }
 
 export function createServer(): McpServer {
