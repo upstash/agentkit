@@ -493,13 +493,45 @@ describe("task.finished", () => {
     expect(deliveries[0]?.url).toBe(alice.url);
     expect(deliveries[0]?.body).toMatchObject({
       name: "task.finished",
-      eventId: `evt_task_${taskId}`,
+      eventId: expect.stringMatching(new RegExp(`^evt_task_${taskId}-\\d+$`)),
       data: { taskId, status: "completed", result: { content: [{ type: "text", text: "done" }] } },
     });
+
+    // The event id is per task record, not per task id: a keyed task re-created after its record
+    // expired reuses the id, and must not be dropped as a duplicate of the first one's event.
+    expect(deliveries[0]?.body.eventId).not.toBe(`evt_task_${taskId}`);
 
     // A cancel after completion settles nothing, so nothing fires.
     await tasks.cancelTask(taskId);
     expect(receiver.deliveries()).toHaveLength(1);
+  });
+});
+
+describe("task.finished event ids", () => {
+  it("differ for a keyed task re-created after its record expired", async () => {
+    const { events } = setup();
+    const taskFinished = taskFinishedEvent(events);
+    const ids: (string | undefined)[] = [];
+    (taskFinished.event as { emit: unknown }).emit = async (
+      _payload: unknown,
+      options: { eventId?: string },
+    ) => {
+      ids.push(options.eventId);
+      return { eventId: options.eventId ?? "", matched: 0 };
+    };
+    const record = {
+      taskId: "keyed",
+      status: "completed" as const,
+      lastUpdatedAt: "2026-10-08T10:00:01.000Z",
+      ttlMs: 300_000,
+      name: "slow",
+      args: {},
+      owner: "alice",
+    };
+    await taskFinished.onSettle({ ...record, createdAt: "2026-10-08T10:00:00.000Z" });
+    await taskFinished.onSettle({ ...record, createdAt: "2026-10-08T10:06:00.000Z" });
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
   });
 });
 

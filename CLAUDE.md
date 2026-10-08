@@ -734,6 +734,11 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `${taskId}-${createdAt ms}`. QStash remembers a `deduplicationId` for 10 minutes and Workflow
   refuses a reused `workflowRunId`, while a keyed task id comes back once its 5-minute record
   expires. A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
+  The `task.finished` event id is `evt_task_${dispatchKey(task)}` for the same reason: QStash and
+  hosts dedupe on it.
+- **`RedisSubscriptionStore.find` batches:** one `ZRANGE` per owner × argument subset (up to 256
+  per owner), split into pipelines and `MGET`s of at most 1,000 commands, so `emit({ owners })`
+  with a large team never sends one giant request.
 - **No secret defaults:** `MCP_EVENTS_SECRET_KEY` has no fallback, demo included; the event layer
   resolves it on first use (not at construction, so builds without env still work) and a missing key
   throws rather than dropping deliveries.

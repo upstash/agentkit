@@ -9,7 +9,7 @@
  * A host subscribes with no arguments for every task its user starts, or with a `taskId`.
  */
 import * as z from "zod";
-import type { Task } from "../tasks/types.js";
+import { dispatchKey, type Task } from "../tasks/types.js";
 import { EventPayloadTooLargeError, type EventLayer } from "./core.js";
 
 const taskFinishedInput = z.object({
@@ -58,8 +58,9 @@ export function taskFinishedEvent(
     const emitOptions = {
       owner: task.owner,
       args: { taskId: task.taskId },
-      // Stable, so a repeated settle hook cannot deliver twice.
-      eventId: `evt_task_${task.taskId}`,
+      // Stable per task record, so a repeated settle hook cannot deliver twice, while a keyed task
+      // re-created after expiry (same id, new createdAt) is not mistaken for a duplicate.
+      eventId: `evt_task_${dispatchKey(task)}`,
     };
     try {
       await event.emit(payload, emitOptions);

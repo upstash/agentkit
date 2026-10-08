@@ -23,6 +23,9 @@ import type {
 
 export const DEFAULT_EVENTS_PREFIX = "mcp-events:";
 
+/** The most commands one pipeline or `MGET` carries; `find` splits larger lookups. */
+const MAX_BATCH = 1000;
+
 export type RedisSubscriptionStoreConfig = {
   /** The Upstash Redis client. Defaults to one from `UPSTASH_REDIS_REST_URL` / `_TOKEN`. */
   redis?: Redis;
@@ -96,13 +99,24 @@ export class RedisSubscriptionStore implements SubscriptionStore {
         argsKeys.map((argsKey) => this.indexKey({ event, owner, argsKey })),
       ),
     );
+    // One ZRANGE per owner and argument subset (up to 256 per owner), so a large `owners` list is
+    // split into bounded pipelines rather than sent as one huge request.
     const now = Date.now();
-    const pipeline = this.redis().pipeline();
-    for (const key of keys) pipeline.zrange(key, now, "+inf", { byScore: true });
-    const ids = [...new Set((await pipeline.exec<string[][]>()).flat().map(String))];
-    if (ids.length === 0) return [];
-    const records = await this.redis().mget<unknown[]>(...ids.map((id) => this.subKey(id)));
-    return records.map(parse).filter((sub): sub is Subscription => sub !== null);
+    const ids = new Set<string>();
+    for (const batch of chunks(keys, MAX_BATCH)) {
+      const pipeline = this.redis().pipeline();
+      for (const key of batch) pipeline.zrange(key, now, "+inf", { byScore: true });
+      for (const id of (await pipeline.exec<string[][]>()).flat()) ids.add(String(id));
+    }
+    const found: Subscription[] = [];
+    for (const batch of chunks([...ids], MAX_BATCH)) {
+      const records = await this.redis().mget<unknown[]>(...batch.map((id) => this.subKey(id)));
+      for (const record of records) {
+        const sub = parse(record);
+        if (sub) found.push(sub);
+      }
+    }
+    return found;
   }
 
   /** The key a subscription is stored under. */
@@ -119,6 +133,12 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     const digest = await sha256Hex(JSON.stringify([owner, argsKey]));
     return `${this.prefix}idx:${event}:${digest.slice(0, 24)}`;
   }
+}
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 function parse(raw: unknown): Subscription | null {

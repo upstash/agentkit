@@ -67,6 +67,16 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     expect(both.map((s) => s.id).sort()).toEqual([alice.id, bob.id].sort());
   });
 
+  it("splits a lookup across many owners into bounded pipelines", async () => {
+    // 1,500 owners is 1,500 ZRANGEs: more than one pipeline's worth.
+    const owners = Array.from({ length: 1500 }, (_, i) => `member-${i}`);
+    const picked = [owners[3]!, owners[1100]!, owners[1499]!];
+    const subs = picked.map((owner) => makeSub({ event: "team", args: {}, owner }));
+    for (const sub of subs) await store.put(sub);
+    const found = await store.find("team", owners, ["{}"]);
+    expect(found.map((s) => s.id).sort()).toEqual(subs.map((s) => s.id).sort());
+  });
+
   it("refreshing replaces the record and extends the index", async () => {
     const sub = makeSub({ event: "refresh", expiresAt: Date.now() + 10_000 });
     await store.put(sub);
