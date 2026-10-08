@@ -545,6 +545,112 @@ Cursor and OpenCode do not subscribe yet. The demo's Deploy Watch server has bee
 with ChatGPT monitors. Poll and stream delivery modes in the draft are not
 implemented here; `events/subscribe` refuses them.
 
+## What lives in Redis
+
+Everything the toolkit keeps is in your Upstash Redis database, under two prefixes you can change
+(`prefix` on each store). This section lists every key, what it is for, and what it means for
+security and correctness. Treat the Redis credentials like any other production secret: whoever can
+write these keys can change who owns a task or where an event goes.
+
+### Tasks: one hash per task
+
+`mcp:task:<taskId>` is a hash with one field per task property, each value JSON-encoded:
+
+| Field | What it is |
+| --- | --- |
+| `taskId`, `name` | The task id, and the defined task (tool) name that picks the handler |
+| `args` | The validated tool arguments, replayed into the handler on delivery |
+| `owner` | The caller's id from `principal`, checked on every `task_status` / `task_cancel` |
+| `status`, `statusMessage` | `working`, `completed`, `failed` or `cancelled`, and the progress line |
+| `result` / `error` | The handler's tool result once `completed`, or the error once `failed` |
+| `createdAt`, `lastUpdatedAt`, `ttlMs`, `pollIntervalMs` | Timing |
+| `dispatchId` | The QStash message id or Workflow run id, so a cancel can stop pending deliveries |
+
+**Security**
+
+- `args` and `result` are **plain JSON**. Anyone who can read the database can read them, for as
+  long as the task lives. Keep secrets out of tool arguments and results, or use a short `ttlMs`.
+- `owner` is what keeps tasks apart. A task is only ever answered to the caller whose `principal`
+  matches it; another caller's id reads as unknown. That is why `principal` must return the user
+  (the token's subject), not `auth.clientId`.
+- The caller's token, `AuthInfo` and request are **never stored**.
+- Keyed task ids (`idempotencyKey`) are a hash of the owner, the tool and the key, so two callers
+  can never land on the same record.
+
+**Correctness**
+
+- **Durable before the reply.** The record is written before the tool answers with its id, because
+  the model may poll from another instance right away. Creation is one Lua script that writes only
+  if the key is absent, so two racing retries with the same key cannot both create a task, and a
+  retry gets the existing task back.
+- **First terminal write wins.** Progress updates and terminal transitions go through one guarded
+  Lua script that refuses to touch a task that is already `completed`, `failed` or `cancelled`. A
+  completion that lands after a cancel cannot overwrite it, and a late progress line cannot
+  overwrite "Cancelled by client".
+- **One field per property**, so a progress write and a cancel never clobber each other's fields.
+- **TTL from creation.** `PEXPIRE` is set once, from `ttlMs` (5 minutes by default), and never
+  extended. An expired task reads as unknown, and its handler's `isCancelled()` returns true. With
+  `ttlMs: null` the record has no expiry and stays until you delete it.
+- **Values are JSON-encoded on write**, so the client's automatic decoding is the exact inverse: a
+  status message of `"123"` comes back as a string. A Redis client built with
+  `automaticDeserialization: false` is not supported.
+
+### Events: one key per subscription, one index per filter
+
+`mcp-events:sub:<subscriptionId>` is a JSON string with the subscription:
+
+| Field | What it is |
+| --- | --- |
+| `id` | `sub_` + a hash of subscriber, callback URL, event and arguments |
+| `event`, `args`, `argsKey` | The event name, the subscriber's filter, and its canonical JSON |
+| `url` | The callback URL the host gave, which every delivery for this subscription goes to |
+| `encryptedSecret` | The host's `whsec_` signing secret, AES-256-GCM encrypted under `secretKey` |
+| `subscriber` | The caller's id from `principal` |
+| `context` | Optional non-secret context `principal` returned, at most 4 KB |
+| `createdAt`, `expiresAt` | Timing |
+
+`mcp-events:idx:<event>:<hash of argsKey>` is a sorted set of subscription ids scored by expiry,
+so an emit reads only the subscriptions its arguments can match.
+
+**Security**
+
+- **The signing secret is encrypted** with `secretKey` (`MCP_EVENTS_SECRET_KEY`), which is never
+  stored in Redis. A leaked database does not let anyone forge webhooks to the hosts. Rotating the
+  key makes stored secrets unreadable; those subscriptions stop receiving events until the host
+  refreshes and re-verifies.
+- **No token is stored.** That is why `authorize` before a delivery only gets the stored
+  `subscriber` and `context`, never `auth`. Put only non-secret data (an org id, a role) in
+  `context`.
+- **Callback URLs are visible** to anyone who can read the database. They are host-generated and
+  only accept requests signed with the encrypted secret.
+- **Where vs who.** The callback URL says where a delivery goes; `subscriber` plus `authorize` say
+  who may receive it. One user connected through two hosts has two subscriptions with two URLs and
+  two secrets, so a delivery for one host is never sent to the other.
+- A subscription is stored only after `authorize` allows it and the callback echoed a signed
+  challenge. Unsubscribing recomputes the id from the caller's own principal, so only the
+  subscriber can remove it.
+
+**Correctness**
+
+- **Expiry.** The subscription key expires with the subscription (`PX`), and the index is written in
+  the same Lua script, kept alive as long as its longest-lived member, with expired members pruned
+  on every write. Reads only take index entries scored in the future.
+- **Deterministic ids.** Subscribing again with the same subscriber, URL, event and arguments
+  updates the same record (a refresh) instead of creating a duplicate.
+- **Bounded lookups.** An emit reads one index per subset of its arguments (at most 256), then the
+  matching records, in requests of at most 1,000 commands.
+
+### Not in Redis, but worth knowing
+
+- **QStash messages.** A task delivery carries only `{ taskId }`. An event delivery carries the
+  subscription id and the full event envelope, including its payload, so the payload sits in QStash
+  (and its DLQ, if every retry fails) until it is delivered.
+- **Deduplication keys.** Task dispatches dedupe on `taskId` plus creation time, and event deliveries
+  on event id plus subscription id. Re-creating an expired keyed task gets a new key, so QStash's
+  10-minute dedup window never swallows it.
+- **Never stored anywhere by the toolkit:** the caller's token or `AuthInfo`, the raw request, the
+  plaintext webhook secret, and `MCP_EVENTS_SECRET_KEY`.
+
 ## Reference
 
 <details>
@@ -597,9 +703,7 @@ neither is durable, which is exactly the failure this package is about.
 **`RedisTaskStore`** — `redis` (defaults to `Redis.fromEnv()`; `automaticDeserialization: false`
 is not supported), `prefix`, `enableTelemetry`.
 
-**Data at rest.** Task `args` and `result` are stored in Redis as plain JSON for the task's TTL,
-which is forever with `ttlMs: null`. Don't put secrets in tool arguments or results, or set a short
-TTL. Webhook signing secrets, by contrast, are encrypted with `secretKey`.
+**Data at rest.** See [What lives in Redis](#what-lives-in-redis).
 
 **`QStashDispatcher`** — `url` required; `qstash`, `receiver`, `retries`, `retryDelay`, `headers`,
 `enableTelemetry`.
