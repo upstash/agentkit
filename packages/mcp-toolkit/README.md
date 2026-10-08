@@ -545,6 +545,81 @@ Cursor and OpenCode do not subscribe yet. The demo's Deploy Watch server has bee
 with ChatGPT monitors. Poll and stream delivery modes in the draft are not
 implemented here; `events/subscribe` refuses them.
 
+## Who can see what
+
+Every guarantee below starts from `principal`. It runs on the server, on every request, and reads
+the `AuthInfo` your route verified (or the request, for session apps). The caller never supplies an
+owner or a subscriber id: no tool argument, subscription argument or header is trusted for it. So
+the guarantees are only as good as `principal`: it must return the user (the token's subject), not
+`auth.clientId`, which every user of a host like ChatGPT shares.
+
+### Tasks: nobody can read or cancel another user's task
+
+1. **The owner is set by the server.** When a task tool is called, the toolkit runs `principal`
+   and stores the result as the task's `owner`. The model only sends the tool's own arguments, and
+   there is no way to pass an owner. A caller `principal` cannot identify is refused before
+   anything is stored.
+2. **Every read checks it.** `task_status` and `task_cancel` run `principal` again, load the task,
+   and compare its `owner` to the caller. Anything else gets the same answer as an id that never
+   existed ("Unknown task"), so another user's id cannot even be confirmed to exist.
+3. **Ids don't help.** Unkeyed ids are random UUIDs. Keyed ids hash the owner in, so the same
+   `idempotencyKey` gives each user their own task and never someone else's.
+4. **There is no other way in.** No tool lists tasks. The execute endpoint only accepts deliveries
+   signed by QStash, and it runs the handler; it never returns a task to the caller.
+5. **`task.finished` follows the same owner.** It is a personal event, emitted `to` the task's
+   owner, so a task's result only reaches that user's subscriptions.
+
+### Events: only users with access can subscribe
+
+On every `events/subscribe`:
+
+1. `principal` gives the subscriber. If it is `undefined`, the call is refused with
+   `not_authenticated`.
+2. The arguments are validated against the event's `input` schema.
+3. `authorize(args, { principal, context, phase: "subscribe", auth, request })` runs. It is
+   required on every event. If it says no, the call is refused with `not_authorized`. This happens
+   **before** the callback is challenged and before anything is stored, so a refused caller costs
+   one call and leaves nothing behind.
+4. Only then is the callback verified and the subscription stored, with the subscriber's id in its
+   record and in its id.
+
+A refresh is a subscribe with the same arguments, so it goes through all four steps again. An
+unsubscribe recomputes the subscription id from the caller's own principal, so a user can only ever
+remove their own subscriptions.
+
+### Events: deliveries only reach users who still have access
+
+Subscribing was allowed once, but access changes. So the check runs again for every delivery:
+
+1. **`emit` picks candidates.** It finds the subscriptions whose arguments match, and, when `to` is
+   given, keeps only those users' subscriptions. A `personal` event cannot be emitted without `to`;
+   the type requires it, and so does a runtime check. `emit` is your server code, never something a
+   client calls.
+2. **Each candidate is queued separately**, one QStash message per subscription.
+3. **The delivery route checks again.** When QStash calls it, the route loads the subscription and
+   runs `authorize(args, { principal: subscriber, context, phase: "deliver" })`. Because this
+   happens at delivery time, not at `emit`, it also catches access removed between the two.
+   - **No:** the event is dropped. Nothing is sent, and QStash does not retry it.
+   - **Throws** (your database is down, say): the route answers 500 and QStash retries later, so a
+     temporary failure never turns into a delivery.
+   - **Yes:** the envelope is signed with that subscription's own secret and POSTed to that
+     subscription's own callback URL.
+
+At delivery there is no token or request (neither is ever stored), so `authorize` decides from the
+stored subscriber id, the subscription's arguments and the optional `context`, by asking your own
+data: "can this user still read this document?" Treat `context` as a snapshot from subscribe time;
+revocation checks should look up the current state.
+
+### What this does not cover
+
+- **Your `authorize`.** The toolkit makes sure it runs; whether it is right is yours. An event with
+  `authorize: () => true` reaches every authenticated subscriber whose arguments match.
+- **Field-level redaction.** `authorize` lets a whole event through or not. Every recipient of an
+  emit gets the same payload, so don't put data in it that only some of them may see; emit
+  separately, with `to`, instead.
+- **The Redis and QStash credentials.** Anyone who can write the stored records can change an owner
+  or a callback URL. See [What lives in Redis](#what-lives-in-redis).
+
 ## What lives in Redis
 
 Everything the toolkit keeps is in your Upstash Redis database, under two prefixes you can change
