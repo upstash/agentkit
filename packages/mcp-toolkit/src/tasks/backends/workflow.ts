@@ -93,31 +93,44 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
       this.config.qstash,
       this.config.enableTelemetry,
     );
-    const { handler } = serve<WorkflowPayload>(
-      async (context) => {
-        const taskId = context.requestPayload?.taskId;
-        if (taskId) await endpoints.run(taskId, context, journalFor(context));
+    const { handler } = serve<WorkflowPayload>(workflowRoute(endpoints), {
+      failureFunction: async ({ context, failStatus, failResponse }) => {
+        const taskId = (context.requestPayload as WorkflowPayload | undefined)?.taskId;
+        if (!taskId) return;
+        await endpoints.fail(taskId, {
+          code: INTERNAL_ERROR,
+          message: `Workflow run failed${failStatus ? ` (status ${failStatus})` : ""}`,
+          data: { response: failResponse, workflowRunId: context.workflowRunId },
+        });
       },
-      {
-        failureFunction: async ({ context, failStatus, failResponse }) => {
-          const taskId = (context.requestPayload as WorkflowPayload | undefined)?.taskId;
-          if (!taskId) return;
-          await endpoints.fail(taskId, {
-            code: INTERNAL_ERROR,
-            message: `Workflow run failed${failStatus ? ` (status ${failStatus})` : ""}`,
-            data: { response: failResponse, workflowRunId: context.workflowRunId },
-          });
-        },
-        // Workflow verifies only body and signature; binding the URL refuses a signature that
-        // QStash issued for any other endpoint of the same account.
-        receiver: boundToUrl(receiver, url),
-        qstashClient,
-        // The public URL, as with QStash: behind a proxy `request.url` is the internal one.
-        url,
-      },
-    );
+      // Workflow verifies only body and signature; binding the URL refuses a signature that
+      // QStash issued for any other endpoint of the same account.
+      receiver: boundToUrl(receiver, url),
+      qstashClient,
+      // The public URL, as with QStash: behind a proxy `request.url` is the internal one.
+      url,
+    });
     return handler;
   }
+}
+
+/**
+ * The workflow's route function. Its first act is always a step: Workflow authorizes every request,
+ * the failure callback included, by running the route function until its first step, and refuses
+ * one that throws or returns before reaching any. Without this, a handler that throws before its
+ * first `task.run` (or a run whose task was already cancelled) never gets `failureFunction`, and
+ * the task reads `working` until its TTL.
+ */
+export function workflowRoute(
+  endpoints: TaskEndpoints<WorkflowContext<WorkflowPayload>>,
+): (context: WorkflowContext<WorkflowPayload>) => Promise<void> {
+  return async (context) => {
+    const taskId = await context.run(
+      "mcp-task:start",
+      async () => context.requestPayload?.taskId ?? null,
+    );
+    if (taskId) await endpoints.run(taskId, context, journalFor(context));
+  };
 }
 
 /**

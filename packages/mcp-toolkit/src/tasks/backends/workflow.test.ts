@@ -9,7 +9,7 @@ import { Client as QStashClient } from "@upstash/qstash";
 import { WorkflowContext } from "@upstash/workflow";
 import { describe, expect, it } from "vitest";
 import * as z from "zod";
-import { insideStep, WorkflowDispatcher } from "./workflow.js";
+import { insideStep, WorkflowDispatcher, workflowRoute } from "./workflow.js";
 import { createTaskLayer } from "../core.js";
 import type { Task, TaskContext } from "../types.js";
 import {
@@ -274,5 +274,42 @@ describe("insideStep", () => {
     expect(executor).toBeDefined();
     expect(executor).toHaveProperty("executingStep", false);
     expect(insideStep(context as never)).toBe(false);
+  });
+});
+
+describe("workflowRoute", () => {
+  // Workflow authorizes every request, the failure callback included, by running the route
+  // function on a context whose first step throws a sentinel. A route that throws anything else
+  // first, or returns without a step, is refused, and failureFunction never runs.
+  it("reaches a step before any task code runs", async () => {
+    const steps: string[] = [];
+    let ran = false;
+    const authorizing = {
+      requestPayload: { taskId: "task-1" },
+      run: async (name: string) => {
+        steps.push(name);
+        throw new Error("first step reached");
+      },
+    };
+    const route = workflowRoute({
+      run: async () => {
+        ran = true;
+        throw new Error("the handler threw before its first step");
+      },
+      fail: async () => undefined,
+    });
+    await expect(route(authorizing as never)).rejects.toThrow("first step reached");
+    expect(steps).toEqual(["mcp-task:start"]);
+    expect(ran).toBe(false);
+  });
+
+  it("still reaches a step when there is no task to run", async () => {
+    const steps: string[] = [];
+    const route = workflowRoute({ run: async () => undefined, fail: async () => undefined });
+    await route({
+      requestPayload: {},
+      run: async (name: string, fn: () => Promise<unknown>) => (steps.push(name), fn()),
+    } as never);
+    expect(steps).toEqual(["mcp-task:start"]);
   });
 });
