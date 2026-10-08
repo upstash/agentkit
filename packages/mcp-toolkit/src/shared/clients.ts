@@ -5,6 +5,9 @@
 import { Redis } from "@upstash/redis";
 import { Client as QStashClient, Receiver } from "@upstash/qstash";
 import { addQStashTelemetry, addTelemetry } from "../telemetry.js";
+import { env } from "./env.js";
+
+export { INTERNAL_ERROR, env } from "./env.js";
 
 /** Calls `create` once, on first access. */
 export function lazy<T>(create: () => T): () => T {
@@ -59,10 +62,6 @@ function redisFromEnv(owner: string): Redis {
   });
 }
 
-export function env(name: string): string | undefined {
-  return typeof process === "object" ? process.env?.[name] : undefined;
-}
-
 export function requireEnv(owner: string, name: string): string {
   const value = env(name);
   if (!value) throw new Error(`${owner} needs ${name} (or pass the client explicitly).`);
@@ -75,4 +74,39 @@ export function requireEnv(owner: string, name: string): string {
  */
 export function nonRetryable(message: string): Response {
   return new Response(message, { status: 489, headers: { "Upstash-NonRetryable-Error": "true" } });
+}
+
+/**
+ * A receiver that always checks the signature was issued for `url`. Upstash Workflow verifies
+ * with only the body and signature, which would accept a delivery signed for any other endpoint.
+ */
+export function boundToUrl(receiver: Receiver, url: string): Receiver {
+  return Object.assign(Object.create(receiver) as Receiver, {
+    verify: (request: Parameters<Receiver["verify"]>[0]) => receiver.verify({ ...request, url }),
+  });
+}
+
+/**
+ * Reads a QStash delivery: verifies its signature against `url`, the URL we published to (behind
+ * a proxy `request.url` is the internal one), then parses the JSON body. Anything wrong comes back
+ * as a non-retryable response.
+ */
+export async function readQStashJson(
+  request: Request,
+  receiver: Receiver,
+  url: string,
+): Promise<unknown> {
+  const body = await request.text();
+  try {
+    const signature = request.headers.get("upstash-signature") ?? "";
+    if (!(await receiver.verify({ signature, body, url })))
+      return nonRetryable("invalid signature");
+  } catch {
+    return nonRetryable("invalid signature");
+  }
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return nonRetryable("malformed body");
+  }
 }

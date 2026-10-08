@@ -6,58 +6,43 @@
 import type { McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import {
-  callerOf as callerFrom,
-  type Caller,
+  callerOf,
   requirePrincipal,
   resolvePrincipal,
-  type CallerAuth,
   type PrincipalResolver,
 } from "../shared/auth.js";
-import {
-  isTerminal,
-  UnknownTaskError,
-  type Task,
-  type TaskContext,
-  type TaskDispatcher,
-  type TaskError,
-  type TaskJournal,
-  type TaskStore,
-  type WireTask,
+import { INTERNAL_ERROR } from "../shared/env.js";
+import type {
+  Task,
+  TaskContext,
+  TaskDispatcher,
+  TaskError,
+  TaskJournal,
+  TaskStore,
+  WireTask,
 } from "./types.js";
 
 const DEFAULT_TTL_MS = 300_000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
-/** JSON-RPC internal error. */
-const INTERNAL_ERROR = -32603;
-
-/** The names the two shared tools are registered under, unless overridden. */
-export const DEFAULT_TOOL_NAMES = { status: "task_status", cancel: "task_cancel" } as const;
-
-export type { Caller, CallerAuth };
+const STATUS_TOOL = "task_status";
+const CANCEL_TOOL = "task_cancel";
 
 export type TaskLayerOptions<TContext = unknown> = {
   store: TaskStore;
   dispatcher: TaskDispatcher<TContext>;
+  /**
+   * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
+   * when it can't, and the call is refused as not authenticated. Every task is owned by its
+   * caller. `auth.clientId` is the OAuth app (shared by every ChatGPT user), so it is the wrong
+   * key. A server with no users of its own passes `() => "local"`.
+   */
+  principal: PrincipalResolver;
   defaults?: {
-    /** Retention window from creation. `null` means unlimited. Defaults to 5 minutes. */
-    ttlMs?: number | null;
+    /** Retention window from creation. Defaults to 5 minutes. */
+    ttlMs?: number;
     /** Poll interval suggested to the model. Defaults to 2s. */
     pollIntervalMs?: number;
   };
-  /**
-   * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
-   * when it can't, and the call is refused as not authenticated. Every task is owned by its caller. `auth.clientId` is the OAuth app
-   * (shared by every ChatGPT user), so it is the wrong key. A server with no users of its own
-   * passes `() => "local"`.
-   */
-  principal: PrincipalResolver;
-  /** Renames the shared tools, e.g. to namespace them. */
-  toolNames?: { status?: string; cancel?: string };
-  /**
-   * Called once per task, by the write that made it terminal. Throws are logged and swallowed.
-   * `taskFinishedEvent(...).onSettle` from `@upstash/mcp-toolkit/events` plugs in here.
-   */
-  onSettle?: (task: Task) => void | Promise<void>;
 };
 
 export type TaskToolConfig<Schema extends StandardSchemaWithJSON> = {
@@ -66,11 +51,6 @@ export type TaskToolConfig<Schema extends StandardSchemaWithJSON> = {
   description: string;
   /** A Standard Schema (Zod 4, ArkType, Valibot) for the arguments. */
   inputSchema: Schema;
-  /** Retention window for this tool's tasks. `null` means unlimited. */
-  ttlMs?: number | null;
-  pollIntervalMs?: number;
-  /** Status message at creation. Defaults to `"Queued for durable execution"`. */
-  queuedMessage?: string;
   /** Status message on success. Defaults to `"Completed"`. */
   completedMessage?: string;
 };
@@ -90,23 +70,17 @@ export type TaskHandler<Args, TContext = unknown> = (
   task: TaskContext & TContext,
 ) => Promise<Record<string, unknown>>;
 
-export type TaskDefinition = { readonly name: string };
-
 export type TaskLayer<TContext = unknown> = {
   /** Declares a task tool and its handler. Call it at module scope, so every instance has it. */
   define<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
     handler: TaskHandler<InferArgs<Schema>, TContext>,
-  ): TaskDefinition;
+  ): void;
   /** Adds every defined task tool, plus `task_status` and `task_cancel`, to a server. */
   register(server: McpServer): void;
   /** The dispatcher's delivery endpoint: `export const POST = tasks.createExecuteHandler()`. */
   createExecuteHandler(): (request: Request) => Promise<Response>;
-  /** Reads a task server-side, without an ownership check. */
-  getTask(taskId: string): Promise<Task | null>;
-  /** Cancels a task server-side, without an ownership check. Idempotent. */
-  cancelTask(taskId: string): Promise<Task | null>;
 };
 
 /**
@@ -126,128 +100,54 @@ export type TaskLayer<TContext = unknown> = {
 export function createTaskLayer<TContext = unknown>(
   options: TaskLayerOptions<TContext>,
 ): TaskLayer<TContext> {
-  const { store, dispatcher, defaults = {}, onSettle } = options;
+  const { store, dispatcher } = options;
   const principal = requirePrincipal(options.principal, "createTaskLayer");
-  const toolNames = {
-    status: options.toolNames?.status ?? DEFAULT_TOOL_NAMES.status,
-    cancel: options.toolNames?.cancel ?? DEFAULT_TOOL_NAMES.cancel,
-  };
+  const ttlMs = options.defaults?.ttlMs ?? DEFAULT_TTL_MS;
+  const pollIntervalMs = options.defaults?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   // Keyed by tool name: a delivery only carries a task id, and the record names its tool.
   const definitions = new Map<
     string,
-    { config: TaskToolConfig<StandardSchemaWithJSON>; handler: TaskHandler<never, TContext> }
+    { config: TaskToolConfig<StandardSchemaWithJSON>; handler: TaskHandler<unknown, TContext> }
   >();
-  const wired = new WeakSet<McpServer>();
 
-  const callerOf = async (context: unknown) =>
-    (await resolvePrincipal(principal, callerFrom(context)))?.id;
-
-  async function runSettleHook(task: Task): Promise<void> {
-    if (!onSettle) return;
-    try {
-      await onSettle(task);
-    } catch (error) {
-      console.warn(`[mcp-toolkit] onSettle failed for task ${task.taskId}:`, error);
-    }
-  }
-
-  async function settle(taskId: string, patch: Parameters<TaskStore["settle"]>[1]) {
-    const outcome = await store.settle(taskId, patch);
-    if (outcome?.settled) await runSettleHook(outcome.task);
-    return outcome;
-  }
+  const callerId = (context: unknown) => resolvePrincipal(principal, callerOf(context));
 
   function define<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
     handler: TaskHandler<InferArgs<Schema>, TContext>,
-  ): TaskDefinition {
-    if (name === toolNames.status || name === toolNames.cancel) {
+  ): void {
+    if (name === STATUS_TOOL || name === CANCEL_TOOL) {
       throw new Error(`"${name}" is reserved for the shared task tools`);
     }
     if (definitions.has(name)) throw new Error(`Task "${name}" is already defined`);
     definitions.set(name, {
       config: config as unknown as TaskToolConfig<StandardSchemaWithJSON>,
-      handler: handler as TaskHandler<never, TContext>,
+      handler: handler as TaskHandler<unknown, TContext>,
     });
-    return { name };
   }
 
   function register(server: McpServer): void {
-    if (wired.has(server)) return;
-    wired.add(server);
-    for (const [name, { config }] of definitions) registerTaskTool(server, name, config);
-    registerSharedTools(server);
-  }
-
-  function registerTaskTool(
-    server: McpServer,
-    name: string,
-    config: TaskToolConfig<StandardSchemaWithJSON>,
-  ): void {
-    const callback = async (args: unknown, context: unknown): Promise<Record<string, unknown>> => {
-      const owner = await callerOf(context);
-      if (!owner) return notAuthenticatedResult();
-      const taskId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      const task: Task = {
-        taskId,
-        status: "working",
-        statusMessage: config.queuedMessage ?? "Queued for durable execution",
-        createdAt: now,
-        lastUpdatedAt: now,
-        // `null` means unlimited, so `??` would wrongly replace it.
-        ttlMs:
-          config.ttlMs !== undefined
-            ? config.ttlMs
-            : defaults.ttlMs !== undefined
-              ? defaults.ttlMs
-              : DEFAULT_TTL_MS,
-        pollIntervalMs:
-          config.pollIntervalMs ?? defaults.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+    for (const [name, { config }] of definitions) {
+      server.registerTool(
         name,
-        args,
-        owner,
-      };
+        {
+          title: config.title,
+          description:
+            `${config.description.trim()} Runs in the background: returns a taskId immediately. ` +
+            `Call ${STATUS_TOOL} with it to get progress and, once completed, the result.`,
+          inputSchema: config.inputSchema,
+        },
+        (async (args: unknown, context: unknown) => startTask(name, args, context)) as never,
+      );
+    }
 
-      // The record is durable before the id goes out, and before the work is queued.
-      if (await store.create(task)) throw new Error(`Task id ${taskId} is already taken`);
-      let dispatchId: string | undefined;
-      try {
-        dispatchId = await dispatcher.dispatch(task);
-      } catch (error) {
-        // Nothing will ever run this record: fail it rather than leave it `working` until its TTL.
-        await settle(taskId, {
-          status: "failed",
-          statusMessage: "Could not be queued",
-          error: { code: INTERNAL_ERROR, message: "The task could not be dispatched" },
-        }).catch(() => undefined);
-        throw error;
-      }
-      const saved = dispatchId ? await store.update(taskId, { dispatchId }) : task;
-      return startedResult(saved, toolNames);
-    };
-
-    server.registerTool(
-      name,
-      {
-        title: config.title,
-        description:
-          `${config.description.trim()} Runs in the background: returns a taskId immediately. ` +
-          `Call ${toolNames.status} with it to get progress and, once completed, the result.`,
-        inputSchema: config.inputSchema,
-      },
-      callback as never,
-    );
-  }
-
-  function registerSharedTools(server: McpServer): void {
     const inputSchema = z.object({
-      taskId: z.string().describe("The taskId returned when the task was started."),
+      taskId: z.uuid().describe("The taskId returned when the task was started."),
     });
 
     server.registerTool(
-      toolNames.status,
+      STATUS_TOOL,
       {
         title: "Task status",
         description:
@@ -258,15 +158,15 @@ export function createTaskLayer<TContext = unknown>(
         annotations: { readOnlyHint: true, idempotentHint: true },
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
-        const caller = await callerOf(context);
-        if (!caller) return notAuthenticatedResult();
+        const caller = await callerId(context);
+        if (!caller) return errorResult(NOT_AUTHENTICATED);
         const task = await owned(taskId, caller);
-        return task ? statusResult(task) : unknownTaskResult(taskId);
+        return task ? statusResult(task) : errorResult(unknownTask(taskId));
       }) as never,
     );
 
     server.registerTool(
-      toolNames.cancel,
+      CANCEL_TOOL,
       {
         title: "Cancel task",
         description:
@@ -276,37 +176,74 @@ export function createTaskLayer<TContext = unknown>(
         annotations: { destructiveHint: true, idempotentHint: true },
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
-        const caller = await callerOf(context);
-        if (!caller) return notAuthenticatedResult();
-        if (!(await owned(taskId, caller))) return unknownTaskResult(taskId);
-        const task = await cancelTask(taskId);
-        return task ? statusResult(task) : unknownTaskResult(taskId);
+        const caller = await callerId(context);
+        if (!caller) return errorResult(NOT_AUTHENTICATED);
+        if (!(await owned(taskId, caller))) return errorResult(unknownTask(taskId));
+        const task = await store.settle(taskId, {
+          status: "cancelled",
+          statusMessage: "Cancelled by client",
+        });
+        if (!task) return errorResult(unknownTask(taskId));
+        // Also stop pending redeliveries. A delivery already running can't be recalled, which is
+        // why handlers check `isCancelled()`.
+        if (task.status === "cancelled") await dispatcher.cancel(taskId).catch(() => undefined);
+        return statusResult(task);
       }) as never,
     );
   }
 
-  async function cancelTask(taskId: string): Promise<Task | null> {
-    const outcome = await settle(taskId, {
-      status: "cancelled",
-      statusMessage: "Cancelled by client",
-    });
-    if (!outcome) return null;
-    // Also stop pending redeliveries. A delivery already running can't be recalled, which is why
-    // handlers check `isCancelled()`.
-    if (outcome.settled && outcome.task.dispatchId) {
-      await dispatcher.cancel(outcome.task.dispatchId).catch(() => undefined);
+  async function startTask(name: string, args: unknown, context: unknown) {
+    const owner = await callerId(context);
+    if (!owner) return errorResult(NOT_AUTHENTICATED);
+    const now = new Date().toISOString();
+    const task: Task = {
+      taskId: crypto.randomUUID(),
+      status: "working",
+      statusMessage: "Queued for durable execution",
+      createdAt: now,
+      lastUpdatedAt: now,
+      ttlMs,
+      pollIntervalMs,
+      name,
+      args,
+      owner,
+    };
+    // The record is durable before the id goes out, and before the work is queued.
+    await store.create(task);
+    try {
+      await dispatcher.dispatch(task);
+    } catch (error) {
+      // Nothing will ever run this record: fail it rather than leave it `working` until its TTL.
+      await store
+        .settle(task.taskId, {
+          status: "failed",
+          statusMessage: "Could not be queued",
+          error: { code: INTERNAL_ERROR, message: "The task could not be dispatched" },
+        })
+        .catch(() => undefined);
+      throw error;
     }
-    return outcome.task;
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Started task ${task.taskId}. Call ${STATUS_TOOL} with taskId "${task.taskId}" ` +
+            `in about ${seconds(pollIntervalMs)} to check on it.`,
+        },
+      ],
+      structuredContent: toWire(task),
+    };
   }
 
   /**
    * Runs a delivered task. A throw propagates and leaves the task `working`: only the transport
    * knows whether it will deliver again, so only it records the final failure.
    */
-  async function executeTask(taskId: string, context?: TContext, journal?: TaskJournal) {
-    const task = await read(taskId);
+  async function run(taskId: string, context: TContext, journal?: TaskJournal): Promise<void> {
+    const task = await store.get(taskId);
     // Expired or unknown, or a redelivery of a finished task: nothing to do.
-    if (!task || isTerminal(task.status)) return;
+    if (!task || task.status !== "working") return;
     const definition = definitions.get(task.name);
     if (!definition) {
       throw new Error(
@@ -319,118 +256,62 @@ export function createTaskLayer<TContext = unknown>(
     const taskContext: TaskContext = {
       taskId,
       update: async (statusMessage) => {
-        const write = () => store.update(taskId, { statusMessage }).then(() => undefined);
+        const write = () => store.update(taskId, { statusMessage });
         await (journal ? journal(`mcp-task:update:${++writes}`, write) : write());
       },
-      isCancelled: async () => {
-        const current = await store.get(taskId);
-        return current === null || current.status === "cancelled";
-      },
+      isCancelled: async () => (await store.get(taskId))?.status !== "working",
     };
 
-    const result = await (definition.handler as TaskHandler<unknown, TContext>)(
-      task.args,
-      mergeContext(taskContext, context),
-    );
+    const result = await definition.handler(task.args, mergeContext(taskContext, context));
     // A cancel that landed meanwhile wins: settle refuses the second terminal write.
-    await settle(taskId, {
+    await store.settle(taskId, {
       status: "completed",
       statusMessage: definition.config.completedMessage ?? "Completed",
       result,
     });
   }
 
-  async function failTask(taskId: string, error: TaskError) {
-    await settle(taskId, { status: "failed", statusMessage: "Execution failed", error });
-  }
-
-  /** Reads a task, folding a store's {@link UnknownTaskError} into null. */
-  async function read(taskId: string): Promise<Task | null> {
-    try {
-      return await store.get(taskId);
-    } catch (cause) {
-      if (cause instanceof UnknownTaskError) return null;
-      throw cause;
-    }
+  async function fail(taskId: string, error: TaskError): Promise<void> {
+    await store.settle(taskId, { status: "failed", statusMessage: "Execution failed", error });
   }
 
   /** Another caller's task reads as unknown, so ids cannot be probed. */
   async function owned(taskId: string, caller: string): Promise<Task | null> {
-    const task = await read(taskId);
+    const task = await store.get(taskId);
     return task && task.owner === caller ? task : null;
   }
 
-  function createExecuteHandler(): (request: Request) => Promise<Response> {
-    if (!dispatcher.createExecuteHandler) {
-      throw new Error(
-        "This dispatcher runs tasks in-process and has no delivery endpoint. Use QStashDispatcher or WorkflowDispatcher.",
-      );
-    }
-    return dispatcher.createExecuteHandler();
-  }
-
-  dispatcher.attach?.({ run: executeTask, fail: failTask });
-
-  return { define, register, createExecuteHandler, getTask: read, cancelTask };
+  return {
+    define,
+    register,
+    createExecuteHandler: () => dispatcher.createExecuteHandler({ run, fail }),
+  };
 }
 
-function startedResult(task: Task, toolNames: { status: string }): Record<string, unknown> {
-  const lead = `Started task ${task.taskId}.`;
-  return {
-    content: [
-      {
-        type: "text",
-        text:
-          `${lead} Call ${toolNames.status} with taskId "${task.taskId}" ` +
-          `in about ${seconds(task.pollIntervalMs)} to check on it.`,
-      },
-    ],
-    structuredContent: toWire(task),
-  };
+const NOT_AUTHENTICATED = "Not authenticated: this server could not identify the caller.";
+
+const unknownTask = (taskId: string) =>
+  `Unknown task: ${taskId}. It may have expired, or the id may be wrong.`;
+
+function errorResult(text: string): Record<string, unknown> {
+  return { isError: true, content: [{ type: "text", text }] };
 }
 
 /** A status line, followed by the task's own result content once it completed. */
 function statusResult(task: Task): Record<string, unknown> {
-  const wire = toWire(task);
   const line = `Task ${task.taskId} is ${task.status}${task.statusMessage ? `: ${task.statusMessage}` : "."}`;
-  if (task.status === "completed") {
-    const content = Array.isArray(task.result?.content) ? task.result.content : [];
-    return { content: [{ type: "text", text: line }, ...content], structuredContent: wire };
-  }
-  if (task.status === "failed") {
-    return {
-      content: [{ type: "text", text: `${line} Error: ${task.error?.message ?? "unknown"}` }],
-      structuredContent: wire,
-    };
-  }
-  const hint =
-    task.status === "working" ? ` Check again in about ${seconds(task.pollIntervalMs)}.` : "";
-  return { content: [{ type: "text", text: line + hint }], structuredContent: wire };
+  const extra =
+    task.status === "completed" && Array.isArray(task.result?.content) ? task.result.content : [];
+  const text =
+    task.status === "failed"
+      ? `${line} Error: ${task.error?.message ?? "unknown"}`
+      : task.status === "working"
+        ? `${line} Check again in about ${seconds(task.pollIntervalMs)}.`
+        : line;
+  return { content: [{ type: "text", text }, ...extra], structuredContent: toWire(task) };
 }
 
-function notAuthenticatedResult(): Record<string, unknown> {
-  return {
-    isError: true,
-    content: [
-      { type: "text", text: "Not authenticated: this server could not identify the caller." },
-    ],
-  };
-}
-
-function unknownTaskResult(taskId: string): Record<string, unknown> {
-  return {
-    isError: true,
-    content: [
-      {
-        type: "text",
-        text: `Unknown task: ${taskId}. It may have expired, or the id may be wrong.`,
-      },
-    ],
-  };
-}
-
-const seconds = (ms: number | undefined) =>
-  `${Math.max(1, Math.round((ms ?? DEFAULT_POLL_INTERVAL_MS) / 1000))}s`;
+const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`;
 
 /**
  * Merges the task context into the transport's, as one object. Assigned onto the instance rather
@@ -445,7 +326,7 @@ function mergeContext<TContext>(
 }
 
 /** Strips the server-only fields, leaving what the model sees in `structuredContent`. */
-export function toWire(task: Task): WireTask {
-  const { name: _name, args: _args, dispatchId: _dispatchId, owner: _owner, ...wire } = task;
+function toWire(task: Task): WireTask {
+  const { name: _name, args: _args, owner: _owner, ...wire } = task;
   return wire;
 }

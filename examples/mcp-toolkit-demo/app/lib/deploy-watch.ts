@@ -25,18 +25,6 @@ export const events = createEventLayer({
   delivery: new QStashDelivery({ url: `${APP_URL}/api/deploy-watch/events` }),
   // `secretKey` is read from MCP_EVENTS_SECRET_KEY (see .env.example). There is no fallback.
   principal: () => DEMO_USER,
-  // Logs what the host answers to the challenge and to every delivery.
-  fetch: async (input, init) => {
-    const response = await fetch(input, init);
-    const body = await response
-      .clone()
-      .text()
-      .catch(() => "");
-    console.log(
-      `[deploy-watch] POST ${String(input).slice(0, 80)} -> ${response.status} ${body.slice(0, 200)}`,
-    );
-    return response;
-  },
   // The demo's own receiver runs on localhost. Never set this in production: it disables the
   // checks that stop a subscriber from pointing your server at internal addresses.
   allowInsecureCallbacks: /^http:\/\/(127\.0\.0\.1|localhost)/.test(APP_URL),
