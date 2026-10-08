@@ -102,15 +102,18 @@ describe("WorkflowDispatcher", () => {
     // The real client, only its HTTP stubbed: a stubbed client can't catch how the real one
     // names runs (`trigger` prefixes `wfr_`, `cancel` doesn't).
     const requests: { method: string; url: string; body: string; headers: string }[] = [];
-    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input instanceof Request ? input.url : input);
-      const method = init?.method ?? "GET";
-      const headers = JSON.stringify(Object.fromEntries(new Headers(init?.headers).entries()));
-      requests.push({ method, url, body: String(init?.body ?? ""), headers });
-      return method === "DELETE"
-        ? Response.json({ cancelled: 1 })
-        : Response.json([{ messageId: "msg_1" }]);
-    });
+    vi.stubGlobal(
+      "fetch",
+      async (input: string | URL | Request, init?: Parameters<typeof fetch>[1]) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = init?.method ?? "GET";
+        const headers = JSON.stringify(Object.fromEntries(new Headers(init?.headers).entries()));
+        requests.push({ method, url, body: String(init?.body ?? ""), headers });
+        return method === "DELETE"
+          ? Response.json({ cancelled: 1 })
+          : Response.json([{ messageId: "msg_1" }]);
+      },
+    );
     try {
       const client = new WorkflowClient({ token: "test-token", baseUrl: "https://qstash.test" });
       const dispatcher = new WorkflowDispatcher({ url: URL, client });
