@@ -3,23 +3,25 @@
 Durable building blocks for MCP servers on the official TypeScript SDK, backed by Upstash Redis,
 QStash and Workflow.
 
-| Entry point                                                           | What it gives your server                                                                                                                                  |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@upstash/mcp-toolkit/tasks`](#tasks-long-running-tools)             | **Long-running tools.** A tool answers at once with a task id; the model polls `task_status` for progress and the result. Works in every client today.     |
+| Entry point | What it gives your server |
+| --- | --- |
+| [`@upstash/mcp-toolkit/tasks`](#tasks-long-running-tools) | **Long-running tools.** A tool answers at once with a task id; the model polls `task_status` for progress and the result. Works in every client today. |
 | [`@upstash/mcp-toolkit/events`](#events-webhooks-that-wake-the-agent) | **MCP Events.** Hosts subscribe to your events and get a signed webhook when one happens, so an agent wakes up instead of polling. Works in ChatGPT today. |
+| `@upstash/mcp-toolkit/upstash` | **The Upstash backends for both:** `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher`, `RedisSubscriptionStore`, `QStashDelivery`. |
 
-`/tasks` keeps its Upstash backends behind `/tasks/upstash`; `/events` ships them in the same
-entry point. Both include in-memory backends for tests. They also compose: a `task.finished` event tells an
-event-capable host that a task settled, so it can skip polling.
+`/tasks` and `/events` are generic: the layers, the interfaces a backend implements, and in-memory
+backends for tests. Everything Upstash-specific is in `/upstash`. The two layers also compose: a
+`task.finished` event tells an event-capable host that a task settled, so it can skip polling.
 
 ## Install
 
 ```bash
-npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server
 ```
 
-`@upstash/workflow` is only needed for `WorkflowDispatcher`. The package uses WebCrypto only, so it
-runs on Node and on edge runtimes.
+`@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` come with the package, so there is
+nothing else to install. The MCP SDK is a peer dependency, because your server already has its own.
+The package uses WebCrypto only, so it runs on Node and on edge runtimes.
 
 ## Tasks: long-running tools
 
@@ -39,14 +41,18 @@ Codex, Cursor, OpenCode, ChatGPT — with no client capability required. See
 // lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
-import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 
 export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  // Who is calling: your user id from the request's auth. Required — see below.
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+  // Who is calling: your user id from the verified token. Required, see below.
+  principal: ({ auth }) => {
+    const userId = auth?.extra?.userId;
+    if (typeof userId !== "string") throw new Error("Not authenticated");
+    return userId;
+  },
 });
 
 // Module scope: every instance knows the handler, including an /api/execute instance that never
@@ -54,7 +60,16 @@ export const tasks = createTaskLayer({
 tasks.define(
   "generate_report",
   { description: "Generates a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
-  async ({ topic }) => ({ content: [{ type: "text", text: await writeReport(topic) }] }),
+  // `task` is the running task: report progress, and check whether it was cancelled.
+  async ({ topic }, task) => {
+    const sources = await findSources(topic);
+    for (const [i, source] of sources.entries()) {
+      if (await task.isCancelled()) return {};
+      await task.update(`Reading source ${i + 1}/${sources.length}`); // the model sees this
+      await read(source);
+    }
+    return { content: [{ type: "text", text: await writeReport(topic) }] };
+  },
 );
 
 // Per request: attach every defined task tool, plus task_status and task_cancel.
@@ -98,28 +113,13 @@ That second route is deliberately not yours to write — the dispatcher owns it.
 
 `task_status` and `task_cancel` are shared by every task tool on the server.
 
-<details>
-<summary><b>Reporting progress and honouring cancellation</b></summary>
+The handler's second argument, `task`, has two calls, both optional:
 
-The handler's second argument is the task. Both calls are optional — a handler that ignores them
-still works, it just reports nothing and cannot be stopped early.
-
-```ts
-async ({ topic }, task) => {
-  for (const source of sources) {
-    if (await task.isCancelled()) return {};
-    await task.update(`Reading ${source}`);
-    await read(source);
-  }
-  return { content: [{ type: "text", text: await writeReport(topic) }] };
-};
-```
-
-`task.update(...)` is what the model sees as `statusMessage` on its next `task_status`.
-Cancellation is cooperative: `task_cancel` flips the record and stops a pending delivery, but
-running code only stops where it checks.
-
-</details>
+- `task.update(message)` writes a progress line. The model sees it as `statusMessage` on its next
+  `task_status`.
+- `task.isCancelled()` is true once `task_cancel` was called (or the record expired).
+  Cancellation is cooperative: `task_cancel` flips the record and stops a pending delivery, but
+  running code only stops where it checks.
 
 ### Who is calling: `principal`
 
@@ -143,16 +143,18 @@ It receives `{ auth, request }`:
   }
   ```
 
-  `extra` is free-form: put the user id there in `verifyToken`, and read it back with
-  `principal: ({ auth }) => auth?.extra?.userId as string | undefined`. Because the token was
-  already checked, this is the path to prefer.
+  `extra` is free-form: put the user id there in `verifyToken`, and read it back in `principal`,
+  as in the snippet above. Because the token was already checked, this is the path to prefer.
 
 - **`request`** is the raw HTTP request, for apps that authenticate with a cookie or session
   instead of an `AuthInfo`. It is unverified, so check the session yourself (`principal` may be
   async), and never trust a header like `x-user-id` that the caller can set.
 
-There is no anonymous mode. When `principal` returns `undefined`, the call is refused with "Not
-authenticated". A server with no users of its own (a local tool, a demo) says so explicitly:
+`principal` must return an id; its type does not allow `undefined`. When it cannot identify the
+caller, it **throws**, and the call is refused with "Not authenticated". The layer fails closed
+even if the types are bypassed: a throw, a rejected promise, or an answer without a non-empty
+string id (an `as string` that lied, plain JavaScript) is a refusal too. There is no anonymous
+mode. A server with no users of its own (a local tool, a demo) says so explicitly:
 
 ```ts
 principal: () => "local",
@@ -160,27 +162,6 @@ principal: () => "local",
 
 Key on the _user_, not `auth.clientId`: the client id identifies the OAuth app, which is often one
 id shared by every user of a host like ChatGPT.
-
-### Retries without duplicates: `idempotencyKey`
-
-Agents retry tool calls, especially ones that seemed to time out. Give a task tool an
-`idempotencyKey`, and a second call from the same caller with the same key returns the existing
-task instead of starting another:
-
-```ts
-tasks.define(
-  "generate_report",
-  {
-    description: "Generates a report on a topic.",
-    inputSchema: z.object({ topic: z.string() }),
-    idempotencyKey: ({ topic }) => topic,
-  },
-  handler,
-);
-```
-
-Keys are scoped by caller and tool, and last as long as the task is retained (`ttlMs`). Return
-`undefined` to opt a call out.
 
 ### What the model sees
 
@@ -218,37 +199,49 @@ A queue delivery is a single serverless invocation: exceed your platform's funct
 work is killed, and the redelivery restarts your handler from the beginning. Workflow gives each
 step its own invocation and replays finished ones from a journal, so the task has no time limit.
 
-**Start on QStash. Move to Workflow when the work outgrows a function.** Three things change:
+**Start on QStash. Move to Workflow when the work outgrows a function.** A Workflow task, end to
+end:
 
 ```ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/tasks/upstash";
-import type { WorkflowContext } from "@upstash/workflow";
+// lib/tasks.ts
+import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
+import * as z from "zod";
 
-const tasks = createTaskLayer<WorkflowContext>({
+export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
+  // The dispatcher decides what `task` is: with Workflow it also has `run`, `sleep` and `call`.
   dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
-  // The record's TTL runs from creation and is never extended. Once it passes, the record is gone
-  // and `isCancelled()` returns true, so give long work a longer one than the 5-minute default.
+  principal, // the same function as in the QStash example
+  // A TTL longer than the work. It runs from creation and is never extended: once it passes,
+  // the record is gone and `isCancelled()` returns true. The default is 5 minutes.
   defaults: { ttlMs: 60 * 60 * 1000 },
 });
+
+tasks.define(
+  "migrate_workspace",
+  {
+    description: "Copies a workspace's documents to the new storage, one batch at a time.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+  },
+  async ({ workspaceId }, task) => {
+    // The work in steps. Each step is its own invocation, replayed from the journal once done.
+    const batches = await task.run("plan", () => listBatches(workspaceId));
+    for (const [i, batch] of batches.entries()) {
+      if (await task.isCancelled()) return {};
+      await task.update(`Copying batch ${i + 1}/${batches.length}`);
+      await task.run(`copy-${i}`, () => copyBatch(batch));
+    }
+    await task.sleep("settle", 30); // waits without holding a function open
+    const report = await task.run("verify", () => verifyCopy(workspaceId));
+    return { content: [{ type: "text", text: report }] };
+  },
+);
 ```
 
-1. The `createTaskLayer<WorkflowContext>` type argument.
-2. The work wrapped in `task.run(...)` steps. Each step is still one invocation, so keep each step
-   within your function limit.
-3. A `ttlMs` longer than the work.
-
-The type argument flows into `define`, so the handler's context becomes
-`TaskContext & WorkflowContext` — `task.update(...)` and the engine's `task.run(...)` on one object:
-
-```ts
-async ({ topic }, task) => {
-  const data = await task.run("fetch", () => fetchSources(topic));
-  await task.sleep("cool-off", 5);
-  return { content: [{ type: "text", text: await task.run("write", () => summarise(data)) }] };
-};
-```
+The routes are the same as with QStash: `export const POST = tasks.createExecuteHandler()` now
+returns Workflow's own `serve()` handler. Each step is still one invocation, so keep every step
+within your function limit; the task as a whole has none.
 
 <details>
 <summary><b>Writing a workflow handler: what goes inside a step</b></summary>
@@ -272,7 +265,7 @@ step body executed exactly once.**
 
 |                                  | Owns                                                                                                                                                             |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`@upstash/mcp-toolkit/tasks`** | The tools: creating the record before replying, `task_status` / `task_cancel`, ownership and idempotency, the redelivery guard, settling `completed`/`cancelled` |
+| **`@upstash/mcp-toolkit/tasks`** | The tools: creating the record before replying, `task_status` / `task_cancel`, ownership, the redelivery guard, settling `completed`/`cancelled` |
 | **`TaskStore`**                  | Durability of the _record_: create-before-response, TTL, and the atomic terminal transition so a cancel and a completion cannot clobber each other               |
 | **`TaskDispatcher`**             | Durability of the _work_: delivering it, retrying it, cancelling a pending delivery, authenticating its own endpoint, and deciding when a failure is final       |
 | **Your handler**                 | The work, and checking `isCancelled()` at step boundaries                                                                                                        |
@@ -386,7 +379,8 @@ subscription ids, expiry and refresh, Standard Webhooks signing, and durable ret
 
 ```ts
 // lib/events.ts
-import { createEventLayer, QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
+import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 
 export const events = createEventLayer({
@@ -394,7 +388,7 @@ export const events = createEventLayer({
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
   // `secretKey` defaults to MCP_EVENTS_SECRET_KEY, which encrypts the hosts' signing secrets at
   // rest. There is no built-in default: generate one with `openssl rand -base64 32`.
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined, // required, as for tasks
+  principal, // required: the same function as for tasks
 });
 
 export const commentCreated = events.define("comment.created", {
@@ -486,7 +480,7 @@ arguments say **what**, and `authorize` says **who may**.
   them `personal: true`, and every `emit` must say who with `to` (the type requires it, and so does
   a runtime check). A subscription with no arguments then only hears about its own user's events.
   `to` also works on ordinary events, to narrow one emit.
-- **No anonymous subscriptions.** When `principal` returns `undefined`, subscribe and unsubscribe
+- **No anonymous subscriptions.** When `principal` throws, subscribe and unsubscribe
   are refused with reason `not_authenticated`, before any challenge is sent. Only the subscriber
   can unsubscribe.
 
@@ -562,8 +556,8 @@ the guarantees are only as good as `principal`: it must return the user (the tok
 2. **Every read checks it.** `task_status` and `task_cancel` run `principal` again, load the task,
    and compare its `owner` to the caller. Anything else gets the same answer as an id that never
    existed ("Unknown task"), so another user's id cannot even be confirmed to exist.
-3. **Ids don't help.** Unkeyed ids are random UUIDs. Keyed ids hash the owner in, so the same
-   `idempotencyKey` gives each user their own task and never someone else's.
+3. **Ids don't help.** Task ids are random UUIDs, and knowing one gets you nothing without being
+   its owner.
 4. **There is no other way in.** No tool lists tasks. The execute endpoint only accepts deliveries
    signed by QStash, and it runs the handler; it never returns a task to the caller.
 5. **`task.finished` follows the same owner.** It is a personal event, emitted `to` the task's
@@ -649,18 +643,15 @@ write these keys can change who owns a task or where an event goes.
   matches it; another caller's id reads as unknown. That is why `principal` must return the user
   (the token's subject), not `auth.clientId`.
 - The caller's token, `AuthInfo` and request are **never stored**.
-- The owner is not a separate part of the key; it is folded into the task id. A task without an
-  `idempotencyKey` gets a random id (`crypto.randomUUID()`). A keyed task's id is the first 32 hex
-  characters of `sha256(JSON.stringify([owner, tool, key]))`, so alice and bob calling
-  `generate_report` with the same key get different ids, and so different records. Either way the
-  stored `owner` field is checked again on every read.
+- The owner is not part of the key. The task id is a random UUID (`crypto.randomUUID()`), so two
+  tasks never share a record, and the stored `owner` field is what every read checks.
 
 **Correctness**
 
 - **Durable before the reply.** The record is written before the tool answers with its id, because
-  the model may poll from another instance right away. Creation is one Lua script that writes only
-  if the key is absent, so two racing retries with the same key cannot both create a task, and a
-  retry gets the existing task back.
+  the model may poll from another instance right away. Creation is one Lua script that writes the
+  hash and its expiry together, and only if the key is absent, so a record never exists without a
+  TTL and is never overwritten.
 - **First terminal write wins.** Progress updates and terminal transitions go through one guarded
   Lua script that refuses to touch a task that is already `completed`, `failed` or `cancelled`. A
   completion that lands after a cancel cannot overwrite it, and a late progress line cannot
@@ -723,9 +714,8 @@ so an emit reads only the subscriptions its arguments can match.
 - **QStash messages.** A task delivery carries only `{ taskId }`. An event delivery carries the
   subscription id and the full event envelope, including its payload, so the payload sits in QStash
   (and its DLQ, if every retry fails) until it is delivered.
-- **Deduplication keys.** Task dispatches dedupe on `taskId` plus creation time, and event deliveries
-  on event id plus subscription id. Re-creating an expired keyed task gets a new key, so QStash's
-  10-minute dedup window never swallows it.
+- **Deduplication keys.** Task dispatches dedupe on the task id (and a Workflow run is named after
+  it), and event deliveries on event id plus subscription id.
 - **Never stored anywhere by the toolkit:** the caller's token or `AuthInfo`, the raw request, the
   plaintext webhook secret, and `MCP_EVENTS_SECRET_KEY`.
 
@@ -746,7 +736,7 @@ interface TaskStore {
 }
 
 interface TaskDispatcher<TContext = unknown> {
-  /** Dedupe on `dispatchKey(task)`: a keyed task id comes back once its record expires. */
+  /** Idempotent per task id. */
   dispatch(task: Task): Promise<string | undefined>;
   cancel(dispatchId: string): Promise<void>;
   attach?(endpoints: TaskEndpoints<TContext>): void;
@@ -769,14 +759,14 @@ neither is durable, which is exactly the failure this package is about.
 |                           |                                                                                                             |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `store`, `dispatcher`     | Required.                                                                                                   |
-| `principal`               | Required. `({ auth, request }) => string \| undefined`, may be async — the caller's id; `undefined` refuses the call.                  |
+| `principal`               | Required. `({ auth, request }) => string`, may be async — the caller's id; throw to refuse the call. |
 | `defaults.ttlMs`          | Retention window, `null` for unlimited. Default 5 min.                                                      |
 | `defaults.pollIntervalMs` | Poll interval suggested to the model. Default 2s.                                                           |
 | `toolNames`               | Rename `task_status` / `task_cancel`, e.g. to namespace them.                                               |
 | `onSettle`                | `(task) => void` — called once when a task completes, fails or is cancelled. Wire `taskFinishedEvent` here. |
 
 **`define(name, config, handler)` config** — `description`, `inputSchema`, plus optional `title`, `ttlMs`,
-`pollIntervalMs`, `queuedMessage`, `completedMessage`, `idempotencyKey`.
+`pollIntervalMs`, `queuedMessage`, `completedMessage`.
 
 **`RedisTaskStore`** — `redis` (defaults to `Redis.fromEnv()`; `automaticDeserialization: false`
 is not supported), `prefix`, `enableTelemetry`.
@@ -809,13 +799,13 @@ itself, or with `UPSTASH_DISABLE_TELEMETRY`.
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `createTaskLayer(options)`                            | `{ define, register, createExecuteHandler, getTask, cancelTask }`                                       |
 | `TaskStore`, `TaskDispatcher`, `TaskContext`          | The two seams, and what a handler is handed                                                             |
-| `TaskEndpoints`, `TaskJournal`, `dispatchKey`         | What a dispatcher calls back into, how it journals this package's writes, and the key it dedupes on     |
+| `TaskEndpoints`, `TaskJournal`                        | What a dispatcher calls back into, and how it journals this package's writes                            |
 | `SettleResult`, `PrincipalResolver`                   | What `settle` returns, and the type of `principal`                                                      |
 | `Task`, `WireTask`, `TaskStatus`, `TaskError`         | The record, and the subset the model sees                                                               |
 | `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type                                                               |
 | `DEFAULT_TOOL_NAMES`, `Caller`, `CallerAuth`          | `{ status: "task_status", cancel: "task_cancel" }`, and what `principal` receives                       |
 | `MemoryTaskStore`, `InlineTaskDispatcher`             | Non-durable backends for tests                                                                          |
-| `@upstash/mcp-toolkit/tasks/upstash`                  | `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher`                                              |
+| `@upstash/mcp-toolkit/upstash`                        | `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher`, `WorkflowContext` (type)                    |
 
 </details>
 
@@ -855,7 +845,7 @@ most 1,000 commands.
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `store`, `delivery`                    | Required.                                                                                                        |
 | `secretKey`                            | Encrypts stored signing secrets. Defaults to `MCP_EVENTS_SECRET_KEY`; required, no built-in default.             |
-| `principal`                            | Required. `({ auth, request }) => id \| { id, context } \| undefined`, may be async — the subscriber; `undefined` refuses. |
+| `principal`                            | Required. `({ auth, request }) => id \| { id, context }`, may be async — the subscriber; throw to refuse. |
 | `defaults.ttlMs` / `defaults.maxTtlMs` | Granted lifetime when none is asked for (7 days), and the cap (30 days).                                         |
 | `allowInsecureCallbacks`               | Accept `http://` and private hosts. Local development only.                                                      |
 | `timeoutMs`                            | Per-POST timeout. Default 10s.                                                                                   |
@@ -883,7 +873,7 @@ most 1,000 commands.
 | `EventPayloadTooLargeError`, `CALLBACK_ENDPOINT_ERROR`, `MAX_PAYLOAD_BYTES` | Limits and errors                                                          |
 | `AuthorizeCaller`, `Recipients`, `Principal`, `EmitOptions`                 | What `authorize` is told, what `to` takes, what `principal` returns         |
 | `MemorySubscriptionStore`, `InlineDelivery`                                 | Non-durable backends for tests                                             |
-| `RedisSubscriptionStore`, `QStashDelivery` | The Upstash backends (need `@upstash/redis` and `@upstash/qstash`) |
+| `@upstash/mcp-toolkit/upstash` | `RedisSubscriptionStore`, `QStashDelivery` |
 
 </details>
 
@@ -919,8 +909,7 @@ A dispatcher that runs work in-process — `InlineTaskDispatcher` — has no end
 <summary><b>Won't the model give up polling?</b></summary>
 
 Sometimes, which is why every response says what to do next in words — "call `task_status` in
-about 2s" — and `task_status` tells the model not to start the task again. If it does start it
-again, `idempotencyKey` turns the retry into a read of the existing task. Nothing is lost if the
+about 2s" — and `task_status` tells the model not to start the task again. Nothing is lost if the
 model stops polling: the work finishes anyway, and the result stays readable until the task's TTL.
 
 </details>
@@ -944,8 +933,7 @@ id and the failed response attached. The message is in the QStash DLQ, not lost.
 <summary><b>Is the task id a secret?</b></summary>
 
 No. Every task is scoped to the `principal` that started it, so an id is useless to anyone but its
-owner. Ids are also random (~122 bits for `randomUUID`), and idempotent task ids are a hash of
-caller, tool and key, so they are not guessable either.
+owner. Ids are also random (~122 bits for `randomUUID`), so they are not guessable either.
 
 </details>
 

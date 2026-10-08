@@ -104,8 +104,7 @@ export interface TaskStore {
 export interface TaskDispatcher<TContext = unknown> {
   /**
    * Durably accepts a delivery and returns a handle for {@link cancel}. Must be idempotent per
-   * task record: dedupe on {@link dispatchKey}, not the task id alone, because a keyed task id is
-   * reused once its record expires.
+   * task id, which is a random UUID.
    */
   dispatch(task: Task): Promise<string | undefined>;
 
@@ -138,7 +137,3 @@ export type TaskContext = {
   /** True once the client cancelled, or the record expired. Cooperative: check at step boundaries. */
   isCancelled(): Promise<boolean>;
 };
-
-/** A dedupe key unique to one task record: `<taskId>-<createdAt in ms>`. */
-export const dispatchKey = (task: Pick<Task, "taskId" | "createdAt">): string =>
-  `${task.taskId}-${Date.parse(task.createdAt)}`;

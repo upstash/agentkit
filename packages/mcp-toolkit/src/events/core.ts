@@ -50,8 +50,8 @@ export type EventLayerOptions = {
    */
   secretKey?: string;
   /**
-   * Who is calling, usually your user id: `({ auth }) => auth?.extra?.userId`. Required;
-   * `undefined` refuses the subscribe. Return `{ id, context }` to store non-secret context (an
+   * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
+   * when it can't, and the subscribe is refused as not authenticated. Return `{ id, context }` to store non-secret context (an
    * org id) that `authorize` gets back before each delivery. Never put the token in it.
    */
   principal: PrincipalResolver;

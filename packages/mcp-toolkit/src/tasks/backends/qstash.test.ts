@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { QStashDispatcher, RedisTaskStore } from "./qstash.js";
-import { dispatchKey, UnknownTaskError, type Task, type TaskError } from "../types.js";
+import { UnknownTaskError, type Task, type TaskError } from "../types.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../../test-support.js";
 
 const makeTask = (overrides: Partial<Task> = {}): Task => {
@@ -395,17 +395,9 @@ describe("QStashDispatcher.dispatch", () => {
     } as unknown as ConstructorParameters<typeof QStashDispatcher>[0]["qstash"];
     const dispatcher = new QStashDispatcher({ url: "https://example.com/api/execute", qstash });
 
-    // A keyed task re-created after its record expired: same id, new createdAt.
-    const first = makeTask({ taskId: "t", createdAt: "2026-10-08T10:00:00.000Z" });
-    const second = makeTask({ taskId: "t", createdAt: "2026-10-08T10:06:00.000Z" });
-    expect(await dispatcher.dispatch(first)).toBe("msg_1");
-    await dispatcher.dispatch(second);
-
-    expect(published.map((p) => p.deduplicationId)).toEqual([
-      dispatchKey(first),
-      dispatchKey(second),
-    ]);
-    expect(published[0]?.deduplicationId).not.toBe(published[1]?.deduplicationId);
+    expect(await dispatcher.dispatch(makeTask({ taskId: "t" }))).toBe("msg_1");
+    // Deduplicated on the task id, so a double dispatch of one task is delivered once.
+    expect(published[0]?.deduplicationId).toBe("t");
     expect(published[0]?.body).toEqual({ taskId: "t" });
   });
 });

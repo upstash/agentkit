@@ -19,7 +19,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
-| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` has a `/tasks/upstash` entry point; `/events` exports its Redis/QStash backends directly (no `/events/upstash`). Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (layers, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
@@ -679,9 +679,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `$count`, `$histogram`, `$percentiles`, `$cardinality`.
 
 ## MCP toolkit facts (`packages/mcp-toolkit`) — IMPORTANT
-- **Layout:** `src/tasks/` (`index.ts` core + `upstash.ts` backends) and `src/events/` (`index.ts`
-  exports core *and* Redis/QStash backends — one entry point by choice), built to
-  `dist/tasks/{index,upstash}.js` and `dist/events/index.js`.
+- **Layout:** three entry points, built to `dist/tasks/index.js`, `dist/events/index.js` and
+  `dist/upstash.js`. `src/tasks/index.ts` and `src/events/index.ts` must never import an
+  `@upstash/*` package (check the built `dist/{tasks,events}/index.js` imports); the backends live
+  in `src/{tasks,events}/backends/` and are exported only from `src/upstash.ts`.
   There is no root export. Shared: `src/shared/{auth,clients,crypto}.ts` (principal + `authOf`,
   lazy env clients + `nonRetryable`, WebCrypto helpers), `src/telemetry.ts`, `src/version.ts`.
   **WebCrypto only** (no `node:crypto` / `node:net`), so it runs on edge runtimes; `signWebhook`,
@@ -705,7 +706,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `ctx.http.req`), may be async, and stamps `task.owner` / `subscription.owner`. `auth` is only what
   the app's route passed to `handler.fetch(request, { authInfo })` after verifying the token: the
   SDK never derives it from headers. `request` is unverified, for cookie/session apps; docs warn
-  against trusting caller-set headers. `authorize` gets `{ principal, auth, request }`. Returning `undefined` = not authenticated: the call is
+  against trusting caller-set headers. `authorize` gets `{ principal, auth, request }`. `PrincipalResolver` cannot return `undefined`
+  (typed `Principal | Promise<Principal>`): it **throws** to refuse, and `resolvePrincipal` also
+  fails closed on a rejection or an answer without a non-empty string id. Refused = not authenticated: the call is
   refused (`isError` "Not authenticated" for tools, reason `not_authenticated` for events/*) — no
   anonymous mode, fail closed; a stored task without an owner answers nobody. Single-tenant servers
   pass `principal: () => "local"`. `task_status` / `task_cancel` report a non-owned task as
@@ -714,10 +717,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `{ define, register, createExecuteHandler, getTask, cancelTask }`; a dispatcher gets `run` /
   `fail` through `attach`. Tests drive deliveries with `ManualDispatcher` / `CountingDispatcher`
   from `src/test-support.ts`, not with knobs on the public classes.
-- **Idempotency:** `define(..., { idempotencyKey: (args) => string })` makes the task id
-  `sha256([owner, tool, key])`. `TaskStore.create` is **create-if-absent** and returns the existing
-  task when the id is taken (one Lua script on Redis), so a keyed retry is one round trip and two
-  racing first calls cannot both create.
+- **No `idempotencyKey` (removed 2026-10-08, keep it simple; add back only if someone asks).** Task
+  ids are always `crypto.randomUUID()`. `TaskStore.create` stays create-if-absent in one Lua script
+  (atomic `HSET` + `PEXPIRE`, never overwrites); the core throws if an id is somehow taken.
 - **Signing keys required, no fail-open.** `QStashDispatcher`, `WorkflowDispatcher` and
   `QStashDelivery` verify with `receiver` or a `Receiver` from the `QSTASH_*_SIGNING_KEY` env vars,
   and throw on the first request when neither exists (resolved outside the verify `try`, so it is
@@ -733,12 +735,14 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   is missing): `settled` drives `onSettle` and dispatcher cancel, and the record comes back even when
   nothing changed, so `cancelTask` is one write. `SubscriptionStore.delete` takes
   `{ id, event, argsKey }` so the Redis store drops record + index in one pipeline.
-- **Dispatch dedupe is per record, not per task id:** `dispatchKey(task)` =
-  `${taskId}-${createdAt ms}`. QStash remembers a `deduplicationId` for 10 minutes and Workflow
-  refuses a reused `workflowRunId`, while a keyed task id comes back once its 5-minute record
-  expires. A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
-  The `task.finished` event id is `evt_task_${dispatchKey(task)}` for the same reason: QStash and
-  hosts dedupe on it.
+- **Dispatch dedupe on the task id:** QStash `deduplicationId` and Workflow `workflowRunId` are the
+  task id, and the `task.finished` event id is `evt_task_${taskId}`. That is only safe because ids
+  are random: if keyed (deterministic) ids ever come back, dedupe must move to a per-record key
+  (taskId + createdAt), since QStash keeps dedup ids for 10 minutes and Workflow refuses a reused
+  run id. A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
+- **Workflow context is inferred** from the dispatcher (`TaskDispatcher<TContext>`), so
+  `createTaskLayer({ dispatcher: new WorkflowDispatcher(...) })` types `task.run` / `task.sleep` with
+  no type argument; a test in `workflow.test.ts` keeps it that way.
 - **`RedisSubscriptionStore.find` batches:** one `ZRANGE` per argument subset (up to 256), then
   `MGET`s of the matches, each split into requests of at most 1,000 commands, so a popular event
   never sends one giant request.

@@ -1,7 +1,7 @@
 /**
  * `@upstash/mcp-toolkit/events`: MCP Events (webhook delivery) for servers on the official
- * TypeScript SDK, with the Upstash backends and in-memory ones for tests. Needs `@upstash/redis`
- * and `@upstash/qstash` installed.
+ * TypeScript SDK, with in-memory backends for tests. The Upstash backends are in
+ * `@upstash/mcp-toolkit/upstash`.
  */
 export {
   createEventLayer,
@@ -48,13 +48,6 @@ export {
 } from "./webhooks.js";
 export { taskFinishedEvent, type TaskFinishedPayload } from "./tasks.js";
 export { InlineDelivery, MemorySubscriptionStore } from "./backends/memory.js";
-export {
-  RedisSubscriptionStore,
-  QStashDelivery,
-  DEFAULT_EVENTS_PREFIX,
-  type RedisSubscriptionStoreConfig,
-  type QStashDeliveryConfig,
-} from "./backends/qstash.js";
 
 export { SDK_TELEMETRY } from "../telemetry.js";
 export { VERSION } from "../version.js";

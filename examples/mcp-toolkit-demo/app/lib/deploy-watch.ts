@@ -10,11 +10,8 @@
  * message to `/api/deploy-watch/events`, which signs and POSTs it to the host and lets QStash retry.
  */
 import { McpServer } from "@modelcontextprotocol/server";
-import {
-  createEventLayer,
-  QStashDelivery,
-  RedisSubscriptionStore,
-} from "@upstash/mcp-toolkit/events";
+import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
 import { Redis } from "@upstash/redis";
 import * as z from "zod";
 
@@ -35,7 +32,9 @@ export const events = createEventLayer({
       .clone()
       .text()
       .catch(() => "");
-    console.log(`[deploy-watch] POST ${String(input).slice(0, 80)} -> ${response.status} ${body.slice(0, 200)}`);
+    console.log(
+      `[deploy-watch] POST ${String(input).slice(0, 80)} -> ${response.status} ${body.slice(0, 200)}`,
+    );
     return response;
   },
   // The demo's own receiver runs on localhost. Never set this in production: it disables the
@@ -93,7 +92,8 @@ export function createServer(): McpServer {
     async ({ limit }) => {
       const deploys = (await Redis.fromEnv().lrange<Deploy>(RECENT_KEY, 0, limit - 1)) ?? [];
       const lines = deploys.map(
-        (d) => `${d.status === "succeeded" ? "✅" : "❌"} ${d.service} → ${d.environment}: "${d.commit}" by ${d.author} (${d.durationSeconds}s)`,
+        (d) =>
+          `${d.status === "succeeded" ? "✅" : "❌"} ${d.service} → ${d.environment}: "${d.commit}" by ${d.author} (${d.durationSeconds}s)`,
       );
       return {
         content: [{ type: "text", text: lines.length ? lines.join("\n") : "No deploys yet." }],

@@ -1,6 +1,6 @@
 /**
  * `@upstash/mcp-toolkit/tasks`: long-running tools for MCP servers on the official TypeScript SDK.
- * The Upstash backends are in `@upstash/mcp-toolkit/tasks/upstash`.
+ * The Upstash backends are in `@upstash/mcp-toolkit/upstash`.
  */
 export {
   createTaskLayer,
@@ -18,7 +18,6 @@ export {
 export type { Principal, PrincipalResolver } from "../shared/auth.js";
 
 export {
-  dispatchKey,
   isTerminal,
   TERMINAL_STATUSES,
   UnknownTaskError,

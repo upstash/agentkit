@@ -8,10 +8,11 @@
 import { Client as QStashClient } from "@upstash/qstash";
 import { WorkflowContext } from "@upstash/workflow";
 import { describe, expect, it } from "vitest";
+import * as z from "zod";
 import { insideStep, WorkflowDispatcher } from "./workflow.js";
 import { createTaskLayer } from "../core.js";
 import { MemoryTaskStore } from "./memory.js";
-import { dispatchKey, type Task, type TaskContext } from "../types.js";
+import type { Task, TaskContext } from "../types.js";
 import { ManualDispatcher } from "../../test-support.js";
 
 const task = (overrides: Partial<Task> = {}): Task => ({
@@ -49,6 +50,25 @@ function stubClient() {
 }
 
 describe("WorkflowDispatcher", () => {
+  it("gives handlers the Workflow API without a type argument", () => {
+    const tasks = createTaskLayer({
+      store: new MemoryTaskStore(),
+      dispatcher: new WorkflowDispatcher({ url: "https://example.com/api/workflow" }),
+      principal: () => "local",
+    });
+    // Compiles only if `task` is inferred as TaskContext & WorkflowContext.
+    tasks.define(
+      "t",
+      { description: "d", inputSchema: z.object({ n: z.number() }) },
+      async ({ n }, task) => {
+        const doubled: number = await task.run("double", async () => n * 2);
+        await task.sleep("wait", 1);
+        await task.update(`got ${doubled}`);
+        return {};
+      },
+    );
+  });
+
   it("triggers a run named after the task record, so a double dispatch is deduplicated", async () => {
     const { client, triggered } = stubClient();
     const dispatcher = new WorkflowDispatcher({ url: "https://example.com/api/workflow", client });
@@ -58,11 +78,8 @@ describe("WorkflowDispatcher", () => {
     expect(triggered).toHaveLength(1);
     expect(triggered[0]?.url).toBe("https://example.com/api/workflow");
     expect(triggered[0]?.body).toEqual({ taskId: "task-1" });
-    // Per record: Workflow refuses a used run id, and a keyed task id comes back after expiry.
-    expect(triggered[0]?.workflowRunId).toBe(dispatchKey(task()));
-    expect(dispatchId).toBe(dispatchKey(task()));
-    await dispatcher.dispatch(task({ createdAt: "2026-10-08T10:06:00.000Z" }));
-    expect(triggered[1]?.workflowRunId).not.toBe(triggered[0]?.workflowRunId);
+    expect(triggered[0]?.workflowRunId).toBe("task-1");
+    expect(dispatchId).toBe("task-1");
   });
 
   it("cancels the run itself, not just the task record", async () => {

@@ -95,3 +95,10 @@ export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TCon
     return this.endpoints;
   }
 }
+
+/** The principal every test uses: the user id the verified auth carries, or a refusal. */
+export function userIdOf({ auth }: { auth?: { extra?: Record<string, unknown> } }): string {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+}

@@ -30,12 +30,11 @@ export type Caller = {
 export type Principal = string | { id: string; context?: Record<string, unknown> };
 
 /**
- * Maps a call to a stable caller id, usually your user id. `undefined` means "not
- * authenticated", and the call is refused. May be async, e.g. to look up a session.
+ * Maps a call to a stable caller id, usually your user id. It must return one: when it cannot
+ * identify the caller, throw, and the call is refused as not authenticated. May be async, e.g. to
+ * look up a session.
  */
-export type PrincipalResolver = (
-  caller: Caller,
-) => Principal | undefined | Promise<Principal | undefined>;
+export type PrincipalResolver = (caller: Caller) => Principal | Promise<Principal>;
 
 /** The most JSON a principal's context may take, since it is stored with every subscription. */
 export const MAX_CONTEXT_BYTES = 4096;
@@ -46,26 +45,36 @@ export function callerOf(context: unknown): Caller {
   return { auth: http?.authInfo, request: http?.req };
 }
 
-/** Runs the resolver and normalizes its answer to `{ id, context }`, or `undefined`. */
+/**
+ * Runs the resolver and normalizes its answer to `{ id, context }`. Fails closed: a throw, or an
+ * answer without a non-empty string id (from an `as string` that lied, or plain JavaScript),
+ * gives `undefined`, which the layers refuse as not authenticated.
+ */
 export async function resolvePrincipal(
   principal: PrincipalResolver,
   caller: Caller,
 ): Promise<{ id: string; context: Record<string, unknown> } | undefined> {
-  const result = await principal(caller);
-  if (result === undefined || result === null) return undefined;
-  if (typeof result === "string") return { id: result, context: {} };
-  const context = result.context ?? {};
+  let result: unknown;
+  try {
+    result = await principal(caller);
+  } catch {
+    return undefined;
+  }
+  const id = typeof result === "string" ? result : (result as { id?: unknown } | null)?.id;
+  if (typeof id !== "string" || id === "") return undefined;
+  if (typeof result === "string") return { id, context: {} };
+  const context = (result as { context?: Record<string, unknown> }).context ?? {};
   if (new TextEncoder().encode(JSON.stringify(context)).length > MAX_CONTEXT_BYTES) {
     throw new Error(`principal context must be at most ${MAX_CONTEXT_BYTES} bytes of JSON`);
   }
-  return { id: result.id, context };
+  return { id, context };
 }
 
 /** Throws at construction when a layer is built without a principal. */
 export function requirePrincipal(principal: unknown, layer: string): PrincipalResolver {
   if (typeof principal !== "function") {
     throw new Error(
-      `${layer} needs a \`principal\`: ({ auth }) => your user id. A server with no users of its ` +
+      `${layer} needs a \`principal\` that returns your user id (and throws when it can't). A server with no users of its ` +
         'own passes `principal: () => "local"`.',
     );
   }

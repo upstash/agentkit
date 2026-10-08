@@ -14,6 +14,7 @@ import { InlineDelivery, MemorySubscriptionStore } from "./backends/memory.js";
 import { taskFinishedEvent } from "./tasks.js";
 import { callbackUrlProblem, verifyWebhook } from "./webhooks.js";
 import type { EventEnvelope, SendOutcome } from "./types.js";
+import { userIdOf } from "../test-support.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 const newSecret = () => `whsec_${randomBytes(32).toString("base64")}`;
@@ -97,7 +98,7 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
     store,
     delivery: new InlineDelivery({ onOutcome: (_job, outcome) => outcomes.push(outcome) }),
     secretKey: "test-key",
-    principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+    principal: userIdOf,
     fetch: receiver.fetch,
     ...layerOptions,
   });
@@ -442,9 +443,9 @@ describe("access across users", () => {
   it("hands authorize the principal's context at subscribe and again at delivery", async () => {
     const seen: { phase: string; principal: string; org: unknown; hasAuth: boolean }[] = [];
     const { events, subscribe, receiver } = setup({
-      principal: ({ auth }) => {
-        const userId = auth?.extra?.userId as string | undefined;
-        return userId && { id: userId, context: { org: `org-of-${userId}` } };
+      principal: (caller) => {
+        const userId = userIdOf(caller);
+        return { id: userId, context: { org: `org-of-${userId}` } };
       },
     });
     const memo = events.define("memo.posted", {
@@ -571,7 +572,10 @@ describe("principal", () => {
   it("can identify the caller from the raw request, e.g. a session cookie", async () => {
     // No AuthInfo at all: an app that authenticates with its own session reads the request.
     const { subscribe, store } = setup({
-      principal: async ({ request }) => (request ? "session-user" : undefined),
+      principal: async ({ request }) => {
+        if (!request) throw new Error("no session");
+        return "session-user";
+      },
     });
     const sub = await subscribe({ documentId: "d" }, { user: null });
     expect(sub.error).toBeUndefined();
@@ -596,7 +600,7 @@ describe("task.finished", () => {
     const tasks = createTaskLayer({
       store: new MemoryTaskStore(),
       dispatcher: new InlineTaskDispatcher(),
-      principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+      principal: userIdOf,
       onSettle: taskFinished.onSettle,
     });
     tasks.define("slow", { description: "slow", inputSchema: z.object({}) }, async () => ({
@@ -626,45 +630,13 @@ describe("task.finished", () => {
     expect(deliveries[0]?.url).toBe(alice.url);
     expect(deliveries[0]?.body).toMatchObject({
       name: "task.finished",
-      eventId: expect.stringMatching(new RegExp(`^evt_task_${taskId}-\\d+$`)),
+      eventId: `evt_task_${taskId}`,
       data: { taskId, status: "completed", result: { content: [{ type: "text", text: "done" }] } },
     });
-
-    // The event id is per task record, not per task id: a keyed task re-created after its record
-    // expired reuses the id, and must not be dropped as a duplicate of the first one's event.
-    expect(deliveries[0]?.body.eventId).not.toBe(`evt_task_${taskId}`);
 
     // A cancel after completion settles nothing, so nothing fires.
     await tasks.cancelTask(taskId);
     expect(receiver.deliveries()).toHaveLength(1);
-  });
-});
-
-describe("task.finished event ids", () => {
-  it("differ for a keyed task re-created after its record expired", async () => {
-    const { events } = setup();
-    const taskFinished = taskFinishedEvent(events);
-    const ids: (string | undefined)[] = [];
-    (taskFinished.event as { emit: unknown }).emit = async (
-      _payload: unknown,
-      options: { eventId?: string },
-    ) => {
-      ids.push(options.eventId);
-      return { eventId: options.eventId ?? "", matched: 0 };
-    };
-    const record = {
-      taskId: "keyed",
-      status: "completed" as const,
-      lastUpdatedAt: "2026-10-08T10:00:01.000Z",
-      ttlMs: 300_000,
-      name: "slow",
-      args: {},
-      owner: "alice",
-    };
-    await taskFinished.onSettle({ ...record, createdAt: "2026-10-08T10:00:00.000Z" });
-    await taskFinished.onSettle({ ...record, createdAt: "2026-10-08T10:06:00.000Z" });
-    expect(ids).toHaveLength(2);
-    expect(ids[0]).not.toBe(ids[1]);
   });
 });
 

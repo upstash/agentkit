@@ -13,7 +13,6 @@ import {
   type CallerAuth,
   type PrincipalResolver,
 } from "../shared/auth.js";
-import { sha256Hex } from "../shared/crypto.js";
 import {
   isTerminal,
   UnknownTaskError,
@@ -46,8 +45,8 @@ export type TaskLayerOptions<TContext = unknown> = {
     pollIntervalMs?: number;
   };
   /**
-   * Who is calling, usually your user id: `({ auth }) => auth?.extra?.userId`. Required. Every task
-   * is owned by its caller, and `undefined` refuses the call. `auth.clientId` is the OAuth app
+   * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
+   * when it can't, and the call is refused as not authenticated. Every task is owned by its caller. `auth.clientId` is the OAuth app
    * (shared by every ChatGPT user), so it is the wrong key. A server with no users of its own
    * passes `() => "local"`.
    */
@@ -61,7 +60,7 @@ export type TaskLayerOptions<TContext = unknown> = {
   onSettle?: (task: Task) => void | Promise<void>;
 };
 
-export type TaskToolConfig<Schema extends StandardSchemaWithJSON, Args = InferArgs<Schema>> = {
+export type TaskToolConfig<Schema extends StandardSchemaWithJSON> = {
   title?: string;
   /** What the tool does. The layer appends a sentence about polling `task_status`. */
   description: string;
@@ -74,11 +73,6 @@ export type TaskToolConfig<Schema extends StandardSchemaWithJSON, Args = InferAr
   queuedMessage?: string;
   /** Status message on success. Defaults to `"Completed"`. */
   completedMessage?: string;
-  /**
-   * Derives an idempotency key from the arguments. Two calls by the same caller with the same key
-   * return the same task while it is retained. Return `undefined` to opt a call out.
-   */
-  idempotencyKey?: (args: Args) => string | undefined;
 };
 
 type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
@@ -194,12 +188,7 @@ export function createTaskLayer<TContext = unknown>(
     const callback = async (args: unknown, context: unknown): Promise<Record<string, unknown>> => {
       const owner = await callerOf(context);
       if (owner === undefined) return notAuthenticatedResult();
-      const key = config.idempotencyKey?.(args);
-      // A keyed call gets a deterministic id scoped to its caller, so a retry finds the first task.
-      const taskId =
-        key === undefined
-          ? crypto.randomUUID()
-          : (await sha256Hex(JSON.stringify([owner, name, key]))).slice(0, 32);
+      const taskId = crypto.randomUUID();
       const now = new Date().toISOString();
       const task: Task = {
         taskId,
@@ -222,8 +211,7 @@ export function createTaskLayer<TContext = unknown>(
       };
 
       // The record is durable before the id goes out, and before the work is queued.
-      const existing = await store.create(task);
-      if (existing) return startedResult(existing, toolNames, true);
+      if (await store.create(task)) throw new Error(`Task id ${taskId} is already taken`);
       let dispatchId: string | undefined;
       try {
         dispatchId = await dispatcher.dispatch(task);
@@ -237,7 +225,7 @@ export function createTaskLayer<TContext = unknown>(
         throw error;
       }
       const saved = dispatchId ? await store.update(taskId, { dispatchId }) : task;
-      return startedResult(saved, toolNames, false);
+      return startedResult(saved, toolNames);
     };
 
     server.registerTool(
@@ -386,14 +374,8 @@ export function createTaskLayer<TContext = unknown>(
   return { define, register, createExecuteHandler, getTask: read, cancelTask };
 }
 
-function startedResult(
-  task: Task,
-  toolNames: { status: string },
-  deduplicated: boolean,
-): Record<string, unknown> {
-  const lead = deduplicated
-    ? `Task ${task.taskId} already exists for this request (status: ${task.status}).`
-    : `Started task ${task.taskId}.`;
+function startedResult(task: Task, toolNames: { status: string }): Record<string, unknown> {
+  const lead = `Started task ${task.taskId}.`;
   return {
     content: [
       {

@@ -9,7 +9,7 @@
  */
 import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
-import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 
 /** Where QStash delivers. Must be reachable *from QStash*, not just from your browser. */
@@ -28,8 +28,8 @@ export const tasks = createTaskLayer({
   dispatcher,
   defaults: { ttlMs: 300_000, pollIntervalMs: 2_000 },
   // Who is calling. The demo has no login, so every caller is the same user — said explicitly,
-  // because there is no anonymous default. A real server returns its user id from `auth`:
-  //   principal: ({ auth }) => auth?.extra?.userId as string | undefined
+  // because there is no anonymous default. A real server returns its user id from `auth`, and
+  // throws when there is none (see "Who is calling" in the toolkit README).
   principal: () => "demo-user",
 });
 
@@ -41,41 +41,41 @@ const STEPS = STEP_NAMES.length;
 // Defined at module scope, so every instance knows the handler — including one that only ever
 // serves `/api/execute` and never builds an MCP server.
 tasks.define(
-    "generate_report",
-    {
-      title: "Generate report",
-      description: `Generates a report on a topic in ${STEPS} steps, on QStash.`,
-      inputSchema: z.object({ topic: z.string().describe("What the report should be about") }),
-      completedMessage: "Report ready",
-    },
-    // Two arguments: the tool's input, and the task. There is no third — see workflow-server.ts.
-    async ({ topic }, task) => {
-      for (let step = 1; step <= STEPS; step++) {
-        // Cancellation is cooperative: running code only stops where it checks.
-        if (await task.isCancelled()) {
-          console.log(`[qstash] task=${task.taskId} cancelled before step ${step}`);
-          return {};
-        }
-        await task.update(`Step ${step}/${STEPS}: ${STEP_NAMES[step - 1]}`);
-        // Plain sleep, inside the one invocation. Push this past the function limit and the work
-        // is killed and restarted from step 1 — which is exactly what the workflow server fixes.
-        await sleep(2_500);
+  "generate_report",
+  {
+    title: "Generate report",
+    description: `Generates a report on a topic in ${STEPS} steps, on QStash.`,
+    inputSchema: z.object({ topic: z.string().describe("What the report should be about") }),
+    completedMessage: "Report ready",
+  },
+  // Two arguments: the tool's input, and the task. There is no third — see workflow-server.ts.
+  async ({ topic }, task) => {
+    for (let step = 1; step <= STEPS; step++) {
+      // Cancellation is cooperative: running code only stops where it checks.
+      if (await task.isCancelled()) {
+        console.log(`[qstash] task=${task.taskId} cancelled before step ${step}`);
+        return {};
       }
+      await task.update(`Step ${step}/${STEPS}: ${STEP_NAMES[step - 1]}`);
+      // Plain sleep, inside the one invocation. Push this past the function limit and the work
+      // is killed and restarted from step 1 — which is exactly what the workflow server fixes.
+      await sleep(2_500);
+    }
 
-      // A canned report: the demo is about the task lifecycle, not the writing.
-      const report = [
-        `# ${topic}`,
-        `Sources reviewed: 12 (4 primary, 8 secondary).`,
-        `Key finding: interest in ${topic} grew steadily over the last three years.`,
-        `Open question: which of the competing explanations holds up under more data.`,
-        `Recommendation: run a small follow-up study before committing budget.`,
-      ].join("\n");
-      return {
-        content: [{ type: "text", text: report }],
-        structuredContent: { topic, sources: 12, report },
-      };
-    },
-  );
+    // A canned report: the demo is about the task lifecycle, not the writing.
+    const report = [
+      `# ${topic}`,
+      `Sources reviewed: 12 (4 primary, 8 secondary).`,
+      `Key finding: interest in ${topic} grew steadily over the last three years.`,
+      `Open question: which of the competing explanations holds up under more data.`,
+      `Recommendation: run a small follow-up study before committing budget.`,
+    ].join("\n");
+    return {
+      content: [{ type: "text", text: report }],
+      structuredContent: { topic, sources: 12, report },
+    };
+  },
+);
 
 /** A fresh server per request: the defined task tool plus `task_status` and `task_cancel`. */
 export function createServer(): McpServer {

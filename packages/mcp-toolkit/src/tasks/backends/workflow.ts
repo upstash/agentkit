@@ -6,13 +6,7 @@ import type { Client as QStashClient, Receiver } from "@upstash/qstash";
 import { Client as WorkflowClient, serve, type WorkflowContext } from "@upstash/workflow";
 import { env, lazy, requireEnv, resolveQStash, resolveReceiver } from "../../shared/clients.js";
 import { addQStashTelemetry } from "../../telemetry.js";
-import {
-  dispatchKey,
-  type Task,
-  type TaskDispatcher,
-  type TaskEndpoints,
-  type TaskJournal,
-} from "../types.js";
+import { type Task, type TaskDispatcher, type TaskEndpoints, type TaskJournal } from "../types.js";
 
 /** JSON-RPC internal error. */
 const INTERNAL_ERROR = -32603;
@@ -75,8 +69,8 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
       body: { taskId: task.taskId } satisfies WorkflowPayload,
       headers: this.config.headers,
       retries: this.config.retries,
-      // Unique per record: Workflow refuses a run id that was already used.
-      workflowRunId: dispatchKey(task),
+      // One run per task: Workflow refuses a run id that was already used.
+      workflowRunId: task.taskId,
     });
     return workflowRunId;
   }

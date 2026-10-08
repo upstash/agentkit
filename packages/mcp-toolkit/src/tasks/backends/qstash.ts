@@ -10,7 +10,6 @@ import {
 } from "../../shared/clients.js";
 import { fromBase64, fromUtf8 } from "../../shared/crypto.js";
 import {
-  dispatchKey,
   UnknownTaskError,
   type SettleResult,
   type Task,
@@ -186,8 +185,7 @@ export class QStashDispatcher implements TaskDispatcher {
       headers: this.config.headers,
       // Comes back to the same route once retries are exhausted, and settles the task `failed`.
       failureCallback: this.config.url,
-      // Per record, not per id: QStash remembers ids for 10 minutes, longer than a keyed task's TTL.
-      deduplicationId: dispatchKey(task),
+      deduplicationId: task.taskId,
     });
     return Array.isArray(message) ? message[0]?.messageId : message.messageId;
   }

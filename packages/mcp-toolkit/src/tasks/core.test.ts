@@ -8,8 +8,8 @@ import * as z from "zod";
 import { createTaskLayer } from "./core.js";
 import { InlineTaskDispatcher, MemoryTaskStore } from "./backends/memory.js";
 import type { TaskContext, TaskLayer, TaskToolConfig, WireTask } from "./index.js";
-import { CountingDispatcher, ManualDispatcher, sleep } from "../test-support.js";
-import { dispatchKey, type Task } from "./types.js";
+import { CountingDispatcher, ManualDispatcher, sleep, userIdOf } from "../test-support.js";
+import type { Task } from "./types.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 
@@ -40,8 +40,7 @@ type Harness = {
 type ReportArgs = { topic: string };
 
 /** Every test identifies callers by the user id their auth carries. */
-const principal = ({ auth }: { auth?: { extra?: Record<string, unknown> } }) =>
-  auth?.extra?.userId as string | undefined;
+const principal = userIdOf;
 
 /** Builds a server with one task tool backed by `handler`. */
 async function harness(
@@ -311,7 +310,7 @@ describe("createTaskLayer over MCP", () => {
         principal: async ({ auth, request }) => {
           seen.push({ userId: auth?.extra?.userId, url: request?.url });
           await sleep(1);
-          return auth?.extra?.userId as string | undefined;
+          return userIdOf({ auth });
         },
       });
       const taskId = await live.start("x", "alice");
@@ -359,6 +358,26 @@ describe("createTaskLayer over MCP", () => {
       await live.dispatcher.drain();
     });
 
+    it("refuses when principal throws, or returns no usable id at runtime", async () => {
+      for (const answer of [undefined, "", null, { id: "" }, 42]) {
+        live = await harness(steppedHandler(1, 1), {
+          // Plain JavaScript, or an `as string` that lied: the layer still fails closed.
+          principal: (() => answer) as never,
+        });
+        const start = await live.call("generate_report", { topic: "x" }, "alice");
+        expect(text(start)).toMatch(/Not authenticated/);
+      }
+      live = await harness(steppedHandler(1, 1), {
+        principal: async () => {
+          throw new Error("session store is down");
+        },
+      });
+      expect(text(await live.call("generate_report", { topic: "x" }, "alice"))).toMatch(
+        /Not authenticated/,
+      );
+      expect(live.dispatcher.dispatched).toBe(0);
+    });
+
     it("never answers for a stored task without an owner", async () => {
       live = await harness(steppedHandler(1, 1));
       const taskId = await live.start("x", "alice");
@@ -380,34 +399,10 @@ describe("createTaskLayer over MCP", () => {
     });
   });
 
-  describe("idempotency", () => {
-    it("returns the same task for a retried call with the same key", async () => {
-      live = await harness(steppedHandler(4, 30), {}, { idempotencyKey: (args) => args.topic });
-      const first = await live.call("generate_report", { topic: "x" });
-      const retry = await live.call("generate_report", { topic: "x" });
-
-      expect(retry.structuredContent?.taskId).toBe(first.structuredContent?.taskId);
-      expect(text(retry)).toMatch(/already exists/);
-      expect(live.dispatcher.dispatched).toBe(1);
-
-      const other = await live.call("generate_report", { topic: "y" });
-      expect(other.structuredContent?.taskId).not.toBe(first.structuredContent?.taskId);
-      await live.dispatcher.drain();
-    });
-
-    it("scopes keys by owner, so two callers never share a task", async () => {
-      live = await harness(steppedHandler(1, 1), {}, { idempotencyKey: (args) => args.topic });
-      const alice = await live.start("x", "alice");
-      const bob = await live.start("x", "bob");
-      expect(alice).not.toBe(bob);
-      await live.dispatcher.drain();
-    });
-
-    it("starts a fresh task on every call without a key", async () => {
-      live = await harness(steppedHandler(1, 1));
-      expect(await live.start("x")).not.toBe(await live.start("x"));
-      await live.dispatcher.drain();
-    });
+  it("starts a fresh task, with a random id, on every call", async () => {
+    live = await harness(steppedHandler(1, 1));
+    expect(await live.start("x")).not.toBe(await live.start("x"));
+    await live.dispatcher.drain();
   });
 
   describe("at-least-once delivery", () => {
@@ -484,22 +479,6 @@ describe("createTaskLayer over MCP", () => {
       expect(result.isError).toBe(true);
       expect(settled).toHaveLength(1);
       expect(settled[0]).toMatchObject({ status: "failed", statusMessage: "Could not be queued" });
-    });
-
-    it("dispatches a re-created keyed task under a new dispatch key", async () => {
-      const manual = new ManualDispatcher();
-      live = await harness(
-        steppedHandler(1, 1),
-        { dispatcher: manual as never },
-        { idempotencyKey: (args) => args.topic, ttlMs: 30 },
-      );
-      const first = await live.start("x");
-      await sleep(60); // the record expires; the same key now makes a new record with the same id
-      const second = await live.start("x");
-      expect(second).toBe(first);
-      expect(manual.dispatched).toHaveLength(2);
-      const [a, b] = manual.dispatched.map(dispatchKey);
-      expect(a).not.toBe(b);
     });
   });
 
