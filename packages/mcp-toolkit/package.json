@@ -1,6 +1,6 @@
 {
   "name": "@upstash/mcp-toolkit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Durable building blocks for MCP servers on the official TypeScript SDK: long-running tools (tasks) and webhook events, with Upstash Redis, QStash and Workflow backends.",
   "license": "MIT",
   "repository": {
