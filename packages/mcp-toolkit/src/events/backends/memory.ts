@@ -1,9 +1,6 @@
 /**
- * Single-process backends, for tests and for a first local run.
- *
- * {@link MemorySubscriptionStore} forgets every subscription on restart, and {@link InlineDelivery}
- * POSTs from the process that called `emit`, once, with no retries. Use the Upstash backends when
- * a host has to be able to rely on the deliveries.
+ * Single-process backends for tests and a first local run. {@link InlineDelivery} POSTs once,
+ * from the process that called `emit`, with no retries.
  */
 import type {
   DeliveryEndpoints,
@@ -11,6 +8,7 @@ import type {
   EventDelivery,
   SendOutcome,
   Subscription,
+  SubscriptionRef,
   SubscriptionStore,
 } from "../types.js";
 
@@ -23,32 +21,45 @@ export class MemorySubscriptionStore implements SubscriptionStore {
   }
 
   async get(id: string): Promise<Subscription | null> {
-    const subscription = this.subscriptions.get(id);
-    if (!subscription) return null;
-    if (subscription.expiresAt <= Date.now()) {
-      this.subscriptions.delete(id);
-      return null;
-    }
-    return { ...subscription };
+    const subscription = this.live(id);
+    return subscription ? { ...subscription } : null;
   }
 
-  async delete(id: string): Promise<void> {
+  async delete({ id }: SubscriptionRef): Promise<void> {
     this.subscriptions.delete(id);
   }
 
-  async find(event: string, argsKeys: string[]): Promise<Subscription[]> {
+  async find(
+    event: string,
+    owners: readonly string[],
+    argsKeys: readonly string[],
+  ): Promise<Subscription[]> {
+    const ownerSet = new Set(owners);
     const keys = new Set(argsKeys);
-    const now = Date.now();
-    return [...this.subscriptions.values()]
-      .filter((sub) => sub.event === event && keys.has(sub.argsKey) && sub.expiresAt > now)
+    return [...this.subscriptions.keys()]
+      .map((id) => this.live(id))
+      .filter(
+        (sub): sub is Subscription =>
+          sub !== undefined &&
+          sub.event === event &&
+          ownerSet.has(sub.owner) &&
+          keys.has(sub.argsKey),
+      )
       .map((sub) => ({ ...sub }));
+  }
+
+  /** Stands in for Redis' expiry. */
+  private live(id: string): Subscription | undefined {
+    const subscription = this.subscriptions.get(id);
+    if (subscription && subscription.expiresAt <= Date.now()) {
+      this.subscriptions.delete(id);
+      return undefined;
+    }
+    return subscription;
   }
 }
 
-/**
- * Sends each delivery from the calling process, once. `emit` resolves after every POST has been
- * answered. A failed delivery is reported to `onOutcome` and then forgotten.
- */
+/** Sends each delivery from the calling process, once. A failure goes to `onOutcome`, then is forgotten. */
 export class InlineDelivery implements EventDelivery {
   private endpoints: DeliveryEndpoints | undefined;
 
@@ -62,8 +73,9 @@ export class InlineDelivery implements EventDelivery {
 
   async enqueue(jobs: DeliveryJob[]): Promise<void> {
     const endpoints = this.endpoints;
-    if (!endpoints)
+    if (!endpoints) {
       throw new Error("InlineDelivery is not attached — pass it to createEventLayer().");
+    }
     await Promise.all(
       jobs.map(async (job) => {
         const outcome = await endpoints.send(job);

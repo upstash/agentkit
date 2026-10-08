@@ -1,10 +1,7 @@
 /**
- * `@upstash/mcp-toolkit/events` — MCP Events (webhook delivery) for servers on the official
- * TypeScript SDK.
- *
- * One entry point: the core, the Upstash backends (`RedisSubscriptionStore`, `QStashDelivery`),
- * and in-memory backends for tests. Importing it needs `@upstash/redis` and `@upstash/qstash`
- * installed.
+ * `@upstash/mcp-toolkit/events`: MCP Events (webhook delivery) for servers on the official
+ * TypeScript SDK, with the Upstash backends and in-memory ones for tests. Needs `@upstash/redis`
+ * and `@upstash/qstash` installed.
  */
 export {
   createEventLayer,
@@ -16,6 +13,7 @@ export {
   MAX_PAYLOAD_BYTES,
   type CallerAuth,
   type EmitOptions,
+  type EmitRecipients,
   type EmitResult,
   type EventConfig,
   type EventDescriptor,
@@ -25,6 +23,8 @@ export {
   type EventLayerOptions,
 } from "./core.js";
 
+export type { PrincipalResolver } from "../shared/auth.js";
+
 export type {
   DeliveryEndpoints,
   DeliveryJob,
@@ -32,6 +32,7 @@ export type {
   EventEnvelope,
   SendOutcome,
   Subscription,
+  SubscriptionRef,
   SubscriptionStore,
 } from "./types.js";
 

@@ -5,11 +5,26 @@
  * task becomes a run named after it, that cancelling the task cancels the run, and above all that
  * `task.run(...)` becomes a journaled step under Workflow and a plain call without it.
  */
+import { Client as QStashClient } from "@upstash/qstash";
+import { WorkflowContext } from "@upstash/workflow";
 import { describe, expect, it } from "vitest";
-import { WorkflowDispatcher } from "./workflow.js";
+import { insideStep, WorkflowDispatcher } from "./workflow.js";
 import { createTaskLayer } from "../core.js";
 import { MemoryTaskStore } from "./memory.js";
-import type { TaskContext } from "../types.js";
+import { dispatchKey, type Task, type TaskContext } from "../types.js";
+import { ManualDispatcher } from "../../test-support.js";
+
+const task = (overrides: Partial<Task> = {}): Task => ({
+  taskId: "task-1",
+  status: "working",
+  createdAt: "2026-10-08T10:00:00.000Z",
+  lastUpdatedAt: "2026-10-08T10:00:00.000Z",
+  ttlMs: null,
+  name: "demo",
+  args: {},
+  owner: "local",
+  ...overrides,
+});
 
 type Triggered = { url: string; body: unknown; workflowRunId?: string };
 
@@ -34,18 +49,20 @@ function stubClient() {
 }
 
 describe("WorkflowDispatcher", () => {
-  it("triggers a run named after the task, so a double dispatch is deduplicated", async () => {
+  it("triggers a run named after the task record, so a double dispatch is deduplicated", async () => {
     const { client, triggered } = stubClient();
     const dispatcher = new WorkflowDispatcher({ url: "https://example.com/api/workflow", client });
 
-    const dispatchId = await dispatcher.dispatch("task-1");
+    const dispatchId = await dispatcher.dispatch(task());
 
     expect(triggered).toHaveLength(1);
     expect(triggered[0]?.url).toBe("https://example.com/api/workflow");
     expect(triggered[0]?.body).toEqual({ taskId: "task-1" });
-    // Naming the run after the task is what makes the trigger idempotent.
-    expect(triggered[0]?.workflowRunId).toBe("task-1");
-    expect(dispatchId).toBe("task-1");
+    // Per record: Workflow refuses a used run id, and a keyed task id comes back after expiry.
+    expect(triggered[0]?.workflowRunId).toBe(dispatchKey(task()));
+    expect(dispatchId).toBe(dispatchKey(task()));
+    await dispatcher.dispatch(task({ createdAt: "2026-10-08T10:06:00.000Z" }));
+    expect(triggered[1]?.workflowRunId).not.toBe(triggered[0]?.workflowRunId);
   });
 
   it("cancels the run itself, not just the task record", async () => {
@@ -86,10 +103,8 @@ describe("the context a handler receives", () => {
     handler: (task: TaskContext & TContext) => Promise<Record<string, unknown>>,
   ) {
     const store = new MemoryTaskStore();
-    const tasks = createTaskLayer<TContext>({
-      store,
-      dispatcher: { dispatch: async () => undefined, cancel: async () => undefined },
-    });
+    const dispatcher = new ManualDispatcher<TContext>();
+    const tasks = createTaskLayer<TContext>({ store, dispatcher, principal: () => "local" });
 
     const now = new Date().toISOString();
     await store.create({
@@ -100,21 +115,17 @@ describe("the context a handler receives", () => {
       ttlMs: null,
       name: "demo",
       args: {},
+      owner: "local",
     });
 
-    const server = {
-      registerTool: () => undefined,
-      server: { registerCapabilities: () => undefined, setRequestHandler: () => undefined },
-    } as unknown as Parameters<typeof tasks.registerTask>[0];
-
-    tasks.registerTask(
-      server,
+    tasks.define(
       "demo",
       { description: "d", inputSchema: { "~standard": {} } as never },
       async (_args, task) => await handler(task),
     );
 
-    return await tasks.executeTask("t1", context);
+    await dispatcher.run("t1", context);
+    return await store.get("t1");
   }
 
   it("is just the task context when the transport adds nothing", async () => {
@@ -147,10 +158,8 @@ describe("the context a handler receives", () => {
   it("journals the SDK's own writes, so a replay does not rewind the status message", async () => {
     const journaled: string[] = [];
     const store = new MemoryTaskStore();
-    const tasks = createTaskLayer({
-      store,
-      dispatcher: { dispatch: async () => undefined, cancel: async () => undefined },
-    });
+    const dispatcher = new ManualDispatcher();
+    const tasks = createTaskLayer({ store, dispatcher, principal: () => "local" });
     const now = new Date().toISOString();
     await store.create({
       taskId: "t1",
@@ -160,13 +169,9 @@ describe("the context a handler receives", () => {
       ttlMs: null,
       name: "demo",
       args: {},
+      owner: "local",
     });
-    const server = {
-      registerTool: () => undefined,
-      server: { registerCapabilities: () => undefined, setRequestHandler: () => undefined },
-    } as unknown as Parameters<typeof tasks.registerTask>[0];
-    tasks.registerTask(
-      server,
+    tasks.define(
       "demo",
       { description: "d", inputSchema: { "~standard": {} } as never },
       async (_args, task) => {
@@ -176,7 +181,7 @@ describe("the context a handler receives", () => {
       },
     );
 
-    await tasks.executeTask("t1", undefined, async (name, fn) => {
+    await dispatcher.run("t1", undefined, async (name, fn) => {
       journaled.push(name);
       return await fn();
     });
@@ -205,5 +210,44 @@ describe("the context a handler receives", () => {
       expect(Object.getPrototypeOf(task)).toBe(FakeWorkflowContext.prototype);
       return {};
     });
+  });
+});
+
+describe("WorkflowDispatcher signature verification", () => {
+  it("refuses to serve without signing keys, instead of running unverified", async () => {
+    // The Workflow SDK's own default is to skip verification when the keys are missing.
+    const saved = { ...process.env };
+    delete process.env.QSTASH_CURRENT_SIGNING_KEY;
+    delete process.env.QSTASH_NEXT_SIGNING_KEY;
+    process.env.QSTASH_TOKEN = "test-token";
+    try {
+      const dispatcher = new WorkflowDispatcher({ url: "https://example.com/api/workflow" });
+      const handler = dispatcher.createExecuteHandler(); // building the route must not throw
+      expect(() =>
+        handler(new Request("https://example.com/api/workflow", { method: "POST", body: "{}" })),
+      ).toThrow(/signing keys/);
+    } finally {
+      process.env = saved;
+    }
+  });
+});
+
+describe("insideStep", () => {
+  // It reads Workflow's non-public `executor.executingStep`. If an upgrade renames the field this
+  // fails, instead of task.update silently going unjournaled.
+  it("still finds executingStep on a real WorkflowContext", async () => {
+    const context = new WorkflowContext({
+      qstashClient: new QStashClient({ token: "test" }) as never,
+      workflowRunId: "wfr_test",
+      workflowRunCreatedAt: Date.now(),
+      headers: new Headers(),
+      steps: [],
+      url: "https://example.com/api/workflow",
+      initialPayload: {},
+    });
+    const executor = (context as unknown as { executor?: Record<string, unknown> }).executor;
+    expect(executor).toBeDefined();
+    expect(executor).toHaveProperty("executingStep", false);
+    expect(insideStep(context as never)).toBe(false);
   });
 });

@@ -3,6 +3,9 @@
  * deploy finished. POST a partial deploy; anything left out gets a demo value:
  *
  *   curl -X POST $APP/api/deploy-watch/deploys -d '{"service":"checkout-api","status":"failed"}'
+ *
+ * Unauthenticated on purpose, so the demo is easy to drive. A real server must authenticate this
+ * route (your CI's token, a signed webhook): anyone who can call it can fire events.
  */
 import { randomBytes } from "node:crypto";
 import { Deploy, reportDeploy } from "../../../lib/deploy-watch";

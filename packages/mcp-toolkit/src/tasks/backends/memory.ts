@@ -1,14 +1,11 @@
 /**
- * Single-process backends, for tests and for a first local run before you have QStash creds.
- *
- * They are honest about what they are: {@link MemoryTaskStore} loses everything on restart, and
- * {@link InlineTaskDispatcher} runs the work in the process that accepted the tool call — the
- * exact fire-and-forget shape that leaves a durable record of a task stuck in `working` when the
- * process dies. Use them to develop against; use the Upstash backends to survive a deploy.
+ * Single-process backends for tests and a first local run. Nothing here survives a restart, and
+ * {@link InlineTaskDispatcher} runs work in the process that took the tool call.
  */
 import {
   isTerminal,
   UnknownTaskError,
+  type SettleResult,
   type Task,
   type TaskDispatcher,
   type TaskEndpoints,
@@ -22,10 +19,12 @@ export class MemoryTaskStore implements TaskStore {
   private readonly tasks = new Map<string, Task>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  async create(task: Task): Promise<void> {
+  async create(task: Task): Promise<Task | null> {
+    const existing = this.tasks.get(task.taskId);
+    if (existing) return { ...existing };
     this.tasks.set(task.taskId, { ...task });
     if (task.ttlMs !== null && task.ttlMs > 0) {
-      // Stands in for Redis EXPIRE. Unref'd so a pending TTL never holds the process open.
+      // Stands in for Redis' expiry. Unref'd so it never holds the process open.
       const timer = setTimeout(() => {
         this.tasks.delete(task.taskId);
         this.timers.delete(task.taskId);
@@ -33,6 +32,7 @@ export class MemoryTaskStore implements TaskStore {
       timer.unref?.();
       this.timers.set(task.taskId, timer);
     }
+    return null;
   }
 
   async get(taskId: string): Promise<Task | null> {
@@ -41,77 +41,58 @@ export class MemoryTaskStore implements TaskStore {
   }
 
   async update(taskId: string, patch: TaskPatch): Promise<Task> {
-    const task = this.tasks.get(taskId);
-    if (!task) throw new UnknownTaskError(taskId);
-    // A terminal task is finished, message included — see the note on `TaskStore.update`.
-    if (isTerminal(task.status)) return { ...task };
-    const next: Task = { ...task, ...patch, lastUpdatedAt: new Date().toISOString() };
-    this.tasks.set(taskId, next);
-    return { ...next };
+    const outcome = this.write(taskId, patch);
+    if (!outcome) throw new UnknownTaskError(taskId);
+    return outcome.task;
   }
 
-  async settle(taskId: string, patch: TerminalTaskPatch): Promise<Task | null> {
-    const task = this.tasks.get(taskId);
-    // A single-threaded runtime gives this the atomicity the Lua script buys on Redis: nothing
-    // can interleave between the read and the write below.
-    if (!task || isTerminal(task.status)) return null;
-    const next: Task = { ...task, ...patch, lastUpdatedAt: new Date().toISOString() };
-    this.tasks.set(taskId, next);
-    return { ...next };
+  async settle(taskId: string, patch: TerminalTaskPatch): Promise<SettleResult | null> {
+    return this.write(taskId, patch);
   }
 
-  /** Drops every task and its pending expiry. Handy between tests. */
+  /** Drops every task and its pending expiry. */
   clear(): void {
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
     this.tasks.clear();
   }
+
+  /** Synchronous, so nothing interleaves between the check and the write. */
+  private write(taskId: string, patch: TaskPatch): SettleResult | null {
+    const task = this.tasks.get(taskId);
+    if (!task) return null;
+    if (isTerminal(task.status)) return { task: { ...task }, settled: false };
+    const next: Task = { ...task, ...patch, lastUpdatedAt: new Date().toISOString() };
+    this.tasks.set(taskId, next);
+    return { task: { ...next }, settled: true };
+  }
 }
 
 /**
- * Runs a task in the current process, on the next tick.
- *
- * There is nothing durable about it, and nothing to cancel once the work has started — `cancel`
- * is a no-op, so stopping relies entirely on the handler checking `isCancelled()`.
+ * Runs a task in the current process, on the next microtask. Nothing is durable and `cancel` is a
+ * no-op, so stopping relies on the handler checking `isCancelled()`. A throw fails the task: there
+ * are no retries.
  */
 export class InlineTaskDispatcher implements TaskDispatcher {
   private readonly pending = new Set<Promise<void>>();
   private endpoints: TaskEndpoints | undefined;
-  private readonly autoRun: boolean;
-
-  /** How many tasks have been dispatched. Test-only. */
-  dispatched = 0;
-
-  constructor(config: { autoRun?: boolean } = {}) {
-    // `autoRun: false` records dispatches without running them, so a test can drive execution
-    // itself and observe what a single attempt does.
-    this.autoRun = config.autoRun ?? true;
-  }
 
   attach(endpoints: TaskEndpoints): void {
     this.endpoints = endpoints;
   }
 
-  async dispatch(taskId: string): Promise<string | undefined> {
-    this.dispatched += 1;
-    if (!this.autoRun) return undefined;
+  async dispatch(task: Task): Promise<string | undefined> {
     const endpoints = this.endpoints;
     if (!endpoints) {
-      throw new Error(
-        "This dispatcher is not attached to a task layer — pass it to createTaskLayer().",
-      );
+      throw new Error("InlineTaskDispatcher is not attached — pass it to createTaskLayer().");
     }
-
-    // Deferred to a microtask so the tool call returns its handle before the work starts, which
-    // is the ordering a real queue gives you for free.
     const run = Promise.resolve()
-      .then(() => endpoints.run(taskId, undefined))
+      .then(() => endpoints.run(task.taskId, undefined))
       .then(
         () => undefined,
-        // There are no retries in this process, so the first error is the last one.
         (cause: unknown) =>
           endpoints
-            .fail(taskId, {
+            .fail(task.taskId, {
               code: -32603,
               message: cause instanceof Error ? cause.message : String(cause),
             })
@@ -125,11 +106,9 @@ export class InlineTaskDispatcher implements TaskDispatcher {
     return undefined;
   }
 
-  async cancel(): Promise<void> {
-    // Nothing to un-enqueue: the work is already running in this process.
-  }
+  async cancel(): Promise<void> {}
 
-  /** Resolves once every dispatched task has settled. Test-only. */
+  /** Resolves once every dispatched task has settled. */
   async drain(): Promise<void> {
     while (this.pending.size > 0) await Promise.all([...this.pending]);
   }

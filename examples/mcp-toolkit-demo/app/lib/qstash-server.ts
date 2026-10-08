@@ -27,6 +27,10 @@ export const tasks = createTaskLayer({
   store: new RedisTaskStore({ prefix: "mcp:task:qstash:" }),
   dispatcher,
   defaults: { ttlMs: 300_000, pollIntervalMs: 2_000 },
+  // Who is calling. The demo has no login, so every caller is the same user — said explicitly,
+  // because there is no anonymous default. A real server returns its user id from `auth`:
+  //   principal: (auth) => auth?.extra?.userId as string | undefined
+  principal: () => "demo-user",
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,11 +38,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const STEP_NAMES = ["gathering sources", "reading", "outlining", "writing"];
 const STEPS = STEP_NAMES.length;
 
-export function createServer(): McpServer {
-  const server = new McpServer({ name: "report-desk", version: "0.1.0" });
-
-  tasks.registerTask(
-    server,
+// Defined at module scope, so every instance knows the handler — including one that only ever
+// serves `/api/execute` and never builds an MCP server.
+tasks.define(
     "generate_report",
     {
       title: "Generate report",
@@ -75,10 +77,9 @@ export function createServer(): McpServer {
     },
   );
 
+/** A fresh server per request: the defined task tool plus `task_status` and `task_cancel`. */
+export function createServer(): McpServer {
+  const server = new McpServer({ name: "report-desk", version: "0.1.0" });
+  tasks.register(server);
   return server;
 }
-
-// The delivery endpoint receives only a task id and looks the handler up by the tool name stored
-// on the task, so the registry has to be populated even when `/api/execute` is the first route hit
-// in this process. This server is never connected to a transport.
-createServer();

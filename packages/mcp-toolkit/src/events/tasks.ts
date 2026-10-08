@@ -1,15 +1,12 @@
 /**
- * The bridge between the two halves of the toolkit: a `task.finished` event fired when a task
- * settles, so a host that supports MCP Events can stop polling `task_status`.
+ * A `task.finished` event, fired once when a task settles, to its owner only:
  *
  * ```ts
- * const events = createEventLayer({ store, delivery });
  * const taskFinished = taskFinishedEvent(events);
- * const tasks = createTaskLayer({ store, dispatcher, onSettle: taskFinished.onSettle });
+ * const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: taskFinished.onSettle });
  * ```
  *
- * A host subscribes with no arguments to hear about every task the caller starts, or with a
- * `taskId` for one task. Deliveries only go to subscriptions made by the task's owner.
+ * A host subscribes with no arguments for every task its user starts, or with a `taskId`.
  */
 import * as z from "zod";
 import type { Task } from "../tasks/types.js";
@@ -48,8 +45,9 @@ export function taskFinishedEvent(
   });
 
   async function onSettle(task: Task): Promise<void> {
-    if (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled")
+    if (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
       return;
+    }
     const payload: TaskFinishedPayload = {
       taskId: task.taskId,
       status: task.status,
@@ -58,10 +56,10 @@ export function taskFinishedEvent(
       ...(task.error ? { error: task.error } : {}),
     };
     const emitOptions = {
+      owner: task.owner,
       args: { taskId: task.taskId },
-      // The settle hook can fire twice only if a store misbehaves; a stable id makes it harmless.
+      // Stable, so a repeated settle hook cannot deliver twice.
       eventId: `evt_task_${task.taskId}`,
-      ...(task.owner === undefined || task.owner === null ? {} : { owner: String(task.owner) }),
     };
     try {
       await event.emit(payload, emitOptions);

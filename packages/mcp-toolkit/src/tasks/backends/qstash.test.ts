@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { QStashDispatcher, RedisTaskStore } from "./qstash.js";
-import { UnknownTaskError, type Task, type TaskError } from "../types.js";
+import { dispatchKey, UnknownTaskError, type Task, type TaskError } from "../types.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../../test-support.js";
 
 const makeTask = (overrides: Partial<Task> = {}): Task => {
@@ -15,6 +15,7 @@ const makeTask = (overrides: Partial<Task> = {}): Task => {
     pollIntervalMs: 2_000,
     name: "generate_report",
     args: { topic: "coffee trends" },
+    owner: "alice",
     ...overrides,
   };
 };
@@ -100,12 +101,15 @@ describe.skipIf(!hasRedisCreds)("RedisTaskStore (real Redis)", () => {
       statusMessage: "Completed",
       result: { content: [{ type: "text", text: "done" }] },
     });
-    expect(completed?.status).toBe("completed");
-    expect(completed?.result).toEqual({ content: [{ type: "text", text: "done" }] });
+    expect(completed?.settled).toBe(true);
+    expect(completed?.task.status).toBe("completed");
+    expect(completed?.task.result).toEqual({ content: [{ type: "text", text: "done" }] });
 
-    // First terminal write wins: a later cancel cannot reopen or overwrite it.
+    // First terminal write wins: a later cancel cannot reopen or overwrite it, and gets the
+    // current record back in the same round trip.
     const cancelled = await store.settle(task.taskId, { status: "cancelled" });
-    expect(cancelled).toBeNull();
+    expect(cancelled?.settled).toBe(false);
+    expect(cancelled?.task.status).toBe("completed");
     expect((await store.get(task.taskId))?.status).toBe("completed");
   });
 
@@ -113,9 +117,13 @@ describe.skipIf(!hasRedisCreds)("RedisTaskStore (real Redis)", () => {
     const task = makeTask();
     await store.create(task);
 
-    expect((await store.settle(task.taskId, { status: "cancelled" }))?.status).toBe("cancelled");
+    expect((await store.settle(task.taskId, { status: "cancelled" }))?.task.status).toBe(
+      "cancelled",
+    );
     // This is the executor finishing just after the client cancelled.
-    expect(await store.settle(task.taskId, { status: "completed", result: {} })).toBeNull();
+    expect((await store.settle(task.taskId, { status: "completed", result: {} }))?.settled).toBe(
+      false,
+    );
     expect((await store.get(task.taskId))?.status).toBe("cancelled");
   });
 
@@ -133,6 +141,33 @@ describe.skipIf(!hasRedisCreds)("RedisTaskStore (real Redis)", () => {
 
     expect(after.status).toBe("cancelled");
     expect(after.statusMessage).toBe("Cancelled by client");
+  });
+
+  it("creates only if absent, and hands back the existing task otherwise", async () => {
+    const task = makeTask({ statusMessage: "first" });
+    expect(await store.create(task)).toBeNull();
+
+    const again = await store.create({ ...task, statusMessage: "second" });
+    expect(again?.taskId).toBe(task.taskId);
+    expect(again?.statusMessage).toBe("first");
+    expect((await store.get(task.taskId))?.statusMessage).toBe("first");
+  });
+
+  it("returns the record from update and settle in the same round trip", async () => {
+    const task = makeTask();
+    await store.create(task);
+    const updated = await store.update(task.taskId, { statusMessage: "42" });
+    expect(updated.statusMessage).toBe("42");
+    expect(updated.args).toEqual(task.args);
+
+    const settled = await store.settle(task.taskId, {
+      status: "completed",
+      result: { content: [{ type: "text", text: "ok" }] },
+    });
+    expect(settled?.task.status).toBe("completed");
+    expect(settled?.task.result).toEqual({ content: [{ type: "text", text: "ok" }] });
+    // A finished task's update returns it unchanged rather than failing.
+    expect((await store.update(task.taskId, { statusMessage: "late" })).statusMessage).toBe("42");
   });
 
   it("never creates a task as a side effect of updating a missing one", async () => {
@@ -169,7 +204,7 @@ describe("constructing without credentials", () => {
   it("still reports the missing credentials when the client is actually used", async () => {
     await expect(new RedisTaskStore().get("t")).rejects.toThrow(/UPSTASH_REDIS_REST_URL/);
     await expect(
-      new QStashDispatcher({ url: "https://example.com/api/execute" }).dispatch("t"),
+      new QStashDispatcher({ url: "https://example.com/api/execute" }).dispatch(makeTask()),
     ).rejects.toThrow(/QSTASH_TOKEN/);
   });
 });
@@ -215,6 +250,21 @@ describe("QStashDispatcher.createExecuteHandler", () => {
 
   /** QStash sends the original message body base64-encoded on the failure callback. */
   const base64 = (value: unknown) => Buffer.from(JSON.stringify(value), "utf8").toString("base64");
+
+  it("throws, rather than answering 401, when no signing keys are configured", async () => {
+    const saved = { ...process.env };
+    delete process.env.QSTASH_CURRENT_SIGNING_KEY;
+    delete process.env.QSTASH_NEXT_SIGNING_KEY;
+    try {
+      const dispatcher = new QStashDispatcher({ url: "https://example.com/api/execute" });
+      dispatcher.attach({ run: async () => undefined, fail: async () => undefined });
+      await expect(dispatcher.createExecuteHandler()(deliver({ taskId: "t" }))).rejects.toThrow(
+        /signing keys/,
+      );
+    } finally {
+      process.env = saved;
+    }
+  });
 
   it("runs a delivery and acknowledges with 200", async () => {
     const { handler, calls } = attached();
@@ -264,20 +314,20 @@ describe("QStashDispatcher.createExecuteHandler", () => {
     });
   });
 
-  it("rejects an unsigned delivery with 401 and never runs the task", async () => {
+  it("rejects an unsigned delivery as non-retryable and never runs the task", async () => {
     const { handler, calls } = attached({ accept: false });
     const response = await handler(deliver({ taskId: "t1" }));
 
-    // 401 rather than 500 on purpose: a retry cannot fix a bad signature, and answering 500 would
-    // make QStash replay an unauthenticated request.
-    expect(response.status).toBe(401);
+    // QStash retries every non-2xx except this one, and a retry cannot fix a bad signature.
+    expect(response.status).toBe(489);
+    expect(response.headers.get("Upstash-NonRetryable-Error")).toBe("true");
     expect(calls.ran).toEqual([]);
     expect(calls.failed).toEqual([]);
   });
 
   it("rejects a body that is neither a delivery nor a failure callback", async () => {
     const { handler } = attached();
-    expect((await handler(deliver({}))).status).toBe(400);
+    expect((await handler(deliver({}))).status).toBe(489);
     expect(
       (
         await handler(
@@ -288,7 +338,19 @@ describe("QStashDispatcher.createExecuteHandler", () => {
           }),
         )
       ).status,
-    ).toBe(400);
+    ).toBe(489);
+  });
+
+  it("decodes a non-ASCII failure response as UTF-8", async () => {
+    const { handler, calls } = attached();
+    await handler(
+      deliver({
+        sourceBody: base64({ taskId: "t1" }),
+        status: 502,
+        body: Buffer.from("Ağ geçidi hatası ✗", "utf8").toString("base64"),
+      }),
+    );
+    expect(calls.failed[0]?.error.data).toMatchObject({ response: "Ağ geçidi hatası ✗" });
   });
 
   it("verifies against the published URL, not the incoming one", async () => {
@@ -319,5 +381,31 @@ describe("QStashDispatcher.createExecuteHandler", () => {
     await expect(dispatcher.createExecuteHandler()(deliver({ taskId: "t1" }))).rejects.toThrow(
       /not attached/,
     );
+  });
+});
+
+describe("QStashDispatcher.dispatch", () => {
+  it("deduplicates per task record, not per task id", async () => {
+    const published: Record<string, unknown>[] = [];
+    const qstash = {
+      publishJSON: async (options: Record<string, unknown>) => {
+        published.push(options);
+        return { messageId: "msg_1" };
+      },
+    } as unknown as ConstructorParameters<typeof QStashDispatcher>[0]["qstash"];
+    const dispatcher = new QStashDispatcher({ url: "https://example.com/api/execute", qstash });
+
+    // A keyed task re-created after its record expired: same id, new createdAt.
+    const first = makeTask({ taskId: "t", createdAt: "2026-10-08T10:00:00.000Z" });
+    const second = makeTask({ taskId: "t", createdAt: "2026-10-08T10:06:00.000Z" });
+    expect(await dispatcher.dispatch(first)).toBe("msg_1");
+    await dispatcher.dispatch(second);
+
+    expect(published.map((p) => p.deduplicationId)).toEqual([
+      dispatchKey(first),
+      dispatchKey(second),
+    ]);
+    expect(published[0]?.deduplicationId).not.toBe(published[1]?.deduplicationId);
+    expect(published[0]?.body).toEqual({ taskId: "t" });
   });
 });

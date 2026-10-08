@@ -8,7 +8,8 @@ import * as z from "zod";
 import { createTaskLayer } from "./core.js";
 import { InlineTaskDispatcher, MemoryTaskStore } from "./backends/memory.js";
 import type { TaskContext, TaskLayer, TaskToolConfig, WireTask } from "./index.js";
-import { sleep } from "../test-support.js";
+import { CountingDispatcher, ManualDispatcher, sleep } from "../test-support.js";
+import { dispatchKey, type Task } from "./types.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 
@@ -18,22 +19,29 @@ type ToolResult = {
   isError?: boolean;
 };
 
-type Call = (name: string, args: Record<string, unknown>, user?: string) => Promise<ToolResult>;
+/** `user` defaults to "alice"; `null` sends the request with no auth at all. */
+type User = string | null | undefined;
+
+type Call = (name: string, args: Record<string, unknown>, user?: User) => Promise<ToolResult>;
 
 type Harness = {
   call: Call;
   /** Starts the report tool and returns the task id it answered with. */
-  start: (topic?: string, user?: string) => Promise<string>;
-  status: (taskId: string, user?: string) => Promise<ToolResult>;
-  cancel: (taskId: string, user?: string) => Promise<ToolResult>;
+  start: (topic?: string, user?: User) => Promise<string>;
+  status: (taskId: string, user?: User) => Promise<ToolResult>;
+  cancel: (taskId: string, user?: User) => Promise<ToolResult>;
   listTools: () => Promise<string[]>;
   tasks: TaskLayer;
   store: MemoryTaskStore;
-  dispatcher: InlineTaskDispatcher;
+  dispatcher: CountingDispatcher;
   close: () => Promise<void>;
 };
 
 type ReportArgs = { topic: string };
+
+/** Every test identifies callers by the user id their auth carries. */
+const principal = (auth: { extra?: Record<string, unknown> } | undefined) =>
+  auth?.extra?.userId as string | undefined;
 
 /** Builds a server with one task tool backed by `handler`. */
 async function harness(
@@ -43,28 +51,31 @@ async function harness(
 ): Promise<Harness> {
   const store = new MemoryTaskStore();
   const dispatcher =
-    (layer.dispatcher as InlineTaskDispatcher | undefined) ?? new InlineTaskDispatcher();
-  const tasks = createTaskLayer({ store, ...layer, dispatcher });
+    (layer.dispatcher as CountingDispatcher | undefined) ?? new CountingDispatcher();
+  const tasks = createTaskLayer({ store, principal, ...layer, dispatcher });
+
+  // Defined once, the way module scope does it in an app.
+  tasks.define(
+    "generate_report",
+    {
+      description: "Generates a report.",
+      inputSchema: z.object({ topic: z.string() }),
+      ...tool,
+    },
+    handler,
+  );
 
   // A fresh server per request, the way `createMcpHandler` serves stateless traffic — the same
   // path the demo uses. Registering on each one is cheap; the task layer's state is the store.
   const handlerFor = createMcpHandler(() => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
-    tasks.registerTask(
-      server,
-      "generate_report",
-      {
-        description: "Generates a report.",
-        inputSchema: z.object({ topic: z.string() }),
-        ...tool,
-      },
-      handler,
-    );
+    tasks.register(server);
     return server;
   });
 
   let id = 0;
-  const rpc = async (method: string, params: Record<string, unknown>, user?: string) => {
+  const rpc = async (method: string, params: Record<string, unknown>, given?: User) => {
+    const user = given === undefined ? "alice" : given;
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
@@ -147,6 +158,45 @@ describe("createTaskLayer over MCP", () => {
     expect((await live.listTools()).sort()).toEqual(
       ["generate_report", "task_cancel", "task_status"].sort(),
     );
+  });
+
+  it("runs a task on an instance that never built a server", async () => {
+    // The execute endpoint on a cold instance: the layer was created and the task defined at
+    // module scope, but no MCP request — and so no `register` — ever happened there.
+    const store = new MemoryTaskStore();
+    const dispatcher = new ManualDispatcher();
+    const coldInstance = createTaskLayer({ store, dispatcher, principal });
+    coldInstance.define(
+      "generate_report",
+      { description: "Generates a report.", inputSchema: z.object({ topic: z.string() }) },
+      async ({ topic }) => ({ content: [{ type: "text", text: topic }] }),
+    );
+    const now = new Date().toISOString();
+    await store.create({
+      taskId: "t1",
+      status: "working",
+      createdAt: now,
+      lastUpdatedAt: now,
+      ttlMs: null,
+      name: "generate_report",
+      args: { topic: "ferries" },
+      owner: "alice",
+    });
+    await dispatcher.run("t1");
+    expect((await store.get("t1"))?.status).toBe("completed");
+    store.clear();
+  });
+
+  it("refuses to define the same task twice, or under a shared tool's name", () => {
+    const tasks = createTaskLayer({
+      store: new MemoryTaskStore(),
+      dispatcher: new InlineTaskDispatcher(),
+      principal,
+    });
+    const config = { description: "d", inputSchema: z.object({}) };
+    tasks.define("a", config, async () => ({}));
+    expect(() => tasks.define("a", config, async () => ({}))).toThrow(/already defined/);
+    expect(() => tasks.define("task_status", config, async () => ({}))).toThrow(/reserved/);
   });
 
   it("answers the tool call with a task handle, as an ordinary tool result", async () => {
@@ -255,11 +305,8 @@ describe("createTaskLayer over MCP", () => {
   });
 
   describe("ownership", () => {
-    const principal = (auth: { extra?: Record<string, unknown> } | undefined) =>
-      auth?.extra?.userId as string | undefined;
-
     it("lets the owner read and cancel its task", async () => {
-      live = await harness(steppedHandler(4, 30), { principal });
+      live = await harness(steppedHandler(4, 30));
       const taskId = await live.start("x", "alice");
       expect((await live.store.get(taskId))?.owner).toBe("alice");
       expect((await live.status(taskId, "alice")).structuredContent?.status).toBe("working");
@@ -268,7 +315,7 @@ describe("createTaskLayer over MCP", () => {
     });
 
     it("reports another caller's task as unknown, and refuses to cancel it", async () => {
-      live = await harness(steppedHandler(4, 30), { principal });
+      live = await harness(steppedHandler(4, 30));
       const taskId = await live.start("x", "alice");
 
       const peek = await live.status(taskId, "mallory");
@@ -280,16 +327,41 @@ describe("createTaskLayer over MCP", () => {
       expect((await live.store.get(taskId))?.status).not.toBe("cancelled");
 
       // Nor does an anonymous caller get through.
-      expect((await live.status(taskId)).isError).toBe(true);
+      expect((await live.status(taskId, null)).isError).toBe(true);
       await live.dispatcher.drain();
     });
 
-    it("leaves tasks unscoped when no principal is configured", async () => {
+    it("refuses every call from a caller the principal cannot identify", async () => {
+      live = await harness(steppedHandler(1, 1));
+      const start = await live.call("generate_report", { topic: "x" }, null);
+      expect(start.isError).toBe(true);
+      expect(text(start)).toMatch(/Not authenticated/);
+      expect(live.dispatcher.dispatched).toBe(0);
+
+      const taskId = await live.start("x", "alice");
+      expect(text(await live.status(taskId, null))).toMatch(/Not authenticated/);
+      expect(text(await live.cancel(taskId, null))).toMatch(/Not authenticated/);
+      await live.dispatcher.drain();
+    });
+
+    it("never answers for a stored task without an owner", async () => {
       live = await harness(steppedHandler(1, 1));
       const taskId = await live.start("x", "alice");
-      expect((await live.store.get(taskId))?.owner).toBeUndefined();
-      expect((await live.status(taskId, "bob")).isError).toBeFalsy();
       await live.dispatcher.drain();
+      // A record written by something other than the layer, with no owner on it.
+      const record = await live.store.get(taskId);
+      live.store.clear();
+      await live.store.create({ ...record!, owner: undefined as unknown as string });
+      expect(text(await live.status(taskId, "alice"))).toMatch(/Unknown task/);
+    });
+
+    it("requires a principal", () => {
+      expect(() =>
+        createTaskLayer({
+          store: new MemoryTaskStore(),
+          dispatcher: new InlineTaskDispatcher(),
+        } as unknown as Parameters<typeof createTaskLayer>[0]),
+      ).toThrow(/principal/);
     });
   });
 
@@ -309,11 +381,7 @@ describe("createTaskLayer over MCP", () => {
     });
 
     it("scopes keys by owner, so two callers never share a task", async () => {
-      live = await harness(
-        steppedHandler(1, 1),
-        { principal: (auth) => auth?.extra?.userId as string | undefined },
-        { idempotencyKey: (args) => args.topic },
-      );
+      live = await harness(steppedHandler(1, 1), {}, { idempotencyKey: (args) => args.topic });
       const alice = await live.start("x", "alice");
       const bob = await live.start("x", "bob");
       expect(alice).not.toBe(bob);
@@ -330,44 +398,46 @@ describe("createTaskLayer over MCP", () => {
   describe("at-least-once delivery", () => {
     it("ignores a redelivery of a task that already finished", async () => {
       let runs = 0;
-      live = await harness(async () => {
-        runs += 1;
-        return { content: [{ type: "text", text: "done" }] };
-      });
+      const manual = new ManualDispatcher();
+      live = await harness(
+        async () => {
+          runs += 1;
+          return { content: [{ type: "text", text: "done" }] };
+        },
+        { dispatcher: manual as never },
+      );
       const taskId = await live.start("x");
-      await live.dispatcher.drain();
-      expect(runs).toBe(1);
-
+      await manual.run(taskId);
       // The same message arriving twice is the contract, not a bug.
-      await live.tasks.executeTask(taskId);
-      await live.tasks.executeTask(taskId);
+      await manual.run(taskId);
+      await manual.run(taskId);
       expect(runs).toBe(1);
     });
 
     it("acknowledges a delivery for a task that no longer exists", async () => {
-      live = await harness(steppedHandler(1, 1));
-      // Expired or never created: a retry cannot fix that, so it must not throw and be retried.
-      await expect(live.tasks.executeTask("gone")).resolves.toBeNull();
+      const manual = new ManualDispatcher();
+      live = await harness(steppedHandler(1, 1), { dispatcher: manual as never });
+      // Expired or never created: a retry cannot fix that, so it must not throw.
+      await expect(manual.run("gone")).resolves.toBeUndefined();
     });
 
     it("leaves a thrown task retryable rather than settling it failed", async () => {
       let attempts = 0;
+      const manual = new ManualDispatcher();
       live = await harness(
         async () => {
           attempts += 1;
           if (attempts < 3) throw new Error(`boom ${attempts}`);
           return { content: [{ type: "text", text: "eventually" }] };
         },
-        { dispatcher: new InlineTaskDispatcher({ autoRun: false }) },
+        { dispatcher: manual as never },
       );
       const taskId = await live.start("x");
-
-      // Redeliveries are driven by hand, to prove `executeTask` itself never makes a failure
-      // terminal — that decision belongs to the transport.
-      await expect(live.tasks.executeTask(taskId)).rejects.toThrow("boom 1");
+      // Only the transport decides that a failure is final.
+      await expect(manual.run(taskId)).rejects.toThrow("boom 1");
       expect((await live.status(taskId)).structuredContent?.status).toBe("working");
-      await expect(live.tasks.executeTask(taskId)).rejects.toThrow("boom 2");
-      await live.tasks.executeTask(taskId);
+      await expect(manual.run(taskId)).rejects.toThrow("boom 2");
+      await manual.run(taskId);
       expect((await live.status(taskId)).structuredContent?.status).toBe("completed");
       expect(attempts).toBe(3);
     });
@@ -384,6 +454,61 @@ describe("createTaskLayer over MCP", () => {
       expect(after.structuredContent?.error).toMatchObject({ code: -32603, message: "permanent" });
       expect(text(after)).toMatch(/permanent/);
     });
+
+    it("fails the task when it cannot be dispatched, instead of leaving it working", async () => {
+      const manual = new ManualDispatcher();
+      manual.failNext = new Error("queue unavailable");
+      const settled: Task[] = [];
+      live = await harness(steppedHandler(1, 1), {
+        dispatcher: manual as never,
+        onSettle: (task) => {
+          settled.push(task);
+        },
+      });
+      const result = await live.call("generate_report", { topic: "x" });
+      expect(result.isError).toBe(true);
+      expect(settled).toHaveLength(1);
+      expect(settled[0]).toMatchObject({ status: "failed", statusMessage: "Could not be queued" });
+    });
+
+    it("dispatches a re-created keyed task under a new dispatch key", async () => {
+      const manual = new ManualDispatcher();
+      live = await harness(
+        steppedHandler(1, 1),
+        { dispatcher: manual as never },
+        { idempotencyKey: (args) => args.topic, ttlMs: 30 },
+      );
+      const first = await live.start("x");
+      await sleep(60); // the record expires; the same key now makes a new record with the same id
+      const second = await live.start("x");
+      expect(second).toBe(first);
+      expect(manual.dispatched).toHaveLength(2);
+      const [a, b] = manual.dispatched.map(dispatchKey);
+      expect(a).not.toBe(b);
+    });
+  });
+
+  it("calls onSettle once and cancels the dispatch once, however often a task is cancelled", async () => {
+    const manual = new ManualDispatcher();
+    const settled: Task[] = [];
+    live = await harness(steppedHandler(1, 1), {
+      dispatcher: manual as never,
+      onSettle: (task) => {
+        settled.push(task);
+      },
+    });
+    const taskId = await live.start("x");
+    await live.cancel(taskId);
+    await live.cancel(taskId);
+    expect(settled.map((t) => t.status)).toEqual(["cancelled"]);
+    expect(manual.cancelled).toEqual(["msg_1"]);
+  });
+
+  it("keeps ttlMs: null (unlimited) instead of falling back to the default", async () => {
+    live = await harness(steppedHandler(1, 1), {}, { ttlMs: null });
+    const result = await live.call("generate_report", { topic: "x" });
+    expect(result.structuredContent?.ttlMs).toBeNull();
+    await live.dispatcher.drain();
   });
 
   it("registers the shared tools under custom names when asked", async () => {

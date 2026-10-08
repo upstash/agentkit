@@ -1,36 +1,41 @@
 /**
- * The Upstash backends for events: subscriptions in Upstash Redis, deliveries through QStash.
- *
- * QStash is the part that makes the webhooks dependable. Each matching subscription becomes one
- * QStash message to your delivery endpoint, deduplicated per event and subscription and retried
- * with backoff when the host's callback fails. The endpoint signs every attempt fresh with the
- * host's secret, so a retry never carries a stale Standard Webhooks timestamp.
+ * The Upstash event backends: subscriptions in Redis, deliveries through QStash. Each delivery is
+ * one QStash message to your endpoint, which signs every attempt fresh with the host's secret.
  */
-import { createHash } from "node:crypto";
-import { Redis } from "@upstash/redis";
-import { Client as QStashClient, Receiver } from "@upstash/qstash";
-import { addTelemetry } from "../../telemetry.js";
+import type { Redis } from "@upstash/redis";
+import type { Client as QStashClient, Receiver } from "@upstash/qstash";
+import {
+  lazy,
+  nonRetryable,
+  resolveQStash,
+  resolveReceiver,
+  resolveRedis,
+} from "../../shared/clients.js";
+import { sha256Hex } from "../../shared/crypto.js";
 import type {
   DeliveryEndpoints,
   DeliveryJob,
   EventDelivery,
   Subscription,
+  SubscriptionRef,
   SubscriptionStore,
 } from "../types.js";
 
 export const DEFAULT_EVENTS_PREFIX = "mcp-events:";
 
 export type RedisSubscriptionStoreConfig = {
-  /** The Upstash Redis client. Defaults to one built from `UPSTASH_REDIS_REST_URL` / `_TOKEN`. */
+  /** The Upstash Redis client. Defaults to one from `UPSTASH_REDIS_REST_URL` / `_TOKEN`. */
   redis?: Redis;
   /** Key prefix. Defaults to `mcp-events:`. */
   prefix?: string;
-  /** Set `false` to skip reporting the SDK version in the Redis telemetry header. */
+  /** Set `false` to skip this package's tag in the telemetry header. */
   enableTelemetry?: boolean;
 };
 
-// Writes the record and its index entry together, with the record's own expiry, and keeps the
-// index alive exactly as long as its longest-lived member.
+/**
+ * Writes the record with its expiry and its index entry, and keeps the index alive as long as its
+ * longest-lived member. ARGV: record, expiresAt, id, now.
+ */
 const PUT_SCRIPT = `#!lua flags=allow-key-locking
 local ttl = tonumber(ARGV[2]) - tonumber(ARGV[4])
 if ttl <= 0 then return 0 end
@@ -42,37 +47,24 @@ return 1
 `;
 
 /**
- * One string key per subscription (expiring with it), plus a sorted set per `(event, argsKey)`
- * scored by expiry. An emit reads only the index entries it can match, so cost grows with the
- * number of matching subscriptions, not with the total.
+ * One key per subscription, expiring with it, plus a sorted set per `(event, owner, argsKey)`
+ * scored by expiry. An emit reads only the index entries of the owners it names.
  */
 export class RedisSubscriptionStore implements SubscriptionStore {
   private readonly prefix: string;
-  private readonly enableTelemetry: boolean;
-  private readonly resolveRedis: () => Redis;
-  private client: Redis | undefined;
+  private readonly redis: () => Redis;
 
-  constructor(config: RedisSubscriptionStoreConfig | Redis = {}) {
-    const options: RedisSubscriptionStoreConfig = isRedisClient(config)
-      ? { redis: config }
-      : config;
-    this.prefix = options.prefix ?? DEFAULT_EVENTS_PREFIX;
-    this.enableTelemetry = options.enableTelemetry ?? true;
-    this.resolveRedis = () => options.redis ?? redisFromEnv();
-  }
-
-  private get redis(): Redis {
-    if (!this.client) {
-      this.client = this.resolveRedis();
-      addTelemetry(this.client, { enabled: this.enableTelemetry });
-    }
-    return this.client;
+  constructor(config: RedisSubscriptionStoreConfig = {}) {
+    this.prefix = config.prefix ?? DEFAULT_EVENTS_PREFIX;
+    this.redis = lazy(() =>
+      resolveRedis("RedisSubscriptionStore", config.redis, config.enableTelemetry),
+    );
   }
 
   async put(subscription: Subscription): Promise<void> {
-    await this.redis.eval(
+    await this.redis().eval(
       PUT_SCRIPT,
-      [this.subKey(subscription.id), this.indexKey(subscription.event, subscription.argsKey)],
+      [this.subKey(subscription.id), await this.indexKey(subscription)],
       [
         JSON.stringify(subscription),
         String(subscription.expiresAt),
@@ -83,32 +75,34 @@ export class RedisSubscriptionStore implements SubscriptionStore {
   }
 
   async get(id: string): Promise<Subscription | null> {
-    const subscription = parse(await this.redis.get<unknown>(this.subKey(id)));
-    return subscription && subscription.expiresAt > Date.now() ? subscription : null;
+    return parse(await this.redis().get<unknown>(this.subKey(id)));
   }
 
-  async delete(id: string): Promise<void> {
-    const subscription = parse(await this.redis.get<unknown>(this.subKey(id)));
-    if (!subscription) return;
-    const pipeline = this.redis.pipeline();
-    pipeline.del(this.subKey(id));
-    pipeline.zrem(this.indexKey(subscription.event, subscription.argsKey), id);
+  async delete(subscription: SubscriptionRef): Promise<void> {
+    const pipeline = this.redis().pipeline();
+    pipeline.del(this.subKey(subscription.id));
+    pipeline.zrem(await this.indexKey(subscription), subscription.id);
     await pipeline.exec();
   }
 
-  async find(event: string, argsKeys: string[]): Promise<Subscription[]> {
-    if (argsKeys.length === 0) return [];
+  async find(
+    event: string,
+    owners: readonly string[],
+    argsKeys: readonly string[],
+  ): Promise<Subscription[]> {
+    if (owners.length === 0 || argsKeys.length === 0) return [];
+    const keys = await Promise.all(
+      owners.flatMap((owner) =>
+        argsKeys.map((argsKey) => this.indexKey({ event, owner, argsKey })),
+      ),
+    );
     const now = Date.now();
-    const pipeline = this.redis.pipeline();
-    for (const argsKey of argsKeys) {
-      pipeline.zrange(this.indexKey(event, argsKey), now, "+inf", { byScore: true });
-    }
+    const pipeline = this.redis().pipeline();
+    for (const key of keys) pipeline.zrange(key, now, "+inf", { byScore: true });
     const ids = [...new Set((await pipeline.exec<string[][]>()).flat().map(String))];
     if (ids.length === 0) return [];
-    const records = await this.redis.mget<unknown[]>(...ids.map((id) => this.subKey(id)));
-    return records
-      .map(parse)
-      .filter((sub): sub is Subscription => sub !== null && sub.expiresAt > now);
+    const records = await this.redis().mget<unknown[]>(...ids.map((id) => this.subKey(id)));
+    return records.map(parse).filter((sub): sub is Subscription => sub !== null);
   }
 
   /** The key a subscription is stored under. */
@@ -116,10 +110,14 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     return `${this.prefix}sub:${id}`;
   }
 
-  /** The index key for one `(event, argsKey)` pair. Hashed, because arguments can be long. */
-  indexKey(event: string, argsKey: string): string {
-    const digest = createHash("sha256").update(argsKey).digest("hex").slice(0, 24);
-    return `${this.prefix}idx:${event}:${digest}`;
+  /** The index key for one `(event, owner, argsKey)`. Hashed, because arguments can be long. */
+  async indexKey({
+    event,
+    owner,
+    argsKey,
+  }: Pick<Subscription, "event" | "owner" | "argsKey">): Promise<string> {
+    const digest = await sha256Hex(JSON.stringify([owner, argsKey]));
+    return `${this.prefix}idx:${event}:${digest.slice(0, 24)}`;
   }
 }
 
@@ -131,57 +129,54 @@ function parse(raw: unknown): Subscription | null {
 }
 
 export type QStashDeliveryConfig = {
-  /** The public URL of your delivery endpoint, the route that serves `events.createDeliveryHandler()`. */
+  /** The public URL of the route serving `events.createDeliveryHandler()`. */
   url: string;
-  /** The QStash client. Defaults to one built from `QSTASH_TOKEN` (and `QSTASH_URL`). */
+  /** The QStash client. Defaults to one from `QSTASH_TOKEN` (and `QSTASH_URL`). */
   qstash?: QStashClient;
-  /** Verifies QStash's signature on deliveries. Defaults to the `QSTASH_*_SIGNING_KEY` env vars. */
+  /**
+   * Verifies deliveries. Defaults to one from the `QSTASH_*_SIGNING_KEY` env vars. Required either
+   * way: without keys the endpoint refuses to serve.
+   */
   receiver?: Receiver;
   /** Retries after the first failed attempt. Defaults to 3. */
   retries?: number;
-  /** QStash retry delay expression, e.g. `"pow(2, retried) * 1000"`. Defaults to QStash's backoff. */
+  /** QStash retry delay expression. Defaults to QStash's backoff. */
   retryDelay?: string;
   /** Extra headers QStash forwards to your endpoint. */
   headers?: Record<string, string>;
+  /** Set `false` to skip this package's tag in the telemetry header. */
+  enableTelemetry?: boolean;
 };
 
 /** Every webhook delivery as a QStash message: durable, deduplicated, retried with backoff. */
 export class QStashDelivery implements EventDelivery {
-  private readonly url: string;
   private readonly config: QStashDeliveryConfig;
+  private readonly qstash: () => QStashClient;
+  private readonly receiver: () => Receiver;
   private endpoints: DeliveryEndpoints | undefined;
-  private client: QStashClient | undefined;
-  private verifier: Receiver | undefined;
 
   constructor(config: QStashDeliveryConfig) {
-    this.url = config.url;
     this.config = config;
+    this.qstash = lazy(() =>
+      resolveQStash("QStashDelivery", config.qstash, config.enableTelemetry),
+    );
+    this.receiver = lazy(() => resolveReceiver("QStashDelivery", config.receiver));
   }
 
   attach(endpoints: DeliveryEndpoints): void {
     this.endpoints = endpoints;
   }
 
-  private get qstash(): QStashClient {
-    if (!this.client) this.client = this.config.qstash ?? qstashFromEnv();
-    return this.client;
-  }
-
-  private get receiver(): Receiver {
-    if (!this.verifier) this.verifier = this.config.receiver ?? receiverFromEnv();
-    return this.verifier;
-  }
-
   async enqueue(jobs: DeliveryJob[]): Promise<void> {
     for (let i = 0; i < jobs.length; i += 100) {
-      await this.qstash.batchJSON(
+      await this.qstash().batchJSON(
         jobs.slice(i, i + 100).map((job) => ({
-          url: this.url,
+          url: this.config.url,
           body: job,
           retries: this.config.retries ?? 3,
           ...(this.config.retryDelay ? { retryDelay: this.config.retryDelay } : {}),
           ...(this.config.headers ? { headers: this.config.headers } : {}),
-          // Emitting the same event id twice must not POST twice. QStash refuses ':' in the id.
+          // Emitting the same event id twice must not POST twice. QStash refuses ':' in ids.
           deduplicationId: `${job.envelope.eventId}_${job.subscriptionId}`.replace(/[^\w.-]/g, "-"),
         })),
       );
@@ -189,71 +184,41 @@ export class QStashDelivery implements EventDelivery {
   }
 
   /**
-   * The delivery endpoint: `export const POST = events.createDeliveryHandler()`.
+   * The delivery endpoint.
    *
-   * - **200** — delivered, or retrying cannot help (the host answered 410 or 413, or the
-   *   subscription is gone).
-   * - **500** — the callback failed; QStash retries with backoff.
-   * - **401** — QStash's signature did not verify.
+   * - **200**: delivered, or retrying cannot help (410, 413, redirect, subscription gone).
+   * - **500**: the callback failed; QStash retries.
+   * - **489** with `Upstash-NonRetryable-Error`: bad signature or body, never retried.
    */
   createDeliveryHandler(): (request: Request) => Promise<Response> {
     return async (request: Request): Promise<Response> => {
       const endpoints = this.endpoints;
-      if (!endpoints)
+      if (!endpoints) {
         throw new Error("QStashDelivery is not attached — pass it to createEventLayer().");
+      }
+      // Outside the try: missing signing keys are a configuration error, not a bad signature.
+      const receiver = this.receiver();
       const body = await request.text();
       try {
-        await this.receiver.verify({
+        await receiver.verify({
           signature: request.headers.get("upstash-signature") ?? "",
           body,
-          url: this.url,
+          url: this.config.url,
         });
       } catch {
-        return new Response("invalid signature", { status: 401 });
+        return nonRetryable("invalid signature");
       }
       let job: DeliveryJob;
       try {
         job = JSON.parse(body) as DeliveryJob;
       } catch {
-        return new Response("malformed body", { status: 400 });
+        return nonRetryable("malformed body");
       }
-      if (!job?.subscriptionId || !job.envelope)
-        return new Response("malformed body", { status: 400 });
+      if (!job?.subscriptionId || !job.envelope) return nonRetryable("malformed body");
       const outcome = await endpoints.send(job);
       return outcome === "retry"
         ? new Response("callback failed", { status: 500 })
         : new Response(outcome);
     };
   }
-}
-
-function isRedisClient(value: RedisSubscriptionStoreConfig | Redis): value is Redis {
-  return typeof (value as Redis).mget === "function";
-}
-
-function redisFromEnv(): Redis {
-  const { UPSTASH_REDIS_REST_URL: url, UPSTASH_REDIS_REST_TOKEN: token } = process.env;
-  if (!url || !token) {
-    throw new Error(
-      "RedisSubscriptionStore needs a client: pass `redis`, or set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.",
-    );
-  }
-  return new Redis({ url, token });
-}
-
-function receiverFromEnv(): Receiver {
-  const currentSigningKey = process.env.QSTASH_CURRENT_SIGNING_KEY;
-  const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY;
-  if (!currentSigningKey || !nextSigningKey) {
-    throw new Error(
-      "createDeliveryHandler needs signing keys: pass `receiver`, or set QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY.",
-    );
-  }
-  return new Receiver({ currentSigningKey, nextSigningKey });
-}
-
-function qstashFromEnv(): QStashClient {
-  const token = process.env.QSTASH_TOKEN;
-  if (!token) throw new Error("QStashDelivery needs a client: pass `qstash`, or set QSTASH_TOKEN.");
-  return new QStashClient({ token, baseUrl: process.env.QSTASH_URL });
 }

@@ -1,41 +1,23 @@
 /**
- * The storage and execution seams of the tasks runtime.
- *
- * MCP Tasks says how a client and a server talk about long-running work; it says nothing about
- * where that work runs. Those are two different durability problems, so they get two interfaces:
- * a {@link TaskStore} owns the task *record*, a {@link TaskDispatcher} owns the *execution*. The
- * core in `core.ts` depends only on these, so Upstash Redis + QStash (`upstash.ts`) are a swap,
- * not a hard-coded backend.
+ * The two seams of the tasks runtime: a {@link TaskStore} owns the task record, a
+ * {@link TaskDispatcher} owns the execution. The core depends only on these.
  */
 
-/**
- * A task's five states, borrowed from the `io.modelcontextprotocol/tasks` extension so a native
- * adapter can serve the same records later. `completed`, `failed` and `cancelled` are terminal:
- * once a task reaches one, its status never changes again.
- */
+/** A task's states, from the `io.modelcontextprotocol/tasks` extension. The last three are terminal. */
 export type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
 
-/** The three terminal states, as a type. */
 export type TerminalTaskStatus = Extract<TaskStatus, "completed" | "failed" | "cancelled">;
 
-/** The terminal states, as a runtime set. */
 export const TERMINAL_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "completed",
   "failed",
   "cancelled",
 ]);
 
-/** True when a status is terminal and can never transition again. */
 export const isTerminal = (status: TaskStatus): status is TerminalTaskStatus =>
   TERMINAL_STATUSES.has(status);
 
-/**
- * Thrown by a {@link TaskStore} when a task id does not resolve — unknown, or expired past its TTL.
- *
- * It is deliberately *not* an MCP `ProtocolError`: a store implementation should not have to
- * import the MCP SDK to be a valid store. The core translates this into the protocol error the
- * client sees.
- */
+/** Thrown by a store for an unknown or expired task. Not an MCP error, so stores need no SDK. */
 export class UnknownTaskError extends Error {
   override readonly name = "UnknownTaskError";
   constructor(readonly taskId: string) {
@@ -50,11 +32,7 @@ export type TaskError = {
   data?: unknown;
 };
 
-/**
- * Exactly the object the model sees in a task tool's `structuredContent` — the same shape as the
- * Tasks extension's task object. Everything the server keeps for itself lives on {@link Task}
- * instead, and is stripped on the way out.
- */
+/** What the model sees in `structuredContent`: the extension's task object. */
 export type WireTask = {
   taskId: string;
   status: TaskStatus;
@@ -65,166 +43,102 @@ export type WireTask = {
   lastUpdatedAt: string;
   /** Retention window in milliseconds. `null` means unlimited. */
   ttlMs: number | null;
-  /** How long the model should wait between `task_status` polls. */
   pollIntervalMs?: number;
-  /** Present once the task is `completed`: the tool result, inline. */
+  /** The tool result, once `completed`. */
   result?: Record<string, unknown>;
-  /** Present once the task is `failed`. */
+  /** Once `failed`. */
   error?: TaskError;
 };
 
-/**
- * The stored task: the wire object plus the fields the server needs and the model never sees —
- * which tool to run, what to run it with, which dispatch to cancel, and who owns it.
- */
+/** The stored task: the wire object plus server-only fields the model never sees. */
 export type Task = WireTask & {
-  /** The registered task name, so the executor knows which handler to run. */
+  /** The defined task name, which picks the handler. */
   name: string;
-  /** The validated tool input, replayed into the handler on delivery. */
+  /** The validated tool input. */
   args: unknown;
-  /** The dispatcher's handle for the pending delivery, so cancel can stop retries. */
+  /** The dispatcher's handle, so cancel can stop pending deliveries. */
   dispatchId?: string;
-  /**
-   * The caller that started the task, from `TaskLayerOptions.principal`. When set, only the same
-   * caller can read or cancel it through the tools.
-   */
-  owner?: string;
+  /** The caller that started the task. Only they can read or cancel it. */
+  owner: string;
 };
 
-/** The fields a caller may patch on a stored task. */
-export type TaskPatch = Partial<Omit<Task, "taskId" | "createdAt">>;
+export type TaskPatch = Partial<Omit<Task, "taskId" | "createdAt" | "owner">>;
 
-/** A patch that moves a task into a terminal state. */
 export type TerminalTaskPatch = TaskPatch & { status: TerminalTaskStatus };
 
-/**
- * Durable storage for the task record.
- *
- * The one hard requirement comes from the spec: a `tools/call` must not return the task handle
- * until the task is durably created, because the model may immediately poll it against a
- * different instance. So {@link create} must have committed before it resolves.
- */
-export interface TaskStore {
-  /** Durably persists a new task before resolving. */
-  create(task: Task): Promise<void>;
+/** What {@link TaskStore.settle} returns for an existing task. */
+export type SettleResult = {
+  /** The task after the call: settled by it, or unchanged because it was already terminal. */
+  task: Task;
+  /** True only for the call that performed the terminal transition. */
+  settled: boolean;
+};
 
-  /** Returns the latest durable state of a task, or `null` when it is absent or expired. */
+export interface TaskStore {
+  /**
+   * Durably creates a task unless one with that id exists, atomically. Resolves `null` when it
+   * created the task, or the existing task otherwise.
+   */
+  create(task: Task): Promise<Task | null>;
+
+  /** The latest state of a task, or `null` when it is absent or expired. */
   get(taskId: string): Promise<Task | null>;
 
   /**
-   * Applies a partial update without extending the task's original TTL — the retention window is
-   * measured from creation, so a chatty progress handler must not keep a task alive forever.
-   *
-   * **Ignored once the task is terminal**, and returns it unchanged. "Once a task reaches a
-   * terminal status its state does not change" covers the status message too, so a progress write
-   * that lands after a cancel must not overwrite "Cancelled by client".
-   *
-   * Used for non-terminal writes. Terminal transitions go through {@link settle}.
+   * Applies a non-terminal patch without extending the TTL. A terminal task is returned
+   * unchanged. Throws {@link UnknownTaskError} when the task is missing.
    */
   update(taskId: string, patch: TaskPatch): Promise<Task>;
 
   /**
-   * Atomically moves a **non-terminal** task to a terminal state. Returns the settled task when
-   * this call performed the transition, or `null` when the task was already terminal.
-   *
-   * This is the one operation that must not be a read-modify-write, because two writers race for
-   * it by design: a `task_cancel` and the executor finishing at the same moment. First
-   * terminal write wins, and a late `completed` can never overwrite a `cancelled`.
+   * Atomically moves a non-terminal task to a terminal state. First terminal write wins, so a late
+   * `completed` cannot overwrite a `cancelled`. Resolves `null` when the task is missing.
    */
-  settle(taskId: string, patch: TerminalTaskPatch): Promise<Task | null>;
+  settle(taskId: string, patch: TerminalTaskPatch): Promise<SettleResult | null>;
 }
 
 /**
- * Durable execution transport.
- *
- * A store keeps the record alive across a restart; only a dispatcher keeps the *work* alive. The
- * contract is deliberately at-least-once — that is what a queue can actually promise — so the
- * core guards against redelivery rather than assuming a message arrives exactly once.
- *
- * `TContext` is what this transport gives a running handler beyond the task itself, and it is the
- * honest way to express that transports are not interchangeable. A queue delivery has nothing to
- * offer, so `QStashDispatcher` is a `TaskDispatcher<undefined>` and handlers take two arguments. A
- * workflow engine has a great deal to offer, so `WorkflowDispatcher` is a
- * `TaskDispatcher<WorkflowContext>` and handlers take a third argument carrying the real
- * engine API — steps, durable sleeps, `waitForEvent`, everything.
- *
- * Typing it this way rather than smoothing it into a lowest-common-denominator shim means the
- * compiler tells you when a handler needs a transport that can actually run it.
+ * Durable, at-least-once execution. `TContext` is what the transport gives a running handler:
+ * nothing for a queue, the `WorkflowContext` for Upstash Workflow.
  */
 export interface TaskDispatcher<TContext = unknown> {
   /**
-   * Durably accepts an at-least-once delivery for a task before resolving, and returns a handle
-   * that {@link cancel} understands. Return `undefined` when the transport has nothing to cancel.
-   *
-   * Implementations should be idempotent in the task id: dispatching the same task twice must
-   * not enqueue two deliveries.
+   * Durably accepts a delivery and returns a handle for {@link cancel}. Must be idempotent per
+   * task record: dedupe on {@link dispatchKey}, not the task id alone, because a keyed task id is
+   * reused once its record expires.
    */
-  dispatch(taskId: string): Promise<string | undefined>;
+  dispatch(task: Task): Promise<string | undefined>;
 
-  /** Idempotently stops a pending delivery and its future retries, when the transport can. */
+  /** Stops pending deliveries, when the transport can. Idempotent. */
   cancel(dispatchId: string): Promise<void>;
 
-  /**
-   * Receives the layer's entry points, once, when the dispatcher is passed to `createTaskLayer`.
-   *
-   * A transport needs to call back into the layer — to run a delivered task, and to record a
-   * failure once it has given up retrying — but the layer does not exist when the dispatcher is
-   * constructed. This hands them over at wiring time instead of making callers late-bind.
-   */
+  /** Receives the layer's entry points when passed to `createTaskLayer`. */
   attach?(endpoints: TaskEndpoints<TContext>): void;
 
-  /**
-   * Optionally, the transport's own delivery endpoint.
-   *
-   * A dispatcher that delivers over HTTP knows things the application should not have to: how the
-   * request is authenticated, where the task id sits in the body, and which status code means
-   * "retry me". Implementing this keeps all of that inside the transport, so the application's
-   * route is `export const POST = tasks.createExecuteHandler()` rather than a hand-written
-   * endpoint that has to remember to verify a signature.
-   *
-   * Dispatchers that run work in-process have nothing to serve and leave it undefined.
-   */
+  /** The transport's delivery endpoint, for dispatchers that deliver over HTTP. */
   createExecuteHandler?(): (request: Request) => Promise<Response>;
 }
 
 /** The layer's entry points, handed to a dispatcher by {@link TaskDispatcher.attach}. */
 export type TaskEndpoints<TContext = unknown> = {
-  /**
-   * Runs a delivered task, handing the handler whatever execution context this transport provides.
-   * Rejects if the handler threw — which the transport should treat as "deliver again", not as a
-   * failed task.
-   */
+  /** Runs a delivered task. Rejects if the handler threw, which means "deliver again". */
   run(taskId: string, context: TContext, journal?: TaskJournal): Promise<unknown>;
-  /**
-   * Records a terminal failure. Only the transport knows when retrying is over, so only the
-   * transport calls this.
-   */
+  /** Records a terminal failure, once the transport has stopped retrying. */
   fail(taskId: string, error: TaskError): Promise<unknown>;
 };
 
-/**
- * How a transport journals a side effect so it runs once across replays.
- *
- * Supplied by dispatchers whose engine re-enters the handler — the core uses it to wrap its own
- * writes (`task.update`) so a progress message is not rewritten on every invocation. Handlers
- * never see this; they get the engine's real API through the context instead.
- */
+/** How a replaying transport runs a side effect once. The core wraps `task.update` with it. */
 export type TaskJournal = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
-/**
- * What every task handler is handed, whatever the transport.
- *
- * Anything transport-specific — a workflow's step and sleep primitives, say — arrives as the
- * handler's third argument instead, typed by the dispatcher. See {@link TaskDispatcher}.
- */
+/** What every handler is handed, whatever the transport. */
 export type TaskContext = {
-  /** The id of the running task. */
   taskId: string;
-  /** Publishes a human-readable progress line that the client's next poll will see. */
+  /** Publishes a progress line that the next `task_status` poll will see. */
   update(statusMessage: string): Promise<void>;
-  /**
-   * Reads the durable status to see whether a client asked to stop. Cancellation is cooperative:
-   * running code only stops where it checks, so call this at your step boundaries.
-   */
+  /** True once the client cancelled, or the record expired. Cooperative: check at step boundaries. */
   isCancelled(): Promise<boolean>;
 };
+
+/** A dedupe key unique to one task record: `<taskId>-<createdAt in ms>`. */
+export const dispatchKey = (task: Pick<Task, "taskId" | "createdAt">): string =>
+  `${task.taskId}-${Date.parse(task.createdAt)}`;

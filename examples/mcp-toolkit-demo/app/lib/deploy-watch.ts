@@ -20,12 +20,14 @@ import * as z from "zod";
 
 const APP_URL = process.env.APP_URL ?? "http://127.0.0.1:3000";
 const RECENT_KEY = "deploy-watch:recent";
+/** The demo has no login, so every caller is this one user. A real server returns its user id. */
+const DEMO_USER = "demo-user";
 
 export const events = createEventLayer({
   store: new RedisSubscriptionStore({ prefix: "deploy-watch:events:" }),
   delivery: new QStashDelivery({ url: `${APP_URL}/api/deploy-watch/events` }),
-  // Generate a real one with `openssl rand -base64 32`; the fallback only exists so the demo boots.
-  secretKey: process.env.MCP_EVENTS_SECRET_KEY ?? "mcp-toolkit-demo-only-secret-key",
+  // `secretKey` is read from MCP_EVENTS_SECRET_KEY (see .env.example). There is no fallback.
+  principal: () => DEMO_USER,
   // Logs what the host answers to the challenge and to every delivery.
   fetch: async (input, init) => {
     const response = await fetch(input, init);
@@ -64,13 +66,16 @@ export const deployFinished = events.define("deploy.finished", {
   payload: Deploy,
 });
 
-/** Records a deploy and fires `deploy.finished` to every matching subscription. */
+/**
+ * Records a deploy and fires `deploy.finished` to the matching subscriptions of the users who may
+ * see it. Here that is the one demo user; a real server would pass the team's members as `owners`.
+ */
 export async function reportDeploy(deploy: Deploy) {
   const redis = Redis.fromEnv();
   await redis.lpush(RECENT_KEY, JSON.stringify(deploy));
   await redis.ltrim(RECENT_KEY, 0, 19);
   // The deploy id doubles as the event id, so reporting the same deploy twice delivers once.
-  return deployFinished.emit(deploy, { eventId: `deploy_${deploy.id}` });
+  return deployFinished.emit(deploy, { owner: DEMO_USER, eventId: `deploy_${deploy.id}` });
 }
 
 export function createServer(): McpServer {

@@ -1,30 +1,34 @@
 /**
- * `@upstash/mcp-toolkit/tasks` — durable long-running tools for MCP servers on the official TypeScript SDK.
- *
- * The core here is storage-agnostic. The Upstash Redis + QStash backends live behind the
- * `@upstash/mcp-toolkit/tasks/upstash` entry point, so bringing your own store costs you nothing.
+ * `@upstash/mcp-toolkit/tasks`: long-running tools for MCP servers on the official TypeScript SDK.
+ * The Upstash backends are in `@upstash/mcp-toolkit/tasks/upstash`.
  */
 export {
   createTaskLayer,
   toWire,
   DEFAULT_TOOL_NAMES,
   type CallerAuth,
+  type TaskDefinition,
   type TaskHandler,
   type TaskLayer,
   type TaskLayerOptions,
   type TaskToolConfig,
 } from "./core.js";
 
+export type { PrincipalResolver } from "../shared/auth.js";
+
 export {
+  dispatchKey,
   isTerminal,
   TERMINAL_STATUSES,
   UnknownTaskError,
+  type SettleResult,
   type Task,
   type TaskContext,
   type TaskDispatcher,
-  type TaskError,
-  type TaskPatch,
   type TaskEndpoints,
+  type TaskError,
+  type TaskJournal,
+  type TaskPatch,
   type TaskStatus,
   type TaskStore,
   type TerminalTaskPatch,

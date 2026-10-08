@@ -21,7 +21,7 @@ export const EXECUTE_URL = `${process.env.APP_URL ?? "http://127.0.0.1:3000"}/ap
 export const dispatcher = new WorkflowDispatcher({ url: EXECUTE_URL });
 
 /**
- * The type argument is the whole point: it flows into `registerTask`, so the handler below is
+ * The type argument is the whole point: it flows into `define`, so the handler below is
  * typed with the engine's API and the compiler rejects a workflow handler wired to a queue.
  */
 export const tasks = createTaskLayer<WorkflowContext>({
@@ -29,15 +29,16 @@ export const tasks = createTaskLayer<WorkflowContext>({
   dispatcher,
   // A workflow task can take far longer than a queued one, so give the record room to outlive it.
   defaults: { ttlMs: 3_600_000, pollIntervalMs: 2_000 },
+  // Who is calling. The demo has no login, so every caller is the same user — said explicitly,
+  // because there is no anonymous default. A real server returns its user id from `auth`:
+  //   principal: (auth) => auth?.extra?.userId as string | undefined
+  principal: () => "demo-user",
 });
 
 const STEPS = 4;
 
-export function createServer(): McpServer {
-  const server = new McpServer({ name: "mcp-toolkit-demo-workflow", version: "0.1.0" });
-
-  tasks.registerTask(
-    server,
+// Module scope: the workflow endpoint needs the handler on every instance.
+tasks.define(
     "generate_report",
     {
       title: "Generate report",
@@ -69,7 +70,8 @@ export function createServer(): McpServer {
     },
   );
 
+export function createServer(): McpServer {
+  const server = new McpServer({ name: "mcp-toolkit-demo-workflow", version: "0.1.0" });
+  tasks.register(server);
   return server;
 }
-
-createServer();

@@ -8,6 +8,8 @@
 import { randomUUID } from "node:crypto";
 import { config } from "dotenv";
 import { Redis } from "@upstash/redis";
+import { InlineTaskDispatcher } from "./tasks/backends/memory.js";
+import type { Task, TaskDispatcher, TaskEndpoints, TaskError, TaskJournal } from "./tasks/types.js";
 
 // Load repo-root .env (no-op if already loaded or absent).
 config();
@@ -39,3 +41,57 @@ export async function cleanupKeys(redis: Redis, prefix: string): Promise<void> {
 /** Resolves after `ms`. */
 export const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+/** An inline dispatcher that counts what it was handed. */
+export class CountingDispatcher extends InlineTaskDispatcher {
+  dispatched = 0;
+  override async dispatch(task: Task): Promise<string | undefined> {
+    this.dispatched += 1;
+    return await super.dispatch(task);
+  }
+}
+
+/**
+ * A dispatcher that records dispatches and runs nothing on its own, so a test drives each
+ * delivery by hand, the way a queue would.
+ */
+export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TContext> {
+  readonly dispatched: Task[] = [];
+  readonly cancelled: string[] = [];
+  /** Makes the next `dispatch` throw this error. */
+  failNext: Error | undefined;
+  private endpoints: TaskEndpoints<TContext> | undefined;
+
+  attach(endpoints: TaskEndpoints<TContext>): void {
+    this.endpoints = endpoints;
+  }
+
+  async dispatch(task: Task): Promise<string | undefined> {
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = undefined;
+      throw error;
+    }
+    this.dispatched.push(task);
+    return `msg_${this.dispatched.length}`;
+  }
+
+  async cancel(dispatchId: string): Promise<void> {
+    this.cancelled.push(dispatchId);
+  }
+
+  /** Delivers a task, as the transport would. */
+  run(taskId: string, context?: TContext, journal?: TaskJournal): Promise<unknown> {
+    return this.attached().run(taskId, context as TContext, journal);
+  }
+
+  /** Reports that the transport gave up, as a failure callback would. */
+  fail(taskId: string, error: TaskError): Promise<unknown> {
+    return this.attached().fail(taskId, error);
+  }
+
+  private attached(): TaskEndpoints<TContext> {
+    if (!this.endpoints) throw new Error("ManualDispatcher is not attached");
+    return this.endpoints;
+  }
+}

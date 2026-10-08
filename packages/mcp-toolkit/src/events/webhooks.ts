@@ -1,43 +1,38 @@
 /**
- * The webhook plumbing MCP Events needs:
- *
- * - Standard Webhooks signing (`webhook-id`, `webhook-timestamp`, `webhook-signature`).
- * - Encrypting the host's signing secret at rest (AES-256-GCM).
- * - Checking a callback URL before the server ever POSTs to it.
+ * Webhook plumbing for MCP Events: Standard Webhooks signing, the host secret encrypted at rest,
+ * and the checks a callback URL must pass before the server POSTs to it.
  */
 import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  createHmac,
+  constantTimeEqual,
+  fromBase64,
+  fromUtf8,
   randomBytes,
-  timingSafeEqual,
-} from "node:crypto";
-import { isIP } from "node:net";
+  sha256,
+  toBase64,
+  utf8,
+} from "../shared/crypto.js";
 
 /** The secret length the MCP Events draft allows, in decoded bytes. */
 export const SECRET_MIN_BYTES = 24;
 export const SECRET_MAX_BYTES = 64;
 
-/**
- * Decodes a `whsec_<base64>` secret into its key bytes, or returns `null` when it is malformed or
- * outside the 24–64 byte range the draft allows.
- */
-export function decodeSecret(secret: unknown): Buffer | null {
+/** The key bytes of a `whsec_<base64>` secret, or `null` when malformed or outside 24–64 bytes. */
+export function decodeSecret(secret: unknown): Uint8Array<ArrayBuffer> | null {
   if (typeof secret !== "string" || !secret.startsWith("whsec_")) return null;
   const body = secret.slice("whsec_".length);
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body)) return null;
-  const bytes = Buffer.from(body, "base64");
-  if (bytes.length < SECRET_MIN_BYTES || bytes.length > SECRET_MAX_BYTES) return null;
-  return bytes;
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    bytes = fromBase64(body);
+  } catch {
+    return null;
+  }
+  return bytes.length >= SECRET_MIN_BYTES && bytes.length <= SECRET_MAX_BYTES ? bytes : null;
 }
 
 /**
- * Signs a webhook body the Standard Webhooks way: base64 HMAC-SHA256 over
- * `${id}.${timestamp}.${body}`, sent as `v1,<signature>`.
- *
- * Returns the three headers to send. `timestampSeconds` defaults to now; every attempt should be
- * signed fresh, because receivers reject stale timestamps.
+ * Signs a body the Standard Webhooks way: base64 HMAC-SHA256 over `${id}.${timestamp}.${body}`,
+ * sent as `v1,<signature>`. Sign every attempt fresh: receivers reject stale timestamps.
  */
 export async function signWebhook(
   secret: string,
@@ -47,20 +42,22 @@ export async function signWebhook(
 ): Promise<Record<"webhook-id" | "webhook-timestamp" | "webhook-signature", string>> {
   const key = decodeSecret(secret);
   if (!key) throw new Error("Invalid webhook secret");
-  const signature = createHmac("sha256", key)
-    .update(`${id}.${timestampSeconds}.${body}`)
-    .digest("base64");
+  const hmac = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+  ]);
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    hmac,
+    utf8(`${id}.${timestampSeconds}.${body}`),
+  );
   return {
     "webhook-id": id,
     "webhook-timestamp": String(timestampSeconds),
-    "webhook-signature": `v1,${signature}`,
+    "webhook-signature": `v1,${toBase64(new Uint8Array(signature))}`,
   };
 }
 
-/**
- * Verifies a Standard Webhooks signature, with a tolerance on the timestamp. Exported for tests
- * and for anyone writing a receiver; the server side of MCP Events only signs.
- */
+/** Verifies a Standard Webhooks signature, for receivers and tests. */
 export async function verifyWebhook(
   secret: string,
   headers: Headers,
@@ -70,69 +67,57 @@ export async function verifyWebhook(
   const id = headers.get("webhook-id");
   const timestamp = headers.get("webhook-timestamp");
   const signature = headers.get("webhook-signature");
-  if (!id || !timestamp || !signature) return false;
+  if (!id || !timestamp || !signature || !decodeSecret(secret)) return false;
   const ts = Number(timestamp);
   if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > toleranceSeconds) return false;
-  if (!decodeSecret(secret)) return false;
   const expected = (await signWebhook(secret, id, body, ts))["webhook-signature"];
-  // Several space-separated signatures are allowed (key rotation).
-  return signature.split(" ").some((candidate) => safeEqual(candidate, expected));
+  // Several space-separated signatures are allowed, for key rotation.
+  return signature.split(" ").some((candidate) => constantTimeEqual(candidate, expected));
 }
 
-function safeEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
+type AesKey = Awaited<ReturnType<typeof crypto.subtle.importKey>>;
 
 /**
- * Encrypts and decrypts the hosts' signing secrets with a server-side key, so a leaked database
- * dump cannot be used to forge events.
- *
- * The key can be any string (it is hashed to 32 bytes); generate one with
- * `openssl rand -base64 32`. Rotating it invalidates stored subscriptions, which hosts recreate
- * on their next refresh.
+ * Encrypts the hosts' signing secrets with a server-side key (AES-256-GCM), so a leaked database
+ * cannot forge events. Any string works as the key; it is hashed to 32 bytes. Rotating it makes
+ * stored secrets unreadable, and hosts re-verify on their next refresh.
  */
 export class SecretBox {
-  private readonly key: Buffer;
+  private readonly key: Promise<AesKey>;
 
   constructor(secretKey: string) {
     if (!secretKey) throw new Error("SecretBox needs a non-empty secretKey");
-    this.key = createHash("sha256").update(secretKey).digest();
+    this.key = sha256(secretKey).then((raw) =>
+      crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]),
+    );
   }
 
-  seal(plaintext: string): string {
+  async seal(plaintext: string): Promise<string> {
     const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.key, iv);
-    const data = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return `v1.${iv.toString("base64")}.${Buffer.concat([data, tag]).toString("base64")}`;
+    const sealed = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      await this.key,
+      utf8(plaintext),
+    );
+    return `v1.${toBase64(iv)}.${toBase64(new Uint8Array(sealed))}`;
   }
 
-  open(sealed: string): string {
+  async open(sealed: string): Promise<string> {
     const [version, iv, payload] = sealed.split(".");
     if (version !== "v1" || !iv || !payload) throw new Error("Unrecognized sealed secret");
-    const bytes = Buffer.from(payload, "base64");
-    const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(iv, "base64"));
-    decipher.setAuthTag(bytes.subarray(bytes.length - 16));
-    return Buffer.concat([
-      decipher.update(bytes.subarray(0, bytes.length - 16)),
-      decipher.final(),
-    ]).toString("utf8");
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: fromBase64(iv) },
+      await this.key,
+      fromBase64(payload),
+    );
+    return fromUtf8(new Uint8Array(plain));
   }
 }
 
 /**
- * Why a callback URL was refused, or `null` when it is acceptable.
- *
- * The server POSTs to a URL a client chose, which is the textbook server-side request forgery
- * setup. This refuses non-HTTPS URLs, credentials in the URL, and hosts that name the server's own
- * network: `localhost`, single-label, `.local` / `.internal` names, and private, loopback,
- * link-local and carrier-NAT IP literals. Redirects are never followed when posting.
- *
- * It does not resolve DNS, so a public name that resolves to a private address is not caught
- * here. If your server runs next to sensitive internal services, put egress filtering in front of
- * it as well.
+ * Why a callback URL is refused, or `null` when it is acceptable. Refuses non-HTTPS, credentials,
+ * and hosts on the server's own network: `localhost`, single-label, `.local` / `.internal`, and
+ * private or reserved IP literals. It does not resolve DNS, so add egress filtering in production.
  */
 export function callbackUrlProblem(raw: unknown, allowInsecure = false): string | null {
   if (typeof raw !== "string") return "callback URL is missing";
@@ -149,9 +134,16 @@ export function callbackUrlProblem(raw: unknown, allowInsecure = false): string 
   }
   if (url.protocol !== "https:") return "callback URL must use https";
   if (url.username || url.password) return "callback URL must not contain credentials";
-  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const ipVersion = isIP(host);
-  if (ipVersion !== 0) return isPrivateAddress(host) ? "callback URL must be a public host" : null;
+
+  // `localhost.` resolves like `localhost`, so trailing dots go before any check.
+  const host = url.hostname.toLowerCase().replace(/\.+$/, "");
+  if (host.startsWith("[")) {
+    return isPrivateV6(host.slice(1, -1)) ? "callback URL must be a public host" : null;
+  }
+  // The URL parser has already normalized every IPv4 form (hex, octal, short) to dotted decimal.
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    return isPrivateV4(host.split(".").map(Number)) ? "callback URL must be a public host" : null;
+  }
   if (
     !host.includes(".") ||
     host === "localhost" ||
@@ -164,41 +156,58 @@ export function callbackUrlProblem(raw: unknown, allowInsecure = false): string 
   return null;
 }
 
-function isPrivateAddress(ip: string): boolean {
-  if (isIP(ip) === 4) return isPrivateV4(ip);
-  const v6 = ip.toLowerCase();
-  const dotted = /^(?:0*:)*:?ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
-  if (dotted?.[1]) return isPrivateV4(dotted[1]);
-  // The URL parser normalizes ::ffff:127.0.0.1 to ::ffff:7f00:1.
-  const hex = /^(?:0*:)*:?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(v6);
-  if (hex?.[1] && hex[2]) {
-    const hi = parseInt(hex[1], 16);
-    const lo = parseInt(hex[2], 16);
-    return isPrivateV4(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-  }
-  return (
-    v6 === "::" ||
-    v6 === "::1" ||
-    /^f[cd]/.test(v6) || // fc00::/7 unique local
-    /^fe[89ab]/.test(v6) // fe80::/10 link-local
-  );
-}
-
-function isPrivateV4(ip: string): boolean {
-  const [a = 0, b = 0] = ip.split(".").map(Number);
+function isPrivateV4([a = 0, b = 0, c = 0]: number[]): boolean {
   return (
     a === 0 ||
     a === 10 ||
     a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
-    a >= 224
+    (a === 192 && b === 0 && (c === 0 || c === 2)) || // IETF protocol assignments, TEST-NET-1
+    (a === 198 && (b === 18 || b === 19)) || // benchmarking
+    (a === 198 && b === 51 && c === 100) || // TEST-NET-2
+    (a === 203 && b === 0 && c === 113) || // TEST-NET-3
+    a >= 224 // multicast and reserved
   );
 }
 
-/** POSTs a signed JSON body to a callback, without following redirects. */
+function isPrivateV6(ip: string): boolean {
+  const g = expandV6(ip);
+  if (!g) return true; // unparseable: refuse
+  const v4 = (hi: number, lo: number) => isPrivateV4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
+  const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
+  if (zero(0, 5) && g[5] === 0xffff) return v4(g[6]!, g[7]!); // IPv4-mapped
+  if (zero(0, 6)) return v4(g[6]!, g[7]!); // IPv4-compatible, plus :: and ::1
+  if (g[0] === 0x64 && g[1] === 0xff9b) {
+    if (zero(2, 6)) return v4(g[6]!, g[7]!); // NAT64 64:ff9b::/96
+    if (g[2] === 1) return true; // local-use NAT64 64:ff9b:1::/48
+  }
+  if (g[0] === 0x2002) return v4(g[1]!, g[2]!); // 6to4
+  return (
+    (g[0]! & 0xfe00) === 0xfc00 || // unique local fc00::/7
+    (g[0]! & 0xffc0) === 0xfe80 || // link-local fe80::/10
+    (g[0]! & 0xff00) === 0xff00 || // multicast ff00::/8
+    (g[0] === 0x2001 && g[1] === 0x0db8) // documentation 2001:db8::/32
+  );
+}
+
+/** Expands a compressed IPv6 address (as the URL parser prints it) to eight 16-bit groups. */
+function expandV6(ip: string): number[] | null {
+  const halves = ip.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part: string | undefined) =>
+    part ? part.split(":").map((x) => (/^[0-9a-f]{1,4}$/.test(x) ? parseInt(x, 16) : NaN)) : [];
+  const head = parse(halves[0]);
+  const tail = parse(halves[1]);
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 0) return null;
+  const groups = [...head, ...Array<number>(Math.max(missing, 0)).fill(0), ...tail];
+  return groups.some(Number.isNaN) ? null : groups;
+}
+
+/** POSTs a signed JSON body to a callback, never following redirects. */
 export async function postSigned(options: {
   url: string;
   secret: string;
@@ -220,4 +229,31 @@ export async function postSigned(options: {
     },
     body: options.body,
   });
+}
+
+/** Reads at most `maxBytes` of a response body, then drops the rest. */
+export async function readCapped(response: Response, maxBytes: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  const bytes = new Uint8Array(Math.min(size, maxBytes));
+  let offset = 0;
+  for (const chunk of chunks) {
+    const take = chunk.subarray(0, bytes.length - offset);
+    bytes.set(take, offset);
+    offset += take.length;
+    if (offset >= bytes.length) break;
+  }
+  return fromUtf8(bytes);
 }

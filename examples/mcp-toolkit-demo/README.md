@@ -30,7 +30,8 @@ You need an [Upstash Redis database](https://upstash.com/start-redis). QStash yo
 fully offline.
 
 ```bash
-cp .env.example .env.local     # fill in UPSTASH_REDIS_REST_URL / _TOKEN
+cp .env.example .env.local     # fill in UPSTASH_REDIS_REST_URL / _TOKEN, and
+                               # MCP_EVENTS_SECRET_KEY=$(openssl rand -base64 32)
 
 pnpm qstash                    # terminal 1 — prints the QStash URL, token and signing keys
                                #              paste those four into .env.local
@@ -111,5 +112,6 @@ get dead-lettered, it is in the QStash DLQ, not lost.
 
 - All three tools are ordinary MCP tools, so this works in every client today — Claude Code,
   Codex, Cursor, OpenCode, ChatGPT — none of which declare the protocol's Tasks extension yet.
-- The demo leaves tasks unscoped. A multi-user server should pass `principal` to
-  `createTaskLayer` so one user cannot read or cancel another's task — see the package README.
+- The demo has no login, so both layers use `principal: () => "demo-user"`: every caller is the
+  same user. A multi-user server returns its user id from the request's auth instead, so one user
+  cannot read or cancel another's task or subscribe as someone else — see the package README.

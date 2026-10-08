@@ -1,23 +1,17 @@
 /**
- * The tasks runtime.
- *
- * Long-running work over MCP, served as **ordinary tools**. A task tool answers immediately with a
- * task handle; two shared tools, `task_status` and `task_cancel`, poll and stop it. The work runs
- * behind a {@link TaskDispatcher} (QStash, Upstash Workflow, or in-process), and the record lives
- * in a {@link TaskStore} (Upstash Redis, or memory).
- *
- * Why tools rather than the protocol's own Tasks extension (`io.modelcontextprotocol/tasks`): as of
- * October 2026 no mainstream client declares it — not Claude Code, Codex, Cursor or OpenCode — and
- * a server must never return a task to a client that did not. Plain tools work in every client
- * today, and they need nothing from the SDK beyond `registerTool`, so this layer serves through
- * `createMcpHandler`, `mcp-handler` or any transport unchanged. The store and dispatcher are the
- * same either way, so a native adapter can sit on top of them once clients catch up.
- *
- * {@link createTaskLayer} is the whole runtime, in one factory over a store and a dispatcher.
+ * The tasks runtime: long-running work served as ordinary MCP tools. A task tool answers at once
+ * with a task id; the shared `task_status` and `task_cancel` tools poll and stop it. The README
+ * explains why tools rather than the Tasks extension.
  */
-import { createHash, randomUUID } from "node:crypto";
 import type { McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import * as z from "zod";
+import {
+  authOf,
+  requirePrincipal,
+  type CallerAuth,
+  type PrincipalResolver,
+} from "../shared/auth.js";
+import { sha256Hex } from "../shared/crypto.js";
 import {
   isTerminal,
   UnknownTaskError,
@@ -32,94 +26,59 @@ import {
 
 const DEFAULT_TTL_MS = 300_000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+/** JSON-RPC internal error. */
+const INTERNAL_ERROR = -32603;
 
 /** The names the two shared tools are registered under, unless overridden. */
 export const DEFAULT_TOOL_NAMES = { status: "task_status", cancel: "task_cancel" } as const;
 
-/**
- * The slice of the SDK's `AuthInfo` this layer reads. Typed structurally so a principal resolver
- * does not need to import the SDK's auth types.
- */
-export type CallerAuth = {
-  clientId?: string;
-  scopes?: string[];
-  extra?: Record<string, unknown>;
-  [key: string]: unknown;
-};
+export type { CallerAuth };
 
 export type TaskLayerOptions<TContext = unknown> = {
-  /** Durable storage for the task record. */
   store: TaskStore;
-  /** Durable transport for the work itself. */
   dispatcher: TaskDispatcher<TContext>;
-  /** Fallback values for tasks that do not set their own. */
   defaults?: {
-    /** Retention window. `null` means unlimited. Defaults to 5 minutes. */
+    /** Retention window from creation. `null` means unlimited. Defaults to 5 minutes. */
     ttlMs?: number | null;
-    /** Suggested poll interval, returned to the model. Defaults to 2s. */
+    /** Poll interval suggested to the model. Defaults to 2s. */
     pollIntervalMs?: number;
   };
   /**
-   * Who is calling, as a stable string — usually your user id. When it returns a value, every
-   * task records it as its owner, and `task_status` / `task_cancel` only answer for tasks the same
-   * caller owns. Another caller's task id reads exactly like an unknown one.
-   *
-   * Receives the `AuthInfo` your auth middleware attached to the request. Leave it unset only for
-   * a single-tenant server: without it, anyone holding a task id can read and cancel that task.
-   *
-   * ```ts
-   * principal: (auth) => auth?.extra?.userId as string | undefined
-   * ```
-   *
-   * Note that `auth.clientId` is the OAuth *client* (e.g. one id for every ChatGPT user), so it is
-   * usually the wrong key on its own.
+   * Who is calling, usually your user id: `(auth) => auth?.extra?.userId`. Required. Every task
+   * is owned by its caller, and `undefined` refuses the call. `auth.clientId` is the OAuth app
+   * (shared by every ChatGPT user), so it is the wrong key. A server with no users of its own
+   * passes `() => "local"`.
    */
-  principal?: (auth: CallerAuth | undefined) => string | undefined;
-  /** Rename the two shared tools, e.g. to namespace them next to other servers' tools. */
+  principal: PrincipalResolver;
+  /** Renames the shared tools, e.g. to namespace them. */
   toolNames?: { status?: string; cancel?: string };
   /**
-   * Called once per task, right after it reaches `completed`, `failed` or `cancelled`. Only the
-   * write that performed the transition triggers it, so a redelivery or a repeated cancel never
-   * calls it twice.
-   *
-   * The usual consumer is the `task.finished` event from `@upstash/mcp-toolkit/events`, which
-   * turns this into a webhook so a client can stop polling. A throw here is logged and swallowed:
-   * the task is already settled and must stay that way.
+   * Called once per task, by the write that made it terminal. Throws are logged and swallowed.
+   * `taskFinishedEvent(...).onSettle` from `@upstash/mcp-toolkit/events` plugs in here.
    */
   onSettle?: (task: Task) => void | Promise<void>;
 };
 
 export type TaskToolConfig<Schema extends StandardSchemaWithJSON, Args = InferArgs<Schema>> = {
-  /** Human-readable title for `tools/list`. */
   title?: string;
-  /**
-   * What the tool does, for the model. The layer appends one sentence telling the model the call
-   * returns a task id to poll, so this only needs to describe the work.
-   */
+  /** What the tool does. The layer appends a sentence about polling `task_status`. */
   description: string;
-  /** A Standard Schema (Zod 4, ArkType, Valibot) describing the tool's arguments. */
+  /** A Standard Schema (Zod 4, ArkType, Valibot) for the arguments. */
   inputSchema: Schema;
   /** Retention window for this tool's tasks. `null` means unlimited. */
   ttlMs?: number | null;
-  /** Poll interval to suggest for this tool's tasks. */
   pollIntervalMs?: number;
-  /** Status message set at creation. Defaults to `"Queued for durable execution"`. */
+  /** Status message at creation. Defaults to `"Queued for durable execution"`. */
   queuedMessage?: string;
-  /** Status message set on success. Defaults to `"Completed"`. */
+  /** Status message on success. Defaults to `"Completed"`. */
   completedMessage?: string;
   /**
-   * Derives an idempotency key from the arguments. Two calls from the same caller that produce
-   * the same key, while the first task is still retained, return the **same** task instead of
-   * starting a second one — which is what an agent retrying a timed-out tool call needs.
-   *
-   * Return `undefined` to opt a call out. To dedupe identical calls outright, return a stable
-   * serialization of the arguments; to let the model choose, add a field to your schema and
-   * return it here.
+   * Derives an idempotency key from the arguments. Two calls by the same caller with the same key
+   * return the same task while it is retained. Return `undefined` to opt a call out.
    */
   idempotencyKey?: (args: Args) => string | undefined;
 };
 
-/** Infers a Standard Schema's parsed output type. */
 type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
   readonly "~standard": { types?: { readonly output: infer Output } | undefined };
 }
@@ -127,127 +86,117 @@ type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
   : unknown;
 
 /**
- * A task's implementation.
- *
- * The context is the {@link TaskContext} intersected with whatever the dispatcher adds: nothing on
- * a queue, the live `WorkflowContext` on a workflow engine. One object either way, so a workflow
- * handler calls `task.update(...)` and `task.run(...)` side by side.
- *
- * Return an MCP tool result (`content`, optionally `structuredContent`). The model receives it
- * from `task_status` once the task completes.
+ * A task's implementation. The context is {@link TaskContext} plus whatever the dispatcher adds
+ * (the live `WorkflowContext` on Workflow). Return an MCP tool result.
  */
 export type TaskHandler<Args, TContext = unknown> = (
   args: Args,
   task: TaskContext & TContext,
 ) => Promise<Record<string, unknown>>;
 
+export type TaskDefinition = { readonly name: string };
+
 export type TaskLayer<TContext = unknown> = {
-  /**
-   * Registers a tool whose calls start a task and answer with its handle. The first call on a
-   * server also registers the shared `task_status` and `task_cancel` tools.
-   */
-  registerTask<Schema extends StandardSchemaWithJSON>(
-    server: McpServer,
+  /** Declares a task tool and its handler. Call it at module scope, so every instance has it. */
+  define<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
     handler: TaskHandler<InferArgs<Schema>, TContext>,
-  ): void;
-  /**
-   * Runs a dispatched task. Normally you do not call this — the dispatcher does, through the
-   * handler returned by {@link TaskLayer.createExecuteHandler}.
-   *
-   * It **rejects** if the handler threw, and deliberately leaves the task non-terminal. Deciding
-   * that a failure is final means knowing whether the transport will deliver again, and only the
-   * transport knows that: QStash counts deliveries and calls a failure callback when it gives up,
-   * a workflow engine retries per step and has its own failure hook, an in-process dispatcher has
-   * no retries at all. Settling `failed` on the first error would make the task terminal and turn
-   * every later redelivery into a no-op — the opposite of what retries are for.
-   */
-  executeTask(taskId: string, context?: TContext, journal?: TaskJournal): Promise<Task | null>;
-  /** Records a terminal failure. Called by the dispatcher once it has stopped retrying. */
-  failTask(taskId: string, error: TaskError): Promise<Task | null>;
-  /**
-   * The delivery endpoint as a fetch handler, when the dispatcher provides one:
-   *
-   * ```ts
-   * // app/api/execute/route.ts
-   * export const POST = tasks.createExecuteHandler();
-   * ```
-   *
-   * The transport owns authentication, the attempt count and the retry status codes, so the
-   * application does not have to re-derive them — and cannot forget to verify a signature.
-   * Throws if the dispatcher runs work in-process and has no endpoint to serve.
-   */
+  ): TaskDefinition;
+  /** Adds every defined task tool, plus `task_status` and `task_cancel`, to a server. */
+  register(server: McpServer): void;
+  /** The dispatcher's delivery endpoint: `export const POST = tasks.createExecuteHandler()`. */
   createExecuteHandler(): (request: Request) => Promise<Response>;
-  /** Reads a task record server-side, bypassing ownership checks. */
+  /** Reads a task server-side, without an ownership check. */
   getTask(taskId: string): Promise<Task | null>;
-  /** Cancels a task server-side, bypassing ownership checks. Idempotent. */
+  /** Cancels a task server-side, without an ownership check. Idempotent. */
   cancelTask(taskId: string): Promise<Task | null>;
-  /** The store this layer was built on. */
-  store: TaskStore;
-  /** The dispatcher this layer was built on. */
-  dispatcher: TaskDispatcher<TContext>;
 };
 
 /**
  * Builds a tasks runtime over a store and a dispatcher.
  *
  * ```ts
- * const tasks = createTaskLayer({
- *   store: new RedisTaskStore(),
- *   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
- * });
+ * export const tasks = createTaskLayer({ store, dispatcher, principal });
+ * tasks.define("generate_report", { description, inputSchema }, handler); // module scope
+ *
+ * export function createServer() {
+ *   const server = new McpServer({ name: "reports", version: "1.0.0" });
+ *   tasks.register(server);
+ *   return server;
+ * }
  * ```
  */
 export function createTaskLayer<TContext = unknown>(
   options: TaskLayerOptions<TContext>,
 ): TaskLayer<TContext> {
-  const { store, dispatcher, defaults = {}, principal, onSettle } = options;
-
-  /** Runs the settle hook for a transition this call performed; never throws. */
-  async function settled<T extends Task | null>(task: T): Promise<T> {
-    if (task && onSettle) {
-      try {
-        await onSettle(task);
-      } catch (error) {
-        console.warn(`[mcp-toolkit] onSettle failed for task ${task.taskId}:`, error);
-      }
-    }
-    return task;
-  }
+  const { store, dispatcher, defaults = {}, onSettle } = options;
+  const principal = requirePrincipal(options.principal, "createTaskLayer");
   const toolNames = {
     status: options.toolNames?.status ?? DEFAULT_TOOL_NAMES.status,
     cancel: options.toolNames?.cancel ?? DEFAULT_TOOL_NAMES.cancel,
   };
-
-  // Keyed by tool name: the delivery endpoint only receives a task id, so it looks the handler up
-  // from the name recorded on the task.
-  const handlers = new Map<string, TaskHandler<never, TContext>>();
-  const completedMessages = new Map<string, string>();
+  // Keyed by tool name: a delivery only carries a task id, and the record names its tool.
+  const definitions = new Map<
+    string,
+    { config: TaskToolConfig<StandardSchemaWithJSON>; handler: TaskHandler<never, TContext> }
+  >();
   const wired = new WeakSet<McpServer>();
 
-  function registerTask<Schema extends StandardSchemaWithJSON>(
-    server: McpServer,
+  const callerOf = (context: unknown) => principal(authOf(context));
+
+  async function runSettleHook(task: Task): Promise<void> {
+    if (!onSettle) return;
+    try {
+      await onSettle(task);
+    } catch (error) {
+      console.warn(`[mcp-toolkit] onSettle failed for task ${task.taskId}:`, error);
+    }
+  }
+
+  async function settle(taskId: string, patch: Parameters<TaskStore["settle"]>[1]) {
+    const outcome = await store.settle(taskId, patch);
+    if (outcome?.settled) await runSettleHook(outcome.task);
+    return outcome;
+  }
+
+  function define<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
     handler: TaskHandler<InferArgs<Schema>, TContext>,
-  ): void {
-    handlers.set(name, handler as TaskHandler<never, TContext>);
-    if (config.completedMessage) completedMessages.set(name, config.completedMessage);
-    registerSharedTools(server);
+  ): TaskDefinition {
+    if (name === toolNames.status || name === toolNames.cancel) {
+      throw new Error(`"${name}" is reserved for the shared task tools`);
+    }
+    if (definitions.has(name)) throw new Error(`Task "${name}" is already defined`);
+    definitions.set(name, {
+      config: config as unknown as TaskToolConfig<StandardSchemaWithJSON>,
+      handler: handler as TaskHandler<never, TContext>,
+    });
+    return { name };
+  }
 
+  function register(server: McpServer): void {
+    if (wired.has(server)) return;
+    wired.add(server);
+    for (const [name, { config }] of definitions) registerTaskTool(server, name, config);
+    registerSharedTools(server);
+  }
+
+  function registerTaskTool(
+    server: McpServer,
+    name: string,
+    config: TaskToolConfig<StandardSchemaWithJSON>,
+  ): void {
     const callback = async (args: unknown, context: unknown): Promise<Record<string, unknown>> => {
       const owner = callerOf(context);
-      const key = config.idempotencyKey?.(args as InferArgs<Schema>);
-
-      // A keyed call gets a deterministic id, so a retry lands on the task the first call made.
-      // Scoped by owner and tool, so two callers' keys can never collide.
-      const taskId = key === undefined ? randomUUID() : deterministicId(owner, name, key);
-      if (key !== undefined) {
-        const existing = await store.get(taskId);
-        if (existing) return startedResult(existing, toolNames, true);
-      }
-
+      if (owner === undefined) return notAuthenticatedResult();
+      const key = config.idempotencyKey?.(args);
+      // A keyed call gets a deterministic id scoped to its caller, so a retry finds the first task.
+      const taskId =
+        key === undefined
+          ? crypto.randomUUID()
+          : (await sha256Hex(JSON.stringify([owner, name, key]))).slice(0, 32);
       const now = new Date().toISOString();
       const task: Task = {
         taskId,
@@ -255,21 +204,36 @@ export function createTaskLayer<TContext = unknown>(
         statusMessage: config.queuedMessage ?? "Queued for durable execution",
         createdAt: now,
         lastUpdatedAt: now,
-        ttlMs: config.ttlMs ?? defaults.ttlMs ?? DEFAULT_TTL_MS,
+        // `null` means unlimited, so `??` would wrongly replace it.
+        ttlMs:
+          config.ttlMs !== undefined
+            ? config.ttlMs
+            : defaults.ttlMs !== undefined
+              ? defaults.ttlMs
+              : DEFAULT_TTL_MS,
         pollIntervalMs:
           config.pollIntervalMs ?? defaults.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
         name,
         args,
-        ...(owner !== undefined && { owner }),
+        owner,
       };
 
-      // The record must be durable before the handle goes out, because the model may poll it
-      // against another instance the moment it has the id. Dispatch second, so a queue that
-      // accepts a task can always find its record. Two racing keyed calls both get here at
-      // worst: they write the same record, and the dispatchers dedupe on the task id.
-      await store.create(task);
-      const dispatchId = await dispatcher.dispatch(task.taskId);
-      const saved = dispatchId ? await store.update(task.taskId, { dispatchId }) : task;
+      // The record is durable before the id goes out, and before the work is queued.
+      const existing = await store.create(task);
+      if (existing) return startedResult(existing, toolNames, true);
+      let dispatchId: string | undefined;
+      try {
+        dispatchId = await dispatcher.dispatch(task);
+      } catch (error) {
+        // Nothing will ever run this record: fail it rather than leave it `working` until its TTL.
+        await settle(taskId, {
+          status: "failed",
+          statusMessage: "Could not be queued",
+          error: { code: INTERNAL_ERROR, message: "The task could not be dispatched" },
+        }).catch(() => undefined);
+        throw error;
+      }
+      const saved = dispatchId ? await store.update(taskId, { dispatchId }) : task;
       return startedResult(saved, toolNames, false);
     };
 
@@ -286,10 +250,7 @@ export function createTaskLayer<TContext = unknown>(
     );
   }
 
-  /** Registers `task_status` and `task_cancel` on a server, once. */
   function registerSharedTools(server: McpServer): void {
-    if (wired.has(server)) return;
-    wired.add(server);
     const inputSchema = z.object({
       taskId: z.string().describe("The taskId returned when the task was started."),
     });
@@ -306,7 +267,9 @@ export function createTaskLayer<TContext = unknown>(
         annotations: { readOnlyHint: true, idempotentHint: true },
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
-        const task = await owned(taskId, context);
+        const caller = callerOf(context);
+        if (caller === undefined) return notAuthenticatedResult();
+        const task = await owned(taskId, caller);
         return task ? statusResult(task) : unknownTaskResult(taskId);
       }) as never,
     );
@@ -322,7 +285,9 @@ export function createTaskLayer<TContext = unknown>(
         annotations: { destructiveHint: true, idempotentHint: true },
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
-        if (!(await owned(taskId, context))) return unknownTaskResult(taskId);
+        const caller = callerOf(context);
+        if (caller === undefined) return notAuthenticatedResult();
+        if (!(await owned(taskId, caller))) return unknownTaskResult(taskId);
         const task = await cancelTask(taskId);
         return task ? statusResult(task) : unknownTaskResult(taskId);
       }) as never,
@@ -330,91 +295,65 @@ export function createTaskLayer<TContext = unknown>(
   }
 
   async function cancelTask(taskId: string): Promise<Task | null> {
-    const task = await read(taskId);
-    if (!task) return null;
-    // Two writes, on purpose. Flipping the status is the terminal, idempotent half — `settle`
-    // returns null when the task was already terminal, which makes a repeated cancel a no-op
-    // rather than a state change. Cancelling the dispatch is the other half: without it a pending
-    // retry would re-invoke the executor on a task that is already finished.
-    const cancelled = await settled(
-      await store.settle(taskId, { status: "cancelled", statusMessage: "Cancelled by client" }),
-    );
-    const dispatchId = cancelled?.dispatchId ?? task.dispatchId;
-    if (dispatchId) {
-      // A message already in flight cannot be recalled; that is why cancellation is cooperative,
-      // and why the handler still checks `isCancelled()`.
-      await dispatcher.cancel(dispatchId).catch(() => undefined);
+    const outcome = await settle(taskId, {
+      status: "cancelled",
+      statusMessage: "Cancelled by client",
+    });
+    if (!outcome) return null;
+    // Also stop pending redeliveries. A delivery already running can't be recalled, which is why
+    // handlers check `isCancelled()`.
+    if (outcome.settled && outcome.task.dispatchId) {
+      await dispatcher.cancel(outcome.task.dispatchId).catch(() => undefined);
     }
-    return cancelled ?? (await read(taskId));
+    return outcome.task;
   }
 
-  async function executeTask(
-    taskId: string,
-    context?: TContext,
-    journal?: TaskJournal,
-  ): Promise<Task | null> {
+  /**
+   * Runs a delivered task. A throw propagates and leaves the task `working`: only the transport
+   * knows whether it will deliver again, so only it records the final failure.
+   */
+  async function executeTask(taskId: string, context?: TContext, journal?: TaskJournal) {
     const task = await read(taskId);
-    // Expired, or never existed: nothing to run, and nothing a retry could fix.
-    if (!task) return null;
-
-    // The redelivery guard. Delivery is at-least-once by contract, so the same task id can arrive
-    // twice — after a cancel, or after a retry of a delivery that actually succeeded.
-    if (isTerminal(task.status)) return task;
-
-    const handler = handlers.get(task.name);
-    if (!handler) {
+    // Expired or unknown, or a redelivery of a finished task: nothing to do.
+    if (!task || isTerminal(task.status)) return;
+    const definition = definitions.get(task.name);
+    if (!definition) {
       throw new Error(
-        `No task handler registered for "${task.name}". Register it on every instance that serves the execute endpoint.`,
+        `No task handler defined for "${task.name}". Call tasks.define(...) at module scope, in a module the execute route imports.`,
       );
     }
 
-    // Journaled writes get a stable name from their call order, which is deterministic because a
-    // replay re-runs the handler the same way up to the point it left off.
+    // Journaled writes are named by call order, which a replay reproduces.
     let writes = 0;
-
     const taskContext: TaskContext = {
       taskId,
       update: async (statusMessage) => {
         const write = () => store.update(taskId, { statusMessage }).then(() => undefined);
-        // Without a journal this is a plain write that repeats on every replay — harmless on a
-        // queue, which never replays.
         await (journal ? journal(`mcp-task:update:${++writes}`, write) : write());
       },
       isCancelled: async () => {
         const current = await store.get(taskId);
-        // A task that expired out from under us is not worth finishing either.
         return current === null || current.status === "cancelled";
       },
     };
 
-    // A throw propagates untouched, leaving the task non-terminal on purpose: the dispatcher
-    // decides whether that was a retry or a failure. Nothing is recorded here either, because the
-    // core cannot tell a real error from a workflow engine suspending the handler mid-step — and
-    // writing "attempt failed" for the latter would spray noise over a perfectly healthy run.
-    const result = await (handler as TaskHandler<unknown, TContext>)(
+    const result = await (definition.handler as TaskHandler<unknown, TContext>)(
       task.args,
       mergeContext(taskContext, context),
     );
-
-    // If a cancel landed while the handler was running, `settle` refuses the transition and
-    // returns null — the cancelled status wins, with no check-then-write race of our own.
-    const completed = await settled(
-      await store.settle(taskId, {
-        status: "completed",
-        statusMessage: completedMessages.get(task.name) ?? "Completed",
-        result,
-      }),
-    );
-    return completed ?? (await store.get(taskId));
+    // A cancel that landed meanwhile wins: settle refuses the second terminal write.
+    await settle(taskId, {
+      status: "completed",
+      statusMessage: definition.config.completedMessage ?? "Completed",
+      result,
+    });
   }
 
-  async function failTask(taskId: string, error: TaskError): Promise<Task | null> {
-    return await settled(
-      await store.settle(taskId, { status: "failed", statusMessage: "Execution failed", error }),
-    );
+  async function failTask(taskId: string, error: TaskError) {
+    await settle(taskId, { status: "failed", statusMessage: "Execution failed", error });
   }
 
-  /** Reads a task, folding "unknown" and "expired" into null. */
+  /** Reads a task, folding a store's {@link UnknownTaskError} into null. */
   async function read(taskId: string): Promise<Task | null> {
     try {
       return await store.get(taskId);
@@ -424,56 +363,31 @@ export function createTaskLayer<TContext = unknown>(
     }
   }
 
-  /**
-   * Reads a task the caller is allowed to see. A task owned by someone else is reported as
-   * unknown rather than forbidden, so an id cannot be probed for existence.
-   */
-  async function owned(taskId: string, context: unknown): Promise<Task | null> {
+  /** Another caller's task reads as unknown, so ids cannot be probed. */
+  async function owned(taskId: string, caller: string): Promise<Task | null> {
     const task = await read(taskId);
-    if (!task) return null;
-    if (task.owner === undefined || task.owner === null) return task;
-    // Compared as strings: Redis' auto-deserialization turns a numeric-looking owner into a number.
-    return String(task.owner) === callerOf(context) ? task : null;
-  }
-
-  function callerOf(context: unknown): string | undefined {
-    if (!principal) return undefined;
-    const auth = (context as { http?: { authInfo?: CallerAuth } } | undefined)?.http?.authInfo;
-    return principal(auth);
+    return task && task.owner === caller ? task : null;
   }
 
   function createExecuteHandler(): (request: Request) => Promise<Response> {
     if (!dispatcher.createExecuteHandler) {
       throw new Error(
-        "This dispatcher has no delivery endpoint to serve — it runs tasks in the current " +
-          "process. Use a transport-backed dispatcher (e.g. QStashDispatcher) to expose one.",
+        "This dispatcher runs tasks in-process and has no delivery endpoint. Use QStashDispatcher or WorkflowDispatcher.",
       );
     }
     return dispatcher.createExecuteHandler();
   }
 
-  // Hand the transport its way back in, now that both halves exist.
   dispatcher.attach?.({ run: executeTask, fail: failTask });
 
-  return {
-    registerTask,
-    executeTask,
-    failTask,
-    createExecuteHandler,
-    getTask: read,
-    cancelTask,
-    store,
-    dispatcher,
-  };
+  return { define, register, createExecuteHandler, getTask: read, cancelTask };
 }
 
-/** What the starting tool answers: the handle, and a sentence telling the model what to do next. */
 function startedResult(
   task: Task,
   toolNames: { status: string },
   deduplicated: boolean,
 ): Record<string, unknown> {
-  const wire = toWire(task);
   const lead = deduplicated
     ? `Task ${task.taskId} already exists for this request (status: ${task.status}).`
     : `Started task ${task.taskId}.`;
@@ -486,18 +400,14 @@ function startedResult(
           `in about ${seconds(task.pollIntervalMs)} to check on it.`,
       },
     ],
-    structuredContent: wire,
+    structuredContent: toWire(task),
   };
 }
 
-/**
- * What `task_status` and `task_cancel` answer. A completed task hands back its own result's
- * `content`, so the model reads the answer exactly as if the tool had run synchronously.
- */
+/** A status line, followed by the task's own result content once it completed. */
 function statusResult(task: Task): Record<string, unknown> {
   const wire = toWire(task);
   const line = `Task ${task.taskId} is ${task.status}${task.statusMessage ? `: ${task.statusMessage}` : "."}`;
-
   if (task.status === "completed") {
     const content = Array.isArray(task.result?.content) ? task.result.content : [];
     return { content: [{ type: "text", text: line }, ...content], structuredContent: wire };
@@ -511,6 +421,15 @@ function statusResult(task: Task): Record<string, unknown> {
   const hint =
     task.status === "working" ? ` Check again in about ${seconds(task.pollIntervalMs)}.` : "";
   return { content: [{ type: "text", text: line + hint }], structuredContent: wire };
+}
+
+function notAuthenticatedResult(): Record<string, unknown> {
+  return {
+    isError: true,
+    content: [
+      { type: "text", text: "Not authenticated: this server could not identify the caller." },
+    ],
+  };
 }
 
 function unknownTaskResult(taskId: string): Record<string, unknown> {
@@ -528,22 +447,9 @@ function unknownTaskResult(taskId: string): Record<string, unknown> {
 const seconds = (ms: number | undefined) =>
   `${Math.max(1, Math.round((ms ?? DEFAULT_POLL_INTERVAL_MS) / 1000))}s`;
 
-/** A stable, opaque task id for an idempotency key. */
-function deterministicId(owner: string | undefined, tool: string, key: string): string {
-  return createHash("sha256")
-    .update(JSON.stringify([owner ?? null, tool, key]))
-    .digest("hex")
-    .slice(0, 32);
-}
-
 /**
- * Merges the task context into whatever the transport supplied, as one object.
- *
- * The transport's context is *mutated* rather than copied, and deliberately: a `WorkflowContext`
- * is a class instance whose `run`/`sleep`/`call` live on the prototype, so spreading it would drop
- * every method, and re-parenting it with `Object.create` would break `this` for anything the
- * engine keeps private. Assigning onto the instance keeps it intact — the object is ours for the
- * duration of one invocation anyway.
+ * Merges the task context into the transport's, as one object. Assigned onto the instance rather
+ * than spread: a `WorkflowContext` keeps its methods on the prototype.
  */
 function mergeContext<TContext>(
   taskContext: TaskContext,

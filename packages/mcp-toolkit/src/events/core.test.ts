@@ -75,10 +75,13 @@ function request(method: string, params: Record<string, unknown>, id: number): R
   });
 }
 
-const as = (user?: string) =>
-  user
+/** Requests run as "alice" unless told otherwise; `null` sends no auth at all. */
+const as = (given?: string | null) => {
+  const user = given === undefined ? "alice" : given;
+  return user
     ? { authInfo: { token: "t", clientId: "chatgpt", scopes: [], extra: { userId: user } } }
     : undefined;
+};
 
 function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {}) {
   const { respond, ...layerOptions } = options;
@@ -109,7 +112,11 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
   });
 
   let id = 0;
-  const rpc = async (method: string, params: Record<string, unknown> = {}, user?: string) => {
+  const rpc = async (
+    method: string,
+    params: Record<string, unknown> = {},
+    user?: string | null,
+  ) => {
     const response = await handler.fetch(request(method, params, ++id), as(user));
     return JSON.parse(await response.text()) as JsonRpc;
   };
@@ -117,7 +124,7 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
   const subscribe = async (
     args: Record<string, unknown>,
     opts: {
-      user?: string;
+      user?: string | null;
       url?: string;
       secret?: string;
       ttlMs?: number | null;
@@ -205,22 +212,38 @@ describe("events/subscribe", () => {
     const { subscribe, store } = setup({ respond: () => Response.json({ challenge: "nope" }) });
     const response = await subscribe({ documentId: "doc_1" });
     expect(response.error?.code).toBe(-32015);
-    expect(response.error?.data?.reason).toBe("challenge_failed");
-    expect(await store.find("comment.created", ['{"documentId":"doc_1"}'])).toHaveLength(0);
+    expect(await store.find("comment.created", ["alice"], ['{"documentId":"doc_1"}'])).toHaveLength(
+      0,
+    );
   });
 
-  it("refuses with -32015 when the callback is unreachable or errors", async () => {
-    const down = setup({
-      fetch: (async () => {
-        throw new TypeError("fetch failed");
-      }) as typeof fetch,
-    });
-    expect((await down.subscribe({ documentId: "d" })).error?.data?.reason).toBe("unreachable");
-    const erroring = setup({ respond: () => new Response("no", { status: 500 }) });
-    expect((await erroring.subscribe({ documentId: "d" })).error).toMatchObject({
-      code: -32015,
-      data: { reason: "http_status" },
-    });
+  it("gives the same error whatever went wrong, so the network behind it cannot be probed", async () => {
+    const errors = await Promise.all(
+      [
+        setup({
+          fetch: (async () => {
+            throw new TypeError("fetch failed");
+          }) as typeof fetch,
+        }),
+        setup({
+          fetch: (async () => {
+            throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+          }) as typeof fetch,
+        }),
+        setup({ respond: () => new Response("no", { status: 500 }) }),
+        setup({ respond: () => new Response(null, { status: 302 }) }),
+        setup({ respond: () => Response.json({ challenge: "nope" }) }),
+      ].map(async ({ subscribe }) => (await subscribe({ documentId: "d" })).error),
+    );
+    for (const error of errors) {
+      expect(error).toEqual(errors[0]);
+      expect(error?.code).toBe(-32015);
+    }
+  });
+
+  it("reads only the start of a huge challenge response", async () => {
+    const { subscribe } = setup({ respond: () => new Response("x".repeat(5_000_000)) });
+    expect((await subscribe({ documentId: "d" })).error?.code).toBe(-32015);
   });
 
   it("validates event name, mode, arguments, secret, URL and authorization", async () => {
@@ -267,7 +290,10 @@ describe("emit", () => {
     await subscribe({ documentId: "doc_1", author: "bob" });
     await subscribe({ documentId: "doc_2" });
 
-    const result = await commentCreated.emit({ documentId: "doc_1", author: "alice", text: "hi" });
+    const result = await commentCreated.emit(
+      { documentId: "doc_1", author: "alice", text: "hi" },
+      { owner: "alice" },
+    );
     expect(result.matched).toBe(2);
     const deliveries = receiver.deliveries();
     expect(deliveries.map((d) => d.url).sort()).toEqual([all.url, byAlice.url].sort());
@@ -295,11 +321,43 @@ describe("emit", () => {
     expect(receiver.deliveries()[0]?.url).toBe(bob.url);
   });
 
+  it("only reaches the owners it names", async () => {
+    const { subscribe, commentCreated, receiver } = setup();
+    const alice = await subscribe({ documentId: "doc_1" }, { user: "alice" });
+    const bob = await subscribe({ documentId: "doc_1" }, { user: "bob" });
+    const payload = { documentId: "doc_1", author: "x", text: "y" };
+
+    expect((await commentCreated.emit(payload, { owner: "alice" })).matched).toBe(1);
+    expect(receiver.deliveries().map((d) => d.url)).toEqual([alice.url]);
+    expect((await commentCreated.emit(payload, { owner: "mallory" })).matched).toBe(0);
+    expect((await commentCreated.emit(payload, { owners: ["alice", "bob"] })).matched).toBe(2);
+    expect(
+      receiver
+        .deliveries()
+        .map((d) => d.url)
+        .slice(1)
+        .sort(),
+    ).toEqual([alice.url, bob.url].sort());
+    expect((await commentCreated.emit(payload, { owners: [] })).matched).toBe(0);
+  });
+
+  it("refuses to emit without naming who receives it", async () => {
+    const { commentCreated } = setup();
+    await expect(
+      commentCreated.emit({ documentId: "d", author: "a", text: "x" }, {} as never),
+    ).rejects.toThrow(/owner/);
+  });
+
   it("rejects an invalid payload and an oversized one", async () => {
     const { commentCreated } = setup();
-    await expect(commentCreated.emit({ documentId: "d" } as never)).rejects.toThrow();
     await expect(
-      commentCreated.emit({ documentId: "d", author: "a", text: "x".repeat(300 * 1024) }),
+      commentCreated.emit({ documentId: "d" } as never, { owner: "alice" }),
+    ).rejects.toThrow();
+    await expect(
+      commentCreated.emit(
+        { documentId: "d", author: "a", text: "x".repeat(300 * 1024) },
+        { owner: "alice" },
+      ),
     ).rejects.toThrow(/limit/);
   });
 
@@ -309,16 +367,19 @@ describe("emit", () => {
       respond: (r) => (r.body.type === "verification" ? undefined : new Response(null, { status })),
     });
     const sub = await subscribe({ documentId: "d" });
-    await commentCreated.emit({ documentId: "d", author: "a", text: "1" });
+    await commentCreated.emit({ documentId: "d", author: "a", text: "1" }, { owner: "alice" });
     expect(outcomes).toEqual(["gone"]);
     expect(await store.get(String(sub.result?.id))).toBeNull();
 
     status = 413;
     await subscribe({ documentId: "d" });
-    await commentCreated.emit({ documentId: "d", author: "a", text: "2" });
+    await commentCreated.emit({ documentId: "d", author: "a", text: "2" }, { owner: "alice" });
     status = 503;
-    await commentCreated.emit({ documentId: "d", author: "a", text: "3" });
-    expect(outcomes).toEqual(["gone", "dropped", "retry"]);
+    await commentCreated.emit({ documentId: "d", author: "a", text: "3" }, { owner: "alice" });
+    // A redirect is never followed, so retrying it cannot help either.
+    status = 307;
+    await commentCreated.emit({ documentId: "d", author: "a", text: "4" }, { owner: "alice" });
+    expect(outcomes).toEqual(["gone", "dropped", "retry", "dropped"]);
   });
 
   it("stops delivering after unsubscribe", async () => {
@@ -334,9 +395,11 @@ describe("emit", () => {
       "alice",
     );
     expect(response.result).toBeDefined();
-    expect((await commentCreated.emit({ documentId: "d", author: "a", text: "x" })).matched).toBe(
-      0,
+    const after = await commentCreated.emit(
+      { documentId: "d", author: "a", text: "x" },
+      { owner: "alice" },
     );
+    expect(after.matched).toBe(0);
   });
 
   it("keeps secrets encrypted at rest", async () => {
@@ -345,6 +408,51 @@ describe("emit", () => {
     const stored = await store.get(String(sub.result?.id));
     expect(stored?.encryptedSecret).toMatch(/^v1\./);
     expect(JSON.stringify(stored)).not.toContain(sub.secret.slice(6));
+  });
+});
+
+describe("principal", () => {
+  it("refuses to subscribe or unsubscribe a caller it cannot identify", async () => {
+    const { subscribe, rpc, receiver } = setup();
+    const anonymous = await subscribe({ documentId: "d" }, { user: null });
+    expect(anonymous.error?.data?.reason).toBe("not_authenticated");
+    // Refused before the challenge: nothing was posted to the callback.
+    expect(receiver.received).toHaveLength(0);
+
+    const off = await rpc(
+      "events/unsubscribe",
+      {
+        name: "comment.created",
+        arguments: { documentId: "d" },
+        delivery: { mode: "webhook", url: anonymous.url },
+      },
+      null,
+    );
+    expect(off.error?.data?.reason).toBe("not_authenticated");
+  });
+
+  it("has no default secret key: a missing one fails the first subscribe", async () => {
+    const saved = process.env.MCP_EVENTS_SECRET_KEY;
+    delete process.env.MCP_EVENTS_SECRET_KEY;
+    try {
+      // Building the layer must not throw (it runs at module scope, at build time)...
+      const { subscribe } = setup({ secretKey: undefined });
+      // ...but using it without a key does.
+      const result = await subscribe({ documentId: "d" });
+      expect(result.error?.message).toMatch(/secretKey/);
+    } finally {
+      if (saved !== undefined) process.env.MCP_EVENTS_SECRET_KEY = saved;
+    }
+  });
+
+  it("is required", () => {
+    expect(() =>
+      createEventLayer({
+        store: new MemorySubscriptionStore(),
+        delivery: new InlineDelivery(),
+        secretKey: "k",
+      } as unknown as EventLayerOptions),
+    ).toThrow(/principal/);
   });
 });
 
@@ -358,14 +466,12 @@ describe("task.finished", () => {
       principal: (auth) => auth?.extra?.userId as string | undefined,
       onSettle: taskFinished.onSettle,
     });
+    tasks.define("slow", { description: "slow", inputSchema: z.object({}) }, async () => ({
+      content: [{ type: "text", text: "done" }],
+    }));
     const handler = createMcpHandler(() => {
       const server = new McpServer({ name: "t", version: "1.0.0" });
-      tasks.registerTask(
-        server,
-        "slow",
-        { description: "slow", inputSchema: z.object({}) },
-        async () => ({ content: [{ type: "text", text: "done" }] }),
-      );
+      tasks.register(server);
       return server;
     });
 
@@ -417,11 +523,32 @@ describe("helpers", () => {
       "https://metadata.google.internal/x",
       "https://user:pw@example.com/x",
       "https://intranet/x",
+      // Trailing dots resolve like the bare name.
+      "https://localhost./x",
+      "https://foo.internal./x",
+      "https://x.local./x",
+      // IPv4 written another way, or embedded in IPv6.
+      "https://0x7f000001/x",
+      "https://[::127.0.0.1]/x",
+      "https://[64:ff9b::127.0.0.1]/x",
+      "https://[64:ff9b:1::1]/x",
+      "https://[2002:7f00:1::]/x",
+      "https://[fe80::1]/x",
+      "https://[fd00::1]/x",
+      // Reserved and documentation ranges.
+      "https://198.18.0.1/x",
+      "https://192.0.0.1/x",
+      "https://192.0.2.1/x",
+      "https://198.51.100.1/x",
+      "https://203.0.113.1/x",
     ]) {
       expect(callbackUrlProblem(url), url).not.toBeNull();
     }
     expect(callbackUrlProblem("https://receiver.example.com/cb")).toBeNull();
     expect(callbackUrlProblem("https://8.8.8.8/cb")).toBeNull();
+    expect(callbackUrlProblem("https://receiver.example.com./cb")).toBeNull();
+    expect(callbackUrlProblem("https://[2606:4700:4700::1111]/cb")).toBeNull();
+    expect(callbackUrlProblem("https://[64:ff9b::8.8.8.8]/cb")).toBeNull();
     expect(callbackUrlProblem("http://localhost:3000/cb", true)).toBeNull();
   });
 });

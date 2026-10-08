@@ -42,7 +42,7 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     const pttl = await redis.pttl(store.subKey(sub.id));
     expect(pttl).toBeGreaterThan(0);
     expect(pttl).toBeLessThanOrEqual(30_000);
-    expect(await redis.pttl(store.indexKey(sub.event, sub.argsKey))).toBeGreaterThan(0);
+    expect(await redis.pttl(await store.indexKey(sub))).toBeGreaterThan(0);
   });
 
   it("finds subscriptions by any of several argument keys, and only live ones", async () => {
@@ -51,10 +51,20 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     const other = makeSub({ event: "find", args: { repo: "b" } });
     for (const sub of [all, one, other]) await store.put(sub);
 
-    const found = await store.find("find", ["{}", canonicalJson({ repo: "a" })]);
+    const found = await store.find("find", ["123"], ["{}", canonicalJson({ repo: "a" })]);
     expect(found.map((s) => s.id).sort()).toEqual([all.id, one.id].sort());
-    expect(await store.find("find", [])).toEqual([]);
-    expect(await store.find("other-event", ["{}"])).toEqual([]);
+    expect(await store.find("find", ["123"], [])).toEqual([]);
+    expect(await store.find("other-event", ["123"], ["{}"])).toEqual([]);
+  });
+
+  it("only finds the subscriptions of the owners asked for", async () => {
+    const alice = makeSub({ event: "owned", args: {}, owner: "alice" });
+    const bob = makeSub({ event: "owned", args: {}, owner: "bob" });
+    for (const sub of [alice, bob]) await store.put(sub);
+    expect((await store.find("owned", ["alice"], ["{}"])).map((s) => s.id)).toEqual([alice.id]);
+    expect(await store.find("owned", ["mallory"], ["{}"])).toEqual([]);
+    const both = await store.find("owned", ["alice", "bob"], ["{}"]);
+    expect(both.map((s) => s.id).sort()).toEqual([alice.id, bob.id].sort());
   });
 
   it("refreshing replaces the record and extends the index", async () => {
@@ -62,18 +72,18 @@ describe.skipIf(!hasRedisCreds)("RedisSubscriptionStore (real Redis)", () => {
     await store.put(sub);
     await store.put({ ...sub, expiresAt: Date.now() + 50_000 });
     expect((await store.get(sub.id))?.expiresAt).toBeGreaterThan(Date.now() + 40_000);
-    expect(await store.find("refresh", [sub.argsKey])).toHaveLength(1);
-    expect(await redis.pttl(store.indexKey(sub.event, sub.argsKey))).toBeGreaterThan(40_000);
+    expect(await store.find("refresh", [sub.owner], [sub.argsKey])).toHaveLength(1);
+    expect(await redis.pttl(await store.indexKey(sub))).toBeGreaterThan(40_000);
   });
 
   it("deletes the record and its index entry", async () => {
     const sub = makeSub({ event: "delete" });
     await store.put(sub);
-    await store.delete(sub.id);
+    await store.delete(sub);
     expect(await store.get(sub.id)).toBeNull();
-    expect(await store.find("delete", [sub.argsKey])).toEqual([]);
-    expect(await redis.zcard(store.indexKey(sub.event, sub.argsKey))).toBe(0);
-    await store.delete(sub.id); // idempotent
+    expect(await store.find("delete", [sub.owner], [sub.argsKey])).toEqual([]);
+    expect(await redis.zcard(await store.indexKey(sub))).toBe(0);
+    await store.delete(sub); // idempotent
   });
 });
 
@@ -132,12 +142,14 @@ describe("QStashDelivery", () => {
     expect((await handler(post(job))).status).toBe(500);
   });
 
-  it("rejects an unsigned or malformed delivery", async () => {
+  it("rejects an unsigned or malformed delivery as non-retryable", async () => {
     const unsigned = attached("delivered", false);
-    expect((await unsigned.handler(post(job))).status).toBe(401);
+    const refused = await unsigned.handler(post(job));
+    expect(refused.status).toBe(489);
+    expect(refused.headers.get("Upstash-NonRetryable-Error")).toBe("true");
     expect(unsigned.sent).toEqual([]);
     const { handler } = attached("delivered");
-    expect((await handler(post({ nope: true }))).status).toBe(400);
+    expect((await handler(post({ nope: true }))).status).toBe(489);
   });
 
   it("publishes one deduplicated message per subscription, in batches of 100", async () => {

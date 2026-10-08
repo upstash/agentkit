@@ -52,3 +52,36 @@ export const addTelemetry = (
     // telemetry must never break the client
   }
 };
+
+const SDK_HEADER = "Upstash-Telemetry-Sdk";
+
+type TelemetryCapableQStash = { http?: { telemetryHeaders?: Headers } };
+
+/**
+ * Appends this package's tag to a QStash client's telemetry header, producing
+ * `upstash-qstash-js@2.12.0,@upstash/mcp-toolkit@0.1.0` — the same shape as the Redis header.
+ *
+ * Accepts a QStash `Client`, or an Upstash Workflow `Client`, which wraps one as `.client`. The
+ * header only exists when the client itself has telemetry on, so a client built with
+ * `enableTelemetry: false` stays untagged. Opt out here with `enabled: false` or
+ * `UPSTASH_DISABLE_TELEMETRY`.
+ */
+export const addQStashTelemetry = (
+  client: unknown,
+  options: { sdk?: string; enabled?: boolean } = {},
+): void => {
+  const { sdk = SDK_TELEMETRY, enabled = true } = options;
+  if (!enabled || getSafeEnv().UPSTASH_DISABLE_TELEMETRY) return;
+  if (!client || typeof client !== "object") return;
+  const qstash = ("http" in client ? client : (client as { client?: unknown }).client) as
+    | TelemetryCapableQStash
+    | undefined;
+  try {
+    const headers = qstash?.http?.telemetryHeaders;
+    const current = headers?.get(SDK_HEADER);
+    if (!headers || !current || current.split(",").includes(sdk)) return;
+    headers.set(SDK_HEADER, `${current},${sdk}`);
+  } catch {
+    // telemetry must never break the client
+  }
+};

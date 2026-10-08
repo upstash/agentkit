@@ -1,401 +1,277 @@
-/**
- * The Upstash backends: a {@link TaskStore} on Upstash Redis and a {@link TaskDispatcher} on
- * QStash.
- *
- * Nothing here imports the MCP SDK. That is the point of the two interfaces — a Postgres store or
- * a BullMQ dispatcher drops in without the core noticing.
- */
-import { Redis } from "@upstash/redis";
-import { Client as QStashClient, Receiver } from "@upstash/qstash";
-
-/** JSON-RPC internal error, per the MCP spec — inlined so this file imports no MCP SDK. */
-const INTERNAL_ERROR = -32603;
+/** The Upstash task backends: the record in Redis, the work delivered by QStash. */
+import type { Redis } from "@upstash/redis";
+import type { Client as QStashClient, Receiver } from "@upstash/qstash";
 import {
-  TERMINAL_STATUSES,
+  lazy,
+  nonRetryable,
+  resolveQStash,
+  resolveReceiver,
+  resolveRedis,
+} from "../../shared/clients.js";
+import { fromBase64, fromUtf8 } from "../../shared/crypto.js";
+import {
+  dispatchKey,
   UnknownTaskError,
+  type SettleResult,
   type Task,
   type TaskDispatcher,
-  type TaskPatch,
   type TaskEndpoints,
   type TaskError,
+  type TaskPatch,
   type TaskStore,
   type TerminalTaskPatch,
 } from "../types.js";
-import { addTelemetry } from "../../telemetry.js";
+
+/** JSON-RPC internal error. */
+const INTERNAL_ERROR = -32603;
 
 /** Default key prefix for task hashes: `mcp:task:<taskId>`. */
 export const DEFAULT_TASK_PREFIX = "mcp:task:";
 
 /**
- * Backoff between delivery attempts: 1s, 3s, 9s, 27s, 81s — about two minutes across the default
- * {@link DEFAULT_RETRIES} attempts, capped so a longer budget cannot drift into hours.
- *
- * The steep base is doing real work. What the retry budget has to outlast is whatever killed the
- * process — a deploy, a crash loop, a cold start. When it does not, the record survives in Redis
- * but nothing ever finishes the job, and the task sits at `working` until its TTL expires: exactly
- * the failure durable execution exists to prevent. A flat one-second delay spends every attempt
- * inside ten seconds, which no restart fits into.
+ * Backoff between deliveries: 1s, 3s, 9s, 27s, 81s. About two minutes over the default retries,
+ * long enough to outlast a deploy or a crash loop.
  */
 export const DEFAULT_RETRY_DELAY = "min(pow(3, retried) * 1000, 300000)";
 
-/**
- * Delivery attempts before QStash dead-letters a task.
- *
- * **QStash caps this per plan** — the local dev server and the free tier reject anything above 5
- * with `quota maxRetries exceeded`, so 5 is the highest value that works everywhere and the budget
- * is bought with {@link DEFAULT_RETRY_DELAY} instead. Raise it if your plan allows.
- */
+/** Delivery retries. 5 is the most QStash's free tier and local dev server accept. */
 export const DEFAULT_RETRIES = 5;
 
 export type RedisTaskStoreConfig = {
-  /** The Upstash Redis client. Defaults to `Redis.fromEnv()`. */
+  /**
+   * The Upstash Redis client. Defaults to one from `UPSTASH_REDIS_REST_URL` / `_TOKEN`. A client
+   * built with `automaticDeserialization: false` is not supported.
+   */
   redis?: Redis;
-  /** Key prefix for task hashes. Defaults to {@link DEFAULT_TASK_PREFIX}. */
+  /** Key prefix. Defaults to {@link DEFAULT_TASK_PREFIX}. */
   prefix?: string;
-  /** Set `false` to skip reporting the SDK version in the Redis telemetry header. */
+  /** Set `false` to skip this package's tag in the telemetry header. */
   enableTelemetry?: boolean;
 };
 
-/**
- * Every field is written JSON-encoded, and read back with no decoding of our own.
- *
- * That pairing is deliberate. `@upstash/redis` deserializes responses by default: it runs one
- * `JSON.parse` over each value and falls back to the raw string. Writing `JSON.stringify(value)`
- * makes that single parse the exact inverse of the write, so a status message of `"123"` returns
- * as the string `"123"` and not the number `123` — which is what an unencoded write, or a second
- * decode of our own, would produce.
- */
-const encode = (value: unknown): string => JSON.stringify(value ?? null);
-
-/**
- * The fields whose values are objects. They are the only ones worth repairing if a caller
- * supplied a client built with `automaticDeserialization: false`, since a half-decoded scalar is
- * indistinguishable from a legitimate string.
- */
-const OBJECT_FIELDS: ReadonlySet<string> = new Set(["args", "result", "error"]);
-
-/**
- * Moves a task to a terminal state only if it is not terminal already, in one round trip.
- *
- * `ARGV[1]` is how many terminal-status literals follow; the rest are field/value pairs. Returns
- * 1 when this call performed the transition, 0 when the task was missing or already terminal.
- */
-/**
- * Applies fields only while the task is non-terminal, in one round trip.
- *
- * Same guard as {@link SETTLE_SCRIPT}, and for the same reason: "once a task reaches a terminal
- * status its state does not change" covers the status message too, so a late progress write — or
- * an error message from a handler that carried on past a cancel — must not overwrite it.
- */
-const UPDATE_SCRIPT = `#!lua flags=allow-key-locking
-local current = redis.call('HGET', KEYS[1], 'status')
-if not current then return 0 end
-local terminals = tonumber(ARGV[1])
-for i = 2, 1 + terminals do
-  if current == ARGV[i] then return 0 end
-end
-for i = 2 + terminals, #ARGV, 2 do
-  redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
-end
-return 1
+/** Creates the hash and its TTL unless the key exists, in which case it returns the existing fields. */
+const CREATE_SCRIPT = `#!lua flags=allow-key-locking
+if redis.call('EXISTS', KEYS[1]) == 1 then return redis.call('HGETALL', KEYS[1]) end
+redis.call('HSET', KEYS[1], unpack(ARGV, 2))
+local ttl = tonumber(ARGV[1])
+if ttl > 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
+return false
 `;
 
-const SETTLE_SCRIPT = `#!lua flags=allow-key-locking
-local current = redis.call('HGET', KEYS[1], 'status')
-if not current then return 0 end
-local terminals = tonumber(ARGV[1])
-for i = 2, 1 + terminals do
-  if current == ARGV[i] then return 0 end
+/**
+ * Applies fields only while the task is non-terminal. Returns `[changed, ...fields]`, or nil when
+ * the task is missing. Values are JSON-encoded, hence the quoted statuses.
+ */
+const GUARDED_WRITE_SCRIPT = `#!lua flags=allow-key-locking
+local status = redis.call('HGET', KEYS[1], 'status')
+if not status then return false end
+local changed = 0
+if status ~= '"completed"' and status ~= '"failed"' and status ~= '"cancelled"' then
+  redis.call('HSET', KEYS[1], unpack(ARGV))
+  changed = 1
 end
-for i = 2 + terminals, #ARGV, 2 do
-  redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
-end
-return 1
+local fields = redis.call('HGETALL', KEYS[1])
+table.insert(fields, 1, changed)
+return fields
 `;
 
-const TERMINAL_LITERALS = [...TERMINAL_STATUSES].map(encode);
-
 /**
- * A task record per Redis hash, with `EXPIRE` doing the TTL cleanup the draft asks for.
- *
- * One field per task property, rather than one JSON blob, so an update is a plain `HSET` of just
- * the fields that changed. Two writers — a progress update and a client's cancel — therefore
- * cannot clobber each other's fields, which a read-modify-write of a single blob would.
+ * One Redis hash per task, so concurrent writers only touch their own fields. The TTL is set at
+ * creation and never extended.
  */
 export class RedisTaskStore implements TaskStore {
   private readonly prefix: string;
-  private readonly enableTelemetry: boolean;
-  private readonly resolveRedis: () => Redis;
-  private client: Redis | undefined;
+  private readonly redis: () => Redis;
 
-  constructor(config: RedisTaskStoreConfig | Redis = {}) {
-    // Accept a bare client too, so `new RedisTaskStore(redis)` reads naturally.
-    const options: RedisTaskStoreConfig = isRedisClient(config) ? { redis: config } : config;
-    this.prefix = options.prefix ?? DEFAULT_TASK_PREFIX;
-    this.enableTelemetry = options.enableTelemetry ?? true;
-    this.resolveRedis = () => options.redis ?? redisFromEnv();
+  constructor(config: RedisTaskStoreConfig = {}) {
+    this.prefix = config.prefix ?? DEFAULT_TASK_PREFIX;
+    this.redis = lazy(() => resolveRedis("RedisTaskStore", config.redis, config.enableTelemetry));
   }
 
-  /**
-   * The client, resolved on first use rather than in the constructor.
-   *
-   * Constructing must not need credentials: a store is typically created at module scope, and a
-   * framework evaluates those modules in places where the environment is not populated — a Next.js
-   * production build imports every route module to collect page data, so an eager `fromEnv()` fails
-   * the build of an app that would run fine in production.
-   */
-  private get redis(): Redis {
-    if (!this.client) {
-      this.client = this.resolveRedis();
-      addTelemetry(this.client, { enabled: this.enableTelemetry });
-    }
-    return this.client;
-  }
-
-  async create(task: Task): Promise<void> {
-    const key = this.key(task.taskId);
-    await this.redis.hset(key, toFields(task));
-    // The TTL is set once, at creation. Later updates use HSET, which never touches it, so the
-    // retention window is measured from creation no matter how chatty the handler is.
-    if (task.ttlMs !== null && task.ttlMs > 0) {
-      await this.redis.pexpire(key, task.ttlMs);
-    }
+  async create(task: Task): Promise<Task | null> {
+    const ttl = task.ttlMs !== null && task.ttlMs > 0 ? task.ttlMs : 0;
+    const existing = await this.redis().eval<string[], unknown[] | null>(
+      CREATE_SCRIPT,
+      [this.key(task.taskId)],
+      [String(ttl), ...toArgs(task)],
+    );
+    return toTask(existing);
   }
 
   async get(taskId: string): Promise<Task | null> {
-    const fields = await this.redis.hgetall<Record<string, unknown>>(this.key(taskId));
-    if (!fields || Object.keys(fields).length === 0) return null;
-    return fromFields(fields);
+    const fields = await this.redis().hgetall<Record<string, unknown>>(this.key(taskId));
+    return fields && Object.keys(fields).length > 0 ? fromFields(fields) : null;
   }
 
   async update(taskId: string, patch: TaskPatch): Promise<Task> {
-    // Guarded server-side rather than checked first: a plain HSET would both resurrect a missing
-    // key as a partial, TTL-less task and clobber a task that has already finished.
-    await this.redis.eval<string[], number>(
-      UPDATE_SCRIPT,
-      [this.key(taskId)],
-      this.guardArgs({ ...patch, lastUpdatedAt: new Date().toISOString() }),
-    );
-    const task = await this.get(taskId);
-    if (!task) throw new UnknownTaskError(taskId);
-    return task;
+    const outcome = await this.guardedWrite(taskId, patch);
+    if (!outcome) throw new UnknownTaskError(taskId);
+    return outcome.task;
   }
 
-  async settle(taskId: string, patch: TerminalTaskPatch): Promise<Task | null> {
-    const applied = await this.redis.eval<string[], number>(
-      SETTLE_SCRIPT,
-      [this.key(taskId)],
-      this.guardArgs({ ...patch, lastUpdatedAt: new Date().toISOString() }),
-    );
-    if (applied !== 1) return null;
-    return await this.get(taskId);
-  }
-
-  /** `[terminalCount, ...terminalLiterals, ...fieldValuePairs]`, the shape both scripts expect. */
-  private guardArgs(patch: Partial<Task>): string[] {
-    const args: string[] = [String(TERMINAL_LITERALS.length), ...TERMINAL_LITERALS];
-    for (const [field, value] of Object.entries(toFields(patch))) args.push(field, value);
-    return args;
+  async settle(taskId: string, patch: TerminalTaskPatch): Promise<SettleResult | null> {
+    return await this.guardedWrite(taskId, patch);
   }
 
   /** The Redis key a task is stored under. */
   key(taskId: string): string {
     return this.prefix + taskId;
   }
+
+  private async guardedWrite(taskId: string, patch: TaskPatch): Promise<SettleResult | null> {
+    const reply = await this.redis().eval<string[], unknown[] | null>(
+      GUARDED_WRITE_SCRIPT,
+      [this.key(taskId)],
+      toArgs({ ...patch, lastUpdatedAt: new Date().toISOString() }),
+    );
+    if (!Array.isArray(reply)) return null;
+    const [changed, ...fields] = reply;
+    const task = toTask(fields);
+    return task ? { task, settled: Number(changed) === 1 } : null;
+  }
 }
 
 export type QStashDispatcherConfig = {
-  /** The QStash client. Defaults to `new Client({ token: QSTASH_TOKEN, baseUrl: QSTASH_URL })`. */
-  qstash?: QStashClient;
-  /**
-   * The absolute, publicly reachable URL QStash delivers a task to. Your handler there reads
-   * `{ taskId }` from the body and calls `executeTask(taskId)`.
-   */
+  /** The public URL QStash delivers to: the route serving `tasks.createExecuteHandler()`. */
   url: string;
-  /**
-   * Delivery attempts before QStash gives up and dead-letters the message. Defaults to
-   * {@link DEFAULT_RETRIES}.
-   */
+  /** The QStash client. Defaults to one from `QSTASH_TOKEN` (and `QSTASH_URL`). */
+  qstash?: QStashClient;
+  /** Delivery retries before QStash dead-letters a task. Defaults to {@link DEFAULT_RETRIES}. */
   retries?: number;
   /**
-   * Backoff between attempts, as a QStash delay expression. Defaults to exponential —
-   * {@link DEFAULT_RETRY_DELAY}.
-   *
-   * The retry budget is what has to outlast a restart, and it is easy to get wrong: a flat
-   * `"1000"` with a handful of retries burns every attempt within seconds, so a process killed
-   * mid-task exhausts its redeliveries before it is back up and the task is dead-lettered while
-   * still reading `working`. Size the budget against how long your deploys actually take.
+   * Backoff as a QStash delay expression. Defaults to {@link DEFAULT_RETRY_DELAY}. Size the total
+   * budget against your deploys: it has to outlast a restart.
    */
   retryDelay?: string;
-  /** Extra headers to send with the delivery. */
+  /** Extra headers to send with each delivery. */
   headers?: Record<string, string>;
   /**
-   * Verifies the signature on incoming deliveries in {@link QStashDispatcher.createExecuteHandler}.
-   * Defaults to a `Receiver` built from `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`.
+   * Verifies deliveries. Defaults to one from `QSTASH_CURRENT_SIGNING_KEY` /
+   * `QSTASH_NEXT_SIGNING_KEY`. Required either way: without keys the endpoint refuses to serve.
    */
   receiver?: Receiver;
+  /** Set `false` to skip this package's tag in the telemetry header. */
+  enableTelemetry?: boolean;
 };
 
 /**
- * Publishes each task to QStash, which stores the message durably before delivery and retries a
- * failing endpoint. That is the half Redis cannot do: if the process that accepted the tool call
- * dies mid-run, the record survives in Redis but only a redelivery finishes the work.
+ * Publishes each task to QStash, which stores it durably and retries a failing endpoint. The whole
+ * handler runs in one invocation, so it is bound by your function's time limit; use
+ * `WorkflowDispatcher` for longer work.
  */
 export class QStashDispatcher implements TaskDispatcher {
-  private readonly url: string;
-  private readonly retries: number;
-  private readonly retryDelay: string;
-  private readonly headers: Record<string, string> | undefined;
-  private readonly resolveQStash: () => QStashClient;
-  private client: QStashClient | undefined;
-  private readonly resolveReceiver: () => Receiver;
-  private verifier: Receiver | undefined;
+  private readonly config: QStashDispatcherConfig;
+  private readonly qstash: () => QStashClient;
+  private readonly receiver: () => Receiver;
   private endpoints: TaskEndpoints | undefined;
 
   constructor(config: QStashDispatcherConfig) {
-    this.url = config.url;
-    this.retries = config.retries ?? DEFAULT_RETRIES;
-    this.retryDelay = config.retryDelay ?? DEFAULT_RETRY_DELAY;
-    this.headers = config.headers;
-    this.resolveQStash = () => config.qstash ?? qstashFromEnv();
-    this.resolveReceiver = () => config.receiver ?? receiverFromEnv();
+    this.config = config;
+    this.qstash = lazy(() =>
+      resolveQStash("QStashDispatcher", config.qstash, config.enableTelemetry),
+    );
+    this.receiver = lazy(() => resolveReceiver("QStashDispatcher", config.receiver));
   }
 
   attach(endpoints: TaskEndpoints): void {
     this.endpoints = endpoints;
   }
 
-  /** Resolved on first use, for the same reason as {@link RedisTaskStore}'s client. */
-  private get qstash(): QStashClient {
-    if (!this.client) this.client = this.resolveQStash();
-    return this.client;
-  }
-
-  private get receiver(): Receiver {
-    if (!this.verifier) this.verifier = this.resolveReceiver();
-    return this.verifier;
-  }
-
-  async dispatch(taskId: string): Promise<string | undefined> {
-    const message = await this.qstash.publishJSON({
-      url: this.url,
-      body: { taskId },
-      retries: this.retries,
-      retryDelay: this.retryDelay,
-      headers: this.headers,
-      // The failure callback comes back to this same endpoint. QStash signs it against the URL it
-      // posts to, so one URL means one signature check and one route for the application.
-      failureCallback: this.url,
-      // QStash delivery is at-least-once. Pinning deduplication to the task id means a
-      // double-submitted tool call cannot enqueue the same task twice.
-      deduplicationId: taskId,
+  async dispatch(task: Task): Promise<string | undefined> {
+    const message = await this.qstash().publishJSON({
+      url: this.config.url,
+      body: { taskId: task.taskId },
+      retries: this.config.retries ?? DEFAULT_RETRIES,
+      retryDelay: this.config.retryDelay ?? DEFAULT_RETRY_DELAY,
+      headers: this.config.headers,
+      // Comes back to the same route once retries are exhausted, and settles the task `failed`.
+      failureCallback: this.config.url,
+      // Per record, not per id: QStash remembers ids for 10 minutes, longer than a keyed task's TTL.
+      deduplicationId: dispatchKey(task),
     });
     return Array.isArray(message) ? message[0]?.messageId : message.messageId;
   }
 
   async cancel(dispatchId: string): Promise<void> {
-    await this.qstash.messages.cancel(dispatchId);
+    await this.qstash().messages.cancel(dispatchId);
   }
 
   /**
-   * The delivery endpoint, as a fetch handler: `export const POST = tasks.createExecuteHandler()`.
+   * The delivery endpoint. A delivery (`{ taskId }`) runs the task; a failure callback
+   * (`sourceBody`) settles it `failed`.
    *
-   * One route serves both things QStash sends here, told apart by the body:
-   *
-   * - a **delivery** (`{ taskId }`) — run the task;
-   * - a **failure callback**, which carries `sourceBody` and fires only once every retry is
-   *   exhausted — settle the task `failed`.
-   *
-   * That second half is why nothing in this package counts attempts. QStash already knows when it
-   * has given up; asking it rather than re-deriving it from a retry header means the answer cannot
-   * drift from the configuration.
-   *
-   * Status codes are the retry contract:
-   * - **200** — the task ran, was already terminal, or the failure was recorded. Done.
-   * - **401** — the signature did not verify. Deliberately terminal: a retry cannot fix a bad
-   *   signature, and answering 500 would make QStash replay an unauthenticated request.
-   * - **400** — the body was neither a delivery nor a failure callback. Also terminal.
-   * - **500** — the handler threw. This is the one that asks for a redelivery.
+   * - **200**: done.
+   * - **500**: the handler threw; QStash delivers again.
+   * - **489** with `Upstash-NonRetryable-Error`: bad signature or body. QStash retries every other
+   *   non-2xx, so this is the only way to stop it.
    */
   createExecuteHandler(): (request: Request) => Promise<Response> {
     return async (request: Request): Promise<Response> => {
       const endpoints = this.endpoints;
       if (!endpoints) {
-        throw new Error(
-          "This dispatcher is not attached to a task layer — pass it to createTaskLayer().",
-        );
+        throw new Error("QStashDispatcher is not attached — pass it to createTaskLayer().");
       }
-
+      // Outside the try: missing signing keys are a configuration error, not a bad signature.
+      const receiver = this.receiver();
       const body = await request.text();
-
       try {
-        // Verified against the URL we published to, not `request.url`: behind a proxy the
-        // incoming URL is the internal one, while QStash signed the public destination.
-        await this.receiver.verify({
+        // Against the URL we published to: behind a proxy, `request.url` is the internal one.
+        await receiver.verify({
           signature: request.headers.get("upstash-signature") ?? "",
           body,
-          url: this.url,
+          url: this.config.url,
         });
       } catch {
-        return new Response("invalid signature", { status: 401 });
+        return nonRetryable("invalid signature");
       }
 
-      let payload: QStashDelivery;
+      let payload: DeliveryBody;
       try {
-        payload = JSON.parse(body) as QStashDelivery;
+        payload = JSON.parse(body) as DeliveryBody;
       } catch {
-        return new Response("malformed body", { status: 400 });
+        return nonRetryable("malformed body");
       }
 
       const failure = readFailureCallback(payload);
       if (failure) {
         await endpoints.fail(failure.taskId, failure.error);
-        // 200: the failure is recorded. A non-2xx here would only make QStash retry the callback.
         return new Response("recorded");
       }
-
-      if (!payload.taskId) return new Response("missing taskId", { status: 400 });
+      if (!payload.taskId) return nonRetryable("missing taskId");
 
       try {
-        // A queue delivery adds nothing to the handler's context.
         await endpoints.run(payload.taskId, undefined);
         return new Response("ok");
-      } catch {
-        // The task is left `working` on purpose; the non-2xx is purely how you ask QStash for
-        // another delivery. If it runs out, the failure callback above settles the task.
+      } catch (error) {
+        console.error(
+          `[mcp-toolkit] task ${payload.taskId} failed, asking QStash to retry:`,
+          error,
+        );
         return new Response("retry", { status: 500 });
       }
     };
   }
 }
 
-/** Either shape QStash posts to the execute endpoint. */
-type QStashDelivery = {
-  /** Present on a normal delivery: the body we published. */
+/** Either body QStash posts to the execute endpoint. */
+type DeliveryBody = {
+  /** A delivery: the body we published. */
   taskId?: string;
-  /** Present on a failure callback: base64 of the body of the message that failed. */
+  /** A failure callback: base64 of the failed message's body. */
   sourceBody?: string;
-  /** The failed response's status. */
+  /** The last response's status. */
   status?: number;
-  /** Base64 of the failed response's body. */
+  /** Base64 of the last response's body. */
   body?: string;
-  /** The dead-letter entry the message landed in, so an operator can find and replay it. */
   dlqId?: string;
   retried?: number;
   maxRetries?: number;
 };
 
-/**
- * Recognises a failure callback and turns it into the error the task will carry.
- *
- * `sourceBody` is the discriminator: a normal delivery is the `{ taskId }` we published and has no
- * such field, while the callback wraps it. Both are decoded from base64 per QStash's contract.
- */
 function readFailureCallback(
-  payload: QStashDelivery,
+  payload: DeliveryBody,
 ): { taskId: string; error: TaskError } | undefined {
   if (typeof payload.sourceBody !== "string") return undefined;
-
   let taskId: string | undefined;
   try {
     taskId = (JSON.parse(decodeBase64(payload.sourceBody)) as { taskId?: string }).taskId;
@@ -403,8 +279,7 @@ function readFailureCallback(
     return undefined;
   }
   if (!taskId) return undefined;
-
-  const responseBody = typeof payload.body === "string" ? decodeBase64(payload.body) : undefined;
+  const response = typeof payload.body === "string" ? decodeBase64(payload.body) : undefined;
   return {
     taskId,
     error: {
@@ -412,93 +287,34 @@ function readFailureCallback(
       message: `Delivery failed after ${payload.retried ?? payload.maxRetries ?? "all"} retries${
         payload.status ? ` (last status ${payload.status})` : ""
       }`,
-      // Keep what an operator needs to find the message again and see what the endpoint said.
-      data: { dlqId: payload.dlqId, status: payload.status, response: responseBody },
+      data: { dlqId: payload.dlqId, status: payload.status, response },
     },
   };
 }
 
+const decodeBase64 = (value: string): string => fromUtf8(fromBase64(value));
+
 /**
- * Decodes QStash's base64 fields, through whichever primitive the runtime has. Both globals are
- * reached via `globalThis` so this file stays free of runtime-specific globals — it has to work on
- * Node, edge and worker runtimes alike.
+ * Hash fields as `HSET` arguments. Every value is JSON-encoded, so the client's automatic
+ * deserialization on read is its exact inverse (`"123"` stays a string).
  */
-type Base64Global = {
-  atob?: (value: string) => string;
-  Buffer?: { from(value: string, encoding: string): { toString(encoding: string): string } };
-};
-
-function decodeBase64(value: string): string {
-  const runtime = globalThis as unknown as Base64Global;
-  if (runtime.atob) return runtime.atob(value);
-  if (runtime.Buffer) return runtime.Buffer.from(value, "base64").toString("utf8");
-  throw new Error("No base64 decoder available in this runtime.");
-}
-
-/** Encodes a partial task into the hash fields that represent it. `undefined` values are skipped. */
-function toFields(patch: Partial<Task>): Record<string, string> {
-  const fields: Record<string, string> = {};
+function toArgs(patch: Partial<Task>): string[] {
+  const args: string[] = [];
   for (const [field, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
-    fields[field] = encode(value);
+    if (value !== undefined) args.push(field, JSON.stringify(value ?? null));
   }
-  return fields;
+  return args;
 }
 
-/**
- * Turns stored hash fields back into a task. The client's own deserialization has already undone
- * {@link encode}, so this only skips absent fields and repairs objects that arrived as strings.
- */
+/** A flat field/value list from a script's `HGETALL`, as a task. */
+function toTask(reply: unknown[] | null | undefined): Task | null {
+  if (!Array.isArray(reply) || reply.length === 0) return null;
+  const fields: Record<string, unknown> = {};
+  for (let i = 0; i + 1 < reply.length; i += 2) fields[String(reply[i])] = reply[i + 1];
+  return fromFields(fields);
+}
+
 function fromFields(fields: Record<string, unknown>): Task {
-  const task: Record<string, unknown> = {};
-  for (const [field, raw] of Object.entries(fields)) {
-    if (raw === undefined) continue;
-    if (typeof raw === "string" && OBJECT_FIELDS.has(field)) {
-      try {
-        task[field] = JSON.parse(raw);
-        continue;
-      } catch {
-        // Not JSON after all — fall through and keep the raw value.
-      }
-    }
-    // `ttlMs: null` is meaningful ("unlimited"), so nulls are kept rather than dropped.
-    task[field] = raw;
-  }
-  if (!("ttlMs" in task)) task.ttlMs = null;
-  return task as Task;
-}
-
-function isRedisClient(value: RedisTaskStoreConfig | Redis): value is Redis {
-  return typeof (value as Redis).hgetall === "function";
-}
-
-function redisFromEnv(): Redis {
-  const { UPSTASH_REDIS_REST_URL: url, UPSTASH_REDIS_REST_TOKEN: token } = process.env;
-  if (!url || !token) {
-    throw new Error(
-      "RedisTaskStore needs a client: pass `redis`, or set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.",
-    );
-  }
-  return new Redis({ url, token });
-}
-
-function receiverFromEnv(): Receiver {
-  const currentSigningKey = process.env.QSTASH_CURRENT_SIGNING_KEY;
-  const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY;
-  if (!currentSigningKey || !nextSigningKey) {
-    throw new Error(
-      "createExecuteHandler needs signing keys: pass `receiver`, or set QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY.",
-    );
-  }
-  return new Receiver({ currentSigningKey, nextSigningKey });
-}
-
-function qstashFromEnv(): QStashClient {
-  const token = process.env.QSTASH_TOKEN;
-  if (!token) {
-    throw new Error("QStashDispatcher needs a client: pass `qstash`, or set QSTASH_TOKEN.");
-  }
-  // QSTASH_URL points the client at the local dev server when one is running; the hosted URL is
-  // the client's own default.
-  return new QStashClient({ token, baseUrl: process.env.QSTASH_URL });
+  // `ttlMs: null` means unlimited, so an absent field reads as null too.
+  return { ttlMs: null, ...fields } as Task;
 }

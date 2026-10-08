@@ -682,7 +682,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 - **Layout:** `src/tasks/` (`index.ts` core + `upstash.ts` backends) and `src/events/` (`index.ts`
   exports core *and* Redis/QStash backends — one entry point by choice), built to
   `dist/tasks/{index,upstash}.js` and `dist/events/index.js`.
-  There is no root export. Shared: `src/telemetry.ts` (tag `@upstash/mcp-toolkit`), `src/version.ts`.
+  There is no root export. Shared: `src/shared/{auth,clients,crypto}.ts` (principal + `authOf`,
+  lazy env clients + `nonRetryable`, WebCrypto helpers), `src/telemetry.ts`, `src/version.ts`.
+  **WebCrypto only** (no `node:crypto` / `node:net`), so it runs on edge runtimes; `signWebhook`,
+  `SecretBox.seal/open` and `subscriptionId` are async for that reason.
 - **Tools mode, not the Tasks extension (since 2026-10).** A task tool answers with an ordinary tool
   result (`structuredContent` = the task object, plus a text line telling the model to poll); two
   shared tools, `task_status` and `task_cancel`, are registered once per server. No `tasks/*`
@@ -691,16 +694,51 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `io.modelcontextprotocol/tasks` as of 2026-10-07, and a server must not return a task to a client
   that did not. A native adapter can sit on the same store/dispatcher later — don't reintroduce the
   old `methods`/`onMissingCapability`/`-32021` machinery into the core.
-- **Ownership:** `createTaskLayer({ principal })` receives `ctx.http.authInfo` (that is where the
-  SDK v2 puts transport auth on the handler context) and stamps `task.owner`; `task_status` /
-  `task_cancel` report a non-owned task as *unknown* (no existence oracle). Owners compare as strings
-  because Redis auto-deserialization turns numeric-looking owners into numbers.
-- **Idempotency:** `registerTask(..., { idempotencyKey: (args) => string })` makes the task id
-  `sha256([owner, tool, key])`; a hit returns the existing task. Racing first calls both write the
-  same record and the dispatchers dedupe on task id (QStash `deduplicationId`, Workflow
-  `workflowRunId`) — acceptable, documented.
-- `executeTask` on a missing/expired task returns `null` (QStash acks 200) instead of throwing — a
-  retry cannot fix it.
+- **`define` / `register`, never one call (DX-3022 review item 1).** `tasks.define(name, config,
+  handler)` runs at module scope and fills the handler map; `tasks.register(server)` attaches every
+  defined tool + the shared tools inside the per-request factory. The old
+  `registerTask(server, …)` only filled the map when a server was built, so a cold instance serving
+  only `/api/execute` threw "No task handler" and every delivery 500'd — don't bring it back, and
+  don't reintroduce the top-level `createServer();` workaround.
+- **Ownership (`principal` is required, both layers).** `createTaskLayer` / `createEventLayer`
+  throw without it. It receives `ctx.http.authInfo` (where SDK v2 puts transport auth) and stamps
+  `task.owner` / `subscription.owner`. Returning `undefined` = not authenticated: the call is
+  refused (`isError` "Not authenticated" for tools, reason `not_authenticated` for events/*) — no
+  anonymous mode, fail closed; a stored task without an owner answers nobody. Single-tenant servers
+  pass `principal: () => "local"`. `task_status` / `task_cancel` report a non-owned task as
+  *unknown* (no existence oracle). Owners are JSON-encoded on write, so auto-deserialization hands
+  them back as strings and a plain `===` compares them. The public `TaskLayer` is only
+  `{ define, register, createExecuteHandler, getTask, cancelTask }`; a dispatcher gets `run` /
+  `fail` through `attach`. Tests drive deliveries with `ManualDispatcher` / `CountingDispatcher`
+  from `src/test-support.ts`, not with knobs on the public classes.
+- **Idempotency:** `define(..., { idempotencyKey: (args) => string })` makes the task id
+  `sha256([owner, tool, key])`. `TaskStore.create` is **create-if-absent** and returns the existing
+  task when the id is taken (one Lua script on Redis), so a keyed retry is one round trip and two
+  racing first calls cannot both create.
+- **Signing keys required, no fail-open.** `QStashDispatcher`, `WorkflowDispatcher` and
+  `QStashDelivery` verify with `receiver` or a `Receiver` from the `QSTASH_*_SIGNING_KEY` env vars,
+  and throw on the first request when neither exists (resolved outside the verify `try`, so it is
+  not misreported as a 401). `WorkflowDispatcher` passes `receiver` to `serve()` explicitly because
+  Workflow's own default silently skips verification when the env vars are missing; the `serve`
+  handler is built on the first request so route modules still evaluate at build time.
+- **Telemetry:** `addTelemetry` (Redis) and `addQStashTelemetry` (QStash `Client`, or a Workflow
+  `Client` via its `.client`) append `@upstash/mcp-toolkit@<v>` to `Upstash-Telemetry-Sdk`, once
+  per client; `enableTelemetry: false` on each backend opts out.
+- **Round trips:** `RedisTaskStore.create` is one Lua script (create-if-absent + `PEXPIRE`);
+  `update` and `settle` share one guarded-write script (terminal statuses hardcoded as JSON literals)
+  that returns `[changed, ...HGETALL]`. `settle` returns `{ task, settled }` (null only when the task
+  is missing): `settled` drives `onSettle` and dispatcher cancel, and the record comes back even when
+  nothing changed, so `cancelTask` is one write. `SubscriptionStore.delete` takes
+  `{ id, event, argsKey, owner }` so the Redis store drops record + index in one pipeline.
+- **Dispatch dedupe is per record, not per task id:** `dispatchKey(task)` =
+  `${taskId}-${createdAt ms}`. QStash remembers a `deduplicationId` for 10 minutes and Workflow
+  refuses a reused `workflowRunId`, while a keyed task id comes back once its 5-minute record
+  expires. A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
+- **No secret defaults:** `MCP_EVENTS_SECRET_KEY` has no fallback, demo included; the event layer
+  resolves it on first use (not at construction, so builds without env still work) and a missing key
+  throws rather than dropping deliveries.
+- Running a missing/expired task is a no-op (QStash acks 200) instead of throwing — a retry cannot
+  fix it. Handler throws are logged with the task id before the 500.
 - **Design choices that differ from the naive version** (all covered by tests):
   `TaskStore.settle` is a *guarded, atomic* terminal transition (a Lua script on Redis) so a
   `task_cancel` and the executor completing cannot clobber each other — first terminal write wins;
@@ -724,8 +762,12 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   as `tasks.createExecuteHandler()`): signature verification, task-id parsing, attempt counting and
   the retry status codes live in the transport, so an app route is one line and cannot forget
   `Receiver.verify`. Modelled on Vercel Workflow's `Queue.createQueueHandler` (see below). Status
-  contract: **200** ack, **401** bad signature, **400** no task id (both terminal — a retry cannot fix
-  either), **500** only when the task threw and QStash still has attempts. Verification uses the
+  contract: **200** ack, **500** only when the task threw, and **489 + `Upstash-NonRetryable-Error:
+  true`** for a bad signature or body. QStash retries *every* other non-2xx, 401 and 400 included
+  (checked against the QStash retry docs 2026-10-08), so 489 is the only way to stop it. The same
+  contract holds for `QStashDelivery`. The receiver is resolved lazily but outside the verify `try`,
+  on purpose: resolving at `createExecuteHandler()` would fail Next.js builds that import route
+  modules without env. Verification uses the
   **published** `url`, not `request.url`, because behind a proxy the incoming URL is the internal one
   while QStash signed the public destination.
 - **Ecosystem context (verified 2026-09).** Keep two axes apart when reading this — *is there an
@@ -753,10 +795,16 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   unsubscribe` registered via `server.server.setRequestHandler(method, { params }, handler)` and
   `registerCapabilities({ events: {} } as never)` (the SDK has no events types). Subscription id =
   `sub_` + sha256(canonical `[owner, url, event, args]`). Matching = exact canonical args: emit
-  enumerates every subset of its args (cap 8 keys) and the store looks those keys up, so a
-  subscription to `{}` gets everything. Secrets are AES-256-GCM sealed under `secretKey`
-  (`MCP_EVENTS_SECRET_KEY`); a refresh with the same secret skips the challenge. Callback errors are
-  `ProtocolError(-32015, msg, { reason })`; bad params are `-32602` with a `reason`.
+  enumerates every subset of its args (cap 8 keys) and the store looks those keys up. **Every `emit`
+  names `owner` or `owners`** (DX-3022 review S4) and the Redis index is per
+  `(event, owner, argsKey)`, so a `{}` subscription gets everything *of its own user* and nothing of
+  anyone else's. Secrets are AES-256-GCM sealed under `secretKey` (`MCP_EVENTS_SECRET_KEY`); a
+  refresh with the same secret skips the challenge. A failed challenge is always the same
+  `ProtocolError(-32015, "Callback URL failed verification")` with no reason or status (no network
+  probing); the detail is `console.warn`ed. The challenge answer is read capped at 4 KB, delivery
+  bodies are cancelled, and 3xx is `dropped`. `callbackUrlProblem` strips trailing dots and checks
+  IPv4 embedded in IPv6 (mapped, compatible, NAT64, 6to4); it does not resolve DNS. Bad params are
+  `-32602` with a `reason`.
   **QStash `deduplicationId` cannot contain `:`** (dev server answers 400) — ids are
   `${eventId}_${subscriptionId}` sanitized; this was caught only by the e2e smoke.
   The task bridge is `createTaskLayer({ onSettle })`, called only by the write that performed the

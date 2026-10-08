@@ -1,19 +1,17 @@
 /**
- * MCP Events for servers on the official TypeScript SDK.
- *
- * `createEventLayer` gives you typed event definitions, the three `events/*` methods a host calls
- * to subscribe, and an `emit` that fans a payload out to every matching subscription as a signed
- * Standard Webhooks POST. Where subscriptions live and how deliveries are retried are the two
- * seams in `types.ts`; `upstash.ts` fills them with Redis and QStash.
- *
- * The wire format follows the MCP Triggers & Events draft as shipped by ChatGPT: webhook delivery
- * only, a signed verification challenge before the first event, deterministic subscription ids,
- * and expiring subscriptions the host refreshes by subscribing again.
+ * MCP Events for servers on the official TypeScript SDK: typed event definitions, the three
+ * `events/*` methods a host calls, and an owner-scoped `emit` that delivers signed Standard
+ * Webhooks POSTs. Webhook delivery only, as ChatGPT ships it.
  */
-import { createHash, randomBytes } from "node:crypto";
 import { ProtocolError, type McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
-import type { CallerAuth } from "../tasks/core.js";
+import {
+  authOf,
+  requirePrincipal,
+  type CallerAuth,
+  type PrincipalResolver,
+} from "../shared/auth.js";
+import { randomBase64Url, randomHex, sha256Hex } from "../shared/crypto.js";
 import type {
   DeliveryJob,
   EventDelivery,
@@ -21,11 +19,11 @@ import type {
   SendOutcome,
   SubscriptionStore,
 } from "./types.js";
-import { SecretBox, callbackUrlProblem, decodeSecret, postSigned } from "./webhooks.js";
+import { SecretBox, callbackUrlProblem, decodeSecret, postSigned, readCapped } from "./webhooks.js";
 
 /** The draft's cap on a delivered envelope. */
 export const MAX_PAYLOAD_BYTES = 256 * 1024;
-/** `CallbackEndpointError`: the callback failed verification or could not be reached. */
+/** `CallbackEndpointError`: the callback failed verification. */
 export const CALLBACK_ENDPOINT_ERROR = -32015;
 const INVALID_PARAMS = -32602;
 
@@ -35,35 +33,31 @@ const DEFAULT_MAX_TTL_MS = 30 * DAY_MS;
 const DEFAULT_TIMEOUT_MS = 10_000;
 /** Matching enumerates subsets of the emitted arguments, so their count is capped. */
 const MAX_MATCH_KEYS = 8;
+/** The challenge echo is tiny; never read more than this from a callback. */
+const MAX_CHALLENGE_RESPONSE_BYTES = 4096;
 
 export type { CallerAuth };
 
 export type EventLayerOptions = {
-  /** Where subscriptions live. */
   store: SubscriptionStore;
-  /** How deliveries get to the callback, with retries. */
   delivery: EventDelivery;
   /**
-   * Encrypts the hosts' signing secrets at rest. Any string works; generate one with
-   * `openssl rand -base64 32`. Defaults to the `MCP_EVENTS_SECRET_KEY` env var.
+   * Encrypts the hosts' signing secrets at rest. Defaults to `MCP_EVENTS_SECRET_KEY`; one of the
+   * two is required. Generate one with `openssl rand -base64 32`.
    */
   secretKey?: string;
   /**
-   * Who is calling, as a stable string — usually your user id. It is part of the subscription id,
-   * it is handed to each event's `authorize`, and `emit({ owner })` uses it to deliver only to
-   * that caller's subscriptions. Same contract as the tasks layer's `principal`.
+   * Who is calling, usually your user id. Required. Every subscription is owned by its caller,
+   * `undefined` refuses the subscribe, and `emit` only reaches the owners it names.
    */
-  principal?: (auth: CallerAuth | undefined) => string | undefined;
+  principal: PrincipalResolver;
   defaults?: {
     /** Lifetime granted when the host does not ask for one. Defaults to 7 days. */
     ttlMs?: number;
-    /** The most the server grants, whatever the host asks. Defaults to 30 days. */
+    /** The most the server grants. Defaults to 30 days. */
     maxTtlMs?: number;
   };
-  /**
-   * Accept `http://` and private-network callback URLs. For local development only: it turns
-   * off the server-side request forgery checks.
-   */
+  /** Accept `http://` and private callback URLs. Local development only: it disables the SSRF checks. */
   allowInsecureCallbacks?: boolean;
   /** Timeout for each POST to a callback. Defaults to 10s. */
   timeoutMs?: number;
@@ -71,49 +65,43 @@ export type EventLayerOptions = {
   fetch?: typeof fetch;
 };
 
-/** Subscription arguments are always an object schema, so they can be matched field by field. */
+/** Subscription arguments are an object schema, so they can be matched field by field. */
 export type EventInputSchema = z.ZodObject;
 
 export type EventConfig<Input extends EventInputSchema, Payload extends z.ZodType> = {
   title?: string;
-  /** Tells the model and the user what the event means. */
+  /** What the event means, for the model and the user. */
   description: string;
   /** What a subscriber filters on, e.g. `z.object({ repo: z.string() })`. Defaults to none. */
   input?: Input;
   /** The shape of `data` in every delivery. */
   payload: Payload;
   /**
-   * Decides whether a caller may subscribe with these arguments, e.g. whether they can see that
-   * repository. Runs on every subscribe and refresh. Leave unset to allow everyone.
+   * Whether this caller may subscribe with these arguments, e.g. whether they can see that
+   * document. Runs on every subscribe and refresh. Unset allows any authenticated caller.
    */
   authorize?: (
     args: z.output<Input>,
-    caller: { principal?: string; auth?: CallerAuth },
+    caller: { principal: string; auth?: CallerAuth },
   ) => boolean | Promise<boolean>;
-  /**
-   * An extra in-process filter, for conditions exact argument matching cannot express — "only
-   * comments longer than 100 characters". Runs per subscription on every emit.
-   */
+  /** An extra filter for what exact argument matching cannot express. Runs per subscription. */
   match?: (args: z.output<Input>, payload: z.output<Payload>) => boolean;
 };
 
-export type EmitOptions<Args> = {
+/** Who receives an event: one owner, or several (e.g. everyone on a document). */
+export type EmitRecipients =
+  | { owner: string; owners?: never }
+  | { owners: readonly string[]; owner?: never };
+
+export type EmitOptions<Args> = EmitRecipients & {
   /**
-   * The values subscriptions are matched on. A subscription matches when every argument it gave
-   * equals the value here, so `{ repo: "a", branch: "main" }` reaches subscribers of
-   * `{ repo: "a" }`, of `{ repo: "a", branch: "main" }`, and of `{}`.
-   *
-   * Defaults to the payload fields whose names appear in the input schema.
+   * The values subscriptions are matched on. `{ repo: "a", branch: "main" }` reaches subscribers
+   * of `{ repo: "a" }`, of both, and of `{}`. Defaults to the payload fields named in the input.
    */
   args?: Partial<Args>;
-  /** Deliver only to subscriptions this principal created. */
-  owner?: string;
-  /**
-   * The event id, stable across retries and sent as `webhook-id`. Pass your own (e.g. the id of
-   * the record that changed) so that emitting the same thing twice is deduplicated.
-   */
+  /** Stable across retries and sent as `webhook-id`. Reuse an id to deduplicate an emit. */
   eventId?: string;
-  /** When the event happened. Defaults to now. */
+  /** Defaults to now. */
   timestamp?: Date;
 };
 
@@ -125,11 +113,11 @@ export type EmitResult = {
 
 export type EventHandle<Input extends EventInputSchema, Payload extends z.ZodType> = {
   readonly name: string;
-  /** Validates the payload and delivers it to every matching subscription. */
-  emit(payload: z.input<Payload>, options?: EmitOptions<z.output<Input>>): Promise<EmitResult>;
+  /** Validates the payload and delivers it to the named owners' matching subscriptions. */
+  emit(payload: z.input<Payload>, options: EmitOptions<z.output<Input>>): Promise<EmitResult>;
 };
 
-/** The descriptor `events/list` returns for each event. */
+/** What `events/list` returns for each event. */
 export type EventDescriptor = {
   name: string;
   title?: string;
@@ -140,7 +128,7 @@ export type EventDescriptor = {
 };
 
 export type EventLayer = {
-  /** Declares an event. Call it at module load, so every instance knows every event. */
+  /** Declares an event. Call it at module scope, so every instance knows every event. */
   define<
     Input extends EventInputSchema = z.ZodObject<Record<string, never>>,
     Payload extends z.ZodType = z.ZodType,
@@ -148,16 +136,12 @@ export type EventLayer = {
     name: string,
     config: EventConfig<Input, Payload>,
   ): EventHandle<Input, Payload>;
-  /** Declares the `events` capability and serves `events/list`, `events/subscribe`, `events/unsubscribe`. */
+  /** Declares the `events` capability and serves `events/list`, `/subscribe` and `/unsubscribe`. */
   register(server: McpServer): void;
-  /** The transport's delivery endpoint, e.g. `export const POST = events.createDeliveryHandler()`. */
+  /** The transport's delivery endpoint: `export const POST = events.createDeliveryHandler()`. */
   createDeliveryHandler(): (request: Request) => Promise<Response>;
-  /** Sends one delivery attempt. Transports call this; exposed for custom ones. */
-  send(job: DeliveryJob): Promise<SendOutcome>;
   /** The descriptors `events/list` returns. */
   list(): EventDescriptor[];
-  readonly store: SubscriptionStore;
-  readonly delivery: EventDelivery;
 };
 
 /** Thrown by `emit` when the envelope would exceed the draft's 256 KiB cap. */
@@ -195,27 +179,35 @@ const unsubscribeParams = z.looseObject({
 const listParams = z.looseObject({ cursor: z.string().nullish() });
 
 export function createEventLayer(options: EventLayerOptions): EventLayer {
-  const { store, delivery, principal } = options;
-  const secretKey = options.secretKey ?? getEnv("MCP_EVENTS_SECRET_KEY");
-  if (!secretKey) {
-    throw new Error(
-      "createEventLayer needs a secretKey (or MCP_EVENTS_SECRET_KEY) to encrypt webhook secrets at rest.",
-    );
-  }
-  const box = new SecretBox(secretKey);
+  const { store, delivery } = options;
+  const principal = requirePrincipal(options.principal, "createEventLayer");
+  // Resolved on first use, because layers are built at module scope during framework builds.
+  // There is no default key: a missing one fails the first subscribe or delivery.
+  let box: SecretBox | undefined;
+  const secretBox = (): SecretBox => {
+    if (box) return box;
+    const secretKey = options.secretKey ?? getEnv("MCP_EVENTS_SECRET_KEY");
+    if (!secretKey) {
+      throw new Error(
+        "createEventLayer needs a secretKey (or MCP_EVENTS_SECRET_KEY) to encrypt webhook secrets at rest. Generate one with: openssl rand -base64 32",
+      );
+    }
+    return (box = new SecretBox(secretKey));
+  };
+  /** A secret sealed under a rotated key no longer opens, which forces a re-verification. */
+  const openOrEmpty = async (sealed: string): Promise<string> => {
+    const opener = secretBox(); // a missing key throws here, outside the catch
+    try {
+      return await opener.open(sealed);
+    } catch {
+      return "";
+    }
+  };
   const ttl = {
     initial: options.defaults?.ttlMs ?? DEFAULT_TTL_MS,
     max: options.defaults?.maxTtlMs ?? DEFAULT_MAX_TTL_MS,
   };
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  /** A secret sealed under a rotated key no longer opens; that just forces a re-verification. */
-  const openOrEmpty = (sealed: string): string => {
-    try {
-      return box.open(sealed);
-    } catch {
-      return "";
-    }
-  };
   const definitions = new Map<string, Definition>();
 
   function define<Input extends EventInputSchema, Payload extends z.ZodType>(
@@ -245,18 +237,24 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
   async function emit(
     name: string,
     rawPayload: unknown,
-    emitOptions: EmitOptions<unknown> = {},
+    emitOptions: EmitOptions<unknown>,
   ): Promise<EmitResult> {
     const definition = definitions.get(name);
     if (!definition) throw new Error(`Unknown event "${name}"`);
+    const owners =
+      emitOptions?.owners ?? (emitOptions?.owner === undefined ? undefined : [emitOptions.owner]);
+    if (!owners) {
+      throw new Error(
+        `emit("${name}") needs \`owner\` or \`owners\`: events only reach the subscriptions of the users you name.`,
+      );
+    }
     const payload = definition.config.payload.parse(rawPayload);
     const args = (emitOptions.args ?? pickArgs(definition.input, payload)) as Record<
       string,
       unknown
     >;
-
     const envelope: EventEnvelope = {
-      eventId: emitOptions.eventId ?? `evt_${randomBytes(12).toString("hex")}`,
+      eventId: emitOptions.eventId ?? `evt_${randomHex(12)}`,
       name,
       timestamp: (emitOptions.timestamp ?? new Date()).toISOString(),
       data: payload,
@@ -264,15 +262,13 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     };
     const bytes = new TextEncoder().encode(JSON.stringify(envelope)).length;
     if (bytes > MAX_PAYLOAD_BYTES) throw new EventPayloadTooLargeError(bytes);
+    if (owners.length === 0) return { eventId: envelope.eventId, matched: 0 };
 
-    const candidates = await store.find(name, matchKeys(args));
-    const now = Date.now();
-    const targets = candidates.filter(
-      (sub) =>
-        sub.expiresAt > now &&
-        (emitOptions.owner === undefined || String(sub.owner ?? "") === emitOptions.owner) &&
-        (!definition.config.match || definition.config.match(sub.args as never, payload as never)),
-    );
+    const candidates = await store.find(name, [...new Set(owners)], matchKeys(args));
+    const match = definition.config.match;
+    const targets = match
+      ? candidates.filter((sub) => match(sub.args as never, payload as never))
+      : candidates;
     if (targets.length > 0) {
       await delivery.enqueue(targets.map((sub) => ({ subscriptionId: sub.id, envelope })));
     }
@@ -282,9 +278,8 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
   async function send(job: DeliveryJob): Promise<SendOutcome> {
     const sub = await store.get(job.subscriptionId);
     if (!sub) return "dropped";
-    // Sealed under a key that has since rotated: undeliverable until the host refreshes.
-    const secret = openOrEmpty(sub.encryptedSecret);
-    if (!secret) return "dropped";
+    const secret = await openOrEmpty(sub.encryptedSecret);
+    if (!secret) return "dropped"; // sealed under a rotated key: wait for the host's refresh
     let response: Response;
     try {
       response = await postSigned({
@@ -299,12 +294,17 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     } catch {
       return "retry";
     }
+    // Release the connection: the body is never needed.
+    await response.body?.cancel().catch(() => undefined);
     if (response.ok) return "delivered";
     if (response.status === 410) {
-      await store.delete(sub.id);
+      await store.delete(sub);
       return "gone";
     }
-    if (response.status === 413) return "dropped";
+    // Redirects are never followed, so retrying one would fail the same way.
+    if (response.status === 413 || (response.status >= 300 && response.status < 400)) {
+      return "dropped";
+    }
     return "retry";
   }
 
@@ -322,7 +322,6 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       throw invalid(`Invalid arguments: ${parsed.error.message}`, "invalid_arguments");
     }
     const args = parsed.data as Record<string, unknown>;
-
     const secret = params.delivery.secret;
     if (!secret || !decodeSecret(secret)) {
       throw invalid(
@@ -336,7 +335,8 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       throw invalid(problem ?? "callback URL is missing", "invalid_callback_url");
 
     const auth = authOf(ctx);
-    const owner = principal?.(auth);
+    const owner = principal(auth);
+    if (owner === undefined) throw notAuthenticated();
     if (
       definition.config.authorize &&
       !(await definition.config.authorize(args, { principal: owner, auth }))
@@ -344,11 +344,10 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       throw invalid("Not authorized to subscribe with these arguments", "not_authorized");
     }
 
-    const id = subscriptionId(owner, url, params.name, args);
+    const id = await subscriptionId(owner, url, params.name, args);
     const existing = await store.get(id);
-    // A refresh with the same secret skips the challenge; a new or rotated secret proves the
-    // callback again, so a host cannot point someone else's URL at us.
-    const verified = existing !== null && openOrEmpty(existing.encryptedSecret) === secret;
+    // A refresh with the same secret skips the challenge; a new secret proves the callback again.
+    const verified = existing !== null && (await openOrEmpty(existing.encryptedSecret)) === secret;
     if (!verified) await verifyCallback(url, secret, id);
 
     const requested =
@@ -362,8 +361,9 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       args,
       argsKey: canonicalJson(args),
       url,
-      encryptedSecret: verified && existing ? existing.encryptedSecret : box.seal(secret),
-      ...(owner === undefined ? {} : { owner }),
+      encryptedSecret:
+        verified && existing ? existing.encryptedSecret : await secretBox().seal(secret),
+      owner,
       createdAt: existing?.createdAt ?? new Date(now).toISOString(),
       expiresAt,
     });
@@ -376,47 +376,48 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
   }
 
   async function unsubscribe(params: z.output<typeof unsubscribeParams>, ctx: unknown) {
-    const definition = definitions.get(params.name);
-    const parsed = definition?.input.safeParse(params.arguments ?? {});
+    const owner = principal(authOf(ctx));
+    if (owner === undefined) throw notAuthenticated();
+    const parsed = definitions.get(params.name)?.input.safeParse(params.arguments ?? {});
     if (parsed?.success && params.delivery.url) {
-      const owner = principal?.(authOf(ctx));
       const args = parsed.data as Record<string, unknown>;
-      await store.delete(subscriptionId(owner, params.delivery.url, params.name, args));
+      await store.delete({
+        id: await subscriptionId(owner, params.delivery.url, params.name, args),
+        event: params.name,
+        argsKey: canonicalJson(args),
+        owner,
+      });
     }
     return {};
   }
 
+  /**
+   * Posts a signed challenge and expects it echoed back. Every failure gives the caller the same
+   * error: telling apart a timeout, a refused port and a status would let them map the network
+   * behind this server. The detail goes to the server log instead.
+   */
   async function verifyCallback(url: string, secret: string, id: string): Promise<void> {
-    const challenge = randomBytes(24).toString("base64url");
-    let response: Response;
+    const challenge = randomBase64Url(24);
+    let detail: string | undefined;
     try {
-      response = await postSigned({
+      const response = await postSigned({
         url,
         secret,
-        webhookId: `msg_verification_${randomBytes(12).toString("hex")}`,
+        webhookId: `msg_verification_${randomHex(12)}`,
         body: JSON.stringify({ type: "verification", challenge }),
         subscriptionId: id,
         timeoutMs,
         fetch: options.fetch,
       });
+      const text = await readCapped(response, MAX_CHALLENGE_RESPONSE_BYTES);
+      if (!response.ok) detail = `HTTP ${response.status}`;
+      else if (parseChallenge(text) !== challenge) detail = "challenge not echoed";
     } catch (error) {
-      const timedOut =
-        error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-      throw callbackError(
-        timedOut ? "timeout" : "unreachable",
-        "Callback URL could not be reached",
-      );
+      detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     }
-    if (!response.ok) {
-      throw callbackError(
-        "http_status",
-        `Callback answered the challenge with HTTP ${response.status}`,
-        { status: response.status },
-      );
-    }
-    const body = (await response.json().catch(() => null)) as { challenge?: unknown } | null;
-    if (body?.challenge !== challenge) {
-      throw callbackError("challenge_failed", "Callback did not echo the verification challenge");
+    if (detail !== undefined) {
+      console.warn(`[mcp-toolkit] callback verification failed for ${url}: ${detail}`);
+      throw new ProtocolError(CALLBACK_ENDPOINT_ERROR, "Callback URL failed verification");
     }
   }
 
@@ -424,7 +425,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     const low = server.server;
     low.registerCapabilities({ events: {} } as never);
     low.setRequestHandler("events/list", { params: listParams }, async () => ({
-      events: [...definitions.values()].map((d) => d.descriptor),
+      events: list(),
       nextCursor: null,
     }));
     low.setRequestHandler("events/subscribe", { params: subscribeParams }, (params, ctx) =>
@@ -437,24 +438,16 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
 
   function createDeliveryHandler(): (request: Request) => Promise<Response> {
     if (!delivery.createDeliveryHandler) {
-      throw new Error(
-        "This delivery sends in-process and has no endpoint to serve. Use QStashDelivery to expose one.",
-      );
+      throw new Error("This delivery sends in-process and has no endpoint. Use QStashDelivery.");
     }
     return delivery.createDeliveryHandler();
   }
 
+  const list = () => [...definitions.values()].map((d) => d.descriptor);
+
   delivery.attach?.({ send });
 
-  return {
-    define,
-    register,
-    createDeliveryHandler,
-    send,
-    list: () => [...definitions.values()].map((d) => d.descriptor),
-    store,
-    delivery,
-  };
+  return { define, register, createDeliveryHandler, list };
 }
 
 /** JSON with object keys sorted at every level, so equal values serialize identically. */
@@ -491,17 +484,14 @@ export function matchKeys(args: Record<string, unknown>): string[] {
   return keys;
 }
 
-/** Deterministic, as the draft asks: same owner, callback, event and arguments → same id. */
-export function subscriptionId(
-  owner: string | undefined,
+/** Deterministic, as the draft asks: same owner, callback, event and arguments give the same id. */
+export async function subscriptionId(
+  owner: string,
   url: string,
   event: string,
   args: Record<string, unknown>,
-): string {
-  const digest = createHash("sha256")
-    .update(canonicalJson([owner ?? null, url, event, args]))
-    .digest("hex");
-  return `sub_${digest.slice(0, 32)}`;
+): Promise<string> {
+  return `sub_${(await sha256Hex(canonicalJson([owner, url, event, args]))).slice(0, 32)}`;
 }
 
 function pickArgs(input: EventInputSchema, payload: unknown): Record<string, unknown> {
@@ -514,25 +504,28 @@ function pickArgs(input: EventInputSchema, payload: unknown): Record<string, unk
   return picked;
 }
 
+function parseChallenge(text: string): unknown {
+  try {
+    return (JSON.parse(text) as { challenge?: unknown } | null)?.challenge;
+  } catch {
+    return undefined;
+  }
+}
+
 function jsonSchema(schema: z.ZodType, io: "input" | "output"): Record<string, unknown> {
   const { $schema: _ignored, ...rest } = z.toJSONSchema(schema, { io }) as Record<string, unknown>;
   return rest;
-}
-
-function authOf(ctx: unknown): CallerAuth | undefined {
-  return (ctx as { http?: { authInfo?: CallerAuth } } | undefined)?.http?.authInfo;
 }
 
 function invalid(message: string, reason: string): ProtocolError {
   return new ProtocolError(INVALID_PARAMS, message, { reason });
 }
 
-function callbackError(
-  reason: string,
-  message: string,
-  extra: Record<string, unknown> = {},
-): ProtocolError {
-  return new ProtocolError(CALLBACK_ENDPOINT_ERROR, message, { reason, ...extra });
+function notAuthenticated(): ProtocolError {
+  return invalid(
+    "Not authenticated: this server could not identify the caller",
+    "not_authenticated",
+  );
 }
 
 function getEnv(name: string): string | undefined {
