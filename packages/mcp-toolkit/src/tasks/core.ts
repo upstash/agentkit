@@ -187,7 +187,7 @@ export function createTaskLayer<TContext = unknown>(
   ): void {
     const callback = async (args: unknown, context: unknown): Promise<Record<string, unknown>> => {
       const owner = await callerOf(context);
-      if (owner === undefined) return notAuthenticatedResult();
+      if (!owner) return notAuthenticatedResult();
       const taskId = crypto.randomUUID();
       const now = new Date().toISOString();
       const task: Task = {
@@ -259,7 +259,7 @@ export function createTaskLayer<TContext = unknown>(
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
         const caller = await callerOf(context);
-        if (caller === undefined) return notAuthenticatedResult();
+        if (!caller) return notAuthenticatedResult();
         const task = await owned(taskId, caller);
         return task ? statusResult(task) : unknownTaskResult(taskId);
       }) as never,
@@ -277,7 +277,7 @@ export function createTaskLayer<TContext = unknown>(
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
         const caller = await callerOf(context);
-        if (caller === undefined) return notAuthenticatedResult();
+        if (!caller) return notAuthenticatedResult();
         if (!(await owned(taskId, caller))) return unknownTaskResult(taskId);
         const task = await cancelTask(taskId);
         return task ? statusResult(task) : unknownTaskResult(taskId);

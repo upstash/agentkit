@@ -428,7 +428,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
 
     const caller = callerOf(ctx);
     const who = await resolvePrincipal(principal, caller);
-    if (who === undefined) throw notAuthenticated();
+    if (!who) throw notAuthenticated();
     const owner = who.id;
     if (
       definition.config.authorize &&
@@ -477,7 +477,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
 
   async function unsubscribe(params: z.output<typeof unsubscribeParams>, ctx: unknown) {
     const owner = (await resolvePrincipal(principal, callerOf(ctx)))?.id;
-    if (owner === undefined) throw notAuthenticated();
+    if (!owner) throw notAuthenticated();
     const parsed = definitions.get(params.name)?.input.safeParse(params.arguments ?? {});
     if (parsed?.success && params.delivery.url) {
       const args = parsed.data as Record<string, unknown>;
