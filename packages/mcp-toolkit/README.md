@@ -266,6 +266,14 @@ don't depend on the tools, so an adapter for the extension can serve the same re
 
 </details>
 
+### What's next: the native path
+
+Polling through tools costs the model a few turns; the native extension doesn't, which makes it the
+right long-term shape. The task record and the execution sit behind two small interfaces, a
+`TaskStore` and a `TaskDispatcher`, and the task object already has the extension's shape, so once
+clients declare `io.modelcontextprotocol/tasks` a native adapter can serve the same records over
+`tasks/get` and keep the tools for everyone else.
+
 ## Events
 
 ```ts
