@@ -413,6 +413,20 @@ await commentCreated.emit(payload, { args: { documentId }, owner: userId, eventI
 For conditions exact matching cannot express, add `match: (args, payload) => boolean` to the
 definition.
 
+### Users and subscriptions
+
+The callback URL decides **where** an event goes. The principal decides **who** may receive it.
+
+- **The host routes to its user.** Each subscription carries a callback URL and signing secret the
+  host generated for it. ChatGPT sends a unique `connectors.api.openai.com/webhook/mcp-events/<id>`
+  per monitor, so posting there reaches the right user. Your server never needs to know who the host
+  user is.
+- **Your server decides who may subscribe.** `principal(auth)` gives the owner id, which is stored on
+  the subscription and is part of its id. `authorize` gates each subscribe, `emit({ owner })`
+  delivers to one user's subscriptions, and only the owner can unsubscribe.
+- **Without `principal`, every subscription is anonymous.** Deliveries still reach the right host
+  user, but anyone who can reach the server can subscribe to any event.
+
 ### `task.finished`: tasks that push instead of being polled
 
 ```ts
@@ -448,7 +462,8 @@ Deliveries only go to the task owner's subscriptions.
 
 As of October 2026, ChatGPT is the only widely used host that subscribes to MCP Events (webhook
 mode, in Work chats). Codex supports events only for OpenAI's own connectors, and Claude Code,
-Cursor and OpenCode do not subscribe yet. Poll and stream delivery modes in the draft are not
+Cursor and OpenCode do not subscribe yet. The demo's Deploy Watch server has been tested end to end
+with ChatGPT monitors. Poll and stream delivery modes in the draft are not
 implemented here; `events/subscribe` refuses them.
 
 ## Reference
