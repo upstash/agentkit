@@ -701,8 +701,11 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   only `/api/execute` threw "No task handler" and every delivery 500'd — don't bring it back, and
   don't reintroduce the top-level `createServer();` workaround.
 - **Ownership (`principal` is required, both layers).** `createTaskLayer` / `createEventLayer`
-  throw without it. It receives `ctx.http.authInfo` (where SDK v2 puts transport auth) and stamps
-  `task.owner` / `subscription.owner`. Returning `undefined` = not authenticated: the call is
+  throw without it. It receives `{ auth, request }` (SDK v2's `ctx.http.authInfo` and
+  `ctx.http.req`), may be async, and stamps `task.owner` / `subscription.owner`. `auth` is only what
+  the app's route passed to `handler.fetch(request, { authInfo })` after verifying the token: the
+  SDK never derives it from headers. `request` is unverified, for cookie/session apps; docs warn
+  against trusting caller-set headers. `authorize` gets `{ principal, auth, request }`. Returning `undefined` = not authenticated: the call is
   refused (`isError` "Not authenticated" for tools, reason `not_authenticated` for events/*) — no
   anonymous mode, fail closed; a stored task without an owner answers nobody. Single-tenant servers
   pass `principal: () => "local"`. `task_status` / `task_cancel` report a non-owned task as

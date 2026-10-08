@@ -29,7 +29,7 @@ export const tasks = createTaskLayer({
   defaults: { ttlMs: 300_000, pollIntervalMs: 2_000 },
   // Who is calling. The demo has no login, so every caller is the same user — said explicitly,
   // because there is no anonymous default. A real server returns its user id from `auth`:
-  //   principal: (auth) => auth?.extra?.userId as string | undefined
+  //   principal: ({ auth }) => auth?.extra?.userId as string | undefined
   principal: () => "demo-user",
 });
 

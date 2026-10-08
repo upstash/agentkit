@@ -93,7 +93,7 @@ function setup(options: Partial<EventLayerOptions> & { respond?: Respond } = {})
     store,
     delivery: new InlineDelivery({ onOutcome: (_job, outcome) => outcomes.push(outcome) }),
     secretKey: "test-key",
-    principal: (auth) => auth?.extra?.userId as string | undefined,
+    principal: ({ auth }) => auth?.extra?.userId as string | undefined,
     fetch: receiver.fetch,
     ...layerOptions,
   });
@@ -445,6 +445,16 @@ describe("principal", () => {
     }
   });
 
+  it("can identify the caller from the raw request, e.g. a session cookie", async () => {
+    // No AuthInfo at all: an app that authenticates with its own session reads the request.
+    const { subscribe, store } = setup({
+      principal: async ({ request }) => (request ? "session-user" : undefined),
+    });
+    const sub = await subscribe({ documentId: "d" }, { user: null });
+    expect(sub.error).toBeUndefined();
+    expect((await store.get(String(sub.result?.id)))?.owner).toBe("session-user");
+  });
+
   it("is required", () => {
     expect(() =>
       createEventLayer({
@@ -463,7 +473,7 @@ describe("task.finished", () => {
     const tasks = createTaskLayer({
       store: new MemoryTaskStore(),
       dispatcher: new InlineTaskDispatcher(),
-      principal: (auth) => auth?.extra?.userId as string | undefined,
+      principal: ({ auth }) => auth?.extra?.userId as string | undefined,
       onSettle: taskFinished.onSettle,
     });
     tasks.define("slow", { description: "slow", inputSchema: z.object({}) }, async () => ({

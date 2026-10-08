@@ -40,7 +40,7 @@ type Harness = {
 type ReportArgs = { topic: string };
 
 /** Every test identifies callers by the user id their auth carries. */
-const principal = (auth: { extra?: Record<string, unknown> } | undefined) =>
+const principal = ({ auth }: { auth?: { extra?: Record<string, unknown> } }) =>
   auth?.extra?.userId as string | undefined;
 
 /** Builds a server with one task tool backed by `handler`. */
@@ -305,6 +305,21 @@ describe("createTaskLayer over MCP", () => {
   });
 
   describe("ownership", () => {
+    it("hands principal the verified auth and the raw request, and accepts an async resolver", async () => {
+      const seen: { userId: unknown; url: string | undefined }[] = [];
+      live = await harness(steppedHandler(1, 1), {
+        principal: async ({ auth, request }) => {
+          seen.push({ userId: auth?.extra?.userId, url: request?.url });
+          await sleep(1);
+          return auth?.extra?.userId as string | undefined;
+        },
+      });
+      const taskId = await live.start("x", "alice");
+      expect((await live.store.get(taskId))?.owner).toBe("alice");
+      expect(seen[0]).toEqual({ userId: "alice", url: "http://localhost/mcp" });
+      await live.dispatcher.drain();
+    });
+
     it("lets the owner read and cancel its task", async () => {
       live = await harness(steppedHandler(4, 30));
       const taskId = await live.start("x", "alice");

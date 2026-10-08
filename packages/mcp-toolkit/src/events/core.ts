@@ -6,7 +6,8 @@
 import { ProtocolError, type McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import {
-  authOf,
+  callerOf,
+  type Caller,
   requirePrincipal,
   type CallerAuth,
   type PrincipalResolver,
@@ -36,7 +37,7 @@ const MAX_MATCH_KEYS = 8;
 /** The challenge echo is tiny; never read more than this from a callback. */
 const MAX_CHALLENGE_RESPONSE_BYTES = 4096;
 
-export type { CallerAuth };
+export type { Caller, CallerAuth };
 
 export type EventLayerOptions = {
   store: SubscriptionStore;
@@ -82,7 +83,7 @@ export type EventConfig<Input extends EventInputSchema, Payload extends z.ZodTyp
    */
   authorize?: (
     args: z.output<Input>,
-    caller: { principal: string; auth?: CallerAuth },
+    caller: { principal: string } & Caller,
   ) => boolean | Promise<boolean>;
   /** An extra filter for what exact argument matching cannot express. Runs per subscription. */
   match?: (args: z.output<Input>, payload: z.output<Payload>) => boolean;
@@ -334,12 +335,12 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     if (problem || !url)
       throw invalid(problem ?? "callback URL is missing", "invalid_callback_url");
 
-    const auth = authOf(ctx);
-    const owner = principal(auth);
+    const caller = callerOf(ctx);
+    const owner = await principal(caller);
     if (owner === undefined) throw notAuthenticated();
     if (
       definition.config.authorize &&
-      !(await definition.config.authorize(args, { principal: owner, auth }))
+      !(await definition.config.authorize(args, { principal: owner, ...caller }))
     ) {
       throw invalid("Not authorized to subscribe with these arguments", "not_authorized");
     }
@@ -376,7 +377,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
   }
 
   async function unsubscribe(params: z.output<typeof unsubscribeParams>, ctx: unknown) {
-    const owner = principal(authOf(ctx));
+    const owner = await principal(callerOf(ctx));
     if (owner === undefined) throw notAuthenticated();
     const parsed = definitions.get(params.name)?.input.safeParse(params.arguments ?? {});
     if (parsed?.success && params.delivery.url) {

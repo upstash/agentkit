@@ -11,6 +11,7 @@ export {
   EventPayloadTooLargeError,
   CALLBACK_ENDPOINT_ERROR,
   MAX_PAYLOAD_BYTES,
+  type Caller,
   type CallerAuth,
   type EmitOptions,
   type EmitRecipients,

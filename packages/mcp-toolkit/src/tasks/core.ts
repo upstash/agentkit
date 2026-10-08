@@ -6,7 +6,8 @@
 import type { McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import {
-  authOf,
+  callerOf as callerFrom,
+  type Caller,
   requirePrincipal,
   type CallerAuth,
   type PrincipalResolver,
@@ -32,7 +33,7 @@ const INTERNAL_ERROR = -32603;
 /** The names the two shared tools are registered under, unless overridden. */
 export const DEFAULT_TOOL_NAMES = { status: "task_status", cancel: "task_cancel" } as const;
 
-export type { CallerAuth };
+export type { Caller, CallerAuth };
 
 export type TaskLayerOptions<TContext = unknown> = {
   store: TaskStore;
@@ -44,7 +45,7 @@ export type TaskLayerOptions<TContext = unknown> = {
     pollIntervalMs?: number;
   };
   /**
-   * Who is calling, usually your user id: `(auth) => auth?.extra?.userId`. Required. Every task
+   * Who is calling, usually your user id: `({ auth }) => auth?.extra?.userId`. Required. Every task
    * is owned by its caller, and `undefined` refuses the call. `auth.clientId` is the OAuth app
    * (shared by every ChatGPT user), so it is the wrong key. A server with no users of its own
    * passes `() => "local"`.
@@ -143,7 +144,7 @@ export function createTaskLayer<TContext = unknown>(
   >();
   const wired = new WeakSet<McpServer>();
 
-  const callerOf = (context: unknown) => principal(authOf(context));
+  const callerOf = async (context: unknown) => await principal(callerFrom(context));
 
   async function runSettleHook(task: Task): Promise<void> {
     if (!onSettle) return;
@@ -189,7 +190,7 @@ export function createTaskLayer<TContext = unknown>(
     config: TaskToolConfig<StandardSchemaWithJSON>,
   ): void {
     const callback = async (args: unknown, context: unknown): Promise<Record<string, unknown>> => {
-      const owner = callerOf(context);
+      const owner = await callerOf(context);
       if (owner === undefined) return notAuthenticatedResult();
       const key = config.idempotencyKey?.(args);
       // A keyed call gets a deterministic id scoped to its caller, so a retry finds the first task.
@@ -267,7 +268,7 @@ export function createTaskLayer<TContext = unknown>(
         annotations: { readOnlyHint: true, idempotentHint: true },
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
-        const caller = callerOf(context);
+        const caller = await callerOf(context);
         if (caller === undefined) return notAuthenticatedResult();
         const task = await owned(taskId, caller);
         return task ? statusResult(task) : unknownTaskResult(taskId);
@@ -285,7 +286,7 @@ export function createTaskLayer<TContext = unknown>(
         annotations: { destructiveHint: true, idempotentHint: true },
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
-        const caller = callerOf(context);
+        const caller = await callerOf(context);
         if (caller === undefined) return notAuthenticatedResult();
         if (!(await owned(taskId, caller))) return unknownTaskResult(taskId);
         const task = await cancelTask(taskId);

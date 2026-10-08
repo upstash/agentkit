@@ -6,6 +6,7 @@ export {
   createTaskLayer,
   toWire,
   DEFAULT_TOOL_NAMES,
+  type Caller,
   type CallerAuth,
   type TaskDefinition,
   type TaskHandler,

@@ -46,7 +46,7 @@ export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
   // Who is calling: your user id from the request's auth. Required — see below.
-  principal: (auth) => auth?.extra?.userId as string | undefined,
+  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
 });
 
 // Module scope: every instance knows the handler, including an /api/execute instance that never
@@ -123,10 +123,33 @@ running code only stops where it checks.
 
 ### Who is calling: `principal`
 
-`principal` is required. It receives the `AuthInfo` your auth middleware attached to the request
-and returns a stable caller id. Each task records it as its owner, and `task_status` /
-`task_cancel` answer only for the caller who started the task — another caller's id reads exactly
-like an unknown one.
+`principal` is required. It maps each call to a stable caller id, usually your user id. Each task
+records it as its owner, and `task_status` / `task_cancel` answer only for the caller who started
+the task; another caller's id reads exactly like an unknown one. The same function owns event
+subscriptions.
+
+It receives `{ auth, request }`:
+
+- **`auth`** is the MCP SDK's `AuthInfo`: `{ token, clientId, scopes, expiresAt?, extra? }`. The
+  SDK never fills it in from headers. **Your route does**, after verifying the bearer token with
+  your OAuth provider, by passing it to the handler:
+
+  ```ts
+  // app/api/mcp/route.ts
+  export async function POST(request: Request) {
+    const authInfo = await verifyToken(request); // Clerk, WorkOS, Auth0, your own
+    if (!authInfo) return new Response("Unauthorized", { status: 401 });
+    return handler.fetch(request, { authInfo });
+  }
+  ```
+
+  `extra` is free-form: put the user id there in `verifyToken`, and read it back with
+  `principal: ({ auth }) => auth?.extra?.userId as string | undefined`. Because the token was
+  already checked, this is the path to prefer.
+
+- **`request`** is the raw HTTP request, for apps that authenticate with a cookie or session
+  instead of an `AuthInfo`. It is unverified, so check the session yourself (`principal` may be
+  async), and never trust a header like `x-user-id` that the caller can set.
 
 There is no anonymous mode. When `principal` returns `undefined`, the call is refused with "Not
 authenticated". A server with no users of its own (a local tool, a demo) says so explicitly:
@@ -204,7 +227,7 @@ import type { WorkflowContext } from "@upstash/workflow";
 const tasks = createTaskLayer<WorkflowContext>({
   store: new RedisTaskStore(),
   dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal: (auth) => auth?.extra?.userId as string | undefined,
+  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
   // The record's TTL runs from creation and is never extended. Once it passes, the record is gone
   // and `isCancelled()` returns true, so give long work a longer one than the 5-minute default.
   defaults: { ttlMs: 60 * 60 * 1000 },
@@ -371,7 +394,7 @@ export const events = createEventLayer({
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
   // `secretKey` defaults to MCP_EVENTS_SECRET_KEY, which encrypts the hosts' signing secrets at
   // rest. There is no built-in default: generate one with `openssl rand -base64 32`.
-  principal: (auth) => auth?.extra?.userId as string | undefined, // required, as for tasks
+  principal: ({ auth }) => auth?.extra?.userId as string | undefined, // required, as for tasks
 });
 
 export const commentCreated = events.define("comment.created", {
@@ -435,7 +458,7 @@ The callback URL decides **where** an event goes. The principal decides **who** 
   host generated for it. ChatGPT sends a unique `connectors.api.openai.com/webhook/mcp-events/<id>`
   per monitor, so posting there reaches the right user. Your server never needs to know who the host
   user is.
-- **Your server decides who receives what.** `principal(auth)` gives the owner id, which is stored on
+- **Your server decides who receives what.** `principal` gives the owner id, which is stored on
   the subscription and is part of its id. Every `emit` names its `owner` or `owners`, so a
   subscription with no arguments still only hears about its own user's events. `authorize` adds a
   per-argument check on each subscribe ("can this user see this document"), and only the owner can
@@ -473,7 +496,7 @@ Deliveries only go to the task owner's subscriptions.
   `allowInsecureCallbacks` for local development only.
 - **The secret.** `whsec_` plus 24–64 base64 bytes, stored AES-256-GCM encrypted under
   `secretKey`. A refresh with the same secret skips the challenge; a new one re-verifies.
-- **Authorization.** `authorize(args, { principal, auth })` runs on every subscribe and refresh.
+- **Authorization.** `authorize(args, { principal, auth, request })` runs on every subscribe and refresh.
 - **Lifetime.** The host's `ttlMs` is granted up to `defaults.maxTtlMs` (30 days); `refreshBefore`
   tells it when to subscribe again.
 - **Host answers.** `410` deletes the subscription, `413` and redirects drop the event, anything else
@@ -527,7 +550,7 @@ neither is durable, which is exactly the failure this package is about.
 |                           |                                                                                                             |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `store`, `dispatcher`     | Required.                                                                                                   |
-| `principal`               | Required. `(auth) => string \| undefined` — the caller's id; `undefined` refuses the call.                  |
+| `principal`               | Required. `({ auth, request }) => string \| undefined`, may be async — the caller's id; `undefined` refuses the call.                  |
 | `defaults.ttlMs`          | Retention window, `null` for unlimited. Default 5 min.                                                      |
 | `defaults.pollIntervalMs` | Poll interval suggested to the model. Default 2s.                                                           |
 | `toolNames`               | Rename `task_status` / `task_cancel`, e.g. to namespace them.                                               |
@@ -573,7 +596,7 @@ itself, or with `UPSTASH_DISABLE_TELEMETRY`.
 | `SettleResult`, `PrincipalResolver`                   | What `settle` returns, and the type of `principal`                                                      |
 | `Task`, `WireTask`, `TaskStatus`, `TaskError`         | The record, and the subset the model sees                                                               |
 | `isTerminal`, `TERMINAL_STATUSES`, `UnknownTaskError` | Status helpers and the store's error type                                                               |
-| `DEFAULT_TOOL_NAMES`, `CallerAuth`                    | `{ status: "task_status", cancel: "task_cancel" }`, and what `principal` receives                       |
+| `DEFAULT_TOOL_NAMES`, `Caller`, `CallerAuth`          | `{ status: "task_status", cancel: "task_cancel" }`, and what `principal` receives                       |
 | `MemoryTaskStore`, `InlineTaskDispatcher`             | Non-durable backends for tests                                                                          |
 | `@upstash/mcp-toolkit/tasks/upstash`                  | `RedisTaskStore`, `QStashDispatcher`, `WorkflowDispatcher`                                              |
 
@@ -614,7 +637,7 @@ interface EventDelivery {
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `store`, `delivery`                    | Required.                                                                                                        |
 | `secretKey`                            | Encrypts stored signing secrets. Defaults to `MCP_EVENTS_SECRET_KEY`; required, no built-in default.             |
-| `principal`                            | Required. `(auth) => string \| undefined` — owns each subscription; `undefined` refuses.                          |
+| `principal`                            | Required. `({ auth, request }) => string \| undefined`, may be async — owns each subscription; `undefined` refuses.                          |
 | `defaults.ttlMs` / `defaults.maxTtlMs` | Granted lifetime when none is asked for (7 days), and the cap (30 days).                                         |
 | `allowInsecureCallbacks`               | Accept `http://` and private hosts. Local development only.                                                      |
 | `timeoutMs`                            | Per-POST timeout. Default 10s.                                                                                   |
