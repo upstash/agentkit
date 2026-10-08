@@ -574,8 +574,11 @@ write these keys can change who owns a task or where an event goes.
   matches it; another caller's id reads as unknown. That is why `principal` must return the user
   (the token's subject), not `auth.clientId`.
 - The caller's token, `AuthInfo` and request are **never stored**.
-- Keyed task ids (`idempotencyKey`) are a hash of the owner, the tool and the key, so two callers
-  can never land on the same record.
+- The owner is not a separate part of the key; it is folded into the task id. A task without an
+  `idempotencyKey` gets a random id (`crypto.randomUUID()`). A keyed task's id is the first 32 hex
+  characters of `sha256(JSON.stringify([owner, tool, key]))`, so alice and bob calling
+  `generate_report` with the same key get different ids, and so different records. Either way the
+  stored `owner` field is checked again on every read.
 
 **Correctness**
 
