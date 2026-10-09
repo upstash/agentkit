@@ -58,8 +58,8 @@
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
-    "@tanstack/ai": "0.65.1",
-    "@tanstack/ai-memory": "0.2.10",
+    "@tanstack/ai": "0.66.0",
+    "@tanstack/ai-memory": "0.2.11",
     "@tanstack/ai-persistence": "0.7.2",
     "dotenv": "^16.4.5",
     "@upstash/blob": "0.0.7"
