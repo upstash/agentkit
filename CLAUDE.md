@@ -126,9 +126,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   npm/yarn hoisted layouts — was fixed upstream in eve 0.25.3; no workaround needed on ≥0.25.3.)
   **Consumer eve version:** `eve extension build` stamps the manifest's `requires` with the building
   eve's *current* contribution-format versions, and a consumer rejects any version not in its own
-  supported list — the current dist, built with **eve 0.76.0**, stamps formatVersion 2; extension 1 /
-  **tool 84** / **dynamicTool 77** / **hook 43** / instructions 2 / config 1, which needs consumers on
-  **eve ≥0.76.0** — 0.76.0 is the first release accepting all three (0.75.0 and 0.75.1 refuse them with the same obtuse "has no compile or runtime usage" error; an intermediate dist built with 0.75.1 stamped 80/75/41 with floor 0.75.0 and was never released; 0.74.0 and earlier refuse these too, e.g. 0.74.0 fails `eve build` with the obtuse "has no compile or runtime usage" error; the previous dist, built with 0.74.0, stamped 78/73/39 with floor 0.74.0 — 0.72.0–0.73.0 refuse those too: a pack of this dist built
+  supported list — the current dist, built with **eve 0.76.3**, stamps formatVersion 2; extension 1 /
+  **tool 85** / **dynamicTool 79** / **hook 44** / instructions 2 / config 1, which needs consumers on
+  **eve ≥0.76.2** — 0.76.2 is the first release accepting all three (0.76.0 and 0.75.x refuse them with the same obtuse "has no compile or runtime usage" error; an intermediate dist built with 0.75.1 stamped 80/75/41 with floor 0.75.0 and was never released; 0.74.0 and earlier refuse these too, e.g. 0.74.0 fails `eve build` with the obtuse "has no compile or runtime usage" error; the previous dist, built with 0.74.0, stamped 78/73/39 with floor 0.74.0 — 0.72.0–0.73.0 refuse those too: a pack of this dist built
   against 0.72.0/0.72.1/0.73.0 fails `eve build` with the obtuse "has no compile or runtime usage" error; the intermediate
   0.72.1 build stamped 76/72/38 with floor 0.72.0 and was never released; 0.72.0 **dropped tool 71–75**; the published dist, built with 0.69.0, stamped
   71/68/35 with floor 0.69.0 and fails on eve ≥0.72.0). Earlier: 0.69.0 was the first release accepting any of 71/68/35 (0.65.0–0.68.0 accept none
@@ -164,7 +164,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   release's worth of headroom. Since ~0.50 eve also **drops** contracts out of the middle of its
   supported range, so a *newer* eve is not automatically compatible either: the floor has repeatedly
   landed on the pinned version itself, with **no back-compat window at all**.
-  The `eve` peer is **`">=0.76.0"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
+  The `eve` peer is **`">=0.76.2"`, not `"*"`** — issue #22 proved the wildcard is a trap: eve
   0.33 dropped hook contracts ≤9 *nine hours* after 0.32 shipped, so a wildcard install succeeds and
   then fails at `eve build` with a manifest error. The manifest is still the real compatibility tie;
   the peer floor is the install-time guard. **On every eve devDep bump: rebuild, read the new
@@ -888,7 +888,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 
 ## Eve framework facts
 - **The repo is split (since 2026-09-30): `packages/eve-extension` + `examples/eve-extension-demo` are
-  on `eve@0.76.0` (extension peer `>=0.76.0`, since 2026-10-10; 0.75.1 / `>=0.75.0` was never released; 0.74.0 / `>=0.74.0` was the previous floor; 0.70.0 / `>=0.70.0` and 0.72.1 / `>=0.72.0` were never released);
+  on `eve@0.76.3` (extension peer `>=0.76.2`, since 2026-10-11; 0.76.0 / `>=0.76.0` was never released; 0.75.1 / `>=0.75.0` was never released; 0.74.0 / `>=0.74.0` was the previous floor; 0.70.0 / `>=0.70.0` and 0.72.1 / `>=0.72.0` were never released);
   `packages/eve` + `examples/eve-demo` stay on `eve@0.65.0` (peer `>=0.65.0`)** — see the 0.68.0 → 0.69.0
   and 0.65.0 → 0.68.0 bump notes below. Before that (2026-09-23)
   it was one `eve@0.65.0` everywhere, with both packages declaring `eve: ">=0.65.0"`. (For one
@@ -1075,7 +1075,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   implementation needed **no** new member for 0.55.0 — `pnpm typecheck` is clean across all four packages.
   Even the extension's compiled output is unchanged: **`_manifest.json` is the only file in
   `packages/eve-extension/dist` that differs from published `0.10.0`.**
-- **The 0.74.0 → 0.76.0 bump (2026-10-10; first built against 0.75.1 on 2026-10-09) is EXTENSION-ONLY again.** The 0.76.0 rebuild re-stamps **tool 80→84, dynamicTool 75→77, hook 41→43**; a consumer on 0.75.0 or 0.75.1 fails `eve build` with the packed dist ("has no compile or runtime usage"), 0.76.0 mounts clean, so the floor is **`>=0.76.0`** (published 0.16.0 78/73/39 still builds clean on 0.76.0; `packages/eve` on 0.76.0 still fails `TS2305`/`TS7006` in `src/sandbox.ts:63,334`). The 0.75.1 notes follow. `packages/eve` + `examples/eve-demo` stay on 0.65.0: besides the long-known
+- **The 0.74.0 → 0.76.0 bump (2026-10-10; first built against 0.75.1 on 2026-10-09) is EXTENSION-ONLY again. Update 2026-10-11: eve 0.76.2/0.76.3 re-stamp again to tool 85 / dynamicTool 79 / hook 44, which eve 0.76.0 refuses; the dist is rebuilt on 0.76.3 and the floor is now `>=0.76.2` (published 0.16.0 still builds clean on 0.76.3).** The 0.76.0 rebuild re-stamps **tool 80→84, dynamicTool 75→77, hook 41→43**; a consumer on 0.75.0 or 0.75.1 fails `eve build` with the packed dist ("has no compile or runtime usage"), 0.76.0 mounts clean, so the floor is **`>=0.76.0`** (published 0.16.0 78/73/39 still builds clean on 0.76.0; `packages/eve` on 0.76.0 still fails `TS2305`/`TS7006` in `src/sandbox.ts:63,334`). The 0.75.1 notes follow. `packages/eve` + `examples/eve-demo` stay on 0.65.0: besides the long-known
   `MutableNetworkSandboxSession` removal (`TS2305`), eve 0.75.0 renamed the sandbox provider handle hooks `onSessionStop`/`onSessionDelete` →
   `onSandboxStop`/`onSandboxDelete` (and added `onSessionEnd`); on 0.75.1 `src/sandbox.ts` fails with `TS2353` at `createHandle`, plus implicit-any
   cascades. Needs a source change. The extension rebuild re-stamps **tool 78→80, dynamicTool 73→75, hook 39→41**; a consumer on 0.74.0 fails
