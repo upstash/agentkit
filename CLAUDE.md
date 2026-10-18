@@ -1080,6 +1080,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   **tool 76→78, dynamicTool 72→73, hook 38→39**; only 0.74.0 accepts them (verified by building the packed dist against a consumer on each of
   0.72.0/0.72.1/0.73.0 — all fail `eve build` — and 0.74.0, which mounts clean), so the floor moved `>=0.72.0` → **`>=0.74.0`**. Published 0.15.0 fails on 0.74.0 as on 0.72.x.
   Also bumped: `ai` 7.0.133, `@tanstack/ai` 0.65.1, `-client` 0.38.0, `-react` 0.30.0; `@tanstack/ai-persistence` still held at 0.7.2 (above).
+  2026-10-18: `@tanstack/ai` 0.69.0, `-memory` 0.2.14, `-client` 0.39.3, `-react` 0.30.4, `-openai` 0.30.0 (devDeps/example only, peer floors unchanged); `@tanstack/ai-persistence` still held at 0.7.2 - 0.9.0 re-verified to fail the conformance suite on the missing `activities` store.
 - **The 0.69.0 → 0.72.1 bump (2026-10-07) is EXTENSION-ONLY** (`packages/eve` still imports the removed
   `MutableNetworkSandboxSession`; verified on 0.71.2 and 0.72.1: `TS2305` in `src/sandbox.ts`/`sandbox.test.ts`; needs a
   source change, so `packages/eve` + `examples/eve-demo` stay on 0.65.0). The rebuild re-stamps
