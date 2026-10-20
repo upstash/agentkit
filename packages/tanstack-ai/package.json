@@ -60,7 +60,7 @@
   "devDependencies": {
     "@tanstack/ai": "0.70.0",
     "@tanstack/ai-memory": "0.2.15",
-    "@tanstack/ai-persistence": "0.10.0",
+    "@tanstack/ai-persistence": "0.7.2",
     "dotenv": "^16.4.5",
     "@upstash/blob": "0.0.7"
   },
