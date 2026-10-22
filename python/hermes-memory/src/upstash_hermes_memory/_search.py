@@ -52,22 +52,34 @@ class SearchIndex:
 
     def query(self, filter: dict[str, Any], limit: int | None = None) -> list[Any]:
         self.ensure()
+        rows = self._query(filter, limit)
+        if not rows and self._raw_count(filter) < 0:
+            # The Python client turns a missing index into [], so an empty result is ambiguous.
+            # COUNT says -1 when the index is gone (another client dropped it): recreate, retry once.
+            self._ready = False
+            self.ensure()
+            rows = self._query(filter, limit)
+        return rows
+
+    def count(self, filter: dict[str, Any]) -> int:
+        self.ensure()
+        count = self._raw_count(filter)
+        if count < 0:
+            # -1 means the index is gone (dropped after we created it): recreate it and retry once.
+            self._ready = False
+            self.ensure()
+            count = self._raw_count(filter)
+        return max(count, 0)
+
+    def _query(self, filter: dict[str, Any], limit: int | None) -> list[Any]:
         cmd = ["SEARCH.QUERY", self.name, dumps(filter)]
         if limit is not None:
             cmd += ["LIMIT", str(limit)]
         return list(self.redis.execute(cmd) or [])
 
-    def count(self, filter: dict[str, Any]) -> int:
-        self.ensure()
+    def _raw_count(self, filter: dict[str, Any]) -> int:
         result = self.redis.execute(["SEARCH.COUNT", self.name, dumps(filter)])
-        count = int(getattr(result, "count", result))
-        if count < 0:
-            # -1 means the index is gone (dropped after we created it): recreate it and retry once.
-            self._ready = False
-            self.ensure()
-            result = self.redis.execute(["SEARCH.COUNT", self.name, dumps(filter)])
-            count = int(getattr(result, "count", result))
-        return max(count, 0)
+        return int(getattr(result, "count", result))
 
     def wait_indexing(self) -> None:
         """Block until every write so far is searchable (and every delete has left the index)."""

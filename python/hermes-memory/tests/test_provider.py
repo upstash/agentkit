@@ -3,7 +3,6 @@
 import json
 
 import pytest
-from conftest import eventually
 from upstash_hermes_memory import UpstashMemoryProvider
 
 # Tools Hermes itself owns; a provider tool with one of these names is dropped (memory_manager.py).
@@ -42,6 +41,8 @@ def provider(redis, prefix, monkeypatch):
     monkeypatch.delenv("UPSTASH_HERMES_USER_ID", raising=False)
     provider = UpstashMemoryProvider(redis)
     provider.initialize("20261022_120000_ab:cd", platform="cli", agent_identity="arda")
+    provider._memory.index.ensure()
+    provider._chats.index.ensure()
     yield provider
     provider._memory.index.drop()
     provider._chats.index.drop()
@@ -60,7 +61,8 @@ def test_save_then_prefetch(provider):
     )
     assert saved["saved"] is True
 
-    block = eventually(lambda: provider.prefetch("what is my dog called?"))
+    # No waiting here: the save tool only returns once the fact is searchable.
+    block = provider.prefetch("what is my dog called?")
     assert block.startswith("## Upstash Memory")
     assert "Karabas" in block
 
@@ -78,11 +80,10 @@ def test_turns_become_a_searchable_transcript(provider):
     doc = provider._chats.get_chat("s-1", user_id="arda")
     assert [m["role"] for m in doc["messages"]] == ["user", "assistant", "user", "assistant"]
 
-    found = eventually(
-        lambda: json.loads(provider.handle_tool_call("upstash_chat_search", {"query": "Lisbon"}))[
-            "sessions"
-        ]
-    )
+    provider._chats.index.wait_indexing()
+    found = json.loads(provider.handle_tool_call("upstash_chat_search", {"query": "Lisbon"}))[
+        "sessions"
+    ]
     assert [s["session_id"] for s in found] == ["s-1"]
 
 
@@ -98,7 +99,7 @@ def test_a_resumed_session_appends_instead_of_overwriting(provider, redis):
 def test_built_in_memory_writes_are_mirrored(provider):
     provider.on_memory_write("add", "user", "Prefers answers in Turkish")
     provider.on_memory_write("remove", "user", "Prefers answers in Turkish")  # not mirrored
-    hits = eventually(lambda: provider._memory.recall("Turkish", user_id="arda"))
+    hits = provider._memory.recall("Turkish", user_id="arda")  # mirroring waits for indexing
     assert [(h.text, h.metadata) for h in hits] == [
         ("Prefers answers in Turkish", {"source": "hermes", "target": "user"})
     ]

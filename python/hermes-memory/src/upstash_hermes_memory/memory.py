@@ -18,10 +18,21 @@ from ._telemetry import add_telemetry
 
 DEFAULT_PREFIX = "agentkit:memory"
 
+# The document's own fields. Metadata is spread next to them, so it must not replace them: a
+# `userId` in metadata would move the memory into another user's searches.
+RESERVED_FIELDS = frozenset({"text", "userId", "createdAt"})
+
 
 def _check_id(value: str, what: str) -> None:
+    """User and session ids sit in the middle of the key, so they may not contain `:`."""
     if not value or ":" in value:
         raise ValueError(f"{what} must be a non-empty string without ':' (got {value!r})")
+
+
+def _check_memory_id(value: str) -> None:
+    """The memory id is the last part of the key, so `:` is fine there (the TS SDK allows it)."""
+    if not value:
+        raise ValueError("id must be a non-empty string")
 
 
 @dataclass
@@ -67,7 +78,10 @@ class AgentMemory:
     ) -> MemoryRecord:
         _check_id(user_id, "user_id")
         id = id or str(uuid.uuid4())
-        _check_id(id, "id")
+        _check_memory_id(id)
+        reserved = RESERVED_FIELDS & set(metadata or {})
+        if reserved:
+            raise ValueError(f"metadata may not set {sorted(reserved)}")
         created_at = int(time.time() * 1000)
         doc = {"text": text, "userId": user_id, "createdAt": created_at, **(metadata or {})}
         self.redis.execute(["JSON.SET", self._key(user_id, id), "$", dumps(doc)])
@@ -97,6 +111,7 @@ class AgentMemory:
 
     def get(self, id: str, *, user_id: str) -> MemoryRecord | None:
         _check_id(user_id, "user_id")
+        _check_memory_id(id)
         doc = self.redis.execute(["JSON.GET", self._key(user_id, id)])
         if not isinstance(doc, dict):
             return None
@@ -104,7 +119,7 @@ class AgentMemory:
 
     def forget(self, id: str, *, user_id: str) -> bool:
         _check_id(user_id, "user_id")
-        _check_id(id, "id")
+        _check_memory_id(id)
         return bool(self.redis.delete(self._key(user_id, id)))
 
     def _record(self, row: Any, user_id: str) -> MemoryRecord:
@@ -115,7 +130,7 @@ class AgentMemory:
 
     @staticmethod
     def _from_doc(id: str, doc: dict[str, Any]) -> MemoryRecord:
-        metadata = {k: v for k, v in doc.items() if k not in ("text", "userId", "createdAt")}
+        metadata = {k: v for k, v in doc.items() if k not in RESERVED_FIELDS}
         return MemoryRecord(
             id=id,
             text=doc.get("text") or "",

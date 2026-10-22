@@ -55,6 +55,9 @@ uv run python python/hermes-memory/e2e/hermes_e2e.py     # a real Hermes session
 ```
 
 The e2e script installs the package into a temporary directory and runs Hermes with a temporary
-`HERMES_HOME`, so your own Hermes install is not touched. One session saves two facts, a fresh one
-recalls them, and the script then checks the keys and transcripts in Redis (and, if `packages/sdk`
-is built, that the TS `AgentMemory` recalls them too) before cleaning up.
+`HERMES_HOME`, so your own Hermes install is not touched. Hermes's built-in memory is turned off
+there. One session saves two facts; a fresh session started right after must name them without
+calling any tool (checked in Hermes's `state.db`), so they can only come from the automatic recall;
+and a control session as another user must not know them. The script then checks the keys and
+transcripts in Redis (and, if `packages/sdk` is built, that the TS `AgentMemory` recalls them too)
+before cleaning up.

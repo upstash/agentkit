@@ -1,5 +1,4 @@
 import os
-import time
 import uuid
 from pathlib import Path
 
@@ -59,13 +58,3 @@ def prefix(redis):
             redis.delete(*keys)
         if int(cursor) == 0:
             break
-
-
-def eventually(check, timeout=8.0):
-    """Poll `check` until it returns a truthy value: search indexing lags writes slightly."""
-    deadline = time.monotonic() + timeout
-    while True:
-        result = check()
-        if result or time.monotonic() > deadline:
-            return result
-        time.sleep(0.25)

@@ -27,7 +27,7 @@ from typing import Any
 from .chat_history import DEFAULT_PREFIX as CHAT_PREFIX
 from .chat_history import ChatHistory
 from .memory import DEFAULT_PREFIX as MEMORY_PREFIX
-from .memory import AgentMemory
+from .memory import AgentMemory, MemoryRecord
 
 try:  # Inside Hermes. Outside it (tests, plain library use) the provider is a plain class.
     from agent.memory_provider import MemoryProvider
@@ -233,6 +233,9 @@ class UpstashMemoryProvider(MemoryProvider):
             if assistant_content:
                 transcript.append({"role": "assistant", "content": assistant_content})
             try:
+                # Create the index before the first write rather than leaving it to the first
+                # search, so no transcript depends on the index's initial backfill.
+                self._chats.index.ensure()
                 self._chats.save_chat(sid, transcript, user_id=self._user_id)
             except Exception as error:  # noqa: BLE001 - as above
                 logger.warning("upstash chat history save failed: %s", error)
@@ -247,11 +250,22 @@ class UpstashMemoryProvider(MemoryProvider):
         if action != "add" or not content or not self._memory or not self._write_enabled:
             return
         try:
-            self._memory.add(
-                content, user_id=self._user_id, metadata={"source": "hermes", "target": target}
-            )
+            self._remember(content, {"source": "hermes", "target": target})
         except Exception as error:  # noqa: BLE001 - as above
             logger.warning("upstash memory mirror failed: %s", error)
+
+    def _remember(self, text: str, metadata: dict[str, Any]) -> MemoryRecord:
+        """Save a fact so that it is searchable once this returns.
+
+        Recall reads Redis Search, which indexes a write shortly after it lands. Waiting here
+        means a fact saved in one turn is recalled in the next one, or in a session started right
+        after. The index is created first, so the write is indexed as a write, not by a backfill.
+        """
+        assert self._memory is not None
+        self._memory.index.ensure()
+        record = self._memory.add(text, user_id=self._user_id, metadata=metadata)
+        self._memory.index.wait_indexing()
+        return record
 
     def shutdown(self) -> None:
         self._transcripts.clear()
@@ -276,7 +290,7 @@ class UpstashMemoryProvider(MemoryProvider):
             text = str(args.get("text") or "").strip()
             if not text:
                 raise ValueError("text is required")
-            record = self._memory.add(text, user_id=self._user_id, metadata={"source": "hermes"})
+            record = self._remember(text, {"source": "hermes"})
             return {"saved": True, "id": record.id}
         if tool_name == "upstash_memory_search":
             hits = self._memory.recall(
