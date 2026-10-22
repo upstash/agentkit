@@ -479,6 +479,8 @@ importers:
         specifier: ^16.4.5
         version: 16.6.1
 
+  python/hermes-memory: {}
+
 packages:
 
   '@ag-ui/core@1.0.0':
