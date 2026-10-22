@@ -44,7 +44,8 @@ these):
 | Memory | `agentkit:memory:<user>:<id>` → JSON `{text, userId, createdAt, ...metadata}` | `agentkit_memory` (`text`, `userId`) |
 | Chat | `agentkit:chat:<user>:<session>` → JSON `{userId, sessionId, userMessages, modelMessages, messages, createdAt, updatedAt}` | `agentkit_chat` |
 
-Indexes are created on first use. `AgentMemory` and `ChatHistory` are importable on their own for
+A `:` or `%` in a user or session id is written as `%3A` / `%25`, so distinct ids never share a
+key. Indexes are created on first use. `AgentMemory` and `ChatHistory` are importable on their own for
 use outside Hermes.
 
 ## Development

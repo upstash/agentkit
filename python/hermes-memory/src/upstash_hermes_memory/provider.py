@@ -99,9 +99,73 @@ CHAT_SEARCH_SCHEMA = {
 }
 
 
-def _safe_id(value: str) -> str:
-    """Keys are `<prefix>:<user>:<id>`, so a `:` inside an id would break the layout."""
-    return value.replace(":", "_")
+def _key_part(value: str) -> str:
+    """Encode a user or session id for the middle of a `<prefix>:<user>:<id>` key.
+
+    `:` separates the parts of the key, so it is written as `%3A`, and `%` as `%25` so the encoding
+    stays one-to-one: `alice:work` and `alice_work` remain two users. Ids with neither character,
+    which is all of them in practice, are unchanged and match the keys the TS SDK writes.
+    """
+    return value.replace("%", "%25").replace(":", "%3A")
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    """A message's text the way Hermes flattens it for `sync_turn` (text parts, image count)."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    texts, images = [], 0
+    for part in content:
+        if isinstance(part, str):
+            texts.append(part)
+        elif isinstance(part, dict):
+            kind = str(part.get("type") or "").lower()
+            if kind in ("text", "input_text", "output_text") and isinstance(part.get("text"), str):
+                texts.append(part["text"])
+            elif kind in ("image_url", "input_image"):
+                images += 1
+    text = "\n".join(t for t in texts if t).strip()
+    if images:
+        note = f"[{images} image{'s' if images != 1 else ''}]"
+        text = f"{note} {text}" if text else note
+    return text
+
+
+def rewind_transcript(
+    transcript: list[dict[str, str]], history: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Cut a saved transcript back to what Hermes still has after `/undo`.
+
+    `history` is Hermes's conversation for the session after the undo. Hermes does not say how
+    many turns were undone, so the cut is found by content: the transcript keeps everything up to
+    the reply to the latest user message that is still in `history`, and drops the rest. When no
+    user message of the transcript is left, every saved turn was undone.
+
+    Within one session id this is the whole conversation: compaction moves Hermes to a new
+    session id, so a transcript never spans a compaction.
+    """
+    remaining = [t for t in (_message_text(m) for m in history if m.get("role") == "user") if t]
+    saved = [
+        i
+        for i, entry in enumerate(transcript)
+        if entry.get("role") == "user" and str(entry.get("content", "")).strip()
+    ]
+    for position in range(len(remaining) - 1, -1, -1):
+        text = remaining[position]
+        # The same text can recur ("yes"): the n-th time in Hermes's history is the n-th time in
+        # the transcript, so the cut lands on the right turn.
+        nth = remaining[: position + 1].count(text)
+        matches = [i for i in saved if str(transcript[i]["content"]).strip() == text]
+        if not matches:
+            continue
+        i = matches[min(nth, len(matches)) - 1]
+        end = i + 1
+        if end < len(transcript) and transcript[end].get("role") == "assistant":
+            end += 1
+        return transcript[:end]
+    return []
 
 
 class UpstashMemoryProvider(MemoryProvider):
@@ -114,6 +178,8 @@ class UpstashMemoryProvider(MemoryProvider):
         self._write_enabled = True
         # Transcript per session, loaded from Redis on first use so a resumed session appends.
         self._transcripts: dict[str, list[dict[str, str]]] = {}
+        # Sessions Hermes rewound (/undo): their transcript is cut back on the next sync.
+        self._rewound: set[str] = set()
         self._lock = threading.Lock()
 
     # -- identity and setup ------------------------------------------------------------------
@@ -168,11 +234,13 @@ class UpstashMemoryProvider(MemoryProvider):
                 url=get_secret("UPSTASH_REDIS_REST_URL", ""),
                 token=get_secret("UPSTASH_REDIS_REST_TOKEN", ""),
             )
+        # Like the credentials, the prefixes are read per Hermes profile: a multiplexed gateway
+        # keeps each profile's .env out of os.environ.
         self._memory = AgentMemory(
-            self._redis, prefix=os.environ.get("UPSTASH_HERMES_MEMORY_PREFIX") or MEMORY_PREFIX
+            self._redis, prefix=get_secret("UPSTASH_HERMES_MEMORY_PREFIX", "") or MEMORY_PREFIX
         )
         self._chats = ChatHistory(
-            self._redis, prefix=os.environ.get("UPSTASH_HERMES_CHAT_PREFIX") or CHAT_PREFIX
+            self._redis, prefix=get_secret("UPSTASH_HERMES_CHAT_PREFIX", "") or CHAT_PREFIX
         )
         user = (
             get_secret("UPSTASH_HERMES_USER_ID", "")
@@ -180,8 +248,8 @@ class UpstashMemoryProvider(MemoryProvider):
             or kwargs.get("agent_identity")
             or "default"
         )
-        self._user_id = _safe_id(str(user))
-        self._session_id = _safe_id(session_id or "")
+        self._user_id = _key_part(str(user))
+        self._session_id = _key_part(session_id or "")
         self._write_enabled = (kwargs.get("agent_context") or "") in _WRITING_CONTEXTS
 
     def system_prompt_block(self) -> str:
@@ -219,29 +287,63 @@ class UpstashMemoryProvider(MemoryProvider):
     ) -> None:
         if not self._chats or not self._write_enabled:
             return
-        sid = _safe_id(session_id or self._session_id)
+        sid = _key_part(session_id) if session_id else self._session_id
         if not sid:
             return
         with self._lock:
-            transcript = self._transcripts.get(sid)
-            if transcript is None:
-                existing = self._chats.get_chat(sid, user_id=self._user_id) or {}
-                transcript = list(existing.get("messages") or [])
-                self._transcripts[sid] = transcript
+            transcript = self._load_transcript(sid)
+            if sid in self._rewound and messages is not None:
+                # `messages` ends with this turn, which Hermes appended after the undo.
+                history = list(messages)
+                while history and history[-1].get("role") != "user":
+                    history.pop()
+                transcript[:] = rewind_transcript(transcript, history[:-1])
+                self._rewound.discard(sid)
             if user_content:
                 transcript.append({"role": "user", "content": user_content})
             if assistant_content:
                 transcript.append({"role": "assistant", "content": assistant_content})
-            try:
-                # Create the index before the first write rather than leaving it to the first
-                # search, so no transcript depends on the index's initial backfill.
-                self._chats.index.ensure()
-                self._chats.save_chat(sid, transcript, user_id=self._user_id)
-            except Exception as error:  # noqa: BLE001 - as above
-                logger.warning("upstash chat history save failed: %s", error)
+            self._save_transcript(sid, transcript)
 
-    def on_session_switch(self, new_session_id: str, **kwargs: Any) -> None:
-        self._session_id = _safe_id(new_session_id or "")
+    def on_session_switch(
+        self, new_session_id: str, *, rewound: bool = False, **kwargs: Any
+    ) -> None:
+        self._session_id = _key_part(new_session_id or "")
+        if rewound:
+            # /undo keeps the session id but truncates Hermes's history. The next sync (or the
+            # session end) cuts the saved transcript back to match, before anything is appended.
+            with self._lock:
+                self._rewound.add(self._session_id)
+
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+        """A rewind that no later turn followed still has to drop the undone turns from Redis."""
+        sid = self._session_id
+        if not self._chats or not self._write_enabled or sid not in self._rewound:
+            return
+        with self._lock:
+            transcript = self._load_transcript(sid)
+            transcript[:] = rewind_transcript(transcript, list(messages or []))
+            self._rewound.discard(sid)
+            self._save_transcript(sid, transcript)
+
+    def _load_transcript(self, sid: str) -> list[dict[str, str]]:
+        transcript = self._transcripts.get(sid)
+        if transcript is None:
+            assert self._chats is not None
+            existing = self._chats.get_chat(sid, user_id=self._user_id) or {}
+            transcript = list(existing.get("messages") or [])
+            self._transcripts[sid] = transcript
+        return transcript
+
+    def _save_transcript(self, sid: str, transcript: list[dict[str, str]]) -> None:
+        assert self._chats is not None
+        try:
+            # Create the index before the first write rather than leaving it to the first
+            # search, so no transcript depends on the index's initial backfill.
+            self._chats.index.ensure()
+            self._chats.save_chat(sid, transcript, user_id=self._user_id)
+        except Exception as error:  # noqa: BLE001 - a Redis outage must never break a turn
+            logger.warning("upstash chat history save failed: %s", error)
 
     def on_memory_write(
         self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None
@@ -269,6 +371,7 @@ class UpstashMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         self._transcripts.clear()
+        self._rewound.clear()
 
     # -- tools ---------------------------------------------------------------------------------
 

@@ -4,6 +4,8 @@ import json
 
 import pytest
 from upstash_hermes_memory import UpstashMemoryProvider
+from upstash_hermes_memory import provider as provider_module
+from upstash_hermes_memory.provider import _key_part, rewind_transcript
 
 # Tools Hermes itself owns; a provider tool with one of these names is dropped (memory_manager.py).
 HERMES_CORE_TOOL_NAMES = {"memory", "session_search", "todo", "clarify"}
@@ -50,7 +52,7 @@ def provider(redis, prefix, monkeypatch):
 
 def test_user_and_session_ids_are_made_key_safe(provider):
     assert provider._user_id == "arda"
-    assert provider._session_id == "20261022_120000_ab_cd"
+    assert provider._session_id == "20261022_120000_ab%3Acd"
 
 
 def test_save_then_prefetch(provider):
@@ -114,3 +116,94 @@ def test_subagents_read_but_never_write(provider, redis):
     assert "error" in refused
     assert sub._chats.get_chat("s-sub", user_id="arda") is None
     assert sub._memory.count(user_id="arda") == 0
+
+
+def test_key_parts_are_encoded_one_to_one():
+    assert _key_part("arda") == "arda"
+    assert _key_part("alice:work") == "alice%3Awork"
+    assert _key_part("50%:off") == "50%25%3Aoff"
+    ids = ["alice:work", "alice_work", "alice%3Awork", "alice%work"]
+    assert len({_key_part(i) for i in ids}) == len(ids)
+
+
+def test_prefixes_come_from_the_hermes_profile(monkeypatch):
+    # In a multiplexed gateway a profile's .env is only reachable through get_secret.
+    profile = {
+        "UPSTASH_HERMES_MEMORY_PREFIX": "team:memory",
+        "UPSTASH_HERMES_CHAT_PREFIX": "team:chat",
+    }
+    monkeypatch.delenv("UPSTASH_HERMES_MEMORY_PREFIX", raising=False)
+    monkeypatch.delenv("UPSTASH_HERMES_CHAT_PREFIX", raising=False)
+    monkeypatch.setattr(
+        provider_module, "get_secret", lambda name, default=None: profile.get(name, default)
+    )
+    provider = UpstashMemoryProvider(object())
+    provider.initialize("s", platform="cli")
+    assert (provider._memory.prefix, provider._chats.prefix) == ("team:memory", "team:chat")
+
+
+def _turns(*texts):
+    out = []
+    for user, assistant in texts:
+        out += [{"role": "user", "content": user}, {"role": "assistant", "content": assistant}]
+    return out
+
+
+def test_rewind_drops_the_undone_turns():
+    saved = _turns(("a", "1"), ("b", "2"), ("c", "3"))
+    after_undo = _turns(("a", "1"), ("b", "2"))
+    assert rewind_transcript(saved, after_undo) == _turns(("a", "1"), ("b", "2"))
+    assert rewind_transcript(saved, _turns(("a", "1"))) == _turns(("a", "1"))
+    assert rewind_transcript(saved, []) == []
+
+
+def test_rewind_counts_repeated_messages():
+    saved = _turns(("yes", "1"), ("yes", "2"), ("no", "3"))
+    assert rewind_transcript(saved, _turns(("yes", "1"))) == _turns(("yes", "1"))
+    assert rewind_transcript(saved, _turns(("yes", "1"), ("yes", "2"))) == _turns(
+        ("yes", "1"), ("yes", "2")
+    )
+
+
+def test_rewind_matches_multimodal_messages_as_hermes_flattens_them():
+    saved = _turns(("[1 image] what is this?", "a cat"), ("thanks", "np"))
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:"}},
+                {"type": "text", "text": "what is this?"},
+            ],
+        },
+        {"role": "assistant", "content": "a cat"},
+        {"role": "tool", "content": "ignored"},
+    ]
+    assert rewind_transcript(saved, history) == _turns(("[1 image] what is this?", "a cat"))
+
+
+def test_undo_removes_the_undone_turn_from_redis(provider):
+    provider.sync_turn("plan Kyoto", "ok", session_id="s-undo")
+    provider.sync_turn("book the secret hotel", "done", session_id="s-undo")
+    # /undo of the second turn, then a new turn: Hermes passes its post-undo history plus the turn.
+    provider.on_session_switch("s-undo", rewound=True)
+    history = _turns(("plan Kyoto", "ok")) + _turns(("plan Osaka instead", "sure"))
+    provider.sync_turn("plan Osaka instead", "sure", session_id="s-undo", messages=history)
+
+    doc = provider._chats.get_chat("s-undo", user_id="arda")
+    assert [m["content"] for m in doc["messages"]] == [
+        "plan Kyoto",
+        "ok",
+        "plan Osaka instead",
+        "sure",
+    ]
+    provider._chats.index.wait_indexing()
+    assert provider._chats.search_chats("secret hotel", user_id="arda") == []
+
+
+def test_undo_then_exit_still_cleans_redis(provider):
+    provider.sync_turn("first", "one", session_id="s-exit")
+    provider.sync_turn("second", "two", session_id="s-exit")
+    provider.on_session_switch("s-exit", rewound=True)
+    provider.on_session_end(_turns(("first", "one")))
+    doc = provider._chats.get_chat("s-exit", user_id="arda")
+    assert [m["content"] for m in doc["messages"]] == ["first", "one"]
