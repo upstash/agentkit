@@ -134,7 +134,7 @@ importers:
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.148(zod@4.4.3))(eve@0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.148(zod@4.4.3))(eve@0.82.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3)))
       ai:
         specifier: 7.0.148
         version: 7.0.148(zod@4.4.3)
@@ -148,8 +148,8 @@ importers:
         specifier: 1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       eve:
-        specifier: ^0.65.0
-        version: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3))
+        specifier: ^0.82.0
+        version: 0.82.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3))
       lucide-react:
         specifier: 1.16.0
         version: 1.16.0(react@19.2.6)
@@ -292,8 +292,8 @@ importers:
         specifier: 0.31.0
         version: 0.31.0(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
       '@tanstack/ai-persistence':
-        specifier: 0.7.2
-        version: 0.7.2(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: 0.10.1
+        version: 0.10.1(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))
       '@tanstack/ai-react':
         specifier: 0.31.1
         version: 0.31.1(@opentelemetry/api@1.9.1)(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(zod@4.4.3)
@@ -385,8 +385,8 @@ importers:
         specifier: ^16.4.5
         version: 16.6.1
       eve:
-        specifier: ^0.65.0
-        version: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3))
+        specifier: ^0.82.0
+        version: 0.82.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3))
 
   packages/eve-extension:
     dependencies:
@@ -470,8 +470,8 @@ importers:
         specifier: 0.2.16
         version: 0.2.16(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))
       '@tanstack/ai-persistence':
-        specifier: 0.7.2
-        version: 0.7.2(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: 0.10.1
+        version: 0.10.1(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))
       '@upstash/blob':
         specifier: 0.0.7
         version: 0.0.7(react@19.2.6)
@@ -2588,10 +2588,10 @@ packages:
     peerDependencies:
       '@tanstack/ai': ^0.71.0
 
-  '@tanstack/ai-persistence@0.7.2':
-    resolution: {integrity: sha512-m81bTdWZQw2mGrQcBYnLylkSXGhsC6GfqxSEGv/XQUlRAEjVnlp7Fwk2fNiA3DmSaRLsoNIij6X6ZNChmN8fqg==}
+  '@tanstack/ai-persistence@0.10.1':
+    resolution: {integrity: sha512-EQ4XNUzoVY13rPobuZX6kWnKnedxgvuCdTfbrzySQFnqmAFlPaPqOwWHs/yfVe7fusSaBZSHEGScbkIoiLXhuw==}
     peerDependencies:
-      '@tanstack/ai': ^0.64.0
+      '@tanstack/ai': ^0.71.0
       vitest: ^4.1.10
     peerDependenciesMeta:
       vitest:
@@ -2610,9 +2610,6 @@ packages:
         optional: true
       react-dom:
         optional: true
-
-  '@tanstack/ai-utils@0.4.2':
-    resolution: {integrity: sha512-ucSgSK9kLloInqr/7s0VZlp1IFtbpgPnskISvnLXti/hc8koqXc4Zv9pfTTc8V80WzIKYWMf+ZgSIDeFM50eCw==}
 
   '@tanstack/ai-utils@0.5.0':
     resolution: {integrity: sha512-7RQHPWoon+EPDx6RXb1EAuRWPLijewROF8C56yfVANPeIrIeEBeYVdE8c//cMPDNd+3XS1bgehEg754Aw7htjg==}
@@ -3636,32 +3633,6 @@ packages:
   esutils@2.0.3:
     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
     engines: {node: '>=0.10.0'}
-
-  eve@0.65.0:
-    resolution: {integrity: sha512-16dcyvpucnMp6f1TKZROvRrDAYWIlV7ulZfEMK+IuK1AVXMQPoLLOrGuLT/qI1TjIkxZt9g1JcXXOv/uu3yjdQ==}
-    engines: {node: '>=24'}
-    hasBin: true
-    peerDependencies:
-      '@opentelemetry/api': ^1.0.0
-      ai: ^7.0.105
-      braintrust: ^3.0.0
-      chat: ^4.41.0
-      dd-trace: ^6.13.0
-      just-bash: ^3.1.0
-      microsandbox: ^0.5.0
-    peerDependenciesMeta:
-      '@opentelemetry/api':
-        optional: true
-      braintrust:
-        optional: true
-      chat:
-        optional: true
-      dd-trace:
-        optional: true
-      just-bash:
-        optional: true
-      microsandbox:
-        optional: true
 
   eve@0.82.0:
     resolution: {integrity: sha512-HQqjGebljxuO0EYX0XkQaY3/lHmn/oaFe8ggPAkcNIgVW9elyH7x+NjhABAqCO+Tz4azhurq87KeZzbRphJosA==}
@@ -5154,10 +5125,6 @@ packages:
 
   undici@8.10.2:
     resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
-    engines: {node: '>=22.19.0'}
-
-  undici@8.9.0:
-    resolution: {integrity: sha512-aWZpUj7XoGonMClx4gdDRfgBjqeA+F473aDmROQQbM9n6PRfK/u1q/a0X4wMTgcHfT8H6fpbt98PFuDUwFg2YA==}
     engines: {node: '>=22.19.0'}
 
   unenv@2.0.0-rc.24:
@@ -7257,10 +7224,10 @@ snapshots:
       - ws
       - zod
 
-  '@tanstack/ai-persistence@0.7.2(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))':
+  '@tanstack/ai-persistence@0.10.1(@tanstack/ai@0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))':
     dependencies:
       '@tanstack/ai': 0.71.0(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': 0.4.2
+      '@tanstack/ai-utils': 0.5.0
     optionalDependencies:
       vitest: 2.1.9(@types/node@20.19.43)(lightningcss@1.32.0)
 
@@ -7277,8 +7244,6 @@ snapshots:
       - '@opentelemetry/api'
       - octane
       - zod
-
-  '@tanstack/ai-utils@0.4.2': {}
 
   '@tanstack/ai-utils@0.5.0': {}
 
@@ -7708,14 +7673,6 @@ snapshots:
   '@vercel/cli-exec@0.1.1':
     dependencies:
       execa: 5.1.1
-
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.148(zod@4.4.3))(eve@0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3)))':
-    dependencies:
-      '@vercel/oidc': 3.6.1
-    optionalDependencies:
-      '@ai-sdk/mcp': 2.0.54(zod@4.4.3)
-      ai: 7.0.148(zod@4.4.3)
-      eve: 0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3))
 
   '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.54(zod@4.4.3))(ai@7.0.148(zod@4.4.3))(eve@0.82.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3)))':
     dependencies:
@@ -8342,14 +8299,6 @@ snapshots:
       '@types/estree': 1.0.9
 
   esutils@2.0.3: {}
-
-  eve@0.65.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3)):
-    dependencies:
-      ai: 7.0.148(zod@4.4.3)
-      nitro: 3.0.260903-beta
-      undici: 8.9.0
-    optionalDependencies:
-      '@opentelemetry/api': 1.9.1
 
   eve@0.82.0(@opentelemetry/api@1.9.1)(ai@7.0.148(zod@4.4.3)):
     dependencies:
@@ -10175,8 +10124,6 @@ snapshots:
   undici@7.29.1: {}
 
   undici@8.10.2: {}
-
-  undici@8.9.0: {}
 
   unenv@2.0.0-rc.24:
     dependencies:

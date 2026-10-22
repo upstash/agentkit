@@ -14,7 +14,7 @@
     "@tanstack/ai-client": "0.40.1",
     "@tanstack/ai-memory": "0.2.16",
     "@tanstack/ai-openai": "0.31.0",
-    "@tanstack/ai-persistence": "0.7.2",
+    "@tanstack/ai-persistence": "0.10.1",
     "@tanstack/ai-react": "0.31.1",
     "@upstash/agentkit-tanstack-ai": "workspace:*",
     "@upstash/redis": "^1.38.4",

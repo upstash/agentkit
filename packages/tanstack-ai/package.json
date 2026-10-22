@@ -60,14 +60,14 @@
   "devDependencies": {
     "@tanstack/ai": "0.71.0",
     "@tanstack/ai-memory": "0.2.16",
-    "@tanstack/ai-persistence": "0.7.2",
+    "@tanstack/ai-persistence": "0.10.1",
     "dotenv": "^16.4.5",
     "@upstash/blob": "0.0.7"
   },
   "peerDependencies": {
-    "@tanstack/ai": ">=0.63.0",
+    "@tanstack/ai": ">=0.65.0",
     "@tanstack/ai-memory": ">=0.2.8",
-    "@tanstack/ai-persistence": ">=0.7.1",
+    "@tanstack/ai-persistence": ">=0.8.0",
     "@upstash/blob": ">=0.0.7"
   },
   "peerDependenciesMeta": {

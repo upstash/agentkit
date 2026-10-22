@@ -2,7 +2,7 @@ import { config } from "dotenv";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Box } from "@upstash/box";
 import type { SandboxProviderImplementation } from "eve/sandbox/provider";
-import type { MutableNetworkSandboxSession } from "eve/sandbox";
+import type { UpstashSandboxSession } from "./sandbox.js";
 import {
   UpstashSandbox,
   rewriteWorkspacePaths,
@@ -18,7 +18,7 @@ type Impl = SandboxProviderImplementation<
   { networkPolicy?: unknown } | undefined,
   { snapshotId: string | null },
   { boxId: string; version: 1 },
-  MutableNetworkSandboxSession
+  UpstashSandboxSession
 >;
 
 /**
@@ -237,16 +237,16 @@ describe("UpstashSandbox provider (offline)", () => {
     vi.spyOn(Box, "create").mockResolvedValue(fakeBox(calls) as unknown as Box);
     const { handle } = await implementationOf().start(sessionCtx(), undefined, noArtifact);
 
-    await handle.onSessionStop();
+    await handle.onSandboxStop();
     await handle.onRuntimeShutdown();
     expect(calls).toEqual(["pause", "pause"]);
 
-    await handle.onSessionDelete();
+    await handle.onSandboxDelete();
     expect(calls).toEqual(["pause", "pause", "delete"]);
 
     // Gone: repeat teardown is a no-op (eve can still call shutdown on a deleted handle).
-    await handle.onSessionDelete();
-    await handle.onSessionStop();
+    await handle.onSandboxDelete();
+    await handle.onSandboxStop();
     await handle.onRuntimeShutdown();
     expect(calls).toEqual(["pause", "pause", "delete"]);
   });
@@ -256,7 +256,7 @@ describe("UpstashSandbox provider (offline)", () => {
     box.pause.mockRejectedValue(new Error("keep-alive boxes cannot be paused"));
     vi.spyOn(Box, "create").mockResolvedValue(box as unknown as Box);
     const { handle } = await implementationOf().start(sessionCtx(), undefined, noArtifact);
-    await expect(handle.onSessionStop()).rejects.toThrow(/keep-alive/);
+    await expect(handle.onSandboxStop()).rejects.toThrow(/keep-alive/);
     await expect(handle.onRuntimeShutdown()).resolves.toBeUndefined();
   });
 
@@ -264,7 +264,7 @@ describe("UpstashSandbox provider (offline)", () => {
     const calls: string[] = [];
     vi.spyOn(Box, "create").mockResolvedValue(fakeBox(calls) as unknown as Box);
     const { handle } = await implementationOf().start(sessionCtx(), undefined, noArtifact);
-    await expect(handle.onSessionDelete({ abortSignal: AbortSignal.abort() })).rejects.toThrow();
+    await expect(handle.onSandboxDelete({ abortSignal: AbortSignal.abort() })).rejects.toThrow();
     expect(calls).toEqual([]);
   });
 });
@@ -336,13 +336,13 @@ describe.skipIf(!hasBoxCreds)("UpstashSandbox provider (live Upstash Box)", () =
 
       // stop = pause; resume reattaches the SAME box (state survives), network policy included.
       await s.writeTextFile({ path: "turn1.txt", content: "kept" });
-      await handle.onSessionStop();
+      await handle.onSandboxStop();
       const resumed = await impl.resume(sessionCtx("live"), artifact, state);
       expect(await resumed.sandbox.readTextFile({ path: "turn1.txt" })).toBe("kept");
       expect((await resumed.sandbox.run({ command: fetchCmd })).exitCode).toBe(0);
 
       // delete = gone for good; resuming it now fails instead of silently making a new box.
-      await resumed.onSessionDelete();
+      await resumed.onSandboxDelete();
       await expect(impl.resume(sessionCtx("live"), artifact, state)).rejects.toThrow(
         /no longer available/,
       );
