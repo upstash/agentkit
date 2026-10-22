@@ -1,0 +1,15 @@
+# uv workspace for the Python packages under python/*. It lives beside the pnpm workspace rather than
+# replacing anything: each Python package also carries a private package.json so Changesets versions
+# it like every other package (see the "Python packages" section of CLAUDE.md).
+[tool.uv.workspace]
+members = ["python/*"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["python"]

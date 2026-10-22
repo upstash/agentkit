@@ -129,3 +129,32 @@ jobs:
             exit 0
           fi
           npx eve eval
+
+  python:
+    name: python · lint · test
+    # After the Node job, not beside it: both suites share the test Redis, whose search-index cap
+    # (10) is why vitest already runs its files sequentially.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # The lowest version the packages support (requires-python >= 3.11).
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install (locked)
+        # --locked fails if uv.lock is stale, e.g. a version bump without `pnpm ci:version`.
+        run: uv sync --locked --all-packages
+
+      - name: Lint (ruff)
+        run: uv run ruff check python && uv run ruff format --check python
+
+      - name: Test
+        # Redis-backed suites must skip themselves when these are empty (fork PRs get no secrets).
+        run: uv run pytest
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}

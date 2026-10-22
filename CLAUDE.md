@@ -20,6 +20,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
 | `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (layers, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `upstash-hermes-memory` (`python/hermes-memory`, **PyPI**) | Hermes Agent memory provider on Redis Search. **Scaffold at `0.0.0`** (unreleased) until the port lands (DX-3182). See **Python packages** below. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
@@ -1283,6 +1284,33 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `eve eval` is unaffected — it never prewarms.
 - The extension demo's `userId` is the static `"demo-user"` so memory persists across sessions in an
   unauthenticated local agent (the default derivation would fall back to the per-session id).
+
+## Python packages (`python/*`)
+
+Python lives **beside** the pnpm workspace, not instead of any of it:
+
+- **uv workspace** at the root (`pyproject.toml`, members `python/*`, one `uv.lock`). `pnpm py:lint`
+  (ruff) and `pnpm py:test` (pytest) run across every member; `uv sync --all-packages` sets it up.
+- **Changesets is still the only versioning tool.** Each Python package carries a **private
+  `package.json`** whose only job is to hold the version, and `python/*` is in `pnpm-workspace.yaml`
+  so changesets sees it. `pnpm changeset` lists it like any npm package; `changeset version` bumps it
+  and writes its `CHANGELOG.md`. `privatePackages: { version: true, tag: false }`: changesets never
+  tags or publishes it.
+- `scripts/sync-version.mjs` copies that version into `pyproject.toml` and
+  `src/<module>/_version.py` (`VERSION`, for telemetry), discovering packages by folder; `ci:version`
+  then runs `uv lock`, so the Version Packages PR carries a consistent `uv.lock`. **Never edit a
+  Python version by hand** — `sync-version.mjs --check` fails CI on drift.
+- `scripts/publish-python.mjs` (`pnpm ci:publish:python`) is PyPI's `changeset publish`: for every
+  `python/*` whose version is **not on PyPI yet**, `uv build` + `uv publish` (trusted publishing,
+  no token), then tag `<name>@<version>` + GitHub release from the CHANGELOG section. Idempotent and
+  keyed on the registry. **`0.0.0` = unreleased** and is always skipped, so a scaffold can merge
+  without reaching PyPI. `--dry-run` prints the plan.
+- **Adding a package:** `python/<name>/` with `package.json` (private, `0.0.0`), `pyproject.toml`
+  (`[project] name` = the package.json name), `src/<name with _>/_version.py`, tests. Then register a
+  PyPI **trusted publisher** for it (repo `upstash/agentkit`, workflow `release.yml`) before its first
+  non-zero version merges. Nothing else to touch.
+- Python tests share the test Redis (10-index cap) with vitest: run them **after** the Node tests,
+  never in parallel, and reuse the TS key prefixes/index names when the data is meant to be shared.
 
 ## Commands
 - **Setup gotcha — use pnpm 11.5.3, matching the `packageManager` pin.** Root `package.json` pins
