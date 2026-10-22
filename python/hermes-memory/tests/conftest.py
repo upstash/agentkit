@@ -1,4 +1,6 @@
 import os
+import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -39,3 +41,31 @@ def redis():
     from upstash_redis import Redis
 
     return Redis.from_env()
+
+
+@pytest.fixture
+def prefix(redis):
+    """A fresh key prefix per test (like the TS `uniquePrefix`); its keys are deleted afterwards.
+
+    Indexes built on it must be dropped by the test's own fixtures: the test database allows only
+    10 search indexes, shared with the vitest suites.
+    """
+    value = f"test:py:{uuid.uuid4().hex[:8]}"
+    yield value
+    cursor = 0
+    while True:
+        cursor, keys = redis.scan(cursor, match=f"{value}*", count=200)
+        if keys:
+            redis.delete(*keys)
+        if int(cursor) == 0:
+            break
+
+
+def eventually(check, timeout=8.0):
+    """Poll `check` until it returns a truthy value: search indexing lags writes slightly."""
+    deadline = time.monotonic() + timeout
+    while True:
+        result = check()
+        if result or time.monotonic() > deadline:
+            return result
+        time.sleep(0.25)
