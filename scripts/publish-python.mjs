@@ -8,8 +8,9 @@
 // `0.0.0` means "not released yet" (a scaffold), and is skipped, so a package can live in the repo
 // before its first changeset without anything reaching PyPI.
 //
-// After a successful upload the script tags `<name>@<version>` and opens a GitHub release with that
-// version's CHANGELOG section, matching what changesets does for the npm packages.
+// It then tags `<name>@<version>` and opens a GitHub release with that version's CHANGELOG section,
+// matching what changesets does for the npm packages. Upload, tag and release are each checked on
+// their own, so a run that stopped after the upload is completed by the next one.
 //
 //   node scripts/publish-python.mjs             # publish (CI: needs `id-token: write` + GH_TOKEN)
 //   node scripts/publish-python.mjs --dry-run   # print what would be published, change nothing
@@ -21,6 +22,15 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dryRun = process.argv.includes("--dry-run");
 const run = (cmd, args) => execFileSync(cmd, args, { cwd: root, stdio: "inherit" });
+/** Whether a read-only probe command exits 0 (its output is discarded). */
+const succeeds = (cmd, args) => {
+  try {
+    execFileSync(cmd, args, { cwd: root, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /** Whether PyPI already serves `name==version`. Anything but 200/404 is an error, not a "no". */
 const onPyPI = async (name, version) => {
@@ -51,30 +61,49 @@ for (const dir of dirs) {
     console.log(`${name}: 0.0.0 (unreleased), skipping`);
     continue;
   }
-  if (await onPyPI(name, version)) {
-    console.log(`${name}@${version}: already on PyPI, skipping`);
-    continue;
-  }
-  if (dryRun) {
-    console.log(`${name}@${version}: would build, publish and tag`);
-    continue;
-  }
-
-  const outDir = join("dist", "python", name);
-  run("uv", ["build", "--package", name, "--out-dir", outDir]);
-  run("uv", ["publish", "--trusted-publishing", "always", join(outDir, "*")]);
-
+  // Upload, tag and release are reconciled separately, so a run that died after the upload (a
+  // failed tag push or `gh release`) is finished by the next run instead of being skipped.
   const tag = `${name}@${version}`;
-  run("git", ["tag", tag]);
-  run("git", ["push", "origin", tag]);
-  run("gh", [
-    "release",
-    "create",
-    tag,
-    "--title",
-    tag,
-    "--notes",
-    releaseNotes(pkgDir, version) || tag,
-  ]);
+  const uploaded = await onPyPI(name, version);
+  if (dryRun) {
+    console.log(
+      uploaded
+        ? `${tag}: already on PyPI; would create the tag and the GitHub release if missing`
+        : `${tag}: would build, publish and tag`,
+    );
+    continue;
+  }
+
+  if (uploaded) {
+    console.log(`${tag}: already on PyPI, skipping the upload`);
+  } else {
+    const outDir = join("dist", "python", name);
+    run("uv", ["build", "--package", name, "--out-dir", outDir]);
+    run("uv", ["publish", "--trusted-publishing", "always", join(outDir, "*")]);
+  }
+
+  // An existing tag is never moved: it already points at the commit that was published.
+  if (succeeds("git", ["ls-remote", "--exit-code", "--tags", "origin", `refs/tags/${tag}`])) {
+    console.log(`${tag}: tag exists`);
+  } else {
+    if (!succeeds("git", ["rev-parse", "--quiet", "--verify", `refs/tags/${tag}`])) {
+      run("git", ["tag", tag]);
+    }
+    run("git", ["push", "origin", `refs/tags/${tag}`]);
+  }
+
+  if (succeeds("gh", ["release", "view", tag])) {
+    console.log(`${tag}: GitHub release exists`);
+  } else {
+    run("gh", [
+      "release",
+      "create",
+      tag,
+      "--title",
+      tag,
+      "--notes",
+      releaseNotes(pkgDir, version) || tag,
+    ]);
+  }
   console.log(`${tag}: published`);
 }
