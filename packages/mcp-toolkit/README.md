@@ -89,6 +89,56 @@ client:
 Both read the same record. Cancelling is cooperative: running code only stops where it checks
 `await task.isCancelled()`, so check it between steps.
 
+### Ask the user from a task
+
+A task can stop partway, ask the user a question through a form, and carry on with the answer:
+
+```ts
+tasks.registerTask(
+  "publish_post",
+  {
+    description: "Publishes a post once the user approves it.",
+    inputSchema: z.object({ title: z.string() }),
+  },
+  async ({ title }, task) => {
+    const answer = await task.elicit({
+      message: `Publish "${title}" now?`,
+      requestedSchema: z.object({ publish: z.boolean() }),
+    });
+    // `content` is typed and validated against requestedSchema
+    if (answer.action === "accept" && answer.content.publish) {
+      return { content: [{ type: "text", text: "Published." }] };
+    }
+    return { content: [{ type: "text", text: "Not published." }] };
+  },
+);
+```
+
+While it waits, the task is `input_required` and `tasks/get` carries the question as an MCP
+elicitation. The client shows the form and sends the answer with `tasks/update`. `answer.action` is
+`"accept"` (with `content`), `"decline"` or `"cancel"`.
+
+- **Backends.** Asking the user works with the in-memory backends and with `WorkflowDispatcher`.
+  It isn't available with `QStashDispatcher`, which can't wait for an answer: there, `elicit`
+  doesn't appear on `task` at all (and a plain-JS call fails the task with a message saying so).
+  In memory, the handler simply waits in the process. On Workflow it waits with `waitForEvent`, so
+  no function is held open while the user thinks; call it between steps, not inside `task.run`.
+- **Clients.** Claude Code answers in interactive terminal sessions. Elsewhere (headless `-p`, the
+  Agent SDK) it can't show the form, so it cancels the task, and the model is told the task asked a
+  question this session can't show.
+- **Clients without native tasks** can still ask the user: when one polls `task_status` on a
+  waiting task and declares that it can show forms (elicitation, 2026-07-28), `task_status` returns
+  the question as its own `input_required`, and the client retries with the user's answer.
+  Otherwise `task_status` tells the model that the task is waiting for the user. The model can't
+  answer: there is no tool for it, because an answer the model could give would defeat asking the
+  user.
+- **Cancel and expiry.** If the task is cancelled or expires while waiting, `elicit` throws and the
+  handler stops there; don't catch that error. A late answer is ignored.
+- **Limits.** Questions are keyed by call order (`elicit-1`, `elicit-2`, …), one at a time, at
+  most 16 per task. `tasks/update` takes at most 16 answers, 64 KiB in all, and checks them before
+  storing anything; it applies the same ownership rules as `tasks/get`. An accepted answer that
+  doesn't match `requestedSchema` fails the task instead of reaching the handler.
+
 ### Make it durable: Redis + QStash (or Workflow)
 
 In memory, a task is lost when the process restarts, and it only exists on the instance that took
@@ -145,6 +195,7 @@ that takes longer than one function invocation" below).
 | Survives the process dying         | no                           | yes (QStash redelivers)    | yes (replayed from the journal) |
 | Can run longer than one invocation | n/a: as long as the process  | no                         | yes, one invocation per step    |
 | When the handler throws            | `failed`, no retry           | the whole task starts over | only the failed step runs again |
+| Ask the user (`task.elicit`)       | yes                          | no                         | yes                             |
 
 In production (`NODE_ENV=production`), the in-memory defaults log a one-time warning. If a single
 long-lived server is what you want, pass them explicitly to say so:
@@ -270,8 +321,10 @@ kinds of client.
 `task_status` and `task_cancel` stay listed in native mode. They are the fallback, and Claude Code
 itself needs them for the calls it can't turn into tasks. Claude Code shows the model a native
 task's id, so the model may call `task_status` on it too; both paths read the same record and give
-the same answer. Hiding the tools per client would break the fallback, since one client sends both
-kinds of call.
+the same answer. To keep it from polling on top of Claude Code, native mode leaves the polling
+instruction out of the task tool's description, and `task_status`'s description says it is only for
+a tool result that asked for it. Hiding the tools per client would break the fallback, since one
+client sends both kinds of call.
 
 The server advertises the extension on `server/discover` (`capabilities.extensions`), and answers:
 
@@ -297,9 +350,12 @@ The server advertises the extension on `server/discover` (`capabilities.extensio
   `error.data` stays in the store, as with `task_status`.
 - An unknown, expired or malformed task id, another user's task, and an unidentified caller all get
   the same `-32602` error, so ids can't be probed.
-- No other `tasks/*` method is served: `tasks/update` (`input_required`), `tasks/list` and
-  `tasks/result` answer "Method not found", and there are no `notifications/tasks`. Claude Code
-  uses none of them.
+- `tasks/update { taskId, inputResponses }` answers a task that is `input_required` (see
+  [Ask the user from a task](#ask-the-user-from-a-task)) and replies
+  `{ "resultType": "complete" }`; answers to unknown or already answered keys are ignored.
+  Malformed `inputResponses` get `-32602`.
+- No other `tasks/*` method is served: `tasks/list` and `tasks/result` answer "Method not found",
+  and there are no `notifications/tasks`. Claude Code uses none of them.
 - Everything goes through the SDK's own extension points, so `tasks.attach(server)` stays the
   only setup, with the SDK's `createMcpHandler` or `mcp-handler` alike. Call it before the server
   is connected, as both factories do.
@@ -341,8 +397,8 @@ const tasks = new McpTasks({ principal, mode: "tools" }); // default: "native"
                          "result": { "content": [ … ] } } }
 ```
 
-The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. The
-task object has the same shape as the one in the MCP Tasks extension.
+The states are `working`, `input_required`, `completed`, `failed` and `cancelled`; the last three
+are final. The task object has the same shape as the one in the MCP Tasks extension.
 
 If the model stops polling, nothing is lost: the work finishes anyway, and the result can be read
 until the task expires (1 day by default; set `defaults: { ttlMs }` on `McpTasks`).
@@ -590,10 +646,11 @@ Treat the Redis credentials like any other production secret.
 
 **`mcp:task:<taskId>`**: a hash with one JSON-encoded field per property: `taskId`, `name`,
 `args`, `owner`, `status`, `statusMessage`, `result` / `error`, `createdAt`, `lastUpdatedAt`,
-`ttlMs`, `pollIntervalMs`.
+`ttlMs`, `pollIntervalMs`, and, for a task that asks the user, `inputRequests` (the open question)
+and one `response:<key>` field per answer.
 
-- `args` and `result` are **plain JSON**. Keep secrets out of tool arguments and results, or use a
-  short `ttlMs`.
+- `args`, `result` and the user's answers are **plain JSON**. Keep secrets out of tool arguments,
+  results and forms, or use a short `ttlMs`.
 - The task is written with its TTL before the tool replies, because the model's next poll may
   reach another instance. The TTL counts from creation and is never extended.
 - Status changes go through one guarded Lua script, and the first final status wins, so a
@@ -673,6 +730,12 @@ interface TaskStore {
     taskId: string,
     patch: TaskPatch & { status: TerminalTaskStatus },
   ): Promise<Task | null>; // first final status wins
+  // records answers while input_required; resolves the keys it resumed
+  respond(
+    taskId: string,
+    responses: Record<string, TaskInputResponse>,
+    statusMessage: string,
+  ): Promise<string[]>;
 }
 
 interface TaskDispatcher<TContext = unknown> {
@@ -683,6 +746,12 @@ interface TaskDispatcher<TContext = unknown> {
   ): (request: Request) => Promise<Response>;
   // called once, by new McpTasks(...)
   connect?(endpoints: TaskEndpoints<TContext>): void;
+  // both, to support task.elicit (and TaskInputContext in TContext)
+  waitForInput?(
+    wait: TaskInputWait,
+    context: TransportContext<TContext>,
+  ): Promise<void>;
+  resume?(taskId: string, keys: string[]): Promise<void>;
 }
 
 interface SubscriptionStore {
@@ -714,8 +783,8 @@ interface EventDelivery {
 <details>
 <summary><b>Not implemented yet</b></summary>
 
-- `input_required`: a handler asking the user something partway through a task (`tasks/update`
-  answers "Method not found").
+- Asking the user with `QStashDispatcher` (use `WorkflowDispatcher`), and input requests other
+  than form elicitations (URL elicitation, sampling, roots).
 - Listing tasks (`tasks/list`) and `notifications/tasks`.
 - Event replay (`cursor`) and the draft's poll and stream delivery modes.
 
