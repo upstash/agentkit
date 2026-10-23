@@ -18,7 +18,7 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
 ## Long-running tools
 
 A slow tool becomes a task: the call returns at once and the work carries on in the background.
-Clients that support the [MCP Tasks extension](https://modelcontextprotocol.io/extensions/tasks)
+Clients that support the [MCP Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
 (the Claude Code CLI) get a native task, which they poll and show themselves. Every other client
 gets a task id in an ordinary tool result, and the model checks on it with the `task_status` and
 `task_cancel` tools.
@@ -261,11 +261,13 @@ A server may only answer with a task when the request declares the extension, in
 (protocol revision 2026-07-28). `McpTasks` checks that on every call, so one server serves both
 kinds of client.
 
-- **Claude Code** CLI from v2.1.304 (terminal, Agent SDK and GitHub Actions sessions) declares it on
-  calls from the main conversation. It does not on calls from a subagent, in the VS Code extension
-  or the desktop app, or on a 2025-era connection; those get the tool-based handle.
-- **Other clients** (Codex, Cursor and OpenCode, as of October 2026) don't declare it and get the
+- **Claude Code** CLI from v2.1.304 declares it on calls from the main conversation in interactive
+  terminal sessions, and in Agent SDK and GitHub Actions runs with `CLAUDE_AUTO_BACKGROUND_TASKS=1`.
+  It does not on calls from subagents, in one-shot `claude -p` runs, in the VS Code extension or the
+  desktop app, on third-party providers such as Bedrock, or on a 2025-era connection; those get the
   tool-based handle.
+- **Other clients** (Codex, Cursor, OpenCode and ChatGPT, as of October 2026) don't declare it and
+  get the tool-based handle.
 
 `task_status` and `task_cancel` stay listed in native mode. They are the fallback, and Claude Code
 itself needs them for the calls it can't turn into tasks. Claude Code shows the model a native
@@ -307,7 +309,7 @@ The server advertises the extension on `server/discover` (`capabilities.extensio
 </details>
 
 <details>
-<summary><b>Keep the old behaviour (tools only)</b></summary>
+<summary><b>Tool-based handle for every client</b></summary>
 
 To answer every client with the tool-based handle (no `tasks/*` methods, no extension in the
 server's capabilities), set `mode: "tools"`:
@@ -432,8 +434,8 @@ stops at its next `isCancelled()`.
   details (`error.data`: the QStash DLQ id, the Workflow run id) stay in Redis for you. What your
   handler threw (Workflow's failure response) and a dispatch error are logged, never stored or
   returned.
-- By default QStash tries 5 times with backoff `min(pow(3, retried) * 1000, 300000)`, about two
-  minutes in total, so a task survives a server restart. The free tier and the local dev server
+- By default QStash retries 5 times (6 attempts in total) with backoff
+  `min(pow(3, retried) * 1000, 300000)`, about two minutes in total, so a task survives a server restart. The free tier and the local dev server
   allow at most 5 retries.
 
 </details>
@@ -446,7 +448,7 @@ Events need Upstash Redis and QStash: the environment variables from
 [Who is calling](#who-is-calling-principal).
 
 ```ts
-// lib/events.ts
+// events.ts
 import { McpEvents } from "@upstash/mcp-toolkit/events";
 import {
   QStashDelivery,
@@ -476,10 +478,11 @@ Call `events.attach(server)` in the `createMcpHandler` callback, next to `tasks.
 and add the route QStash delivers to:
 
 ```ts
-// app/api/events/route.ts
-import { events } from "@/lib/events";
+// events-route.ts
+import { events } from "./events";
 
-export const POST = events.createDeliveryHandler();
+// QStash delivers each event here: serve POST /api/events with it.
+export const deliver = events.createDeliveryHandler();
 ```
 
 Then emit from anywhere in your server code:
@@ -529,8 +532,9 @@ Pass `{ eventId }` as the second argument to `emit` to give an event a stable id
 - **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
   `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
   are never followed. Before a subscription is stored, the server POSTs a signed challenge and
-  requires the host to echo it back. Every failure returns the same `-32015` error, so a subscriber
-  can't use it to probe your network (the details go to your logs). DNS is not resolved, so use
+  requires the host to echo it back. A malformed URL returns `-32602` (`invalid_callback_url`); a
+  failed challenge always returns the same `-32015` error, so a subscriber can't use it to probe
+  your network (the details go to your logs). DNS is not resolved, so use
   egress filtering in production. `allowInsecureCallbacks: true` turns these checks off. Use it in
   local development only.
 - **The signing secret.** It must be `whsec_` followed by 24 to 64 base64 bytes, and it is stored
@@ -571,8 +575,9 @@ caller may start a task with given arguments is your `authorize`; the handler ge
 `task.principal`.
 `task_status`, `task_cancel`, `tasks/get` and `tasks/cancel` only accept UUID task ids, and
 compare the stored owner with the caller. For anyone else, the task looks exactly like an unknown
-id (a tool error for the tools, `-32602` for `tasks/*`), so they can't even tell it exists. Task ids are random UUIDs. No tool lists tasks, and the execute route only accepts signed
-QStash deliveries and never returns a task.
+id (a tool error for the tools, `-32602` for `tasks/*`), so they can't even tell it exists. Task
+ids are random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash
+deliveries and never returns a task.
 
 **Events.** See "Matching and `authorize`" above. The token is never stored, so the
 delivery-time check gets no `auth`.
