@@ -10,7 +10,7 @@
  * message to `/api/deploy-watch/events`, which signs and POSTs it to the host and lets QStash retry.
  */
 import { McpServer } from "@modelcontextprotocol/server";
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { McpEvents } from "@upstash/mcp-toolkit/events";
 import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
 import { Redis } from "@upstash/redis";
 import * as z from "zod";
@@ -19,7 +19,7 @@ import { principal } from "./auth";
 const APP_URL = process.env.APP_URL ?? "http://127.0.0.1:3000";
 const RECENT_KEY = "deploy-watch:recent";
 
-export const events = createEventLayer({
+export const events = new McpEvents({
   store: new RedisSubscriptionStore({ prefix: "deploy-watch:events:" }),
   delivery: new QStashDelivery({ url: `${APP_URL}/api/deploy-watch/events` }),
   // `secretKey` is read from MCP_EVENTS_SECRET_KEY (see .env.example). There is no fallback.
@@ -42,7 +42,7 @@ export const Deploy = z.object({
 });
 export type Deploy = z.infer<typeof Deploy>;
 
-export const deployFinished = events.define("deploy.finished", {
+export const deployFinished = events.registerEvent("deploy.finished", {
   title: "Deploy finished",
   description:
     "A deploy finished, successfully or not. Filter by service and/or environment, or leave both out to hear about every deploy.",
@@ -71,7 +71,7 @@ export async function reportDeploy(deploy: Deploy) {
 export function createServer(): McpServer {
   const server = new McpServer({ name: "deploy-watch", version: "0.1.0" });
   // events/list, events/subscribe and events/unsubscribe, next to the tools.
-  events.register(server);
+  events.attach(server);
 
   server.registerTool(
     "list_recent_deploys",

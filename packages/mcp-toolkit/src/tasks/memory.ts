@@ -1,5 +1,5 @@
 /**
- * The in-memory backends: what `createTaskLayer` uses when it is given no `store` and no
+ * The in-memory backends: what `McpTasks` uses when it is given no `store` and no
  * `dispatcher`. Tasks live in this process's memory and run in this process, so the setup needs no
  * Redis, no QStash and no execute endpoint.
  *
@@ -79,7 +79,7 @@ export class MemoryTaskStore implements TaskStore {
 
 /**
  * A {@link TaskDispatcher} that runs each task in this process, right after the tool call answers.
- * It needs no execute endpoint: `createTaskLayer` connects it to the layer itself.
+ * It needs no execute endpoint: `McpTasks` connects it itself.
  *
  * There are no retries: a handler that throws fails the task (the error goes to `console.error`
  * and stays in the record's `error.data`, never to the model). Cancelling is cooperative, as with
@@ -91,11 +91,11 @@ export class InProcessDispatcher implements TaskDispatcher {
   private endpoints: TaskEndpoints | undefined;
   private readonly running = new Set<Promise<void>>();
 
-  /** Called by `createTaskLayer`. One dispatcher serves one layer. */
+  /** Called by `McpTasks`. One dispatcher serves one `McpTasks`. */
   connect(endpoints: TaskEndpoints): void {
     if (this.endpoints && this.endpoints !== endpoints) {
       throw new Error(
-        "InProcessDispatcher: already connected to a task layer; create one per layer",
+        "InProcessDispatcher: already connected to an McpTasks; create one per McpTasks",
       );
     }
     this.endpoints = endpoints;
@@ -103,7 +103,7 @@ export class InProcessDispatcher implements TaskDispatcher {
 
   async dispatch(task: Task): Promise<void> {
     const endpoints = this.endpoints;
-    if (!endpoints) throw new Error("InProcessDispatcher: pass it to createTaskLayer first");
+    if (!endpoints) throw new Error("InProcessDispatcher: pass it to new McpTasks(...) first");
     // A macrotask, so the tool call's answer goes out before the work starts.
     const run = new Promise<void>((resolve) => setTimeout(resolve, 0))
       .then(() => endpoints.run(task.taskId, undefined))
@@ -124,7 +124,7 @@ export class InProcessDispatcher implements TaskDispatcher {
   /** Nothing to recall: a task not yet started finds itself cancelled and does nothing. */
   async cancel(): Promise<void> {}
 
-  /** Not needed: tasks run in process. Answers 404, but still connects the layer. */
+  /** Not needed: tasks run in process. Answers 404, but still connects it. */
   createExecuteHandler(endpoints: TaskEndpoints): (request: Request) => Promise<Response> {
     this.connect(endpoints);
     return async () =>

@@ -1,13 +1,13 @@
 /**
- * The in-memory backends, which are also `createTaskLayer`'s defaults: a server with nothing but
+ * The in-memory backends, which are also `McpTasks`' defaults: a server with nothing but
  * an MCP endpoint. Exercised end to end over a real `McpServer` and transport, in both modes, the
  * way a client would see it: start a task, then poll until it settles.
  */
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod";
-import { createTaskLayer, type TaskMode } from "./core.js";
-import type { Task, TaskContext } from "./index.js";
+import { McpTasks, type TaskMode } from "./core.js";
+import type { McpTasksOptions, Task, TaskContext } from "./index.js";
 import { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
 import { ManualDispatcher, sleep } from "../test-support.js";
 
@@ -33,23 +33,23 @@ const stepped =
   };
 
 /**
- * A server on the defaults: `createTaskLayer({ principal })`, nothing else, and no execute
- * endpoint. `layer` adds options (a mode, short TTLs) but never a backend.
+ * A server on the defaults: `new McpTasks({ principal })`, nothing else, and no execute
+ * endpoint. `options` adds (a mode, short TTLs) but never a backend.
  */
-function server(handler: Handler, layer: { mode?: TaskMode; ttlMs?: number } = {}) {
-  const tasks = createTaskLayer({
+function server(handler: Handler, options: { mode?: TaskMode; ttlMs?: number } = {}) {
+  const tasks = new McpTasks({
     principal: () => "local",
-    ...(layer.mode ? { mode: layer.mode } : {}),
-    ...(layer.ttlMs ? { defaults: { ttlMs: layer.ttlMs, pollIntervalMs: 10 } } : {}),
+    ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.ttlMs ? { defaults: { ttlMs: options.ttlMs, pollIntervalMs: 10 } } : {}),
   });
-  tasks.define(
+  tasks.registerTask(
     "generate_report",
     { description: "Generates a report.", inputSchema: z.object({ topic: z.string() }) },
     handler,
   );
   const mcp = createMcpHandler(() => {
     const instance = new McpServer({ name: "test", version: "1.0.0" });
-    tasks.register(instance);
+    tasks.attach(instance);
     return instance;
   });
 
@@ -249,7 +249,7 @@ describe.each([
 describe("in-memory defaults", () => {
   it("needs no execute endpoint, and its execute handler says so", async () => {
     const dispatcher = new InProcessDispatcher();
-    const tasks = createTaskLayer({
+    const tasks = new McpTasks({
       store: new MemoryTaskStore(),
       dispatcher,
       principal: () => "l",
@@ -259,24 +259,25 @@ describe("in-memory defaults", () => {
   });
 
   it("refuses a dispatcher without a store", () => {
-    expect(() =>
-      createTaskLayer({
-        dispatcher: new ManualDispatcher(),
-        principal: () => "local",
-      } as unknown as Parameters<typeof createTaskLayer>[0]),
+    expect(
+      () =>
+        new McpTasks({
+          dispatcher: new ManualDispatcher(),
+          principal: () => "local",
+        } as unknown as McpTasksOptions),
     ).toThrow(/store/);
   });
 
-  it("serves one layer per in-process dispatcher", () => {
+  it("serves one McpTasks per in-process dispatcher", () => {
     const dispatcher = new InProcessDispatcher();
-    createTaskLayer({ store: new MemoryTaskStore(), dispatcher, principal: () => "a" });
-    expect(() =>
-      createTaskLayer({ store: new MemoryTaskStore(), dispatcher, principal: () => "b" }),
-    ).toThrow(/one per layer/);
+    new McpTasks({ store: new MemoryTaskStore(), dispatcher, principal: () => "a" });
+    expect(
+      () => new McpTasks({ store: new MemoryTaskStore(), dispatcher, principal: () => "b" }),
+    ).toThrow(/one per McpTasks/);
   });
 
   it("refuses to dispatch before it is connected", async () => {
-    await expect(new InProcessDispatcher().dispatch({} as Task)).rejects.toThrow(/createTaskLayer/);
+    await expect(new InProcessDispatcher().dispatch({} as Task)).rejects.toThrow(/new McpTasks/);
   });
 
   it("warns once, in production only, when it falls back to memory", async () => {
@@ -284,7 +285,8 @@ describe("in-memory defaults", () => {
     const previous = process.env.NODE_ENV;
     try {
       vi.resetModules();
-      const fresh = (await import("./core.js")).createTaskLayer;
+      const { McpTasks: Fresh } = await import("./core.js");
+      const fresh = (options: McpTasksOptions) => new Fresh(options);
       process.env.NODE_ENV = "development";
       fresh({ principal: () => "local" });
       expect(warn).not.toHaveBeenCalled();

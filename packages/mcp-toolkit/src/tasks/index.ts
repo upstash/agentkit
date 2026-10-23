@@ -4,11 +4,9 @@
  * `@upstash/mcp-toolkit/upstash`.
  */
 export {
-  createTaskLayer,
+  McpTasks,
+  type McpTasksOptions,
   type TaskHandler,
-  type TaskBackends,
-  type TaskLayer,
-  type TaskLayerOptions,
   type TaskMode,
   type TaskToolConfig,
   type TaskAuthorizeCaller,

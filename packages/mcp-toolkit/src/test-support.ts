@@ -123,7 +123,7 @@ export function qstashRequest(
 
 /**
  * A dispatcher that records dispatches and runs nothing on its own, so a test drives each
- * delivery by hand, the way a queue would. The layer connects it when it is created.
+ * delivery by hand, the way a queue would. `McpTasks` connects it when it is created.
  */
 export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TContext> {
   readonly dispatched: Task[] = [];
@@ -165,7 +165,7 @@ export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TCon
   }
 
   private connected(): TaskEndpoints<TContext> {
-    if (!this.endpoints) throw new Error("Pass the dispatcher to createTaskLayer first");
+    if (!this.endpoints) throw new Error("Pass the dispatcher to new McpTasks(...) first");
     return this.endpoints;
   }
 }
@@ -218,7 +218,7 @@ export class MemorySubscriptionStore implements SubscriptionStore {
 
 /**
  * Sends each delivery from the calling process, once, and records whether it finished. It is
- * connected when the layer's `createDeliveryHandler()` is called.
+ * connected when `events.createDeliveryHandler()` is called.
  */
 export class InlineDelivery implements EventDelivery {
   readonly outcomes: { job: DeliveryJob; done: boolean }[] = [];

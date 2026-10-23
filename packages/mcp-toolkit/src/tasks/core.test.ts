@@ -1,12 +1,12 @@
 /**
  * The runtime, exercised through a real `McpServer` and a real transport — the requests below are
- * genuine JSON-RPC `tools/call`s over the wire, not direct calls into the layer.
+ * genuine JSON-RPC `tools/call`s over the wire, not direct calls into `McpTasks`.
  */
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod";
-import { createTaskLayer } from "./core.js";
-import type { TaskContext, TaskLayer, TaskToolConfig, WireTask } from "./index.js";
+import { McpTasks } from "./core.js";
+import type { McpTasksOptions, TaskContext, TaskToolConfig, WireTask } from "./index.js";
 import { MemoryTaskStore } from "./memory.js";
 import { InlineDispatcher, ManualDispatcher, sleep, userIdOf } from "../test-support.js";
 
@@ -30,7 +30,7 @@ type Harness = {
   status: (taskId: string, user?: User) => Promise<ToolResult>;
   cancel: (taskId: string, user?: User) => Promise<ToolResult>;
   listTools: () => Promise<string[]>;
-  tasks: TaskLayer;
+  tasks: McpTasks;
   store: MemoryTaskStore;
   dispatcher: InlineDispatcher;
   close: () => Promise<void>;
@@ -44,15 +44,15 @@ const principal = userIdOf;
 /** Builds a server with one task tool backed by `handler`. */
 async function harness(
   handler: (args: ReportArgs, task: TaskContext) => Promise<Record<string, unknown>>,
-  layer: Partial<Parameters<typeof createTaskLayer>[0]> = {},
+  options: Partial<McpTasksOptions> = {},
   tool: Partial<TaskToolConfig<z.ZodObject<{ topic: z.ZodString }>>> = {},
 ): Promise<Harness> {
   const store = new MemoryTaskStore();
-  const dispatcher = (layer.dispatcher as InlineDispatcher | undefined) ?? new InlineDispatcher();
-  const tasks = createTaskLayer({ store, principal, ...layer, dispatcher });
+  const dispatcher = (options.dispatcher as InlineDispatcher | undefined) ?? new InlineDispatcher();
+  const tasks = new McpTasks({ store, principal, ...options, dispatcher });
 
-  // Defined once, the way module scope does it in an app.
-  tasks.define(
+  // Registered once, the way module scope does it in an app.
+  tasks.registerTask(
     "generate_report",
     {
       description: "Generates a report.",
@@ -63,10 +63,10 @@ async function harness(
   );
 
   // A fresh server per request, the way `createMcpHandler` serves stateless traffic — the same
-  // path the demo uses. Registering on each one is cheap; the task layer's state is the store.
+  // path the demo uses. Attaching to each one is cheap; the tasks' state is the store.
   const handlerFor = createMcpHandler(() => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
-    tasks.register(server);
+    tasks.attach(server);
     return server;
   });
 
@@ -93,7 +93,7 @@ async function harness(
             _meta: {
               "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
               "io.modelcontextprotocol/clientInfo": { name: "test", version: "1.0.0" },
-              // A client that declares nothing at all: the layer must not need any capability.
+              // A client that declares nothing at all: McpTasks must not need any capability.
               "io.modelcontextprotocol/clientCapabilities": {},
             },
           },
@@ -142,7 +142,7 @@ const steppedHandler =
 
 const text = (result: ToolResult) => (result.content ?? []).map((c) => c.text).join("\n");
 
-describe("createTaskLayer over MCP", () => {
+describe("McpTasks over MCP", () => {
   let live: Harness | undefined;
   afterEach(async () => {
     await live?.close();
@@ -157,43 +157,78 @@ describe("createTaskLayer over MCP", () => {
   });
 
   it("runs a task on an instance that never built a server", async () => {
-    // The execute endpoint on a cold instance: the layer was created and the task defined at
-    // module scope, but no MCP request — and so no `register` — ever happened there.
+    // Two instances of one app, sharing a store. Instance A serves the MCP call; instance B only
+    // serves the execute endpoint, so it never built a server and never called `attach`: all it
+    // has is what `registerTask` put there at module scope.
     const store = new MemoryTaskStore();
-    const dispatcher = new ManualDispatcher();
-    const coldInstance = createTaskLayer({ store, dispatcher, principal });
-    coldInstance.define(
-      "generate_report",
-      { description: "Generates a report.", inputSchema: z.object({ topic: z.string() }) },
-      async ({ topic }) => ({ content: [{ type: "text", text: topic }] }),
-    );
-    const now = new Date().toISOString();
-    const taskId = crypto.randomUUID();
-    await store.create({
-      taskId,
-      status: "working",
-      createdAt: now,
-      lastUpdatedAt: now,
-      ttlMs: 60_000,
-      pollIntervalMs: 2_000,
-      name: "generate_report",
-      args: { topic: "ferries" },
-      owner: "alice",
+    const app = (dispatcher: ManualDispatcher) => {
+      const tasks = new McpTasks({ store, dispatcher, principal });
+      tasks.registerTask(
+        "generate_report",
+        { description: "Generates a report.", inputSchema: z.object({ topic: z.string() }) },
+        async ({ topic }) => ({ content: [{ type: "text", text: `Report: ${topic}` }] }),
+      );
+      return tasks;
+    };
+    const instanceA = app(new ManualDispatcher());
+    const coldDispatcher = new ManualDispatcher();
+    const coldInstance = app(coldDispatcher);
+
+    const mcp = createMcpHandler(() => {
+      const server = new McpServer({ name: "test", version: "1.0.0" });
+      instanceA.attach(server);
+      return server;
     });
-    await dispatcher.run(taskId);
-    expect((await store.get(taskId))?.status).toBe("completed");
+    const response = await mcp.fetch(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": PROTOCOL_VERSION,
+          "mcp-method": "tools/call",
+          "mcp-name": "generate_report",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "generate_report",
+            arguments: { topic: "ferries" },
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+              "io.modelcontextprotocol/clientInfo": { name: "test", version: "1.0.0" },
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          },
+        }),
+      }),
+      { authInfo: { token: "t", clientId: "chatgpt", scopes: [], extra: { userId: "alice" } } },
+    );
+    const body = JSON.parse(await response.text()) as { result?: ToolResult };
+    await mcp.close();
+    const taskId = String(body.result?.structuredContent?.taskId);
+    expect(await store.get(taskId)).toMatchObject({ status: "working" });
+
+    coldInstance.createExecuteHandler(); // what the execute route does on instance B
+    await coldDispatcher.run(taskId);
+    expect(await store.get(taskId)).toMatchObject({
+      status: "completed",
+      result: { content: [{ type: "text", text: "Report: ferries" }] },
+    });
   });
 
-  it("refuses to define the same task twice, or under a shared tool's name", () => {
-    const tasks = createTaskLayer({
+  it("refuses to register the same task twice, or under a shared tool's name", () => {
+    const tasks = new McpTasks({
       store: new MemoryTaskStore(),
       dispatcher: new InlineDispatcher(),
       principal,
     });
     const config = { description: "d", inputSchema: z.object({}) };
-    tasks.define("a", config, async () => ({}));
-    expect(() => tasks.define("a", config, async () => ({}))).toThrow(/already defined/);
-    expect(() => tasks.define("task_status", config, async () => ({}))).toThrow(/reserved/);
+    tasks.registerTask("a", config, async () => ({}));
+    expect(() => tasks.registerTask("a", config, async () => ({}))).toThrow(/already defined/);
+    expect(() => tasks.registerTask("task_status", config, async () => ({}))).toThrow(/reserved/);
   });
 
   it("answers the tool call with a task handle, as an ordinary tool result", async () => {
@@ -378,7 +413,7 @@ describe("createTaskLayer over MCP", () => {
     it("refuses when principal throws, or returns no usable id at runtime", async () => {
       for (const answer of [undefined, "", null, { id: "alice" }, 42]) {
         live = await harness(steppedHandler(1, 1), {
-          // Plain JavaScript, or an `as string` that lied: the layer still fails closed.
+          // Plain JavaScript, or an `as string` that lied: McpTasks still fails closed.
           principal: (() => answer) as never,
         });
         const start = await live.call("generate_report", { topic: "x" }, "alice");
@@ -399,7 +434,7 @@ describe("createTaskLayer over MCP", () => {
       live = await harness(steppedHandler(1, 1));
       const taskId = await live.start("x", "alice");
       await live.dispatcher.drain();
-      // A record written by something other than the layer, with no owner on it.
+      // A record written by something other than McpTasks, with no owner on it.
       const record = await live.store.get(taskId);
       await live.store.create({ ...record!, owner: undefined as unknown as string });
       expect(text(await live.status(taskId, "alice"))).toMatch(/Unknown task/);
@@ -457,11 +492,12 @@ describe("createTaskLayer over MCP", () => {
     });
 
     it("requires a principal", () => {
-      expect(() =>
-        createTaskLayer({
-          store: new MemoryTaskStore(),
-          dispatcher: new InlineDispatcher(),
-        } as unknown as Parameters<typeof createTaskLayer>[0]),
+      expect(
+        () =>
+          new McpTasks({
+            store: new MemoryTaskStore(),
+            dispatcher: new InlineDispatcher(),
+          } as unknown as McpTasksOptions),
       ).toThrow(/principal/);
     });
   });
@@ -551,7 +587,7 @@ describe("createTaskLayer over MCP", () => {
       expect(after.isError).toBe(true);
       expect(after.structuredContent).toMatchObject({
         status: "failed",
-        // Settled by the layer, not by a retried throw (whose message would be the thrown one).
+        // Settled by McpTasks, not by a retried throw (whose message would be the thrown one).
         error: { message: "The task returned an error" },
       });
       expect(text(after)).toMatch(/Workspace is read-only/);
@@ -624,7 +660,7 @@ describe("createTaskLayer over MCP", () => {
     await live.dispatcher.drain();
   });
 
-  it("uses the layer's default ttl and poll interval", async () => {
+  it("uses the default ttl and poll interval", async () => {
     live = await harness(steppedHandler(1, 1), {
       defaults: { ttlMs: 60_000, pollIntervalMs: 5_000 },
     });
@@ -636,8 +672,8 @@ describe("createTaskLayer over MCP", () => {
   it("refuses defaults that aren't positive whole milliseconds", () => {
     const base = { store: new MemoryTaskStore(), dispatcher: new InlineDispatcher(), principal };
     for (const bad of [0, -1, 1.5, Number.NaN, Infinity]) {
-      expect(() => createTaskLayer({ ...base, defaults: { ttlMs: bad } })).toThrow(/ttlMs/);
-      expect(() => createTaskLayer({ ...base, defaults: { pollIntervalMs: bad } })).toThrow(
+      expect(() => new McpTasks({ ...base, defaults: { ttlMs: bad } })).toThrow(/ttlMs/);
+      expect(() => new McpTasks({ ...base, defaults: { pollIntervalMs: bad } })).toThrow(
         /pollIntervalMs/,
       );
     }

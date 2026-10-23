@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod";
-import { createEventLayer, type EventLayerOptions } from "./core.js";
+import { McpEvents, type McpEventsOptions } from "./core.js";
 import { SecretBox, callbackUrlProblem, verifyWebhook } from "./webhooks.js";
 import type { EventEnvelope } from "./types.js";
 import {
@@ -89,9 +89,9 @@ afterEach(() => {
 });
 
 function setup(
-  options: Partial<EventLayerOptions> & { respond?: Respond; fetch?: typeof fetch } = {},
+  options: Partial<McpEventsOptions> & { respond?: Respond; fetch?: typeof fetch } = {},
 ) {
-  const { respond, fetch: fetchOverride, ...layerOptions } = options;
+  const { respond, fetch: fetchOverride, ...eventsOptions } = options;
   const secrets = new Map<string, string>();
   const receiver = host(secrets, respond);
   vi.stubGlobal("fetch", fetchOverride ?? receiver.fetch);
@@ -103,15 +103,15 @@ function setup(
   const canRead = (user: string, documentId: string | undefined) =>
     documentId !== "secret-doc" &&
     (documentId === undefined || (acl.get(documentId)?.has(user) ?? true));
-  const events = createEventLayer({
+  const events = new McpEvents({
     store,
     delivery,
     secretKey: TEST_SECRET_KEY,
     principal: userIdOf,
-    ...layerOptions,
+    ...eventsOptions,
   });
 
-  const commentCreated = events.define("comment.created", {
+  const commentCreated = events.registerEvent("comment.created", {
     description: "A new comment on a document.",
     input: z.object({
       documentId: z.string().optional(),
@@ -127,7 +127,7 @@ function setup(
 
   const handler = createMcpHandler(() => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
-    events.register(server);
+    events.attach(server);
     return server;
   });
 
@@ -311,7 +311,7 @@ describe("events/subscribe", () => {
 
   it("refuses the subscribe, and sends no challenge, when authorize throws", async () => {
     const { events, subscribe, receiver } = setup();
-    events.define("flaky", {
+    events.registerEvent("flaky", {
       description: "d",
       payload: z.object({}),
       authorize: () => {
@@ -359,6 +359,33 @@ describe("emit", () => {
       });
       expect(delivery.headers.get("webhook-id")).toBe(result.eventId);
     }
+  });
+
+  it("emits and delivers on an instance that never built a server", async () => {
+    // Instance A served the subscribe; the cold instance shares the store but never called
+    // `attach`. Its module-scope `registerEvent` is all it needs to emit and to deliver.
+    const { subscribe, store, receiver } = setup();
+    const sub = await subscribe({ documentId: "doc_1" });
+    const delivery = new InlineDelivery();
+    const coldInstance = new McpEvents({
+      store,
+      delivery,
+      secretKey: TEST_SECRET_KEY,
+      principal: userIdOf,
+    });
+    const commentCreated = coldInstance.registerEvent("comment.created", {
+      description: "A new comment on a document.",
+      input: z.object({ documentId: z.string().optional() }),
+      payload: z.object({ documentId: z.string(), author: z.string(), text: z.string() }),
+      authorize: () => true,
+    });
+    coldInstance.createDeliveryHandler(); // what the delivery route does on that instance
+
+    await commentCreated.emit({ documentId: "doc_1", author: "bob", text: "hi" });
+    expect(delivery.outcomes.map((o) => o.done)).toEqual([true]);
+    const [delivered] = receiver.deliveries();
+    expect(delivered?.url).toBe(sub.url);
+    expect(delivered?.valid).toBe(true);
   });
 
   it("uses a given eventId, so the host can drop a repeated emit", async () => {
@@ -495,7 +522,7 @@ describe("access across users", () => {
   it("retries a delivery, rather than dropping it, when authorize throws", async () => {
     const { events, subscribe, receiver, done } = setup();
     let down = true;
-    const memo = events.define("memo.posted", {
+    const memo = events.registerEvent("memo.posted", {
       description: "d",
       payload: z.object({ text: z.string() }),
       authorize: (_args, { phase }) => {
@@ -513,7 +540,7 @@ describe("access across users", () => {
   it("gives authorize the verified auth at subscribe time only", async () => {
     const seen: { phase: string; hasAuth: boolean }[] = [];
     const { events, subscribe } = setup();
-    const memo = events.define("memo.posted", {
+    const memo = events.registerEvent("memo.posted", {
       description: "d",
       payload: z.object({ text: z.string() }),
       authorize: (_args, caller) => {
@@ -597,18 +624,18 @@ describe("subscription limit", () => {
   });
 });
 
-describe("define", () => {
+describe("registerEvent", () => {
   it("requires authorize", () => {
     const { events } = setup();
     expect(() =>
-      events.define("open", { description: "d", payload: z.object({}) } as never),
+      events.registerEvent("open", { description: "d", payload: z.object({}) } as never),
     ).toThrow(/authorize/);
   });
 
   it("requires every input field to be a payload field, so emits are routed by the payload", () => {
     const { events } = setup();
     expect(() =>
-      events.define("reply.posted", {
+      events.registerEvent("reply.posted", {
         description: "A reply was posted in a thread.",
         input: z.object({ threadId: z.string() }),
         payload: z.object({ text: z.string() }), // no threadId in the payload
@@ -630,7 +657,7 @@ describe("routing through the input schema", () => {
   it("applies the input's transforms to the payload's values before matching and authorizing", async () => {
     const { events, subscribe, receiver } = setup();
     const seen: unknown[] = [];
-    const pushed = events.define("repo.pushed", {
+    const pushed = events.registerEvent("repo.pushed", {
       description: "A push.",
       input: z.object({ repo: z.string().trim().toLowerCase() }),
       payload: z.object({ repo: z.string(), sha: z.string() }),
@@ -647,7 +674,7 @@ describe("routing through the input schema", () => {
 
   it("refuses an emit whose values don't fit the input schema", async () => {
     const { events } = setup();
-    const build = events.define("build.done", {
+    const build = events.registerEvent("build.done", {
       description: "A build.",
       input: z.object({ id: z.number() }),
       payload: z.object({ id: z.string() }),
@@ -703,7 +730,7 @@ describe("principal", () => {
     const saved = process.env.MCP_EVENTS_SECRET_KEY;
     delete process.env.MCP_EVENTS_SECRET_KEY;
     try {
-      // Building the layer must not throw (it runs at module scope, at build time)...
+      // Constructing McpEvents must not throw (it runs at module scope, at build time)...
       const { subscribe } = setup({ secretKey: undefined });
       // ...but using it without a key does.
       const result = await subscribe({ documentId: "d" });
@@ -727,12 +754,13 @@ describe("principal", () => {
   });
 
   it("is required", () => {
-    expect(() =>
-      createEventLayer({
-        store: new MemorySubscriptionStore(),
-        delivery: new InlineDelivery(),
-        secretKey: TEST_SECRET_KEY,
-      } as unknown as EventLayerOptions),
+    expect(
+      () =>
+        new McpEvents({
+          store: new MemorySubscriptionStore(),
+          delivery: new InlineDelivery(),
+          secretKey: TEST_SECRET_KEY,
+        } as unknown as McpEventsOptions),
     ).toThrow(/principal/);
   });
 });

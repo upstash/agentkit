@@ -69,24 +69,23 @@ export interface TaskStore {
  * nothing for a queue, the `WorkflowContext` for Upstash Workflow.
  */
 export interface TaskDispatcher<TContext = unknown> {
-  /** Durably accepts a delivery. The layer calls it once per task. */
+  /** Durably accepts a delivery. `McpTasks` calls it once per task. */
   dispatch(task: Task): Promise<void>;
 
   /** Stops pending deliveries, when the transport can. Idempotent. */
   cancel(taskId: string): Promise<void>;
 
-  /** The transport's delivery endpoint, which hands each delivery to the layer's entry points. */
+  /** The transport's delivery endpoint, which hands each delivery to `McpTasks`' entry points. */
   createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
 
   /**
-   * Optional. `createTaskLayer` calls it once, with the layer's entry points, when the layer is
-   * created. A dispatcher that runs tasks itself, rather than through a delivery endpoint (like
+   * Optional. `McpTasks` calls it once, with its entry points, when it is constructed. A dispatcher that runs tasks itself, rather than through a delivery endpoint (like
    * `InProcessDispatcher`), keeps them here, so no execute endpoint has to be mounted.
    */
   connect?(endpoints: TaskEndpoints<TContext>): void;
 }
 
-/** The layer's entry points, handed to a dispatcher's `connect` and execute handler. */
+/** `McpTasks`' entry points, handed to a dispatcher's `connect` and execute handler. */
 export type TaskEndpoints<TContext = unknown> = {
   /** Runs a delivered task. Rejects if the handler threw, which means "deliver again". */
   run(taskId: string, context: TContext, journal?: TaskJournal): Promise<void>;

@@ -10,7 +10,7 @@ import { Client as WorkflowClient, WorkflowContext } from "@upstash/workflow";
 import { describe, expect, it, vi } from "vitest";
 import * as z from "zod";
 import { insideStep, WorkflowDispatcher, workflowRoute } from "./workflow.js";
-import { createTaskLayer } from "../core.js";
+import { McpTasks } from "../core.js";
 import type { Task, TaskContext } from "../types.js";
 import { MemoryTaskStore } from "../memory.js";
 import { ManualDispatcher, qstashRequest, testReceiver } from "../../test-support.js";
@@ -54,13 +54,13 @@ function stubClient() {
 
 describe("WorkflowDispatcher", () => {
   it("gives handlers the Workflow API without a type argument", () => {
-    const tasks = createTaskLayer({
+    const tasks = new McpTasks({
       store: new MemoryTaskStore(),
       dispatcher: new WorkflowDispatcher({ url: URL }),
       principal: () => "local",
     });
     // Compiles only if `task` is inferred as TaskContext & WorkflowContext.
-    tasks.define(
+    tasks.registerTask(
       "t",
       { description: "d", inputSchema: z.object({ n: z.number() }) },
       async ({ n }, task) => {
@@ -143,15 +143,15 @@ describe("the context a handler receives", () => {
     async sleep(): Promise<void> {}
   }
 
-  /** A layer with one `demo` task stored and ready to run. */
-  async function layerWithTask<TContext>(
+  /** An McpTasks with one `demo` task stored and ready to run. */
+  async function tasksWithTask<TContext>(
     handler: (task: TaskContext & TContext) => Promise<Record<string, unknown>>,
   ) {
     const store = new MemoryTaskStore();
     const dispatcher = new ManualDispatcher<TContext>();
-    const tasks = createTaskLayer<TContext>({ store, dispatcher, principal: () => "local" });
+    const tasks = new McpTasks<TContext>({ store, dispatcher, principal: () => "local" });
     await store.create(task({ taskId: "t1" }));
-    tasks.define(
+    tasks.registerTask(
       "demo",
       { description: "d", inputSchema: { "~standard": {} } as never },
       async (_args, task) => await handler(task),
@@ -159,12 +159,12 @@ describe("the context a handler receives", () => {
     return { store, dispatcher };
   }
 
-  /** Runs one task through the layer with whatever context the dispatcher would supply. */
+  /** Runs one task through `McpTasks` with whatever context the dispatcher would supply. */
   async function runWith<TContext>(
     context: TContext | undefined,
     handler: (task: TaskContext & TContext) => Promise<Record<string, unknown>>,
   ) {
-    const { store, dispatcher } = await layerWithTask<TContext>(handler);
+    const { store, dispatcher } = await tasksWithTask<TContext>(handler);
     await dispatcher.run("t1", context);
     return await store.get("t1");
   }
@@ -198,7 +198,7 @@ describe("the context a handler receives", () => {
 
   it("journals the SDK's own writes, so a replay does not rewind the status message", async () => {
     const journaled: string[] = [];
-    const { dispatcher } = await layerWithTask<unknown>(async (task) => {
+    const { dispatcher } = await tasksWithTask<unknown>(async (task) => {
       await task.update("one");
       await task.update("two");
       return {};

@@ -7,7 +7,7 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it } from "vitest";
 import * as z from "zod";
-import { createTaskLayer, type TaskMode } from "./core.js";
+import { McpTasks, type TaskMode } from "./core.js";
 import type { TaskContext } from "./index.js";
 import { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
 import { ManualDispatcher, sleep, userIdOf } from "../test-support.js";
@@ -29,13 +29,13 @@ type Options = {
 function harness(options: Options = {}) {
   const store = new MemoryTaskStore();
   const dispatcher = options.dispatcher ?? new InProcessDispatcher();
-  const tasks = createTaskLayer({
+  const tasks = new McpTasks({
     store,
     dispatcher,
     principal: userIdOf,
     ...(options.mode ? { mode: options.mode } : {}),
   });
-  tasks.define(
+  tasks.registerTask(
     "generate_report",
     { description: "Generates a report.", inputSchema: z.object({ topic: z.string() }) },
     options.handler ??
@@ -47,7 +47,7 @@ function harness(options: Options = {}) {
   );
   const mcp = createMcpHandler(() => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
-    tasks.register(server);
+    tasks.attach(server);
     return server;
   });
 
@@ -291,15 +291,15 @@ describe("native MCP Tasks", () => {
     // Its own server: the harness speaks 2026-07-28 only. Native mode registers `tasks/get` and
     // the extension capability on every instance, and a legacy instance must still start.
     const store = new MemoryTaskStore();
-    const tasks = createTaskLayer({
+    const tasks = new McpTasks({
       store,
       dispatcher: new ManualDispatcher(),
       principal: () => "local",
     });
-    tasks.define("t", { description: "d", inputSchema: z.object({}) }, async () => ({}));
+    tasks.registerTask("t", { description: "d", inputSchema: z.object({}) }, async () => ({}));
     const handler = createMcpHandler(() => {
       const server = new McpServer({ name: "test", version: "1.0.0" });
-      tasks.register(server);
+      tasks.attach(server);
       return server;
     });
     const init = await parse(
@@ -347,13 +347,14 @@ describe("native MCP Tasks", () => {
   });
 
   it("refuses an unknown mode", () => {
-    expect(() =>
-      createTaskLayer({
-        store: new MemoryTaskStore(),
-        dispatcher: new InProcessDispatcher(),
-        principal: userIdOf,
-        mode: "both" as TaskMode,
-      }),
+    expect(
+      () =>
+        new McpTasks({
+          store: new MemoryTaskStore(),
+          dispatcher: new InProcessDispatcher(),
+          principal: userIdOf,
+          mode: "both" as TaskMode,
+        }),
     ).toThrow(/mode/);
   });
 });

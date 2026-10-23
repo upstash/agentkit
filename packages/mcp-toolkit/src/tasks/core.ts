@@ -59,7 +59,7 @@ export type TaskMode = "native" | "tools";
  * `RedisTaskStore` with `QStashDispatcher` or `WorkflowDispatcher`. A dispatcher always comes with
  * a store: one that delivers through an endpoint may run the task on another instance.
  */
-export type TaskBackends<TContext = unknown> =
+type TaskBackends<TContext = unknown> =
   | {
       /** Keeps the task records. Defaults to a {@link MemoryTaskStore}: lost on restart. */
       store: TaskStore;
@@ -73,7 +73,7 @@ export type TaskBackends<TContext = unknown> =
       dispatcher?: undefined;
     };
 
-export type TaskLayerOptions<TContext = unknown> = TaskBackends<TContext> & {
+export type McpTasksOptions<TContext = unknown> = TaskBackends<TContext> & {
   /**
    * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
    * when it can't, and the call is refused as not authenticated. Every task is owned by its
@@ -137,55 +137,84 @@ export type TaskHandler<Args, TContext = unknown> = (
   task: TaskContext & TContext,
 ) => Promise<Record<string, unknown>>;
 
-export type TaskLayer<TContext = unknown> = {
-  /** Declares a task tool and its handler. Call it at module scope, so every instance has it. */
+/**
+ * Long-running tools for an `McpServer`: native MCP Tasks for clients that declare the extension,
+ * `task_status` / `task_cancel` for every other client. Without a store and a dispatcher, tasks are
+ * kept in memory and run in this process: fine for a single long-lived server, not for serverless
+ * or several instances.
+ *
+ * ```ts
+ * export const tasks = new McpTasks({ principal: () => "local" });
+ * tasks.registerTask("generate_report", { description, inputSchema }, handler); // module scope
+ *
+ * export function createServer() {
+ *   const server = new McpServer({ name: "reports", version: "1.0.0" });
+ *   tasks.attach(server);
+ *   return server;
+ * }
+ * ```
+ */
+export class McpTasks<TContext = unknown> {
+  readonly #runtime: Runtime<TContext>;
+
+  constructor(options: McpTasksOptions<TContext>) {
+    this.#runtime = buildRuntime(options);
+  }
+
+  /**
+   * Declares a task tool and its handler, like `server.registerTool`, but on this object rather
+   * than on a server. Call it at module scope, in a module the execute route also imports: a
+   * delivery can reach an instance that never built a server, and it finds the handler here.
+   */
+  registerTask<Schema extends StandardSchemaWithJSON>(
+    name: string,
+    config: TaskToolConfig<Schema>,
+    handler: TaskHandler<InferArgs<Schema>, TContext>,
+  ): void {
+    this.#runtime.define(name, config, handler);
+  }
+
+  /**
+   * Adds every registered task tool, plus `task_status` and `task_cancel`, to a server. In native
+   * mode it also advertises the Tasks extension and serves `tasks/get` and `tasks/cancel`. Call it
+   * before the server is connected, e.g. inside the `createMcpHandler` factory.
+   */
+  attach(server: McpServer): void {
+    this.#runtime.install(server);
+  }
+
+  /** The dispatcher's delivery endpoint: `export const POST = tasks.createExecuteHandler()`. */
+  createExecuteHandler(): (request: Request) => Promise<Response> {
+    return this.#runtime.createExecuteHandler();
+  }
+}
+
+type Runtime<TContext> = {
   define<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
     handler: TaskHandler<InferArgs<Schema>, TContext>,
   ): void;
-  /**
-   * Adds every defined task tool, plus `task_status` and `task_cancel`, to a server. In native
-   * mode it also advertises the Tasks extension and serves `tasks/get` and `tasks/cancel`. Call it
-   * before the server is connected, e.g. inside the `createMcpHandler` factory.
-   */
-  register(server: McpServer): void;
-  /** The dispatcher's delivery endpoint: `export const POST = tasks.createExecuteHandler()`. */
+  install(server: McpServer): void;
   createExecuteHandler(): (request: Request) => Promise<Response>;
 };
 
-/**
- * Builds a tasks runtime over a store and a dispatcher. Without them, tasks are kept in memory and
- * run in this process (see {@link TaskBackends}): fine for a single long-lived server, not for
- * serverless or several instances.
- *
- * ```ts
- * export const tasks = createTaskLayer({ principal: () => "local" });
- * tasks.define("generate_report", { description, inputSchema }, handler); // module scope
- *
- * export function createServer() {
- *   const server = new McpServer({ name: "reports", version: "1.0.0" });
- *   tasks.register(server);
- *   return server;
- * }
- * ```
- */
-export function createTaskLayer<TContext = unknown>(
-  options: TaskLayerOptions<TContext>,
-): TaskLayer<TContext> {
+const label = "McpTasks";
+
+function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TContext> {
   if (options.dispatcher && !options.store) {
     throw new Error(
-      "createTaskLayer: pass a `store` with your `dispatcher`. The in-memory default would not " +
+      `${label}: pass a \`store\` with your \`dispatcher\`. The in-memory default would not ` +
         "be shared with the instance that runs the task (use RedisTaskStore).",
     );
   }
   if (!options.dispatcher) warnInMemory(!options.store);
   const store = options.store ?? new MemoryTaskStore();
   const dispatcher = options.dispatcher ?? (new InProcessDispatcher() as TaskDispatcher<TContext>);
-  const principal = requirePrincipal(options.principal, "createTaskLayer");
+  const principal = requirePrincipal(options.principal, label);
   const mode = options.mode ?? "native";
   if (mode !== "native" && mode !== "tools") {
-    throw new Error('createTaskLayer: mode must be "native" or "tools"');
+    throw new Error(`${label}: mode must be "native" or "tools"`);
   }
   const ttlMs = positiveInteger(options.defaults?.ttlMs ?? DEFAULT_TTL_MS, "defaults.ttlMs");
   const pollIntervalMs = positiveInteger(
@@ -216,7 +245,7 @@ export function createTaskLayer<TContext = unknown>(
     });
   }
 
-  function register(server: McpServer): void {
+  function install(server: McpServer): void {
     for (const [name, { config }] of definitions) {
       server.registerTool(
         name,
@@ -272,7 +301,7 @@ export function createTaskLayer<TContext = unknown>(
       }) as never,
     );
 
-    if (mode === "native") registerNative(server);
+    if (mode === "native") installNative(server);
   }
 
   /**
@@ -280,7 +309,7 @@ export function createTaskLayer<TContext = unknown>(
    * `server/discover`, and the two methods Claude Code calls. `tasks/update` (input_required),
    * `tasks/list` and `tasks/result` are not served, so the SDK answers them "Method not found".
    */
-  function registerNative(server: McpServer): void {
+  function installNative(server: McpServer): void {
     server.server.registerCapabilities({ extensions: { [TASKS_EXTENSION]: {} } });
     // Any string: a malformed id reads exactly like a missing or foreign one (-32602), and never
     // reaches the store.
@@ -380,7 +409,7 @@ export function createTaskLayer<TContext = unknown>(
     const definition = definitions.get(task.name);
     if (!definition) {
       throw new Error(
-        `No task handler defined for "${task.name}". Call tasks.define(...) at module scope, in a module the execute route imports.`,
+        `No task handler defined for "${task.name}". Call tasks.registerTask(...) at module scope, in a module the execute route imports.`,
       );
     }
 
@@ -431,7 +460,7 @@ export function createTaskLayer<TContext = unknown>(
 
   return {
     define,
-    register,
+    install,
     createExecuteHandler: () => dispatcher.createExecuteHandler(endpoints),
   };
 }
@@ -447,7 +476,7 @@ function warnInMemory(noStore: boolean): void {
   if (warnedInMemory || env("NODE_ENV") !== "production") return;
   warnedInMemory = true;
   console.warn(
-    `[mcp-toolkit] createTaskLayer: no ${noStore ? "store or dispatcher" : "dispatcher"} given, so ` +
+    `[mcp-toolkit] ${label}: no ${noStore ? "store or dispatcher" : "dispatcher"} given, so ` +
       `tasks ${noStore ? "are kept in memory and " : ""}run in this process. They are lost on ` +
       "restart and do not work across serverless invocations or several instances. Use " +
       "RedisTaskStore with QStashDispatcher or WorkflowDispatcher (the toolkit's /upstash entry), " +
@@ -461,7 +490,7 @@ const NOT_AUTHORIZED = "Not authorized to start this task with these arguments."
 /** Validates a duration option: a positive, finite whole number of milliseconds. */
 function positiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`createTaskLayer: ${name} must be a positive whole number of milliseconds`);
+    throw new Error(`${label}: ${name} must be a positive whole number of milliseconds`);
   }
   return value;
 }
