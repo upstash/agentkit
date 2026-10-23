@@ -28,21 +28,25 @@ gets a task id in an ordinary tool result, and the model checks on it with the `
 ```ts
 // mcp.ts
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import * as z from "zod";
 
 // No store or dispatcher: tasks are kept in memory and run in this process.
-const tasks = createTaskLayer({ principal: () => "local" });
+const tasks = new McpTasks({ principal: () => "local" });
 
-// Define at module scope; the handler runs after the tool call has answered.
-tasks.define(
+// Register at module scope; the handler runs after the tool call has answered.
+tasks.registerTask(
   "generate_report",
-  { description: "Writes a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
+  {
+    description: "Writes a report on a topic.",
+    inputSchema: z.object({ topic: z.string() }),
+  },
   async ({ topic }, task) => {
     for (const step of ["Reading sources", "Drafting", "Polishing"]) {
       if (await task.isCancelled()) return {};
       await task.update(step); // progress, shown to whoever polls
-      await new Promise((resolve) => setTimeout(resolve, 2000)); // the slow part
+      // the slow part
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     return { content: [{ type: "text", text: `A report on ${topic}.` }] };
   },
@@ -50,17 +54,14 @@ tasks.define(
 
 const mcp = createMcpHandler(() => {
   const server = new McpServer({ name: "reports", version: "1.0.0" });
-  server.registerTool(
-    "ping",
-    { description: "An ordinary tool, for comparison.", inputSchema: z.object({}) },
-    async () => ({ content: [{ type: "text", text: "pong" }] }),
-  );
-  tasks.register(server); // generate_report, task_status, task_cancel, tasks/get, tasks/cancel
+  // generate_report, task_status, task_cancel, tasks/get and tasks/cancel
+  tasks.attach(server);
   return server;
 });
 
 // Serve POST /mcp with it.
-export const handler = (request: Request): Promise<Response> => mcp.fetch(request);
+export const handler = (request: Request): Promise<Response> =>
+  mcp.fetch(request);
 ```
 
 `handler` is a Web-standard `(request: Request) => Promise<Response>`, so it mounts in any
@@ -74,9 +75,9 @@ deploy to serverless or run more than one instance.
 
 ### What the client sees
 
-`tools/list` has `ping`, `generate_report`, `task_status` and `task_cancel`, and the server
-advertises the Tasks extension on `server/discover`. A call to `generate_report` is answered
-according to the client:
+`tools/list` has `generate_report`, `task_status` and `task_cancel`, and the server advertises the
+Tasks extension on `server/discover`. A call to `generate_report` is answered according to the
+client:
 
 - **A client that declares the Tasks extension** on the call (Claude Code, see below) gets a
   native task (`resultType: "task"`). The client polls `tasks/get` itself, shows the progress, and
@@ -101,31 +102,35 @@ UPSTASH_REDIS_REST_URL=...
 UPSTASH_REDIS_REST_TOKEN=...
 QSTASH_URL=...                   # your QStash region's URL, from the console
 QSTASH_TOKEN=...
-QSTASH_CURRENT_SIGNING_KEY=...   # required: the execute endpoint refuses to run without them
+# Required: the execute endpoint refuses to run without them.
+QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
 APP_URL=https://your-app.com     # QStash has to be able to reach it
 ```
 
-Pass a store and a dispatcher; the tool definitions and the MCP handler stay exactly as they were:
+Pass a store and a dispatcher; `registerTask` and the MCP handler stay exactly as they were:
 
 ```ts
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 
-const tasks = createTaskLayer({
+const tasks = new McpTasks({
   store: new RedisTaskStore(),
-  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  dispatcher: new QStashDispatcher({
+    url: `${process.env.APP_URL}/api/execute`,
+  }),
   principal: () => "local",
 });
 
-// tasks.define(...) and the MCP handler as above, then one more endpoint.
+// registerTask(...) and the MCP handler as above, then one more endpoint.
 // QStash delivers each task here: serve POST /api/execute with it.
-export const execute: (request: Request) => Promise<Response> = tasks.createExecuteHandler();
+export const execute: (request: Request) => Promise<Response> =
+  tasks.createExecuteHandler();
 ```
 
 The execute endpoint is just another `(request: Request) => Promise<Response>`, mounted like the
 MCP one, at the URL you gave the dispatcher. Every instance that serves it must import the module
-that calls `tasks.define(...)`, so it knows the handlers.
+that calls `tasks.registerTask(...)`, so it knows the handlers.
 
 For work that can outlast one function invocation, use `WorkflowDispatcher` (same `url`, same
 endpoint): each step runs in its own invocation, so a task has no overall time limit (see "Work
@@ -141,16 +146,16 @@ that takes longer than one function invocation" below).
 
 In production (`NODE_ENV=production`), the in-memory defaults log a one-time warning. If a single
 long-lived server is what you want, pass them explicitly to say so:
-`createTaskLayer({ store: new MemoryTaskStore(), dispatcher: new InProcessDispatcher(), principal })`
+`new McpTasks({ store: new MemoryTaskStore(), dispatcher: new InProcessDispatcher(), principal })`
 (both from `@upstash/mcp-toolkit/tasks`). `await dispatcher.drain()` on shutdown lets running tasks
 finish.
 
 ### Who is calling: `principal`
 
-Both layers need `principal`: a function that returns the id of the user making the call. Tasks
-belong to the user who started them, and subscriptions to the user who subscribed. `() => "local"`
-is for a server with no users of its own. Otherwise, verify the token and hand the result to the
-SDK, which passes it to `principal`:
+`McpTasks` and `McpEvents` both need `principal`: a function that returns the id of the user
+making the call. Tasks belong to the user who started them, and subscriptions to the user who
+subscribed. `() => "local"` is for a server with no users of its own. Otherwise, verify the token
+and hand the result to the SDK, which passes it to `principal`:
 
 ```ts
 // auth.ts
@@ -158,14 +163,16 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 import type { Caller } from "@upstash/mcp-toolkit/tasks";
 
 // 1. Your token check. Clerk, WorkOS, Auth0, your own.
-export async function verifyToken(request: Request): Promise<AuthInfo | undefined> {
+export async function verifyToken(
+  request: Request,
+): Promise<AuthInfo | undefined> {
   const token = request.headers.get("authorization")?.replace(/^Bearer /, "");
   if (!token) return undefined;
   const { sub, client_id } = await verifyJwt(token);
   return { token, clientId: client_id, scopes: [], extra: { userId: sub } };
 }
 
-// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+// 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
 export function principal({ auth }: Caller): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -174,7 +181,7 @@ export function principal({ auth }: Caller): string {
 ```
 
 ```ts
-// mcp.ts: createTaskLayer({ principal, ... }), and the handler checks the token first
+// mcp.ts: new McpTasks({ principal, ... }), and check the token first
 export async function handler(request: Request): Promise<Response> {
   const authInfo = await verifyToken(request);
   if (!authInfo) return new Response("Unauthorized", { status: 401 });
@@ -206,13 +213,14 @@ queued, and use `task.principal` (the user who started the task) inside the hand
 user id from the arguments:
 
 ```ts
-tasks.define(
+tasks.registerTask(
   "export_workspace",
   {
     description: "Exports a workspace to CSV.",
     inputSchema: z.object({ workspaceId: z.string() }),
     // May this user export this workspace? `false` refuses the call.
-    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+    authorize: ({ workspaceId }, { principal }) =>
+      canExport(principal, workspaceId),
   },
   async ({ workspaceId }, task) => {
     const csv = await exportWorkspace(workspaceId, { as: task.principal });
@@ -228,7 +236,7 @@ tasks.define(
 
 A server may only answer with a task when the request declares the extension, in
 `_meta["io.modelcontextprotocol/clientCapabilities"].extensions["io.modelcontextprotocol/tasks"]`
-(protocol revision 2026-07-28). The layer checks that on every call, so one server serves both
+(protocol revision 2026-07-28). `McpTasks` checks that on every call, so one server serves both
 kinds of client.
 
 - **Claude Code** CLI from v2.1.304 (terminal, Agent SDK and GitHub Actions sessions) declares it on
@@ -247,12 +255,14 @@ The server advertises the extension on `server/discover` (`capabilities.extensio
 
 ```jsonc
 // tools/call generate_report, from a client that declared the extension
-{ "resultType": "task", "taskId": "0e30…", "status": "working", "statusMessage": "Queued",
-  "createdAt": "…", "lastUpdatedAt": "…", "ttlMs": 86400000, "pollIntervalMs": 2000 }
+{ "resultType": "task", "taskId": "0e30…", "status": "working",
+  "statusMessage": "Queued", "createdAt": "…", "lastUpdatedAt": "…",
+  "ttlMs": 86400000, "pollIntervalMs": 2000 }
 
-// tasks/get { taskId }: the same fields, plus `result` (the tool result) once completed,
-// or `error` once failed
-{ "resultType": "complete", "taskId": "0e30…", "status": "completed", "statusMessage": "Completed", …,
+// tasks/get { taskId }: the same fields, plus `result` (the tool result) once
+// completed, or `error` once failed
+{ "resultType": "complete", "taskId": "0e30…", "status": "completed",
+  "statusMessage": "Completed", …,
   "result": { "content": [{ "type": "text", "text": "Report on coffee" }] } }
 
 // tasks/cancel { taskId }
@@ -268,7 +278,7 @@ The server advertises the extension on `server/discover` (`capabilities.extensio
 - No other `tasks/*` method is served: `tasks/update` (`input_required`), `tasks/list` and
   `tasks/result` answer "Method not found", and there are no `notifications/tasks`. Claude Code
   uses none of them.
-- Everything goes through the SDK's own extension points, so `tasks.register(server)` stays the
+- Everything goes through the SDK's own extension points, so `tasks.attach(server)` stays the
   only setup, with the SDK's `createMcpHandler` or `mcp-handler` alike. Call it before the server
   is connected, as both factories do.
 
@@ -281,7 +291,7 @@ To answer every client with the tool-based handle (no `tasks/*` methods, no exte
 server's capabilities), set `mode: "tools"`:
 
 ```ts
-const tasks = createTaskLayer({ principal, mode: "tools" }); // default: "native"
+const tasks = new McpTasks({ principal, mode: "tools" }); // default: "native"
 ```
 
 </details>
@@ -291,24 +301,29 @@ const tasks = createTaskLayer({ principal, mode: "tools" }); // default: "native
 
 ```jsonc
 // generate_report: a handle, right away
-{ "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
-  "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 86400000, "pollIntervalMs": 2000 } }
+{ "content": [{ "type": "text",
+                "text": "Started task 0e30…. Call task_status with …" }],
+  "structuredContent": { "taskId": "0e30…", "status": "working",
+                         "ttlMs": 86400000, "pollIntervalMs": 2000 } }
 
 // task_status: progress…
-{ "content": [{ "type": "text", "text": "Task 0e30… is working: Reading sources. Check again in about 2s." }],
-  "structuredContent": { "taskId": "0e30…", "status": "working", "statusMessage": "Reading sources" } }
+{ "content": [{ "type": "text",
+                "text": "Task 0e30… is working: Reading sources. …" }],
+  "structuredContent": { "taskId": "0e30…", "status": "working",
+                         "statusMessage": "Reading sources" } }
 
 // …then the handler's own content, as if the tool had run synchronously
-{ "content": [{ "type": "text", "text": "Task 0e30… is completed: Completed" },
+{ "content": [{ "type": "text", "text": "Task 0e30… is completed: …" },
               { "type": "text", "text": "Report on coffee" }],
-  "structuredContent": { "taskId": "0e30…", "status": "completed", "result": { "content": [ … ] } } }
+  "structuredContent": { "taskId": "0e30…", "status": "completed",
+                         "result": { "content": [ … ] } } }
 ```
 
 The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. The
 task object has the same shape as the one in the MCP Tasks extension.
 
 If the model stops polling, nothing is lost: the work finishes anyway, and the result can be read
-until the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
+until the task expires (1 day by default; set `defaults: { ttlMs }` on `McpTasks`).
 
 </details>
 
@@ -321,23 +336,31 @@ runs each step in its own invocation and replays finished steps from a journal, 
 overall time limit. Only the dispatcher changes. The endpoints stay the same.
 
 ```ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
+import {
+  RedisTaskStore,
+  WorkflowDispatcher,
+} from "@upstash/mcp-toolkit/upstash";
 
-const tasks = createTaskLayer({
+const tasks = new McpTasks({
   store: new RedisTaskStore(),
-  dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  dispatcher: new WorkflowDispatcher({
+    url: `${process.env.APP_URL}/api/execute`,
+  }),
   principal,
 });
 
-tasks.define(
+tasks.registerTask(
   "migrate_workspace",
   {
     description: "Copies a workspace to new storage.",
     inputSchema: z.object({ workspaceId: z.string() }),
-    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+    authorize: ({ workspaceId }, { principal }) =>
+      isOwner(principal, workspaceId),
   },
   async ({ workspaceId }, task) => {
-    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
+    const batches = await task.run("plan", () =>
+      listBatches(workspaceId, task.principal),
+    );
     for (const [i, batch] of batches.entries()) {
       if (await task.isCancelled()) return {};
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
@@ -402,28 +425,33 @@ Events need Upstash Redis and QStash: the environment variables from
 
 ```ts
 // lib/events.ts
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
+import { McpEvents } from "@upstash/mcp-toolkit/events";
+import {
+  QStashDelivery,
+  RedisSubscriptionStore,
+} from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 import { principal } from "./auth";
 
-export const events = createEventLayer({
+export const events = new McpEvents({
   store: new RedisSubscriptionStore(),
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
   principal,
 });
 
-export const commentCreated = events.define("comment.created", {
+// Register at module scope, like a task.
+export const commentCreated = events.registerEvent("comment.created", {
   description: "A new comment was added to a document.",
-  input: z.object({ documentId: z.string().optional() }), // what a subscriber may filter on
+  // What a subscriber may filter on.
+  input: z.object({ documentId: z.string().optional() }),
   payload: z.object({ documentId: z.string(), text: z.string() }),
   // May this user see comments on this document?
   authorize: (args, { principal }) => canRead(principal, args.documentId),
 });
 ```
 
-Call `events.register(server)` in the `createMcpHandler` callback, next to `tasks.register(server)`, and add the
-route QStash delivers to:
+Call `events.attach(server)` in the `createMcpHandler` callback, next to `tasks.attach(server)`,
+and add the route QStash delivers to:
 
 ```ts
 // app/api/events/route.ts
@@ -470,7 +498,7 @@ Pass `{ eventId }` as the second argument to `emit` to give an event a stable id
 </details>
 
 <details>
-<summary><b>What the layer checks for you</b></summary>
+<summary><b>What <code>McpEvents</code> checks for you</b></summary>
 
 - **The caller first.** `events/subscribe` and `events/unsubscribe` resolve `principal` before
   anything else, so an unidentified caller learns nothing about your events. A subscription's id is
@@ -566,19 +594,24 @@ The toolkit never stores the caller's token, the request, the plaintext webhook 
 <details>
 <summary><b>All options</b></summary>
 
-**`createTaskLayer`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by
+**`new McpTasks(options)`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by
 default) and `dispatcher` (an `InProcessDispatcher` by default; a dispatcher needs a store with
 it), `mode` (`"native"`, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and
 `defaults.pollIntervalMs` (2s), in positive whole milliseconds.
 
-**`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
-`title`, `completedMessage`, `authorize(args, { principal, auth, request })`.
+**`tasks.registerTask(name, config, handler)`**: `description` and `inputSchema` are required.
+Optional: `title`, `completedMessage`, `authorize(args, { principal, auth, request })`. Call it at
+module scope. `tasks.attach(server)` adds the task tools to a server, and
+`tasks.createExecuteHandler()` is the dispatcher's endpoint.
 
-**`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
-unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8), `allowInsecureCallbacks`.
+**`new McpEvents(options)`**: `store`, `delivery` and `principal` are required, and so is
+`secretKey` unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8),
+`allowInsecureCallbacks`.
 
-**`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
-Optional: `title`, `input`.
+**`events.registerEvent(name, config)`**: `description`, `payload` and `authorize` are required.
+Optional: `title`, `input`. Returns the event's handle, `{ name, emit }`. Call it at module scope.
+`events.attach(server)` serves `events/*` on a server, and `events.createDeliveryHandler()` is the
+delivery's endpoint.
 
 **`RedisTaskStore`** / **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix`
 (`mcp:task:` / `mcp-events:`), `enableTelemetry`.
@@ -612,24 +645,38 @@ interfaces (types exported from the same entry points). `MemoryTaskStore` and
 interface TaskStore {
   create(task: Task): Promise<void>; // with its TTL
   get(taskId: string): Promise<Task | null>;
-  update(taskId: string, patch: TaskPatch): Promise<void>; // ignored once the task is final
-  settle(taskId: string, patch: TaskPatch & { status: TerminalTaskStatus }): Promise<Task | null>; // first final status wins
+  // ignored once the task is final
+  update(taskId: string, patch: TaskPatch): Promise<void>;
+  settle(
+    taskId: string,
+    patch: TaskPatch & { status: TerminalTaskStatus },
+  ): Promise<Task | null>; // first final status wins
 }
 
 interface TaskDispatcher<TContext = unknown> {
   dispatch(task: Task): Promise<void>; // called once per task
   cancel(taskId: string): Promise<void>;
-  createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
-  connect?(endpoints: TaskEndpoints<TContext>): void; // called when the layer is created
+  createExecuteHandler(
+    endpoints: TaskEndpoints<TContext>,
+  ): (request: Request) => Promise<Response>;
+  // called once, by new McpTasks(...)
+  connect?(endpoints: TaskEndpoints<TContext>): void;
 }
 
 interface SubscriptionStore {
-  // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+  // false, storing nothing, when a new one would put its subscriber over
+  // `limit` (atomically)
   put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
   get(id: string): Promise<Subscription | null>;
-  count(subscriber: string): Promise<number>; // live subscriptions, across all events
-  delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
-  find(event: string): Promise<Subscription[]>; // every live subscription to the event
+  // live subscriptions, across all events
+  count(subscriber: string): Promise<number>;
+  delete(subscription: {
+    id: string;
+    event: string;
+    subscriber: string;
+  }): Promise<void>;
+  // every live subscription to the event
+  find(event: string): Promise<Subscription[]>;
 }
 
 interface EventDelivery {

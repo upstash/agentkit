@@ -126,7 +126,7 @@ the QStash DLQ.
 
 ## Notes
 
-- The task layer runs in its default native mode: Claude Code (CLI v2.1.304+) declares the
+- `McpTasks` runs in its default native mode: Claude Code (CLI v2.1.304+) declares the
   protocol's Tasks extension and gets native tasks; Codex, Cursor, OpenCode and ChatGPT don't, and
   use the three ordinary tools, so it works in every client today.
 - The demo has no real login. `app/lib/auth.ts` stands in for one: the MCP routes turn

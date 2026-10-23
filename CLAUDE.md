@@ -19,7 +19,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
-| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — native MCP Tasks for clients that declare the extension, else start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (layers, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — native MCP Tasks for clients that declare the extension, else start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (the `McpTasks` / `McpEvents` classes, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
@@ -694,7 +694,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   once, caught only by grepping the built chunks: `grep -l "@upstash/" dist/chunk-*.js`).
   **WebCrypto only** (no `node:crypto` / `node:net`), so it runs on edge runtimes; `signWebhook`,
   `SecretBox.seal/open` and `subscriptionId` are async for that reason.
-- **Native MCP Tasks by default, tools as the fallback (DX-3209, 1.0.0).** `createTaskLayer({ mode })`:
+- **Native MCP Tasks by default, tools as the fallback (DX-3209, 1.0.0).** `new McpTasks({ mode })`:
   `"native"` (default) or `"tools"` (exactly 0.x). In native mode a `tools/call` whose per-request
   envelope declares the extension (`ctx.mcpReq.envelope["io.modelcontextprotocol/clientCapabilities"]
   .extensions["io.modelcontextprotocol/tasks"]`, an object) is answered with
@@ -703,7 +703,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   object + a text line telling the model to poll `task_status`). Claude Code CLI ≥ 2.1.304 declares
   the extension on main-conversation calls only (not subagents, not VS Code/desktop), so the
   fallback is needed even for Claude Code: `task_status` / `task_cancel` are **always listed**.
-  **No HTTP wrapper** — all via SDK 2.3.x extension points inside `register(server)`:
+  **No HTTP wrapper** — all via SDK 2.3.x extension points inside `attach(server)`:
   `server.server.registerCapabilities({ extensions: { [TASKS]: {} } })` (shows on
   `server/discover`; must run before connect, which `createMcpHandler` and `mcp-handler` both
   guarantee), `server.server.setRequestHandler("tasks/get" | "tasks/cancel", { params }, …)` (the
@@ -719,13 +719,21 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   gotchas: on 2026-07-28 the HTTP entry requires `Mcp-Name: <taskId>` on `tasks/*` (SEP-2663; the
   SDK client sends it, hand-written curl must too), and envelope validation rejects a non-object
   extension value (`[TASKS]: true` → -32602 before dispatch). Tests: `src/tasks/native.test.ts`.
-- **`define` / `register`, never one call (DX-3022 review item 1).** `tasks.define(name, config,
-  handler)` runs at module scope and fills the handler map; `tasks.register(server)` attaches every
-  defined tool + the shared tools inside the per-request factory. The old
-  `registerTask(server, …)` only filled the map when a server was built, so a cold instance serving
-  only `/api/execute` threw "No task handler" and every delivery 500'd — don't bring it back, and
-  don't reintroduce the top-level `createServer();` workaround.
-- **Ownership (`principal` is required, both layers).** `createTaskLayer` / `createEventLayer`
+- **Class API: register at module scope, `attach` per request (DX-3022 review item 1; classes
+  since DX-3209).** `const tasks = new McpTasks({...})` and `tasks.registerTask(name, config,
+  handler)` run at module scope and fill the handler map with no server; `tasks.attach(server)`
+  adds every registered tool + the shared tools inside the per-request factory. Events are the
+  same: `new McpEvents({...})`, `events.registerEvent(name, config)` (returns `{ name, emit }`),
+  `events.attach(server)`. Registering on the module-scope instance is the point; what stays banned
+  is registering on the **per-request server** (the 0.x-era `registerTask(server, …)` shape): it
+  only filled the map when a server was built, so a cold instance serving only `/api/execute`
+  threw "No task handler" and every delivery 500'd. Don't bring it back, and don't reintroduce
+  the top-level `createServer();` workaround. `attach(server)` is the only wiring: the
+  experimental SDK `extensions: [tasks]` shape (`id` / `setup(ctx)`, typescript-sdk #2820) was
+  prototyped and deliberately not shipped. `createTaskLayer` / `createEventLayer` / `define` /
+  `register` were removed as a clean break (no aliases). Tests: the "never built a server" cases in
+  `src/tasks/core.test.ts` and `src/events/core.test.ts`.
+- **Ownership (`principal` is required, both classes).** `new McpTasks` / `new McpEvents`
   throw without it. It receives `{ auth, request }` (SDK v2's `ctx.http.authInfo` and
   `ctx.http.req`), may be async, and stamps `task.owner` / `subscription.owner`. `auth` is only what
   the app's route passed to `handler.fetch(request, { authInfo })` after verifying the token: the
@@ -739,10 +747,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   pass `principal: () => "local"`. `task_status` / `task_cancel` take `z.uuid()` task ids (so
   nothing else reaches a Redis key) and report a non-owned task as *unknown* (no existence oracle).
   Owners are JSON-encoded on write, so auto-deserialization hands them back as strings and a plain
-  `===` compares them. The public `TaskLayer` is only `{ define, register, createExecuteHandler }`;
+  `===` compares them. The public `McpTasks` is only `{ registerTask, attach, createExecuteHandler }`;
   a dispatcher gets `run` / `fail` as the argument of its `createExecuteHandler(endpoints)`, and
-  also through the optional `TaskDispatcher.connect?(endpoints)`, which `createTaskLayer` calls once
-  at creation (that is how a dispatcher with no endpoint gets connected; no `attach` on the layer).
+  also through the optional `TaskDispatcher.connect?(endpoints)`, which the `McpTasks` constructor calls
+  once (that is how a dispatcher with no endpoint gets connected).
 - **In-memory task backends ship, and are the defaults (DX-3209, 1.0.0).** `src/tasks/memory.ts`,
   exported from `/tasks`: `MemoryTaskStore` (lazy expiry `ttlMs` after create, swept at most once a
   minute on `create`, no timers; first terminal write wins; hands out copies) and
@@ -750,15 +758,15 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   tool call answers; a throw → `console.error` + `fail({ -32603, "The task handler threw an error",
   data: { error } })`, no retries; `cancel` is a no-op, `isCancelled()` does the work;
   `createExecuteHandler` answers 404 but still connects; `drain()` for shutdown and tests; one
-  layer per instance, a second `connect` throws). `store` / `dispatcher` are optional on
-  `createTaskLayer` (`TaskBackends` union: both, store only, or neither); a dispatcher without a
+  `McpTasks` per instance, a second `connect` throws). `store` / `dispatcher` are optional on
+  `McpTasks` (internal `TaskBackends` union in `McpTasksOptions`: both, store only, or neither); a dispatcher without a
   store throws (QStash + memory store would run on an instance that never saw the record). Omitting
   the dispatcher in `NODE_ENV=production` logs one `console.warn` per process; passing the
   in-memory backends explicitly silences it. The warning avoids the literal `@upstash/` so
   `grep "@upstash/" dist/tasks/index.js` stays empty. The handle's first `statusMessage` is
   `"Queued"` (was "Queued for durable execution", untrue in memory). Tests: `src/tasks/memory.test.ts`
   runs the defaults end to end in native and tools modes. Test doubles stay in
-  `src/test-support.ts`: `ManualDispatcher` (connected by the layer, drive with `run`/`fail`) and
+  `src/test-support.ts`: `ManualDispatcher` (connected by `McpTasks`, drive with `run`/`fail`) and
   `InlineDispatcher` (the shipped `InProcessDispatcher` + a `dispatched` log). The events in-memory
   backends (`MemorySubscriptionStore`, `InlineDelivery`) are still test-only, **not shipped**.
 - **No `idempotencyKey` (removed 2026-10-08, keep it simple; add back only if someone asks).** Task
@@ -803,7 +811,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `workflowRunId` is the task id; that is only safe because ids are random (Workflow refuses a
   reused run id). A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
 - **Workflow context is inferred** from the dispatcher (`TaskDispatcher<TContext>`), so
-  `createTaskLayer({ dispatcher: new WorkflowDispatcher(...) })` types `task.run` / `task.sleep` with
+  `new McpTasks({ dispatcher: new WorkflowDispatcher(...) })` types `task.run` / `task.sleep` with
   no type argument; a test in `workflow.test.ts` keeps it that way.
 - **`RedisSubscriptionStore` = one index per event** (`<prefix>idx:<event>`, a zset scored by
   expiry, no TTL — bounded by the number of event names) plus `<prefix>sub:<id>` with `PX`. `put`
@@ -883,7 +891,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `sub_` + sha256(canonical `[subscriber, url, event, args]`), so unsubscribe/refresh can only ever
   touch the caller's own record (tested). **An event's values come from ONE place, the payload**
   (the user's call, 2026-10-08: "it doesn't make sense for emit to get the docId as two
-  parameters"): `emit(payload, { eventId? })` is the whole API, `define` throws unless every
+  parameters"): `emit(payload, { eventId? })` is the whole API, `registerEvent` throws unless every
   `input` field is also a `payload` field, and `valuesOf(input, payload)` gives the values used
   both to **match** (a subscription matches when every arg it gave equals the payload's value) and
   to **authorize**. **Access model:** the filter says *what*, a **required** `authorize` says *who
