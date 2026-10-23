@@ -121,12 +121,13 @@ is `input_required`; the client answers with `tasks/update` and the handler carr
 
 - **Backends.** Works in memory and with `WorkflowDispatcher` (which waits without holding a
   function open; call `elicit` between steps, not inside `task.run`). Not with `QStashDispatcher`:
-  there, `task.elicit` doesn't exist.
+  there, `task` has no `elicit` in the types (a plain-JS call fails the task).
 - **Claude Code** shows the form in interactive sessions. In headless sessions (`-p`, the Agent
   SDK) it can't, so it cancels the task.
 - **Clients without native tasks** get the question from `task_status` if they support
-  elicitation; otherwise the model is told the task is waiting for the user. The model can't answer
-  for the user: there is no tool for it, on purpose.
+  elicitation on a 2026-07-28 connection. Otherwise, including on 2025-era connections (the default
+  in many clients, the official SDK client 2.3.1 among them), the model is told the task is waiting
+  and that only the user can answer. There is no tool for the model to answer, on purpose.
 - If the task is cancelled or expires while waiting, `elicit` throws; don't catch that error. A
   task asks at most 16 questions, one at a time.
 
@@ -298,6 +299,7 @@ again later.` (a tool error, or `-32603` on `tasks/*` and `events/*`) and the re
 `console.error`, so a database host or credential in it never reaches the model. Each user may have
 at most 100 tasks working or waiting for input (`maxActiveTasks`), and a task's arguments may be at
 most 64 KiB of JSON (`maxArgsBytes`); past either, the call is refused before anything is stored.
+A task waiting for an answer counts as active until it is answered, cancelled or expires.
 
 ### Going further
 
@@ -485,11 +487,11 @@ stops at its next `isCancelled()`.
   retry, and `task_status` returns your content with `isError`, as the synchronous tool would.
 - What a failure looks like to the model is `error.code` and `error.message`. The transport's
   details (`error.data`: the QStash DLQ id, the Workflow run id) stay in Redis for you. What your
-  handler threw (Workflow's failure response) and a dispatch error are logged, never stored or
-  returned.
+  handler threw (Workflow's failure response) and a dispatch error are never returned. QStash and
+  Workflow only log them; the in-memory dispatcher also keeps the message in `error.data`.
 - By default QStash retries 5 times (6 attempts in total) with backoff
-  `min(pow(3, retried) * 1000, 300000)`, about two minutes in total, so a task survives a server restart. The free tier and the local dev server
-  allow at most 5 retries.
+  `min(pow(3, retried) * 1000, 300000)`, about two minutes in total, so a task survives a server
+  restart. The free tier and the local dev server allow at most 5 retries.
 
 </details>
 
@@ -651,6 +653,9 @@ Treat the Redis credentials like any other production secret.
 `ttlMs`, `pollIntervalMs`, and, for a task that asks the user, `inputRequests` (the open question)
 and one `response:<key>` field per answer.
 
+**`mcp:task:active:<owner>`**: a sorted set of the owner's task ids, scored by expiry, for
+`maxActiveTasks`. Counting drops the expired and finished ones.
+
 - `args`, `result` and the user's answers are **plain JSON**. Keep secrets out of tool arguments,
   results and forms, or use a short `ttlMs`.
 - The task is written with its TTL before the tool replies, because the model's next poll may
@@ -739,6 +744,8 @@ interface TaskStore {
     responses: Record<string, TaskInputResponse>,
     statusMessage: string,
   ): Promise<string[]>;
+  // working + input_required, for maxActiveTasks
+  countActive(owner: string): Promise<number>;
 }
 
 // CanAsk: whether handlers get task.elicit. TContext: what the transport

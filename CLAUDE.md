@@ -797,7 +797,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `src/tasks/core.test.ts` and `src/events/core.test.ts`.
 - **Ownership (`principal` is required, both classes).** `new McpTasks` / `new McpEvents`
   throw without it. It receives `{ auth, request }` (SDK v2's `ctx.http.authInfo` and
-  `ctx.http.req`), may be async, and stamps `task.owner` / `subscription.owner`. `auth` is only what
+  `ctx.http.req`), may be async, and stamps `task.owner` / `subscription.subscriber`. `auth` is only what
   the app's route passed to `handler.fetch(request, { authInfo })` after verifying the token: the
   SDK never derives it from headers. `request` is unverified, for cookie/session apps; docs warn
   against trusting caller-set headers. `PrincipalResolver` returns a plain **string**
