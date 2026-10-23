@@ -19,7 +19,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
-| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (layers, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — native MCP Tasks for clients that declare the extension, else start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (layers, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
@@ -694,14 +694,31 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   once, caught only by grepping the built chunks: `grep -l "@upstash/" dist/chunk-*.js`).
   **WebCrypto only** (no `node:crypto` / `node:net`), so it runs on edge runtimes; `signWebhook`,
   `SecretBox.seal/open` and `subscriptionId` are async for that reason.
-- **Tools mode, not the Tasks extension (since 2026-10).** A task tool answers with an ordinary tool
-  result (`structuredContent` = the task object, plus a text line telling the model to poll); two
-  shared tools, `task_status` and `task_cancel`, are registered once per server. No `tasks/*`
-  methods, no capability check, no custom transport — the demo serves through `createMcpHandler`.
-  Reason: no mainstream client (Claude Code, Codex, Cursor, OpenCode) declares
-  `io.modelcontextprotocol/tasks` as of 2026-10-07, and a server must not return a task to a client
-  that did not. A native adapter can sit on the same store/dispatcher later — don't reintroduce the
-  old `methods`/`onMissingCapability`/`-32021` machinery into the core.
+- **Native MCP Tasks by default, tools as the fallback (DX-3209, 1.0.0).** `createTaskLayer({ mode })`:
+  `"native"` (default) or `"tools"` (exactly 0.x). In native mode a `tools/call` whose per-request
+  envelope declares the extension (`ctx.mcpReq.envelope["io.modelcontextprotocol/clientCapabilities"]
+  .extensions["io.modelcontextprotocol/tasks"]`, an object) is answered with
+  `{ resultType: "task", taskId, status, statusMessage, createdAt, lastUpdatedAt, ttlMs,
+  pollIntervalMs }`; every other call gets the 0.x tool result (`structuredContent` = the task
+  object + a text line telling the model to poll `task_status`). Claude Code CLI ≥ 2.1.304 declares
+  the extension on main-conversation calls only (not subagents, not VS Code/desktop), so the
+  fallback is needed even for Claude Code: `task_status` / `task_cancel` are **always listed**.
+  **No HTTP wrapper** — all via SDK 2.3.x extension points inside `register(server)`:
+  `server.server.registerCapabilities({ extensions: { [TASKS]: {} } })` (shows on
+  `server/discover`; must run before connect, which `createMcpHandler` and `mcp-handler` both
+  guarantee), `server.server.setRequestHandler("tasks/get" | "tasks/cancel", { params }, …)` (the
+  3-arg custom-method form), and returning `resultType: "task"` from the tool handler (the SDK's
+  encode seam passes a handler-provided `resultType` through on `tools/call`; it also adds
+  `content: []`, harmless). `tasks/get` = `resultType: "complete"` + task fields + `result` when
+  completed / `error {code, message}` when failed (handler `isError` → message = the result's text;
+  transport failure → stored code/message; `error.data` never leaves Redis). `tasks/cancel` reuses
+  the `task_cancel` path (`cancelOwned`) and answers `{ resultType: "complete" }`. Unknown,
+  malformed (non-UUID, never reaches the store), foreign or unauthenticated → `ProtocolError`
+  `-32602` with the same message (Claude Code reads -32602 as unknown task). `tasks/update`,
+  `tasks/list`, `tasks/result` are not registered → SDK's `-32601`; no `input_required`. SDK
+  gotchas: on 2026-07-28 the HTTP entry requires `Mcp-Name: <taskId>` on `tasks/*` (SEP-2663; the
+  SDK client sends it, hand-written curl must too), and envelope validation rejects a non-object
+  extension value (`[TASKS]: true` → -32602 before dispatch). Tests: `src/tasks/native.test.ts`.
 - **`define` / `register`, never one call (DX-3022 review item 1).** `tasks.define(name, config,
   handler)` runs at module scope and fills the handler map; `tasks.register(server)` attaches every
   defined tool + the shared tools inside the per-request factory. The old

@@ -6,7 +6,8 @@ Upstash Workflow) so it survives the process that accepted the call.
 
 The page is the MCP client, and it does exactly what a model would: call `generate_report`, then
 poll `task_status` and maybe call `task_cancel` — three ordinary tools, from a client that declares
-no capabilities at all. It speaks raw stateless JSON-RPC and shows every frame in a wire log.
+no capabilities at all, so it gets the tool-based handle. (A client that declares the MCP Tasks
+extension, like Claude Code, gets a native task from the same server and polls `tasks/get`.) It speaks raw stateless JSON-RPC and shows every frame in a wire log.
 
 ## What's here
 
@@ -125,8 +126,9 @@ the QStash DLQ.
 
 ## Notes
 
-- All three tools are ordinary MCP tools, so this works in every client today — Claude Code,
-  Codex, Cursor, OpenCode, ChatGPT — none of which declare the protocol's Tasks extension yet.
+- The task layer runs in its default native mode: Claude Code (CLI v2.1.304+) declares the
+  protocol's Tasks extension and gets native tasks; Codex, Cursor, OpenCode and ChatGPT don't, and
+  use the three ordinary tools, so it works in every client today.
 - The demo has no real login. `app/lib/auth.ts` stands in for one: the MCP routes turn
   `Authorization: Bearer demo-<name>` into the user `demo-<name>` and pass it to the SDK as
   `authInfo`, and `principal` reads it back, as a real server would with a verified token. With no

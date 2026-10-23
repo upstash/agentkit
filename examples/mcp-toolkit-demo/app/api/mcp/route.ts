@@ -1,8 +1,9 @@
 /**
  * The MCP endpoint for the **QStash** server.
  *
- * The SDK's own `createMcpHandler`, unchanged: the task layer only registers ordinary tools, so it
- * needs no custom transport and no extra protocol methods.
+ * The SDK's own `createMcpHandler`, unchanged: `tasks.register` adds the task tools and, through the
+ * SDK's own extension points, the Tasks extension's `tasks/get` and `tasks/cancel`, so it needs no
+ * custom transport.
  */
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { serveMcp } from "../../lib/auth";
