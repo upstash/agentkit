@@ -1,9 +1,15 @@
 /**
- * The tasks runtime: long-running work served as ordinary MCP tools. A task tool answers at once
- * with a task id; the shared `task_status` and `task_cancel` tools poll and stop it. The README
- * explains why tools rather than the Tasks extension.
+ * The tasks runtime: long-running tools. A task tool answers at once and the work runs behind the
+ * dispatcher. A client that declares the `io.modelcontextprotocol/tasks` extension on the call gets
+ * a native task (`resultType: "task"`, then `tasks/get` / `tasks/cancel`); any other client gets the
+ * task id in an ordinary tool result and polls the shared `task_status` / `task_cancel` tools.
  */
-import type { McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
+import {
+  ProtocolError,
+  ProtocolErrorCode,
+  type McpServer,
+  type StandardSchemaWithJSON,
+} from "@modelcontextprotocol/server";
 import * as z from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 import {
@@ -29,6 +35,20 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const STATUS_TOOL = "task_status";
 const CANCEL_TOOL = "task_cancel";
+/** The MCP Tasks extension (protocol revision 2026-07-28). */
+const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
+const CLIENT_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities";
+
+/**
+ * How a task tool answers.
+ *
+ * - `"native"` (default): a call that declares the MCP Tasks extension gets a native task, polled
+ *   with `tasks/get`; every other call gets the tool-based handle.
+ * - `"tools"`: always the tool-based handle, as in 0.x: the task id in an ordinary tool result,
+ *   polled with `task_status` and stopped with `task_cancel`. No `tasks/*` methods, and no
+ *   extension in the server's capabilities.
+ */
+export type TaskMode = "native" | "tools";
 
 export type TaskLayerOptions<TContext = unknown> = {
   store: TaskStore;
@@ -40,6 +60,12 @@ export type TaskLayerOptions<TContext = unknown> = {
    * key. A server with no users of its own passes `() => "local"`.
    */
   principal: PrincipalResolver;
+  /**
+   * `"native"` (default) answers clients that declare the MCP Tasks extension with native tasks
+   * and everyone else with the tool-based handle; `"tools"` always uses the tool-based handle,
+   * exactly as 0.x did. See {@link TaskMode}.
+   */
+  mode?: TaskMode;
   defaults?: {
     /** Retention window from creation. Defaults to 1 day. */
     ttlMs?: number;
@@ -97,7 +123,11 @@ export type TaskLayer<TContext = unknown> = {
     config: TaskToolConfig<Schema>,
     handler: TaskHandler<InferArgs<Schema>, TContext>,
   ): void;
-  /** Adds every defined task tool, plus `task_status` and `task_cancel`, to a server. */
+  /**
+   * Adds every defined task tool, plus `task_status` and `task_cancel`, to a server. In native
+   * mode it also advertises the Tasks extension and serves `tasks/get` and `tasks/cancel`. Call it
+   * before the server is connected, e.g. inside the `createMcpHandler` factory.
+   */
   register(server: McpServer): void;
   /** The dispatcher's delivery endpoint: `export const POST = tasks.createExecuteHandler()`. */
   createExecuteHandler(): (request: Request) => Promise<Response>;
@@ -122,6 +152,10 @@ export function createTaskLayer<TContext = unknown>(
 ): TaskLayer<TContext> {
   const { store, dispatcher } = options;
   const principal = requirePrincipal(options.principal, "createTaskLayer");
+  const mode = options.mode ?? "native";
+  if (mode !== "native" && mode !== "tools") {
+    throw new Error('createTaskLayer: mode must be "native" or "tools"');
+  }
   const ttlMs = positiveInteger(options.defaults?.ttlMs ?? DEFAULT_TTL_MS, "defaults.ttlMs");
   const pollIntervalMs = positiveInteger(
     options.defaults?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
@@ -202,18 +236,51 @@ export function createTaskLayer<TContext = unknown>(
       (async ({ taskId }: { taskId: string }, context: unknown) => {
         const caller = await callerId(context);
         if (!caller) return errorResult(NOT_AUTHENTICATED);
-        if (!(await owned(taskId, caller))) return errorResult(unknownTask(taskId));
-        const task = await store.settle(taskId, {
-          status: "cancelled",
-          statusMessage: "Cancelled by client",
-        });
-        if (!task) return errorResult(unknownTask(taskId));
-        // Also stop pending redeliveries. A delivery already running can't be recalled, which is
-        // why handlers check `isCancelled()`.
-        if (task.status === "cancelled") await dispatcher.cancel(taskId).catch(() => undefined);
-        return statusResult(task);
+        const task = await cancelOwned(taskId, caller);
+        return task ? statusResult(task) : errorResult(unknownTask(taskId));
       }) as never,
     );
+
+    if (mode === "native") registerNative(server);
+  }
+
+  /**
+   * The Tasks extension's server side, through the SDK's own extension points: the capability on
+   * `server/discover`, and the two methods Claude Code calls. `tasks/update` (input_required),
+   * `tasks/list` and `tasks/result` are not served, so the SDK answers them "Method not found".
+   */
+  function registerNative(server: McpServer): void {
+    server.server.registerCapabilities({ extensions: { [TASKS_EXTENSION]: {} } });
+    // Any string: a malformed id reads exactly like a missing or foreign one (-32602), and never
+    // reaches the store.
+    const params = z.object({ taskId: z.string() });
+
+    server.server.setRequestHandler("tasks/get", { params }, async ({ taskId }, context) => {
+      const caller = await callerId(context);
+      const task = caller && isTaskId(taskId) ? await owned(taskId, caller) : null;
+      if (!task) throw unknownTaskError(taskId);
+      return nativeDetail(task);
+    });
+
+    server.server.setRequestHandler("tasks/cancel", { params }, async ({ taskId }, context) => {
+      const caller = await callerId(context);
+      const task = caller && isTaskId(taskId) ? await cancelOwned(taskId, caller) : null;
+      if (!task) throw unknownTaskError(taskId);
+      return { resultType: "complete" };
+    });
+  }
+
+  /** Cancels the caller's task and returns it; `null` when it is unknown or not theirs. */
+  async function cancelOwned(taskId: string, caller: string): Promise<Task | null> {
+    if (!(await owned(taskId, caller))) return null;
+    const task = await store.settle(taskId, {
+      status: "cancelled",
+      statusMessage: "Cancelled by client",
+    });
+    // Also stop pending redeliveries. A delivery already running can't be recalled, which is
+    // why handlers check `isCancelled()`.
+    if (task?.status === "cancelled") await dispatcher.cancel(taskId).catch(() => undefined);
+    return task;
   }
 
   async function startTask(name: string, args: unknown, context: unknown) {
@@ -254,6 +321,10 @@ export function createTaskLayer<TContext = unknown>(
       console.error(`[mcp-toolkit] could not dispatch task ${task.taskId}:`, error);
       return errorResult("The task could not be queued. Try again later.");
     }
+    // A task only for a call that declared the extension on this very request: the extension
+    // forbids returning one to a client that didn't, and Claude Code omits it on calls (from a
+    // subagent, say) that cannot become a task.
+    if (mode === "native" && declaresTasks(context)) return nativeHandle(task);
     return {
       content: [
         {
@@ -344,6 +415,86 @@ function positiveInteger(value: number, name: string): number {
 
 const unknownTask = (taskId: string) =>
   `Unknown task: ${taskId}. It may have expired, or the id may be wrong.`;
+
+/** Task ids are random UUIDs; anything else is unknown before it reaches the store. */
+const isTaskId = (taskId: string) => z.uuid().safeParse(taskId).success;
+
+/**
+ * The extension's "unknown task" answer (`-32602`), given alike for a missing, expired, malformed
+ * or foreign id and for a caller `principal` refused, so ids cannot be probed.
+ */
+function unknownTaskError(taskId: string): ProtocolError {
+  return new ProtocolError(ProtocolErrorCode.InvalidParams, unknownTask(taskId.slice(0, 128)));
+}
+
+/**
+ * Whether the request declared the Tasks extension in its per-request client capabilities,
+ * `_meta["io.modelcontextprotocol/clientCapabilities"].extensions` on protocol revision
+ * 2026-07-28. The SDK lifts that envelope out of `_meta` into `ctx.mcpReq.envelope`.
+ */
+function declaresTasks(context: unknown): boolean {
+  const envelope = (context as { mcpReq?: { envelope?: Record<string, unknown> } } | undefined)
+    ?.mcpReq?.envelope;
+  const capabilities = envelope?.[CLIENT_CAPABILITIES_KEY] as
+    | { extensions?: Record<string, unknown> }
+    | undefined;
+  const declared = capabilities?.extensions?.[TASKS_EXTENSION];
+  return typeof declared === "object" && declared !== null;
+}
+
+/** The extension's task fields, shared by the handle and `tasks/get`. */
+function nativeTask(task: Task): Record<string, unknown> {
+  return {
+    taskId: task.taskId,
+    status: task.status,
+    ...(task.statusMessage !== undefined ? { statusMessage: task.statusMessage } : {}),
+    createdAt: task.createdAt,
+    lastUpdatedAt: task.lastUpdatedAt,
+    ttlMs: task.ttlMs,
+    pollIntervalMs: task.pollIntervalMs,
+  };
+}
+
+/**
+ * The `tools/call` answer for a call that declared the extension: a task instead of a tool result.
+ * The SDK passes a handler's own `resultType` through on `tools/call`.
+ */
+function nativeHandle(task: Task): Record<string, unknown> {
+  return { resultType: "task", ...nativeTask(task) };
+}
+
+/**
+ * The `tasks/get` answer. `completed` carries the tool result as-is. `failed` carries the JSON-RPC
+ * error the extension requires, which is what Claude Code tells the model: for a handler that
+ * returned `isError`, the message is that result's own text (what the synchronous tool would have
+ * shown); for a transport failure, the stored code and message. `error.data` stays in the store,
+ * as with `task_status`.
+ */
+function nativeDetail(task: Task): Record<string, unknown> {
+  const detail: Record<string, unknown> = { resultType: "complete", ...nativeTask(task) };
+  if (task.status === "completed") detail.result = task.result ?? { content: [] };
+  if (task.status === "failed") {
+    const handlerText = task.result?.isError === true ? textOf(task.result.content) : "";
+    detail.error = {
+      code: task.error?.code ?? INTERNAL_ERROR,
+      message: handlerText || task.error?.message || task.statusMessage || "Task failed",
+    };
+  }
+  return detail;
+}
+
+/** The text blocks of a tool result's content, joined by newlines. */
+function textOf(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (block): block is { type: "text"; text: string } =>
+        block?.type === "text" && typeof block.text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+}
 
 function errorResult(text: string): Record<string, unknown> {
   return { isError: true, content: [{ type: "text", text }] };

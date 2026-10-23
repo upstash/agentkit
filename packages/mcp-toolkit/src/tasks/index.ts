@@ -7,6 +7,7 @@ export {
   type TaskHandler,
   type TaskLayer,
   type TaskLayerOptions,
+  type TaskMode,
   type TaskToolConfig,
   type TaskAuthorizeCaller,
 } from "./core.js";
