@@ -157,6 +157,25 @@ describe("native MCP Tasks", () => {
     expect(names).toEqual(["generate_report", "task_cancel", "task_status"]);
   });
 
+  it("doesn't tell the model to poll in the tool description; the fallback handle does", async () => {
+    live = harness({ dispatcher: new ManualDispatcher() });
+    const { result } = await live.rpc("tools/list");
+    const tool = (result?.tools as { name: string; description: string }[]).find(
+      (t) => t.name === "generate_report",
+    );
+    // Claude Code polls tasks/get itself; a description saying "call task_status" made its model
+    // poll on top of that.
+    expect(tool?.description).toBe("Generates a report.");
+    // And task_status says it's only for handles that asked for it (a live run went from 1-6
+    // task_status calls per native task to none).
+    const status = (result?.tools as { name: string; description: string }[]).find(
+      (t) => t.name === "task_status",
+    );
+    expect(status?.description).toMatch(/will notify you, don't call this\.$/);
+    const handle = await live.start({ caps: {} });
+    expect(JSON.stringify(handle.result?.content)).toMatch(/Call task_status with taskId/);
+  });
+
   it("advertises the extension on server/discover", async () => {
     live = harness();
     const { result } = await live.rpc("server/discover");
@@ -322,11 +341,15 @@ describe("native MCP Tasks", () => {
     await handler.close();
   });
 
-  it("does not serve tasks/update (no input_required yet)", async () => {
+  it("serves tasks/update, but not tasks/list or tasks/result", async () => {
     live = harness({ dispatcher: new ManualDispatcher() });
     const taskId = String((await live.start()).result?.taskId);
+    // Nothing is waiting for input: acknowledged, and nothing changes (task.elicit: input.test.ts).
     const update = await live.rpc("tasks/update", { taskId, inputResponses: {} });
-    expect(update.error?.code).toBe(-32601);
+    expect(update.result).toMatchObject({ resultType: "complete" });
+    expect((await live.get(taskId)).result?.status).toBe("working");
+    expect((await live.rpc("tasks/list")).error?.code).toBe(-32601);
+    expect((await live.rpc("tasks/result", { taskId })).error?.code).toBe(-32601);
   });
 
   describe('mode: "tools"', () => {
@@ -335,6 +358,22 @@ describe("native MCP Tasks", () => {
       const { result } = await live.start();
       expect(result?.resultType).toBe("complete");
       expect(result?.structuredContent).toMatchObject({ status: "working" });
+    });
+
+    it("keeps the polling sentence in the tool description", async () => {
+      live = harness({ mode: "tools", dispatcher: new ManualDispatcher() });
+      const { result } = await live.rpc("tools/list");
+      const tool = (result?.tools as { name: string; description: string }[]).find(
+        (t) => t.name === "generate_report",
+      );
+      const status = (result?.tools as { name: string; description: string }[]).find(
+        (t) => t.name === "task_status",
+      );
+      expect(status?.description).not.toMatch(/notify/);
+      expect(tool?.description).toBe(
+        "Generates a report. Runs in the background: returns a taskId immediately. Call " +
+          "task_status with it to get progress and, once completed, the result.",
+      );
     });
 
     it("neither advertises the extension nor serves tasks/*", async () => {

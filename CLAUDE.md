@@ -714,11 +714,64 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   transport failure → stored code/message; `error.data` never leaves Redis). `tasks/cancel` reuses
   the `task_cancel` path (`cancelOwned`) and answers `{ resultType: "complete" }`. Unknown,
   malformed (non-UUID, never reaches the store), foreign or unauthenticated → `ProtocolError`
-  `-32602` with the same message (Claude Code reads -32602 as unknown task). `tasks/update`,
-  `tasks/list`, `tasks/result` are not registered → SDK's `-32601`; no `input_required`. SDK
+  `-32602` with the same message (Claude Code reads -32602 as unknown task). `tasks/update` is
+  served (see the next bullet); `tasks/list`, `tasks/result` are not registered → SDK's `-32601`.
+  In native mode the task tool's description is the config's own (no "call task_status" line: with
+  it, Claude Code's model polled `task_status` on top of `tasks/get`, 9 calls in one live run) and
+  `task_status`'s description adds "only for a tool result that told you to call task_status" —
+  dropping the line alone still left 1-6 calls per task in headless 2.1.309 runs, the extra sentence
+  took it to 0 of 3 runs. `mode: "tools"` keeps the old descriptions. SDK
   gotchas: on 2026-07-28 the HTTP entry requires `Mcp-Name: <taskId>` on `tasks/*` (SEP-2663; the
   SDK client sends it, hand-written curl must too), and envelope validation rejects a non-object
   extension value (`[TASKS]: true` → -32602 before dispatch). Tests: `src/tasks/native.test.ts`.
+- **Asking the user: `task.elicit` (DX-3209 follow-up).** In-memory and Workflow only; **not
+  QStash** (the user rejected the "re-run the handler up to the question" replay design as too
+  odd). Type-level: `TaskInputContext = { elicit }` is part of the dispatcher's `TContext`
+  (`InProcessDispatcher implements TaskDispatcher<TaskInputContext>`, `WorkflowDispatcher` →
+  `WorkflowContext & TaskInputContext`, `McpTasks`' generic **defaults** to `TaskInputContext` so
+  the no-dispatcher default has it); `QStashDispatcher` stays `TaskDispatcher<unknown>`, so
+  `task.elicit` is a type error there (`@ts-expect-error` tests in `input.test.ts`). `run`'s context
+  param is `TransportContext<TContext>` (TContext minus `elicit`, or undefined). Runtime: `elicit`
+  is on every context; without `dispatcher.waitForInput` it settles the task `failed` ("task.elicit
+  needs a dispatcher that can wait…, and QStashDispatcher can't…") and throws the internal
+  `TaskStopped`, which `run` swallows (QStash acks 200). Flow: keys by call order `elicit-<n>`,
+  one open question at a time, max 16 per task (Claude Code ignores >16 keys); a journaled
+  `mcp-task:ask:<n>` step reads the store (answer already there → return it) or writes
+  `status: "input_required"`, `statusMessage` = the question, `inputRequests: { key: inputRequired.elicit(params) }`;
+  then loop `dispatcher.waitForInput({ taskId, key, round, expiresAt, pollIntervalMs }, ctx)` + a
+  journaled `mcp-task:look:<n>:<round>` store read until answered / terminal-or-missing (→
+  `TaskStopped`). **The store is the source of truth; a wait only says when to look.** In memory:
+  sleep until `resume`/`cancel` wakes it or one `pollIntervalMs` (so Redis + in-process and expiry
+  work too). Workflow: `context.waitForEvent("mcp-task:wait:<key>:<round>", eventId, { timeout ≤
+  600s })` and `resume` = `client.notify({ eventId, workflowRunId })` (lookback); a lost notify is
+  picked up at the next look. **Event ids may only hold letters, digits, `-`, `_`, `.`** — the QStash
+  dev server answered `mcp-task:<id>:<key>` with 400 and the run stopped (caught only by the real E2E;
+  now `mcp-task.<taskId>.<key>`, and the fake engine in `input.test.ts` enforces it). `elicit`
+  inside `task.run` throws. `run()` now returns early only for missing/terminal tasks (a Workflow
+  replay comes back through `run` while `input_required`), and `isCancelled()` is
+  "missing or terminal" — both used to be `!== "working"`, which would read a paused task as
+  cancelled. Answers: `TaskStore.respond(taskId, responses, statusMessage)` — atomic, only while
+  `input_required`, only open unanswered keys; when none is left open → `working`, `inputRequests`
+  cleared, returns the keys (exactly one call resumes). Redis: `RESPOND_SCRIPT` (allow-key-locking,
+  one KEY) stores each answer in its own `response:<key>` hash field (pre-encoded JSON, never
+  re-encoded in Lua; `inputRequests` is `cjson.decode`d only for its keys); `get` folds those into
+  `inputResponses`. `tasks/update`: the SDK lifts `inputResponses` out of params into
+  `ctx.mcpReq.inputResponses` (+ `droppedInputResponseKeys` for wrapped `{method,result}` entries →
+  refused); shape/size validated **before** any store read (≤16 entries, keys `[\w.:-]{1,64}`,
+  ≤64 KiB JSON, each `{action, content?}` with flat content) → `-32602 "Invalid inputResponses…"`;
+  then the same ownership path as `tasks/get` → `-32602` unknown. Accepted content is validated with
+  the SDK's `acceptedContent(…, schema)`; a mismatch fails the task. `inputResponses` never leave the
+  store (`toWire` strips them; `inputRequests` only shown while `input_required`). **Fallback:** no
+  model-callable answer tool on purpose (the model or a prompt injection could approve on the
+  user's behalf). `task_status` on an `input_required` task returns `inputRequired({ inputRequests })`
+  (MRTR) when the request is 2026-07-28 and its envelope declares `elicitation` (`{}` or with
+  `form`); the client's retry carries `inputResponses`, which go through the same validation +
+  `answer()`. Otherwise its text says only the user can answer and suggests `task_cancel`. Same in
+  `mode: "tools"`. Claude Code (2.1.309) answers only in interactive sessions; headless stream-json
+  sends `tasks/cancel` ~3 ms after seeing `input_required` (verified clean on both backends: memory
+  handler released, Workflow run `RUN_CANCELED`). Tests: `src/tasks/input.test.ts` (a replaying
+  fake Workflow engine driving the real `workflowRoute` + `WorkflowDispatcher`, real Redis for the
+  Redis+in-process variant), Redis `respond` cases in `backends/qstash.test.ts`.
 - **Class API: register at module scope, `attach` per request (DX-3022 review item 1; classes
   since DX-3209).** `const tasks = new McpTasks({...})` and `tasks.registerTask(name, config,
   handler)` run at module scope and fill the handler map with no server; `tasks.attach(server)`

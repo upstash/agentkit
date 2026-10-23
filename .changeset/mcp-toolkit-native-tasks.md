@@ -45,8 +45,24 @@ everything up through the SDK's own extension points; no route changes are neede
 A completed task's `tasks/get` carries the tool result as-is. A failed task carries a JSON-RPC
 `error`: for a handler that returned `isError`, its message is the result's text; for a transport
 failure, the stored code and message (`error.data` stays in Redis). Unknown, expired, malformed or
-another user's task ids answer `-32602`. `tasks/update` (`input_required`), `tasks/list` and
-`tasks/result` are not served.
+another user's task ids answer `-32602`. `tasks/list` and `tasks/result` are not served. In
+native mode the task tool's description no longer tells the model to poll `task_status` (the client
+polls `tasks/get` itself), and `task_status`'s description says it is only for a tool result that
+asked for it; `mode: "tools"` keeps the old descriptions.
+
+Asking the user from a task. A handler can call
+`await task.elicit({ message, requestedSchema })`: the task goes `input_required`, `tasks/get`
+carries the question as an `elicitation/create` input request, and the client answers with the new
+`tasks/update`; the handler gets `{ action: "accept", content }` (validated against the schema),
+`{ action: "decline" }` or `{ action: "cancel" }`. It works with the in-memory backends and
+`WorkflowDispatcher` (which waits with `waitForEvent` and is notified by `tasks/update`).
+`QStashDispatcher` can't wait for an answer, so `task.elicit` is not on its handlers' `task` type,
+and a plain-JS call fails the task with a message saying so. `tasks/update` follows the same
+ownership rules as `tasks/get` and checks `inputResponses` (at most 16 answers, 64 KiB) before
+storing anything. A client without native tasks that can show forms gets the question from
+`task_status` as that call's own `input_required`; any other client's model is told the task is
+waiting for the user, and has no way to answer for them. `TaskStatus` gains `input_required`,
+`TaskStore` gains `respond`, and `TaskDispatcher` gains the optional `waitForInput` and `resume`.
 
 In-memory backends, and no backends needed to start. `@upstash/mcp-toolkit/tasks` now exports
 `MemoryTaskStore` and `InProcessDispatcher`, and `store` / `dispatcher` are optional on

@@ -14,7 +14,20 @@ import {
   resolveReceiver,
 } from "../../shared/clients.js";
 import { addQStashTelemetry } from "../../telemetry.js";
-import type { Task, TaskDispatcher, TaskEndpoints, TaskJournal } from "../types.js";
+import type {
+  Task,
+  TaskDispatcher,
+  TaskEndpoints,
+  TaskInputContext,
+  TaskInputWait,
+  TaskJournal,
+} from "../types.js";
+
+/**
+ * The longest single wait for an answer. Each wait ends with a look at the store, so an answer
+ * whose wake-up was lost is still picked up within this, at the cost of two steps per round.
+ */
+const MAX_WAIT_SECONDS = 600;
 
 export type WorkflowDispatcherConfig = {
   /** The public URL of the route serving `tasks.createExecuteHandler()`, reachable from QStash. */
@@ -36,11 +49,17 @@ export type WorkflowDispatcherConfig = {
 
 type WorkflowPayload = { taskId?: string };
 
+/** What a handler gets on Workflow: the live `WorkflowContext`, and `elicit`. */
+type WorkflowTaskContext = WorkflowContext<WorkflowPayload> & TaskInputContext;
+
 /**
  * Runs each task as a Workflow run. Handlers get the live `WorkflowContext`, so `task.run`,
  * `task.sleep` and `task.call` are the real thing. Cancelling a task cancels the run.
+ *
+ * `task.elicit(...)` waits with `context.waitForEvent`, so no function is held open while the user
+ * thinks; `tasks/update` stores the answer and then notifies the run.
  */
-export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<WorkflowPayload>> {
+export class WorkflowDispatcher implements TaskDispatcher<WorkflowTaskContext> {
   private readonly config: WorkflowDispatcherConfig;
   private readonly client: () => WorkflowClient;
 
@@ -73,9 +92,38 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
     await this.client().cancel(runIdOf(taskId));
   }
 
+  /**
+   * A `waitForEvent` step, named after the question and round so a replay finds it in the
+   * journal. A timeout is not an error: `McpTasks` looks at the store and waits again if need be.
+   */
+  async waitForInput(
+    wait: TaskInputWait,
+    context: WorkflowContext<WorkflowPayload> | undefined,
+  ): Promise<void> {
+    if (!context || insideStep(context)) {
+      throw new Error("task.elicit can't be called inside task.run: call it between steps");
+    }
+    const seconds = Math.ceil((wait.expiresAt - Date.now()) / 1000);
+    await context.waitForEvent(
+      `mcp-task:wait:${wait.key}:${wait.round}`,
+      inputEventId(wait.taskId, wait.key),
+      { timeout: Math.min(MAX_WAIT_SECONDS, Math.max(1, seconds)) },
+    );
+  }
+
+  /** Notifies the run. With the run id, Workflow keeps a notify that beat the wait (lookback). */
+  async resume(taskId: string, keys: string[]): Promise<void> {
+    for (const key of keys) {
+      await this.client().notify({
+        eventId: inputEventId(taskId, key),
+        workflowRunId: runIdOf(taskId),
+      });
+    }
+  }
+
   /** The workflow endpoint. Its `failureFunction` settles the task `failed` once retries run out. */
   createExecuteHandler(
-    endpoints: TaskEndpoints<WorkflowContext<WorkflowPayload>>,
+    endpoints: TaskEndpoints<WorkflowTaskContext>,
   ): (request: Request) => Promise<Response> {
     // Built on the first request: route modules are evaluated at build time, without the keys.
     const handler = lazy(() => this.buildHandler(endpoints));
@@ -83,7 +131,7 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
   }
 
   private buildHandler(
-    endpoints: TaskEndpoints<WorkflowContext<WorkflowPayload>>,
+    endpoints: TaskEndpoints<WorkflowTaskContext>,
   ): (request: Request) => Promise<Response> {
     const { url } = this.config;
     // Resolved here, so a missing key throws instead of serving unverified.
@@ -127,6 +175,13 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowContext<Workfl
 export const runIdOf = (taskId: string): string => `wfr_${taskId}`;
 
 /**
+ * The Workflow event a question's answer is announced on. QStash only accepts letters, digits,
+ * `-`, `_` and `.` in an event id (a `:` is refused with a 400, and the run stops); task ids are
+ * UUIDs and question keys are `elicit-<n>`.
+ */
+export const inputEventId = (taskId: string, key: string): string => `mcp-task.${taskId}.${key}`;
+
+/**
  * The workflow's route function. Its first act is always a step: Workflow authorizes every request,
  * the failure callback included, by running the route function until its first step, and refuses
  * one that throws or returns before reaching any. Without this, a handler that throws before its
@@ -134,7 +189,7 @@ export const runIdOf = (taskId: string): string => `wfr_${taskId}`;
  * the task reads `working` until its TTL.
  */
 export function workflowRoute(
-  endpoints: TaskEndpoints<WorkflowContext<WorkflowPayload>>,
+  endpoints: TaskEndpoints<WorkflowTaskContext>,
 ): (context: WorkflowContext<WorkflowPayload>) => Promise<void> {
   return async (context) => {
     const taskId = await context.run(

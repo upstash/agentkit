@@ -16,6 +16,7 @@ import type {
   TaskDispatcher,
   TaskEndpoints,
   TaskError,
+  TaskInputResponse,
   TaskPatch,
   TaskStore,
   TerminalTaskStatus,
@@ -56,6 +57,36 @@ return redis.call('HGETALL', KEYS[1])
 `;
 
 /**
+ * Records answers while the task is `input_required`: each into its own `response:<key>` field, and
+ * only for an open question without one. Once none is left open, the task goes back to `working`
+ * and the keys it waited on are returned; otherwise an empty list. `inputRequests` is only decoded
+ * for its keys, never re-encoded. ARGV: lastUpdatedAt, statusMessage, then key/answer pairs.
+ */
+const RESPOND_SCRIPT = `#!lua flags=allow-key-locking
+if redis.call('HGET', KEYS[1], 'status') ~= '"input_required"' then return {} end
+local raw = redis.call('HGET', KEYS[1], 'inputRequests')
+if not raw then return {} end
+local open = cjson.decode(raw)
+for i = 3, #ARGV, 2 do
+  local field = 'response:' .. ARGV[i]
+  if open[ARGV[i]] ~= nil and redis.call('HEXISTS', KEYS[1], field) == 0 then
+    redis.call('HSET', KEYS[1], field, ARGV[i + 1])
+  end
+end
+local keys = {}
+for key in pairs(open) do
+  if redis.call('HEXISTS', KEYS[1], 'response:' .. key) == 0 then return {} end
+  table.insert(keys, key)
+end
+redis.call('HSET', KEYS[1], 'status', '"working"', 'statusMessage', ARGV[2], 'lastUpdatedAt', ARGV[1])
+redis.call('HDEL', KEYS[1], 'inputRequests')
+return keys
+`;
+
+/** The hash field prefix of a stored answer. */
+const RESPONSE_FIELD = "response:";
+
+/**
  * One Redis hash per task, so concurrent writers only touch their own fields. The TTL is set at
  * creation and never extended.
  */
@@ -75,7 +106,24 @@ export class RedisTaskStore implements TaskStore {
 
   async get(taskId: string): Promise<Task | null> {
     const fields = await this.redis().hgetall<Record<string, unknown>>(this.key(taskId));
-    return fields && Object.keys(fields).length > 0 ? (fields as Task) : null;
+    return fields && Object.keys(fields).length > 0 ? fromFields(fields) : null;
+  }
+
+  async respond(
+    taskId: string,
+    responses: Record<string, TaskInputResponse>,
+    statusMessage: string,
+  ): Promise<string[]> {
+    const reply = await this.redis().eval<string[], unknown[] | null>(
+      RESPOND_SCRIPT,
+      [this.key(taskId)],
+      [
+        JSON.stringify(new Date().toISOString()),
+        JSON.stringify(statusMessage),
+        ...Object.entries(responses).flatMap(([key, response]) => [key, JSON.stringify(response)]),
+      ],
+    );
+    return Array.isArray(reply) ? reply.map(String) : [];
   }
 
   async update(taskId: string, patch: TaskPatch): Promise<void> {
@@ -103,7 +151,7 @@ export class RedisTaskStore implements TaskStore {
     if (!Array.isArray(reply) || reply.length === 0) return null;
     const task: Record<string, unknown> = {};
     for (let i = 0; i + 1 < reply.length; i += 2) task[String(reply[i])] = reply[i + 1];
-    return task as Task;
+    return fromFields(task);
   }
 }
 
@@ -232,6 +280,21 @@ function readFailureCallback(
       data: { dlqId: payload.dlqId, status: payload.status, response },
     },
   };
+}
+
+/** A task from its hash: the `response:<key>` fields become `inputResponses`. */
+function fromFields(fields: Record<string, unknown>): Task {
+  const task: Record<string, unknown> = {};
+  const answers: Record<string, TaskInputResponse> = {};
+  for (const [field, value] of Object.entries(fields)) {
+    if (field.startsWith(RESPONSE_FIELD)) {
+      answers[field.slice(RESPONSE_FIELD.length)] = value as TaskInputResponse;
+    } else {
+      task[field] = value;
+    }
+  }
+  if (Object.keys(answers).length > 0) task.inputResponses = answers;
+  return task as Task;
 }
 
 /**

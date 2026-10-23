@@ -17,15 +17,20 @@ export { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
 export type { Caller, PrincipalResolver } from "../shared/auth.js";
 
 export type {
+  ElicitAnswer,
   Task,
   TaskContext,
   TaskDispatcher,
   TaskEndpoints,
   TaskError,
+  TaskInputContext,
+  TaskInputResponse,
+  TaskInputWait,
   TaskJournal,
   TaskPatch,
   TaskStatus,
   TaskStore,
   TerminalTaskStatus,
+  TransportContext,
   WireTask,
 } from "./types.js";

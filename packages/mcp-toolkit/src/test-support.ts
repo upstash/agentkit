@@ -156,7 +156,7 @@ export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TCon
 
   /** Delivers a task, as the transport would. */
   run(taskId: string, context?: TContext, journal?: TaskJournal): Promise<void> {
-    return this.connected().run(taskId, context as TContext, journal);
+    return this.connected().run(taskId, context as never, journal);
   }
 
   /** Reports that the transport gave up, as a failure callback would. */
