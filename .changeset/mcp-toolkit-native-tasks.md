@@ -1,5 +1,5 @@
 ---
-"@upstash/mcp-toolkit": major
+"@upstash/mcp-toolkit": minor
 ---
 
 Class-based API for both entry points. `@upstash/mcp-toolkit/tasks` exports `McpTasks` and

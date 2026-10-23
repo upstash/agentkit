@@ -694,7 +694,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   once, caught only by grepping the built chunks: `grep -l "@upstash/" dist/chunk-*.js`).
   **WebCrypto only** (no `node:crypto` / `node:net`), so it runs on edge runtimes; `signWebhook`,
   `SecretBox.seal/open` and `subscriptionId` are async for that reason.
-- **Native MCP Tasks by default, tools as the fallback (DX-3209, 1.0.0).** `new McpTasks({ mode })`:
+- **Native MCP Tasks by default, tools as the fallback (DX-3209, 0.2.0).** `new McpTasks({ mode })`:
   `"native"` (default) or `"tools"` (exactly 0.x). In native mode a `tools/call` whose per-request
   envelope declares the extension (`ctx.mcpReq.envelope["io.modelcontextprotocol/clientCapabilities"]
   .extensions["io.modelcontextprotocol/tasks"]`, an object) is answered with
@@ -830,7 +830,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   whole set with a plain PEXPIRE, caught by the live test); `countActive` = `ZREMRANGEBYSCORE` the
   expired, pipeline `HGET status` per id, `ZREM` missing/terminal, count the rest. No Lua: two
   concurrent creates can overshoot by a little, accepted and documented.
-- **In-memory task backends ship, and are the defaults (DX-3209, 1.0.0).** `src/tasks/memory.ts`,
+- **In-memory task backends ship, and are the defaults (DX-3209, 0.2.0).** `src/tasks/memory.ts`,
   exported from `/tasks`: `MemoryTaskStore` (lazy expiry `ttlMs` after create, swept at most once a
   minute on `create`, no timers; first terminal write wins; hands out copies) and
   `InProcessDispatcher` (implements `connect`; runs `run(taskId)` on a `setTimeout(0)` after the
