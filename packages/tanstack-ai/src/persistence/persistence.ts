@@ -1,8 +1,9 @@
 import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
-import type { ModelMessage, RunRecord, RunStore } from "@tanstack/ai";
+import type { ActivityRecord, ModelMessage, RunRecord, RunStore } from "@tanstack/ai";
 import type {
   AIPersistence,
+  ActivityStore,
   ArtifactStore,
   BlobStore,
   ChatPersistenceStores,
@@ -32,7 +33,7 @@ export interface UpstashPersistenceConfig {
   /** Base key prefix. Defaults to `agentkit:tanstack`. */
   prefix?: string;
   /**
-   * Expire a thread's stored transcript this many seconds after its last save. Omit to keep
+   * Expire a thread's stored transcript and activity rows this many seconds after its last save. Omit to keep
    * transcripts forever. Run, interrupt and metadata records are never expired automatically.
    */
   messagesTtlSeconds?: number;
@@ -95,6 +96,8 @@ return 1`;
  * `withGenerationPersistence()`.
  *
  * - **messages**: the thread transcript, one JSON document per thread (`saveThread` overwrites).
+ * - **activities**: frontend-only AG-UI activity rows for a thread, one JSON document per thread
+ *   (`saveActivities` overwrites), kept out of the transcript.
  * - **runs**: a JSON document per run plus sorted-set indexes by thread, by parent run and by detach
  *   time, so `findActiveRun`, `listByThread`, `listByParentRun` and `listReclaimable` are index reads.
  * - **interrupts**: human-in-the-loop pauses, indexed by thread and run; `commitBatch` is atomic.
@@ -121,6 +124,7 @@ export function upstashPersistence(
   const p = config.prefix ?? "agentkit:tanstack";
   const k = {
     thread: (id: string) => `${p}:thread:${id}`,
+    activities: (id: string) => `${p}:activities:${id}`,
     run: (id: string) => `${p}:run:${id}`,
     threadRuns: (id: string) => `${p}:threadRuns:${id}`,
     parentRuns: (id: string) => `${p}:parentRuns:${id}`,
@@ -148,6 +152,20 @@ export function upstashPersistence(
       const tx = redis.multi();
       tx.json.set(k.thread(threadId), "$", list as unknown as Record<string, unknown>);
       if (config.messagesTtlSeconds) tx.expire(k.thread(threadId), config.messagesTtlSeconds);
+      await tx.exec();
+    },
+  };
+
+  const activities: ActivityStore = {
+    async loadActivities(threadId) {
+      assertId(threadId, "threadId");
+      return (await redis.json.get<ActivityRecord[]>(k.activities(threadId))) ?? [];
+    },
+    async saveActivities(threadId, list) {
+      assertId(threadId, "threadId");
+      const tx = redis.multi();
+      tx.json.set(k.activities(threadId), "$", list as unknown as Record<string, unknown>);
+      if (config.messagesTtlSeconds) tx.expire(k.activities(threadId), config.messagesTtlSeconds);
       await tx.exec();
     },
   };
@@ -344,6 +362,7 @@ export function upstashPersistence(
   return {
     stores: {
       messages,
+      activities,
       runs,
       interrupts,
       metadata,
