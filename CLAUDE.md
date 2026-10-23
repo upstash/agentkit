@@ -19,7 +19,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
-| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (layers, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
+| `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — native MCP Tasks for clients that declare the extension, else start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (the `McpTasks` / `McpEvents` classes, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
@@ -694,23 +694,110 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   once, caught only by grepping the built chunks: `grep -l "@upstash/" dist/chunk-*.js`).
   **WebCrypto only** (no `node:crypto` / `node:net`), so it runs on edge runtimes; `signWebhook`,
   `SecretBox.seal/open` and `subscriptionId` are async for that reason.
-- **Tools mode, not the Tasks extension (since 2026-10).** A task tool answers with an ordinary tool
-  result (`structuredContent` = the task object, plus a text line telling the model to poll); two
-  shared tools, `task_status` and `task_cancel`, are registered once per server. No `tasks/*`
-  methods, no capability check, no custom transport — the demo serves through `createMcpHandler`.
-  Reason: no mainstream client (Claude Code, Codex, Cursor, OpenCode) declares
-  `io.modelcontextprotocol/tasks` as of 2026-10-07, and a server must not return a task to a client
-  that did not. A native adapter can sit on the same store/dispatcher later — don't reintroduce the
-  old `methods`/`onMissingCapability`/`-32021` machinery into the core.
-- **`define` / `register`, never one call (DX-3022 review item 1).** `tasks.define(name, config,
-  handler)` runs at module scope and fills the handler map; `tasks.register(server)` attaches every
-  defined tool + the shared tools inside the per-request factory. The old
-  `registerTask(server, …)` only filled the map when a server was built, so a cold instance serving
-  only `/api/execute` threw "No task handler" and every delivery 500'd — don't bring it back, and
-  don't reintroduce the top-level `createServer();` workaround.
-- **Ownership (`principal` is required, both layers).** `createTaskLayer` / `createEventLayer`
+- **Native MCP Tasks by default, tools as the fallback (DX-3209, 0.2.0).** `new McpTasks({ mode })`:
+  `"native"` (default) or `"tools"` (exactly 0.x). In native mode a `tools/call` whose per-request
+  envelope declares the extension (`ctx.mcpReq.envelope["io.modelcontextprotocol/clientCapabilities"]
+  .extensions["io.modelcontextprotocol/tasks"]`, an object) is answered with
+  `{ resultType: "task", taskId, status, statusMessage, createdAt, lastUpdatedAt, ttlMs,
+  pollIntervalMs }`; every other call gets the 0.x tool result (`structuredContent` = the task
+  object + a text line telling the model to poll `task_status`). Claude Code CLI ≥ 2.1.304 declares
+  the extension on main-conversation calls only (not subagents, not VS Code/desktop), so the
+  fallback is needed even for Claude Code: `task_status` / `task_cancel` are **always listed**.
+  **No HTTP wrapper** — all via SDK 2.3.x extension points inside `attach(server)`:
+  `server.server.registerCapabilities({ extensions: { [TASKS]: {} } })` (shows on
+  `server/discover`; must run before connect, which `createMcpHandler` and `mcp-handler` both
+  guarantee), `server.server.setRequestHandler("tasks/get" | "tasks/cancel", { params }, …)` (the
+  3-arg custom-method form), and returning `resultType: "task"` from the tool handler (the SDK's
+  encode seam passes a handler-provided `resultType` through on `tools/call`; it also adds
+  `content: []`, harmless). `tasks/get` = `resultType: "complete"` + task fields + `result` when
+  completed / `error {code, message}` when failed (handler `isError` → message = the result's text;
+  transport failure → stored code/message; `error.data` never leaves Redis). `tasks/cancel` reuses
+  the `task_cancel` path (`cancelOwned`) and answers `{ resultType: "complete" }`. Unknown,
+  malformed (non-UUID, never reaches the store), foreign or unauthenticated → `ProtocolError`
+  `-32602` with the same message (Claude Code reads -32602 as unknown task). `tasks/update` is
+  served (see the next bullet); `tasks/list`, `tasks/result` are not registered → SDK's `-32601`.
+  In native mode the task tool's description is the config's own (no "call task_status" line: with
+  it, Claude Code's model polled `task_status` on top of `tasks/get`, 9 calls in one live run) and
+  `task_status`'s description adds "only for a tool result that told you to call task_status" —
+  dropping the line alone still left 1-6 calls per task in headless 2.1.309 runs, the extra sentence
+  took it to 0 of 3 runs. `mode: "tools"` keeps the old descriptions. SDK
+  gotchas: on 2026-07-28 the HTTP entry requires `Mcp-Name: <taskId>` on `tasks/*` (SEP-2663; the
+  SDK client sends it, hand-written curl must too), and envelope validation rejects a non-object
+  extension value (`[TASKS]: true` → -32602 before dispatch). Tests: `src/tasks/native.test.ts`.
+- **Asking the user: `task.elicit` (DX-3209 follow-up).** In-memory and Workflow only; **not
+  QStash** (the user rejected the "re-run the handler up to the question" replay design as too
+  odd). Type-level: asking is its own boolean, **`TaskDispatcher<CanAsk extends boolean = false,
+  TContext = unknown>`** (CanAsk first; a type alias, not an interface: `true` makes
+  `waitForInput` + `resume` required, `false` types them `?: never`). `InProcessDispatcher
+  implements TaskDispatcher<true>`, `WorkflowDispatcher` → `<true, WorkflowContext>`,
+  `QStashDispatcher` / test `ManualDispatcher` → `false`. `implements` never changes a class's
+  type, so CanAsk must be visible in the shape; that's why it's tied to the two methods.
+  **`McpTasks<Dispatcher = InProcessDispatcher>`** is generic over the dispatcher itself and derives
+  `CanAskOf<D>` (`D extends TaskDispatcher<true, never>`) and `ContextOf<D>` (inferred from
+  `createExecuteHandler`'s `TaskEndpoints<infer C>`); a class over `<CanAsk, TContext>` can't infer
+  CanAsk from a structural type without a brand. No dispatcher / store-only → InProcessDispatcher →
+  elicit. Handler: `TaskHandler<Args, CanAsk = false, TContext = unknown>`, `task: TaskContext &
+  (CanAsk extends true ? TaskElicit : unknown) & TContext`; `TaskElicit` lives in `types.ts` but
+  is not exported from `/tasks`. `TaskInputContext` / `TransportContext` are gone; `run(taskId,
+  context: TContext, journal?)` and `waitForInput(wait, context: TContext)`. `task.elicit` is a type
+  error under QStash and non-opted dispatchers (`@ts-expect-error` tests in `input.test.ts`). Runtime: `elicit`
+  is on every context; without `dispatcher.waitForInput` it settles the task `failed` ("task.elicit
+  needs a dispatcher that can wait…, and QStashDispatcher can't…") and throws the internal
+  `TaskStopped`, which `run` swallows (QStash acks 200). Flow: keys by call order `elicit-<n>`,
+  one open question at a time, max 16 per task (Claude Code ignores >16 keys); a journaled
+  `mcp-task:ask:<n>` step reads the store (answer already there → return it) or writes
+  `status: "input_required"`, `statusMessage` = the question, `inputRequests: { key: inputRequired.elicit(params) }`;
+  then loop `dispatcher.waitForInput({ taskId, key, round, expiresAt, pollIntervalMs }, ctx)` + a
+  journaled `mcp-task:look:<n>:<round>` store read until answered / terminal-or-missing (→
+  `TaskStopped`). **The store is the source of truth; a wait only says when to look.** In memory:
+  sleep until `resume`/`cancel` wakes it or one `pollIntervalMs` (so Redis + in-process and expiry
+  work too). Workflow: `context.waitForEvent("mcp-task:wait:<key>:<round>", eventId, { timeout ≤
+  600s })` and `resume` = `client.notify({ eventId, workflowRunId })` (lookback); a lost notify is
+  picked up at the next look. **Event ids may only hold letters, digits, `-`, `_`, `.`** — the QStash
+  dev server answered `mcp-task:<id>:<key>` with 400 and the run stopped (caught only by the real E2E;
+  now `mcp-task.<taskId>.<key>`, and the fake engine in `input.test.ts` enforces it). `elicit`
+  inside `task.run` throws. `run()` now returns early only for missing/terminal tasks (a Workflow
+  replay comes back through `run` while `input_required`), and `isCancelled()` is
+  "missing or terminal" — both used to be `!== "working"`, which would read a paused task as
+  cancelled. Answers: `TaskStore.respond(taskId, responses, statusMessage)` — atomic, only while
+  `input_required`, only open unanswered keys; when none is left open → `working`, `inputRequests`
+  cleared, returns the keys (exactly one call resumes). Redis: `RESPOND_SCRIPT` (allow-key-locking,
+  one KEY) stores each answer in its own `response:<key>` hash field (pre-encoded JSON, never
+  re-encoded in Lua; `inputRequests` is `cjson.decode`d only for its keys); `get` folds those into
+  `inputResponses`. `tasks/update`: the SDK lifts `inputResponses` out of params into
+  `ctx.mcpReq.inputResponses` (+ `droppedInputResponseKeys` for wrapped `{method,result}` entries →
+  refused); shape/size validated **before** any store read (≤16 entries, keys `[\w.:-]{1,64}`,
+  ≤64 KiB JSON, each `{action, content?}` with flat content) → `-32602 "Invalid inputResponses…"`;
+  then the same ownership path as `tasks/get` → `-32602` unknown. Accepted content is validated with
+  the SDK's `acceptedContent(…, schema)`; a mismatch fails the task. `inputResponses` never leave the
+  store (`toWire` strips them; `inputRequests` only shown while `input_required`). **Fallback:** no
+  model-callable answer tool on purpose (the model or a prompt injection could approve on the
+  user's behalf). `task_status` on an `input_required` task returns `inputRequired({ inputRequests })`
+  (MRTR) when the request is 2026-07-28 and its envelope declares `elicitation` (`{}` or with
+  `form`); the client's retry carries `inputResponses`, which go through the same validation +
+  `answer()`. Otherwise its text says only the user can answer and suggests `task_cancel`. Same in
+  `mode: "tools"`. Claude Code (2.1.309) answers only in interactive sessions; headless stream-json
+  sends `tasks/cancel` ~3 ms after seeing `input_required` (verified clean on both backends: memory
+  handler released, Workflow run `RUN_CANCELED`). Tests: `src/tasks/input.test.ts` (a replaying
+  fake Workflow engine driving the real `workflowRoute` + `WorkflowDispatcher`, real Redis for the
+  Redis+in-process variant), Redis `respond` cases in `backends/qstash.test.ts`.
+- **Class API: register at module scope, `attach` per request (DX-3022 review item 1; classes
+  since DX-3209).** `const tasks = new McpTasks({...})` and `tasks.registerTask(name, config,
+  handler)` run at module scope and fill the handler map with no server; `tasks.attach(server)`
+  adds every registered tool + the shared tools inside the per-request factory. Events are the
+  same: `new McpEvents({...})`, `events.registerEvent(name, config)` (returns `{ name, emit }`),
+  `events.attach(server)`. Registering on the module-scope instance is the point; what stays banned
+  is registering on the **per-request server** (the 0.x-era `registerTask(server, …)` shape): it
+  only filled the map when a server was built, so a cold instance serving only `/api/execute`
+  threw "No task handler" and every delivery 500'd. Don't bring it back, and don't reintroduce
+  the top-level `createServer();` workaround. `attach(server)` is the only wiring: the
+  experimental SDK `extensions: [tasks]` shape (`id` / `setup(ctx)`, typescript-sdk #2820) was
+  prototyped and deliberately not shipped. `createTaskLayer` / `createEventLayer` / `define` /
+  `register` were removed as a clean break (no aliases). Tests: the "never built a server" cases in
+  `src/tasks/core.test.ts` and `src/events/core.test.ts`.
+- **Ownership (`principal` is required, both classes).** `new McpTasks` / `new McpEvents`
   throw without it. It receives `{ auth, request }` (SDK v2's `ctx.http.authInfo` and
-  `ctx.http.req`), may be async, and stamps `task.owner` / `subscription.owner`. `auth` is only what
+  `ctx.http.req`), may be async, and stamps `task.owner` / `subscription.subscriber`. `auth` is only what
   the app's route passed to `handler.fetch(request, { authInfo })` after verifying the token: the
   SDK never derives it from headers. `request` is unverified, for cookie/session apps; docs warn
   against trusting caller-set headers. `PrincipalResolver` returns a plain **string**
@@ -722,12 +809,45 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   pass `principal: () => "local"`. `task_status` / `task_cancel` take `z.uuid()` task ids (so
   nothing else reaches a Redis key) and report a non-owned task as *unknown* (no existence oracle).
   Owners are JSON-encoded on write, so auto-deserialization hands them back as strings and a plain
-  `===` compares them. The public `TaskLayer` is only `{ define, register, createExecuteHandler }`;
-  a dispatcher gets `run` / `fail` as the argument of its `createExecuteHandler(endpoints)` (there
-  is no `attach`). Tests drive deliveries with `ManualDispatcher` / `InlineDispatcher` from
-  `src/test-support.ts` — call `tasks.createExecuteHandler()` once to connect them — and the
-  in-memory backends (`MemoryTaskStore`, `MemorySubscriptionStore`, `InlineDelivery`) live there
-  too: they are **not shipped**.
+  `===` compares them. The public `McpTasks` is only `{ registerTask, attach, createExecuteHandler }`;
+  a dispatcher gets `run` / `fail` as the argument of its `createExecuteHandler(endpoints)`, and
+  also through the optional `TaskDispatcher.connect?(endpoints)`, which the `McpTasks` constructor calls
+  once (that is how a dispatcher with no endpoint gets connected).
+- **Generic errors and per-user limits (DX-3209 security review, kept simple).** Every client-facing
+  handler is wrapped: `guardTool` (task tool, `task_status`, `task_cancel`) turns any throw from
+  `authorize` or the store into `isError` `INTERNAL_ERROR_MESSAGE` ("Internal error. Try again
+  later.", `shared/env.ts`), and `guardMethod` (`tasks/get|cancel|update`, `events/subscribe|
+  unsubscribe`) into `ProtocolError(-32603, same text)`; a `ProtocolError` (the intended -32602s,
+  -32015) passes through, and the real error goes to `logInternalError` → `console.error`. Before,
+  a store error like `WRONGPASS at https://…upstash.io` reached the model. A missing/weak
+  `MCP_EVENTS_SECRET_KEY` is now also only in the log (subscribe gets -32603). `authorize`
+  returning `false` and not authenticated keep their own messages. **Limits** in `startTask`, both
+  before `store.create`: `maxArgsBytes` (default 64 KiB, `JSON.stringify(args)` UTF-8 bytes,
+  checked before `authorize`) and `maxActiveTasks` (default 100, `Infinity` = off and skips the
+  count; checked after `authorize`) via `TaskStore.countActive(owner)` (working + input_required).
+  Memory: a scan of the map. Redis: `<prefix>active:<owner>` zset of task ids scored by expiry,
+  `ZADD` in the create `MULTI` with `PEXPIRE NX` + `PEXPIRE GT` (a short-TTL task once expired the
+  whole set with a plain PEXPIRE, caught by the live test); `countActive` = `ZREMRANGEBYSCORE` the
+  expired, pipeline `HGET status` per id, `ZREM` missing/terminal, count the rest. No Lua: two
+  concurrent creates can overshoot by a little, accepted and documented.
+- **In-memory task backends ship, and are the defaults (DX-3209, 0.2.0).** `src/tasks/memory.ts`,
+  exported from `/tasks`: `MemoryTaskStore` (lazy expiry `ttlMs` after create, swept at most once a
+  minute on `create`, no timers; first terminal write wins; hands out copies) and
+  `InProcessDispatcher` (implements `connect`; runs `run(taskId)` on a `setTimeout(0)` after the
+  tool call answers; a throw → `console.error` + `fail({ -32603, "The task handler threw an error",
+  data: { error } })`, no retries; `cancel` is a no-op, `isCancelled()` does the work;
+  `createExecuteHandler` answers 404 but still connects; `drain()` for shutdown and tests; one
+  `McpTasks` per instance, a second `connect` throws). `store` / `dispatcher` are optional on
+  `McpTasks` (internal `TaskBackends` union in `McpTasksOptions`: both, store only, or neither); a dispatcher without a
+  store throws (QStash + memory store would run on an instance that never saw the record). Omitting
+  the dispatcher in `NODE_ENV=production` logs one `console.warn` per process; passing the
+  in-memory backends explicitly silences it. The warning avoids the literal `@upstash/` so
+  `grep "@upstash/" dist/tasks/index.js` stays empty. The handle's first `statusMessage` is
+  `"Queued"` (was "Queued for durable execution", untrue in memory). Tests: `src/tasks/memory.test.ts`
+  runs the defaults end to end in native and tools modes. Test doubles stay in
+  `src/test-support.ts`: `ManualDispatcher` (connected by `McpTasks`, drive with `run`/`fail`) and
+  `InlineDispatcher` (the shipped `InProcessDispatcher` + a `dispatched` log). The events in-memory
+  backends (`MemorySubscriptionStore`, `InlineDelivery`) are still test-only, **not shipped**.
 - **No `idempotencyKey` (removed 2026-10-08, keep it simple; add back only if someone asks).** Task
   ids are always `crypto.randomUUID()`, so `TaskStore.create` is a plain `MULTI` (`HSET` +
   `PEXPIRE`) returning `void` — no create-if-absent script, since a collision cannot happen.
@@ -769,8 +889,8 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   event's id reaches the host as `webhook-id`, which is where Standard Webhooks dedupes. Workflow's
   `workflowRunId` is the task id; that is only safe because ids are random (Workflow refuses a
   reused run id). A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
-- **Workflow context is inferred** from the dispatcher (`TaskDispatcher<TContext>`), so
-  `createTaskLayer({ dispatcher: new WorkflowDispatcher(...) })` types `task.run` / `task.sleep` with
+- **Workflow context is inferred** from the dispatcher (`McpTasks<Dispatcher>` → `ContextOf`), so
+  `new McpTasks({ dispatcher: new WorkflowDispatcher(...) })` types `task.run` / `task.sleep` with
   no type argument; a test in `workflow.test.ts` keeps it that way.
 - **`RedisSubscriptionStore` = one index per event** (`<prefix>idx:<event>`, a zset scored by
   expiry, no TTL — bounded by the number of event names) plus `<prefix>sub:<id>` with `PX`. `put`
@@ -850,7 +970,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `sub_` + sha256(canonical `[subscriber, url, event, args]`), so unsubscribe/refresh can only ever
   touch the caller's own record (tested). **An event's values come from ONE place, the payload**
   (the user's call, 2026-10-08: "it doesn't make sense for emit to get the docId as two
-  parameters"): `emit(payload, { eventId? })` is the whole API, `define` throws unless every
+  parameters"): `emit(payload, { eventId? })` is the whole API, `registerEvent` throws unless every
   `input` field is also a `payload` field, and `valuesOf(input, payload)` gives the values used
   both to **match** (a subscription matches when every arg it gave equals the payload's value) and
   to **authorize**. **Access model:** the filter says *what*, a **required** `authorize` says *who

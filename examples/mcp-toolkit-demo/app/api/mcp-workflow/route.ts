@@ -1,4 +1,4 @@
-/** The MCP endpoint for the **Workflow** server. Same handler, different task layer. */
+/** The MCP endpoint for the **Workflow** server. Same handler, different `McpTasks`. */
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { serveMcp } from "../../lib/auth";
 import { createServer } from "../../lib/workflow-server";

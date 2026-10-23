@@ -1,5 +1,6 @@
 /**
- * Test-only helpers and in-memory backends (never imported by an entry point).
+ * Test-only helpers, test dispatchers and in-memory event backends (never imported by an entry
+ * point).
  *
  * Per the project's testing policy the Redis backends are exercised against a real Upstash Redis
  * rather than a mock. Credentials come from the repo-root `.env`; without them `hasRedisCreds` is
@@ -16,16 +17,8 @@ import type {
   Subscription,
   SubscriptionStore,
 } from "./events/types.js";
-import type {
-  Task,
-  TaskDispatcher,
-  TaskEndpoints,
-  TaskError,
-  TaskJournal,
-  TaskPatch,
-  TaskStore,
-  TerminalTaskStatus,
-} from "./tasks/types.js";
+import { InProcessDispatcher } from "./tasks/memory.js";
+import type { Task, TaskDispatcher, TaskEndpoints, TaskError, TaskJournal } from "./tasks/types.js";
 
 // Load repo-root .env (no-op if already loaded or absent).
 config();
@@ -126,73 +119,18 @@ export function qstashRequest(
 }
 
 // ---------------------------------------------------------------------------------------------
-// In-memory task backends
-
-const isTerminal = (status: string): status is TerminalTaskStatus => status !== "working";
-
-/** An in-process {@link TaskStore}. Not durable, not shared between instances. */
-export class MemoryTaskStore implements TaskStore {
-  private readonly tasks = new Map<string, Task>();
-  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  async create(task: Task): Promise<void> {
-    this.tasks.set(task.taskId, { ...task });
-    // Stands in for Redis' expiry. Unref'd so it never holds the process open.
-    const timer = setTimeout(() => {
-      this.tasks.delete(task.taskId);
-      this.timers.delete(task.taskId);
-    }, task.ttlMs);
-    timer.unref?.();
-    this.timers.set(task.taskId, timer);
-  }
-
-  async get(taskId: string): Promise<Task | null> {
-    const task = this.tasks.get(taskId);
-    return task ? { ...task } : null;
-  }
-
-  async update(taskId: string, patch: TaskPatch): Promise<void> {
-    this.write(taskId, patch);
-  }
-
-  async settle(taskId: string, patch: TaskPatch & { status: TerminalTaskStatus }) {
-    return this.write(taskId, patch);
-  }
-
-  /** Puts a record in as-is, e.g. one written by an older version. */
-  seed(task: Task): void {
-    this.tasks.set(task.taskId, { ...task });
-  }
-
-  /** Drops every task and its pending expiry. */
-  clear(): void {
-    for (const timer of this.timers.values()) clearTimeout(timer);
-    this.timers.clear();
-    this.tasks.clear();
-  }
-
-  /** Synchronous, so nothing interleaves between the check and the write. */
-  private write(taskId: string, patch: TaskPatch): Task | null {
-    const task = this.tasks.get(taskId);
-    if (!task) return null;
-    if (isTerminal(task.status)) return { ...task };
-    const next: Task = { ...task, ...patch, lastUpdatedAt: new Date().toISOString() };
-    this.tasks.set(taskId, next);
-    return { ...next };
-  }
-}
+// Task dispatchers for tests (the shipped in-memory backends are in `tasks/memory.ts`)
 
 /**
  * A dispatcher that records dispatches and runs nothing on its own, so a test drives each
- * delivery by hand, the way a queue would. It is connected when the layer's
- * `createExecuteHandler()` is called.
+ * delivery by hand, the way a queue would. `McpTasks` connects it when it is created.
  */
-export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TContext> {
+export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<false, TContext> {
   readonly dispatched: Task[] = [];
   readonly cancelled: string[] = [];
   /** Makes the next `dispatch` throw this error. */
   failNext: Error | undefined;
-  protected endpoints: TaskEndpoints<TContext> | undefined;
+  private endpoints: TaskEndpoints<TContext> | undefined;
 
   async dispatch(task: Task): Promise<void> {
     if (this.failNext) {
@@ -207,14 +145,18 @@ export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TCon
     this.cancelled.push(taskId);
   }
 
-  createExecuteHandler(endpoints: TaskEndpoints<TContext>): () => Promise<Response> {
+  connect(endpoints: TaskEndpoints<TContext>): void {
     this.endpoints = endpoints;
+  }
+
+  createExecuteHandler(endpoints: TaskEndpoints<TContext>): () => Promise<Response> {
+    this.connect(endpoints);
     return async () => new Response("manual dispatcher: drive deliveries with run()");
   }
 
   /** Delivers a task, as the transport would. */
   run(taskId: string, context?: TContext, journal?: TaskJournal): Promise<void> {
-    return this.connected().run(taskId, context as TContext, journal);
+    return this.connected().run(taskId, context as never, journal);
   }
 
   /** Reports that the transport gave up, as a failure callback would. */
@@ -222,39 +164,19 @@ export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TCon
     return this.connected().fail(taskId, error);
   }
 
-  protected connected(): TaskEndpoints<TContext> {
-    if (!this.endpoints) throw new Error("Call tasks.createExecuteHandler() first");
+  private connected(): TaskEndpoints<TContext> {
+    if (!this.endpoints) throw new Error("Pass the dispatcher to new McpTasks(...) first");
     return this.endpoints;
   }
 }
 
-/**
- * Runs each task in the current process, on the next microtask, and counts dispatches. A throw
- * fails the task: there are no retries.
- */
-export class InlineDispatcher extends ManualDispatcher {
-  private readonly pending = new Set<Promise<void>>();
+/** The shipped {@link InProcessDispatcher}, also recording what it was asked to dispatch. */
+export class InlineDispatcher extends InProcessDispatcher {
+  readonly dispatched: Task[] = [];
 
   override async dispatch(task: Task): Promise<void> {
+    this.dispatched.push(task);
     await super.dispatch(task);
-    const endpoints = this.connected();
-    const run = Promise.resolve()
-      .then(() => endpoints.run(task.taskId, undefined))
-      .catch((cause: unknown) =>
-        endpoints
-          .fail(task.taskId, {
-            code: -32603,
-            message: cause instanceof Error ? cause.message : String(cause),
-          })
-          .catch(() => undefined),
-      );
-    this.pending.add(run);
-    void run.finally(() => this.pending.delete(run));
-  }
-
-  /** Resolves once every dispatched task has settled. */
-  async drain(): Promise<void> {
-    while (this.pending.size > 0) await Promise.all([...this.pending]);
   }
 }
 
@@ -296,7 +218,7 @@ export class MemorySubscriptionStore implements SubscriptionStore {
 
 /**
  * Sends each delivery from the calling process, once, and records whether it finished. It is
- * connected when the layer's `createDeliveryHandler()` is called.
+ * connected when `events.createDeliveryHandler()` is called.
  */
 export class InlineDelivery implements EventDelivery {
   readonly outcomes: { job: DeliveryJob; done: boolean }[] = [];
