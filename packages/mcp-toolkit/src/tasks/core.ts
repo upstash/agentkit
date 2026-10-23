@@ -296,7 +296,11 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
           "or cancelled. While it is working, wait the suggested pollIntervalMs and call again — " +
           "do not start the task a second time. Once completed, the response contains the " +
           "task's result. input_required means the task is waiting for the user to answer a " +
-          "question; only the user can answer it.",
+          "question; only the user can answer it." +
+          (mode === "native"
+            ? " Only for a tool result that told you to call task_status: if your client " +
+              "already runs the task in the background and will notify you, don't call this."
+            : ""),
         inputSchema,
         annotations: { readOnlyHint: true, idempotentHint: true },
       },

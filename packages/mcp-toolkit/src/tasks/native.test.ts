@@ -166,6 +166,12 @@ describe("native MCP Tasks", () => {
     // Claude Code polls tasks/get itself; a description saying "call task_status" made its model
     // poll on top of that.
     expect(tool?.description).toBe("Generates a report.");
+    // And task_status says it's only for handles that asked for it (a live run went from 1-6
+    // task_status calls per native task to none).
+    const status = (result?.tools as { name: string; description: string }[]).find(
+      (t) => t.name === "task_status",
+    );
+    expect(status?.description).toMatch(/will notify you, don't call this\.$/);
     const handle = await live.start({ caps: {} });
     expect(JSON.stringify(handle.result?.content)).toMatch(/Call task_status with taskId/);
   });
@@ -360,6 +366,10 @@ describe("native MCP Tasks", () => {
       const tool = (result?.tools as { name: string; description: string }[]).find(
         (t) => t.name === "generate_report",
       );
+      const status = (result?.tools as { name: string; description: string }[]).find(
+        (t) => t.name === "task_status",
+      );
+      expect(status?.description).not.toMatch(/notify/);
       expect(tool?.description).toBe(
         "Generates a report. Runs in the background: returns a taskId immediately. Call " +
           "task_status with it to get progress and, once completed, the result.",
