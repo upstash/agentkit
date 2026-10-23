@@ -13,10 +13,17 @@ import type {
   Task,
   TaskDispatcher,
   TaskEndpoints,
+  TaskInputContext,
+  TaskInputResponse,
+  TaskInputWait,
   TaskPatch,
   TaskStore,
   TerminalTaskStatus,
 } from "./types.js";
+
+/** The statuses no write may leave. */
+export const isTerminal = (status: string | undefined): boolean =>
+  status === "completed" || status === "failed" || status === "cancelled";
 
 /** How often, at most, `create` sweeps out expired records. */
 const SWEEP_INTERVAL_MS = 60_000;
@@ -58,6 +65,30 @@ export class MemoryTaskStore implements TaskStore {
     return this.write(taskId, patch);
   }
 
+  async respond(
+    taskId: string,
+    responses: Record<string, TaskInputResponse>,
+    statusMessage: string,
+  ): Promise<string[]> {
+    // Synchronous from here on, so nothing interleaves between the checks and the write.
+    const entry = this.live(taskId);
+    const open = entry?.task.status === "input_required" ? entry.task.inputRequests : undefined;
+    if (!entry || !open) return [];
+    const answers = { ...entry.task.inputResponses };
+    for (const [key, response] of Object.entries(responses)) {
+      if (key in open && !(key in answers)) answers[key] = response;
+    }
+    const keys = Object.keys(open);
+    const resumed = keys.every((key) => key in answers);
+    const { inputRequests: _open, ...rest } = entry.task;
+    entry.task = {
+      ...(resumed ? { ...rest, status: "working", statusMessage } : entry.task),
+      inputResponses: answers,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+    return resumed ? keys : [];
+  }
+
   private live(taskId: string): { task: Task; expiresAt: number } | undefined {
     const entry = this.tasks.get(taskId);
     if (entry && entry.expiresAt <= Date.now()) {
@@ -71,7 +102,7 @@ export class MemoryTaskStore implements TaskStore {
   private write(taskId: string, patch: TaskPatch): Task | null {
     const entry = this.live(taskId);
     if (!entry) return null;
-    if (entry.task.status !== "working") return { ...entry.task };
+    if (isTerminal(entry.task.status)) return { ...entry.task };
     entry.task = { ...entry.task, ...patch, lastUpdatedAt: new Date().toISOString() };
     return { ...entry.task };
   }
@@ -86,13 +117,18 @@ export class MemoryTaskStore implements TaskStore {
  * every dispatcher: the handler stops at its next `isCancelled()` check. Work still running when
  * the process exits is lost, and the task stays `working` until its TTL; `drain()` waits for it,
  * e.g. on shutdown.
+ *
+ * A handler may ask the user with `task.elicit(...)`: it simply waits in this process until
+ * `tasks/update` brings the answer, the task is cancelled, or it expires.
  */
-export class InProcessDispatcher implements TaskDispatcher {
-  private endpoints: TaskEndpoints | undefined;
+export class InProcessDispatcher implements TaskDispatcher<TaskInputContext> {
+  private endpoints: TaskEndpoints<TaskInputContext> | undefined;
   private readonly running = new Set<Promise<void>>();
+  /** Wake-ups for handlers waiting on an answer, by task id. */
+  private readonly waiting = new Map<string, Set<() => void>>();
 
   /** Called by `McpTasks`. One dispatcher serves one `McpTasks`. */
-  connect(endpoints: TaskEndpoints): void {
+  connect(endpoints: TaskEndpoints<TaskInputContext>): void {
     if (this.endpoints && this.endpoints !== endpoints) {
       throw new Error(
         "InProcessDispatcher: already connected to an McpTasks; create one per McpTasks",
@@ -121,17 +157,55 @@ export class InProcessDispatcher implements TaskDispatcher {
     this.running.add(run);
   }
 
-  /** Nothing to recall: a task not yet started finds itself cancelled and does nothing. */
-  async cancel(): Promise<void> {}
+  /**
+   * Nothing to recall: a task not yet started finds itself cancelled and does nothing. A handler
+   * waiting for an answer is woken, finds the task cancelled, and stops.
+   */
+  async cancel(taskId: string): Promise<void> {
+    this.wake(taskId);
+  }
+
+  /**
+   * Sleeps until `resume` or `cancel` wakes it, or for one poll interval, so an answer recorded
+   * by another instance (with a shared store) or an expiry is still seen.
+   */
+  async waitForInput(wait: TaskInputWait): Promise<void> {
+    const ms = Math.max(0, Math.min(wait.pollIntervalMs, wait.expiresAt - Date.now()));
+    await new Promise<void>((resolve) => {
+      const wakers = this.waiting.get(wait.taskId) ?? new Set<() => void>();
+      this.waiting.set(wait.taskId, wakers);
+      const done = () => {
+        clearTimeout(timer);
+        wakers.delete(done);
+        if (wakers.size === 0) this.waiting.delete(wait.taskId);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      wakers.add(done);
+    });
+  }
+
+  async resume(taskId: string): Promise<void> {
+    this.wake(taskId);
+  }
+
+  private wake(taskId: string): void {
+    for (const done of [...(this.waiting.get(taskId) ?? [])]) done();
+  }
 
   /** Not needed: tasks run in process. Answers 404, but still connects it. */
-  createExecuteHandler(endpoints: TaskEndpoints): (request: Request) => Promise<Response> {
+  createExecuteHandler(
+    endpoints: TaskEndpoints<TaskInputContext>,
+  ): (request: Request) => Promise<Response> {
     this.connect(endpoints);
     return async () =>
       new Response("Tasks run in process: this server has no execute endpoint.", { status: 404 });
   }
 
-  /** Resolves once every task dispatched so far has settled, e.g. before a graceful shutdown. */
+  /**
+   * Resolves once every task dispatched so far has settled, e.g. before a graceful shutdown. A task
+   * waiting for the user's answer counts as running until it is answered, cancelled or expired.
+   */
   async drain(): Promise<void> {
     while (this.running.size > 0) await Promise.all([...this.running]);
   }

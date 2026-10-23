@@ -5,6 +5,8 @@
  * task id in an ordinary tool result and polls the shared `task_status` / `task_cancel` tools.
  */
 import {
+  acceptedContent,
+  inputRequired,
   ProtocolError,
   ProtocolErrorCode,
   type McpServer,
@@ -20,14 +22,18 @@ import {
   type PrincipalResolver,
 } from "../shared/auth.js";
 import { env, INTERNAL_ERROR } from "../shared/env.js";
-import { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
+import { InProcessDispatcher, isTerminal, MemoryTaskStore } from "./memory.js";
 import type {
+  ElicitAnswer,
   Task,
   TaskContext,
   TaskDispatcher,
   TaskError,
+  TaskInputContext,
+  TaskInputResponse,
   TaskJournal,
   TaskStore,
+  TransportContext,
   WireTask,
 } from "./types.js";
 
@@ -39,6 +45,12 @@ const CANCEL_TOOL = "task_cancel";
 /** The MCP Tasks extension (protocol revision 2026-07-28). */
 const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 const CLIENT_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities";
+/** Questions per task. Claude Code ignores input request keys beyond 16 per task. */
+const MAX_QUESTIONS = 16;
+/** Bounds on one `tasks/update`: answers, key length, and the whole map as JSON. */
+const MAX_RESPONSES = 16;
+const MAX_RESPONSE_KEY = 64;
+const MAX_RESPONSES_BYTES = 64 * 1024;
 
 /**
  * How a task tool answers.
@@ -59,7 +71,7 @@ export type TaskMode = "native" | "tools";
  * `RedisTaskStore` with `QStashDispatcher` or `WorkflowDispatcher`. A dispatcher always comes with
  * a store: one that delivers through an endpoint may run the task on another instance.
  */
-type TaskBackends<TContext = unknown> =
+type TaskBackends<TContext = TaskInputContext> =
   | {
       /** Keeps the task records. Defaults to a {@link MemoryTaskStore}: lost on restart. */
       store: TaskStore;
@@ -73,7 +85,7 @@ type TaskBackends<TContext = unknown> =
       dispatcher?: undefined;
     };
 
-export type McpTasksOptions<TContext = unknown> = TaskBackends<TContext> & {
+export type McpTasksOptions<TContext = TaskInputContext> = TaskBackends<TContext> & {
   /**
    * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
    * when it can't, and the call is refused as not authenticated. Every task is owned by its
@@ -129,8 +141,9 @@ type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
   : unknown;
 
 /**
- * A task's implementation. The context is {@link TaskContext} plus whatever the dispatcher adds
- * (the live `WorkflowContext` on Workflow). Return an MCP tool result.
+ * A task's implementation. The context is {@link TaskContext} plus whatever the dispatcher adds:
+ * `elicit` on a dispatcher that can wait for the user (the in-memory default and Workflow), and the
+ * live `WorkflowContext` on Workflow. Return an MCP tool result.
  */
 export type TaskHandler<Args, TContext = unknown> = (
   args: Args,
@@ -154,7 +167,7 @@ export type TaskHandler<Args, TContext = unknown> = (
  * }
  * ```
  */
-export class McpTasks<TContext = unknown> {
+export class McpTasks<TContext = TaskInputContext> {
   readonly #runtime: Runtime<TContext>;
 
   constructor(options: McpTasksOptions<TContext>) {
@@ -210,7 +223,8 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
   }
   if (!options.dispatcher) warnInMemory(!options.store);
   const store = options.store ?? new MemoryTaskStore();
-  const dispatcher = options.dispatcher ?? (new InProcessDispatcher() as TaskDispatcher<TContext>);
+  const dispatcher =
+    options.dispatcher ?? (new InProcessDispatcher() as unknown as TaskDispatcher<TContext>);
   const principal = requirePrincipal(options.principal, label);
   const mode = options.mode ?? "native";
   if (mode !== "native" && mode !== "tools") {
@@ -269,17 +283,34 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
       {
         title: "Task status",
         description:
-          "Returns the status of a background task: working, completed, failed or cancelled. " +
-          "While it is working, wait the suggested pollIntervalMs and call again — do not start " +
-          "the task a second time. Once completed, the response contains the task's result.",
+          "Returns the status of a background task: working, input_required, completed, failed " +
+          "or cancelled. While it is working, wait the suggested pollIntervalMs and call again — " +
+          "do not start the task a second time. Once completed, the response contains the " +
+          "task's result. input_required means the task is waiting for the user to answer a " +
+          "question; only the user can answer it.",
         inputSchema,
         annotations: { readOnlyHint: true, idempotentHint: true },
       },
       (async ({ taskId }: { taskId: string }, context: unknown) => {
         const caller = await callerId(context);
         if (!caller) return errorResult(NOT_AUTHENTICATED);
-        const task = await owned(taskId, caller);
-        return task ? statusResult(task) : errorResult(unknownTask(taskId));
+        let task = await owned(taskId, caller);
+        if (!task) return errorResult(unknownTask(taskId));
+        // The retry of a task_status that asked the user (below): record the answers first.
+        const retried = retriedResponses(context);
+        if (retried !== undefined) {
+          const responses = parseResponses(retried);
+          if (!responses) return errorResult(INVALID_RESPONSES);
+          await answer(task, responses);
+          task = (await owned(taskId, caller)) ?? task;
+        }
+        // A client that can show a form, but not native tasks, still asks the user itself: the
+        // question goes out as this call's own input_required (multi-round-trip, 2026-07-28), and
+        // the client retries the call with the user's answers. The model never answers.
+        if (task.status === "input_required" && task.inputRequests && canElicit(context)) {
+          return inputRequired({ inputRequests: task.inputRequests });
+        }
+        return statusResult(task);
       }) as never,
     );
 
@@ -306,8 +337,8 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
 
   /**
    * The Tasks extension's server side, through the SDK's own extension points: the capability on
-   * `server/discover`, and the two methods Claude Code calls. `tasks/update` (input_required),
-   * `tasks/list` and `tasks/result` are not served, so the SDK answers them "Method not found".
+   * `server/discover`, and the three methods Claude Code calls. `tasks/list` and `tasks/result`
+   * are not served, so the SDK answers them "Method not found".
    */
   function installNative(server: McpServer): void {
     server.server.registerCapabilities({ extensions: { [TASKS_EXTENSION]: {} } });
@@ -327,6 +358,37 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
       const task = caller && isTaskId(taskId) ? await cancelOwned(taskId, caller) : null;
       if (!task) throw unknownTaskError(taskId);
       return { resultType: "complete" };
+    });
+
+    // The SDK lifts `inputResponses` out of the params into `ctx.mcpReq.inputResponses`.
+    server.server.setRequestHandler("tasks/update", { params }, async ({ taskId }, context) => {
+      // Checked before anything is read or stored, and the same for every caller and task.
+      const responses = parseResponses(retriedResponses(context));
+      if (!responses) throw new ProtocolError(ProtocolErrorCode.InvalidParams, INVALID_RESPONSES);
+      const caller = await callerId(context);
+      const task = caller && isTaskId(taskId) ? await owned(taskId, caller) : null;
+      if (!task) throw unknownTaskError(taskId);
+      // Unknown or already answered keys, and a task that isn't waiting, are ignored.
+      await answer(task, responses);
+      return { resultType: "complete" };
+    });
+  }
+
+  /**
+   * Records the caller's answers to the task's open questions, and wakes the handler once none is
+   * left open. `task` is the caller's own, just read.
+   */
+  async function answer(task: Task, responses: Record<string, TaskInputResponse>): Promise<void> {
+    if (task.status !== "input_required" || !task.inputRequests) return;
+    const open = Object.fromEntries(
+      Object.entries(responses).filter(([key]) => key in task.inputRequests!),
+    );
+    if (Object.keys(open).length === 0) return;
+    const resumed = await store.respond(task.taskId, open, "Answer received");
+    if (resumed.length === 0) return;
+    // The answers are stored, so a lost wake-up only delays the handler until its next look.
+    await dispatcher.resume?.(task.taskId, resumed).catch((error: unknown) => {
+      console.error(`[mcp-toolkit] could not wake task ${task.taskId} after its answer:`, error);
     });
   }
 
@@ -402,10 +464,15 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
    * Runs a delivered task. A throw propagates and leaves the task `working`: only the transport
    * knows whether it will deliver again, so only it records the final failure.
    */
-  async function run(taskId: string, context: TContext, journal?: TaskJournal): Promise<void> {
+  async function run(
+    taskId: string,
+    context: TransportContext<TContext>,
+    journal?: TaskJournal,
+  ): Promise<void> {
     const task = await store.get(taskId);
-    // Expired or unknown, or a redelivery of a finished task: nothing to do.
-    if (!task || task.status !== "working") return;
+    // Expired or unknown, or a redelivery of a finished task: nothing to do. A task waiting for
+    // input still runs: a replaying transport (Workflow) comes back through here to wait.
+    if (!task || isTerminal(task.status)) return;
     const definition = definitions.get(task.name);
     if (!definition) {
       throw new Error(
@@ -415,17 +482,33 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
 
     // Journaled writes are named by call order, which a replay reproduces.
     let writes = 0;
-    const taskContext: TaskContext = {
+    const journaled = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
+      journal ? journal(name, fn) : fn();
+    const taskContext: TaskContext & TaskInputContext = {
       taskId,
       principal: task.owner,
       update: async (statusMessage) => {
-        const write = () => store.update(taskId, { statusMessage });
-        await (journal ? journal(`mcp-task:update:${++writes}`, write) : write());
+        await journaled(`mcp-task:update:${++writes}`, () =>
+          store.update(taskId, { statusMessage }),
+        );
       },
-      isCancelled: async () => (await store.get(taskId))?.status !== "working",
+      isCancelled: async () => {
+        const current = await store.get(taskId);
+        return !current || isTerminal(current.status);
+      },
+      // On every context, so a plain-JS handler under a dispatcher that can't wait gets a clear
+      // failure; the types only offer it where it works.
+      elicit: elicitFor(task, context, journaled),
     };
 
-    const result = await definition.handler(task.args, mergeContext(taskContext, context));
+    let result: Record<string, unknown>;
+    try {
+      result = await definition.handler(task.args, mergeContext<TContext>(taskContext, context));
+    } catch (error) {
+      // Cancelled, expired or failed while asking: the record already says so.
+      if (error instanceof TaskStopped) return;
+      throw error;
+    }
     // A cancel that landed meanwhile wins: settle refuses the second terminal write.
     if (result?.isError === true) {
       // The handler answered with a tool error, the way a synchronous tool would: the task failed,
@@ -443,6 +526,80 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
       statusMessage: definition.config.completedMessage ?? "Completed",
       result,
     });
+  }
+
+  /**
+   * `task.elicit` for one run. Questions are keyed by call order, which a replay reproduces, and
+   * each step that reads or writes the store is journaled, so a Workflow replay sees the same
+   * answers. The store is the source of truth: a wait only says when to look again.
+   */
+  function elicitFor(
+    task: Task,
+    context: TransportContext<TContext>,
+    journaled: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
+  ): TaskInputContext["elicit"] {
+    const { taskId } = task;
+    const expiresAt = Date.parse(task.createdAt) + task.ttlMs;
+    let asked = 0;
+    let pending = false;
+
+    /** Ends the task `failed` with a message for the developer, and stops the handler. */
+    const failWith = async (message: string): Promise<never> => {
+      console.error(`[mcp-toolkit] task ${taskId}: ${message}`);
+      await store.settle(taskId, {
+        status: "failed",
+        statusMessage: "Failed",
+        error: { code: INTERNAL_ERROR, message },
+      });
+      throw new TaskStopped();
+    };
+
+    /** Where the question stands: answered, still open, or the task is over. */
+    const look = async (key: string) => {
+      const current = await store.get(taskId);
+      if (!current || isTerminal(current.status)) return { stopped: true as const };
+      return { answer: current.inputResponses?.[key] ?? null };
+    };
+
+    return async (params) => {
+      const n = ++asked;
+      const key = `elicit-${n}`;
+      if (!dispatcher.waitForInput) {
+        const name = (dispatcher as object).constructor?.name ?? "this dispatcher";
+        return await failWith(
+          `task.elicit needs a dispatcher that can wait for the user's answer, and ${name} ` +
+            "can't. Use WorkflowDispatcher, or the in-memory backends, for tasks that ask the user.",
+        );
+      }
+      if (n > MAX_QUESTIONS) {
+        return await failWith(`A task can ask at most ${MAX_QUESTIONS} questions.`);
+      }
+      if (pending) throw new Error("task.elicit: ask one question at a time (await each answer)");
+      pending = true;
+      try {
+        // Throws on a schema the elicitation form can't express, before anything is stored.
+        const request = inputRequired.elicit(params);
+        let state = await journaled(`mcp-task:ask:${n}`, async () => {
+          const seen = await look(key);
+          if ("stopped" in seen || seen.answer) return seen;
+          await store.update(taskId, {
+            status: "input_required",
+            statusMessage: params.message.slice(0, 500),
+            inputRequests: { [key]: request },
+          });
+          return seen;
+        });
+        for (let round = 1; !("stopped" in state) && !state.answer; round++) {
+          const wait = { taskId, key, round, expiresAt, pollIntervalMs: task.pollIntervalMs };
+          await dispatcher.waitForInput(wait, context);
+          state = await journaled(`mcp-task:look:${n}:${round}`, () => look(key));
+        }
+        if ("stopped" in state) throw new TaskStopped();
+        return await toAnswer(state.answer!, key, params.requestedSchema, failWith);
+      } finally {
+        pending = false;
+      }
+    };
   }
 
   async function fail(taskId: string, error: TaskError): Promise<void> {
@@ -509,6 +666,105 @@ function unknownTaskError(taskId: string): ProtocolError {
   return new ProtocolError(ProtocolErrorCode.InvalidParams, unknownTask(taskId.slice(0, 128)));
 }
 
+/** Thrown out of `task.elicit` when the task is over: `run` ends quietly, with nothing to write. */
+class TaskStopped extends Error {
+  constructor() {
+    super("The task was cancelled, failed or expired while waiting for the user's answer");
+    this.name = "TaskStopped";
+  }
+}
+
+const INVALID_RESPONSES =
+  `Invalid inputResponses: expected at most ${MAX_RESPONSES} elicitation results ` +
+  "({ action, content? }) keyed by the task's inputRequests keys.";
+
+const RESPONSE_KEY = new RegExp(`^[\\w.:-]{1,${MAX_RESPONSE_KEY}}$`);
+
+/** An elicitation result: `content` is a flat object of strings, numbers, booleans and string lists. */
+const elicitResult = z.object({
+  action: z.enum(["accept", "decline", "cancel"]),
+  content: z
+    .record(
+      z.string().max(MAX_RESPONSE_KEY),
+      z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]),
+    )
+    .optional(),
+});
+
+/**
+ * The answers a request carried (`tasks/update`, or a retried `task_status`), as the SDK lifted
+ * them out of the params: `undefined` when there were none at all, `null` when some entries were
+ * not bare results (the SDK drops those, and an answer is never half-taken).
+ */
+function retriedResponses(context: unknown): Record<string, unknown> | null | undefined {
+  const request = (
+    context as
+      | {
+          mcpReq?: {
+            inputResponses?: Record<string, unknown>;
+            droppedInputResponseKeys?: string[];
+          };
+        }
+      | undefined
+  )?.mcpReq;
+  if (request?.droppedInputResponseKeys?.length) return null;
+  return request?.inputResponses;
+}
+
+/**
+ * Checks answers for shape and size before anything is stored: at most 16, short keys, 64 KiB as
+ * JSON, each an elicitation result. Unknown keys pass here and are ignored later. `null` refuses.
+ */
+function parseResponses(
+  responses: Record<string, unknown> | null | undefined,
+): Record<string, TaskInputResponse> | null {
+  if (!responses || typeof responses !== "object" || Array.isArray(responses)) return null;
+  const entries = Object.entries(responses);
+  if (entries.length > MAX_RESPONSES) return null;
+  if (JSON.stringify(responses).length > MAX_RESPONSES_BYTES) return null;
+  const parsed: Record<string, TaskInputResponse> = {};
+  for (const [key, value] of entries) {
+    const result = elicitResult.safeParse(value);
+    if (!RESPONSE_KEY.test(key) || !result.success) return null;
+    parsed[key] = result.data;
+  }
+  return parsed;
+}
+
+/**
+ * The handler's view of an answer. Accepted content is untrusted until it passes the question's
+ * own schema; content that doesn't fails the task rather than reach the handler.
+ */
+async function toAnswer<Schema extends StandardSchemaWithJSON>(
+  response: TaskInputResponse,
+  key: string,
+  schema: Schema,
+  failWith: (message: string) => Promise<never>,
+): Promise<ElicitAnswer<never>> {
+  if (response.action !== "accept") return { action: response.action };
+  const content = acceptedContent({ [key]: response }, key, schema);
+  if (content === undefined) {
+    return await failWith("The user's answer did not match the requested form.");
+  }
+  return { action: "accept", content: content as never };
+}
+
+/**
+ * Whether the request can carry an elicitation as its own `input_required` result: a 2026-07-28
+ * request whose per-request client capabilities declare `elicitation`.
+ */
+function canElicit(context: unknown): boolean {
+  const envelope = (context as { mcpReq?: { envelope?: Record<string, unknown> } } | undefined)
+    ?.mcpReq?.envelope;
+  const capabilities = envelope?.[CLIENT_CAPABILITIES_KEY] as
+    | { elicitation?: { form?: unknown } & Record<string, unknown> }
+    | undefined;
+  const elicitation = capabilities?.elicitation;
+  if (typeof elicitation !== "object" || elicitation === null) return false;
+  // `{}` means form mode (2025-11-25 on); a client listing only `url` can't show our forms.
+  return Object.keys(elicitation).length === 0 || "form" in elicitation;
+}
+
 /**
  * Whether the request declared the Tasks extension in its per-request client capabilities,
  * `_meta["io.modelcontextprotocol/clientCapabilities"].extensions` on protocol revision
@@ -554,6 +810,7 @@ function nativeHandle(task: Task): Record<string, unknown> {
  */
 function nativeDetail(task: Task): Record<string, unknown> {
   const detail: Record<string, unknown> = { resultType: "complete", ...nativeTask(task) };
+  if (task.status === "input_required") detail.inputRequests = task.inputRequests ?? {};
   if (task.status === "completed") detail.result = task.result ?? { content: [] };
   if (task.status === "failed") {
     const handlerText = task.result?.isError === true ? textOf(task.result.content) : "";
@@ -598,7 +855,11 @@ function statusResult(task: Task): Record<string, unknown> {
       ? `${line} Error: ${task.error?.message ?? "unknown"}`
       : task.status === "working"
         ? `${line} Check again in about ${seconds(task.pollIntervalMs)}.`
-        : line;
+        : task.status === "input_required"
+          ? `${line} The task is waiting for the user to answer this question, and this client ` +
+            "can't show it to them. Only the user can answer it: tell them, and stop the task " +
+            `with ${CANCEL_TOOL} if it can't go on without the answer.`
+          : line;
   return {
     content: [{ type: "text", text }, ...extra],
     structuredContent: toWire(task),
@@ -613,11 +874,12 @@ const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`;
  * than spread: a `WorkflowContext` keeps its methods on the prototype.
  */
 function mergeContext<TContext>(
-  taskContext: TaskContext,
-  supplied: TContext | undefined,
+  taskContext: TaskContext & TaskInputContext,
+  supplied: unknown,
 ): TaskContext & TContext {
-  if (supplied === undefined || supplied === null) return taskContext as TaskContext & TContext;
-  return Object.assign(supplied as object, taskContext) as TaskContext & TContext;
+  if (supplied === undefined || supplied === null)
+    return taskContext as unknown as TaskContext & TContext;
+  return Object.assign(supplied as object, taskContext) as unknown as TaskContext & TContext;
 }
 
 /**
@@ -626,6 +888,18 @@ function mergeContext<TContext>(
  * stays in the store for your logs.
  */
 function toWire(task: Task): WireTask {
-  const { name: _name, args: _args, owner: _owner, error, ...wire } = task;
-  return error ? { ...wire, error: { code: error.code, message: error.message } } : wire;
+  const {
+    name: _name,
+    args: _args,
+    owner: _owner,
+    inputResponses: _answers,
+    inputRequests,
+    error,
+    ...wire
+  } = task;
+  return {
+    ...wire,
+    ...(task.status === "input_required" && inputRequests ? { inputRequests } : {}),
+    ...(error ? { error: { code: error.code, message: error.message } } : {}),
+  };
 }

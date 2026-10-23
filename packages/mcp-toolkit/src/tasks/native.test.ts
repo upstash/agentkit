@@ -322,11 +322,15 @@ describe("native MCP Tasks", () => {
     await handler.close();
   });
 
-  it("does not serve tasks/update (no input_required yet)", async () => {
+  it("serves tasks/update, but not tasks/list or tasks/result", async () => {
     live = harness({ dispatcher: new ManualDispatcher() });
     const taskId = String((await live.start()).result?.taskId);
+    // Nothing is waiting for input: acknowledged, and nothing changes (task.elicit: input.test.ts).
     const update = await live.rpc("tasks/update", { taskId, inputResponses: {} });
-    expect(update.error?.code).toBe(-32601);
+    expect(update.result).toMatchObject({ resultType: "complete" });
+    expect((await live.get(taskId)).result?.status).toBe("working");
+    expect((await live.rpc("tasks/list")).error?.code).toBe(-32601);
+    expect((await live.rpc("tasks/result", { taskId })).error?.code).toBe(-32601);
   });
 
   describe('mode: "tools"', () => {
