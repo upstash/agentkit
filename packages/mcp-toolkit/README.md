@@ -174,9 +174,10 @@ kinds of client.
   tool-based handle.
 
 `task_status` and `task_cancel` stay listed in native mode. They are the fallback, and Claude Code
-itself needs them for the calls it can't turn into tasks. A model that has a native task never sees
-its id, so it has no reason to call them. Hiding them per client would break that fallback, since
-one client sends both kinds of call.
+itself needs them for the calls it can't turn into tasks. Claude Code shows the model a native
+task's id, so the model may call `task_status` on it too; both paths read the same record and give
+the same answer. Hiding the tools per client would break the fallback, since one client sends both
+kinds of call.
 
 The server advertises the extension on `server/discover` (`capabilities.extensions`), and answers:
 
