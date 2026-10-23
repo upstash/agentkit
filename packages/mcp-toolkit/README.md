@@ -91,7 +91,9 @@ Both read the same record. Cancelling is cooperative: running code only stops wh
 
 ### Ask the user from a task
 
-A task can stop partway, ask the user a question through a form, and carry on with the answer:
+A task can stop partway, ask the user a question, and carry on with the answer. MCP calls this
+[elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation): the
+client shows the user a form built from a schema and sends back what they entered.
 
 ```ts
 tasks.registerTask(
@@ -114,30 +116,19 @@ tasks.registerTask(
 );
 ```
 
-While it waits, the task is `input_required` and `tasks/get` carries the question as an MCP
-elicitation. The client shows the form and sends the answer with `tasks/update`. `answer.action` is
-`"accept"` (with `content`), `"decline"` or `"cancel"`.
+`answer.action` is `"accept"` (with `content`), `"decline"` or `"cancel"`. While it waits, the task
+is `input_required`; the client answers with `tasks/update` and the handler carries on.
 
-- **Backends.** Asking the user works with the in-memory backends and with `WorkflowDispatcher`.
-  It isn't available with `QStashDispatcher`, which can't wait for an answer: there, `elicit`
-  doesn't appear on `task` at all (and a plain-JS call fails the task with a message saying so).
-  In memory, the handler simply waits in the process. On Workflow it waits with `waitForEvent`, so
-  no function is held open while the user thinks; call it between steps, not inside `task.run`.
-- **Clients.** Claude Code answers in interactive terminal sessions. Elsewhere (headless `-p`, the
-  Agent SDK) it can't show the form, so it cancels the task, and the model is told the task asked a
-  question this session can't show.
-- **Clients without native tasks** can still ask the user: when one polls `task_status` on a
-  waiting task and declares that it can show forms (elicitation, 2026-07-28), `task_status` returns
-  the question as its own `input_required`, and the client retries with the user's answer.
-  Otherwise `task_status` tells the model that the task is waiting for the user. The model can't
-  answer: there is no tool for it, because an answer the model could give would defeat asking the
-  user.
-- **Cancel and expiry.** If the task is cancelled or expires while waiting, `elicit` throws and the
-  handler stops there; don't catch that error. A late answer is ignored.
-- **Limits.** Questions are keyed by call order (`elicit-1`, `elicit-2`, …), one at a time, at
-  most 16 per task. `tasks/update` takes at most 16 answers, 64 KiB in all, and checks them before
-  storing anything; it applies the same ownership rules as `tasks/get`. An accepted answer that
-  doesn't match `requestedSchema` fails the task instead of reaching the handler.
+- **Backends.** Works in memory and with `WorkflowDispatcher` (which waits without holding a
+  function open; call `elicit` between steps, not inside `task.run`). Not with `QStashDispatcher`:
+  there, `task.elicit` doesn't exist.
+- **Claude Code** shows the form in interactive sessions. In headless sessions (`-p`, the Agent
+  SDK) it can't, so it cancels the task.
+- **Clients without native tasks** get the question from `task_status` if they support
+  elicitation; otherwise the model is told the task is waiting for the user. The model can't answer
+  for the user: there is no tool for it, on purpose.
+- If the task is cancelled or expires while waiting, `elicit` throws; don't catch that error. A
+  task asks at most 16 questions, one at a time.
 
 ### Make it durable: Redis + QStash (or Workflow)
 
@@ -357,7 +348,7 @@ The server advertises the extension on `server/discover` (`capabilities.extensio
   `{ "resultType": "complete" }`; answers to unknown or already answered keys are ignored.
   Malformed `inputResponses` get `-32602`.
 - No other `tasks/*` method is served: `tasks/list` and `tasks/result` answer "Method not found",
-  and there are no `notifications/tasks`. Claude Code uses none of them.
+  and there are no `notifications/tasks`.
 - Everything goes through the SDK's own extension points, so `tasks.attach(server)` stays the
   only setup, with the SDK's `createMcpHandler` or `mcp-handler` alike. Call it before the server
   is connected, as both factories do.
