@@ -174,8 +174,12 @@ export class WorkflowDispatcher implements TaskDispatcher<WorkflowTaskContext> {
  */
 export const runIdOf = (taskId: string): string => `wfr_${taskId}`;
 
-/** The Workflow event a question's answer is announced on. */
-const inputEventId = (taskId: string, key: string): string => `mcp-task:${taskId}:${key}`;
+/**
+ * The Workflow event a question's answer is announced on. QStash only accepts letters, digits,
+ * `-`, `_` and `.` in an event id (a `:` is refused with a 400, and the run stops); task ids are
+ * UUIDs and question keys are `elicit-<n>`.
+ */
+export const inputEventId = (taskId: string, key: string): string => `mcp-task.${taskId}.${key}`;
 
 /**
  * The workflow's route function. Its first act is always a step: Workflow authorizes every request,

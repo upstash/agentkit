@@ -10,7 +10,7 @@ import type { WorkflowContext } from "@upstash/workflow";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import * as z from "zod";
 import { QStashDispatcher, RedisTaskStore } from "./backends/qstash.js";
-import { WorkflowDispatcher, workflowRoute } from "./backends/workflow.js";
+import { inputEventId, WorkflowDispatcher, workflowRoute } from "./backends/workflow.js";
 import { McpTasks } from "./core.js";
 import { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
 import type { TaskContext, TaskEndpoints, TaskInputContext, TaskStore } from "./types.js";
@@ -266,6 +266,8 @@ class FakeRun {
       },
       waitForEvent: async (name: string, eventId: string, options: { timeout: number }) => {
         if (this.journal.has(name)) return this.journal.get(name);
+        // What QStash accepts (it answers 400 to anything else, and the run stops).
+        if (!/^[\w.-]+$/.test(eventId)) throw new Error(`invalid eventId ${eventId}`);
         if (stepped) throw ABORT;
         if (this.early.delete(eventId)) {
           this.journal.set(name, { timeout: false, eventData: undefined });
@@ -610,10 +612,11 @@ describe("task.elicit on Workflow", () => {
     await live.until(taskId, "input_required");
     const run = backend.runs.get(`wfr_${taskId}`)!;
     // Parked on the event, not holding an invocation.
-    expect(run.waiting?.eventId).toBe(`mcp-task:${taskId}:elicit-1`);
+    expect(run.waiting?.eventId).toBe(inputEventId(taskId, "elicit-1"));
+    expect(run.waiting?.eventId).toMatch(/^[\w.-]+$/);
 
     await live.update(taskId, accept({ publish: true }));
-    expect(backend.notified).toEqual([`mcp-task:${taskId}:elicit-1`]);
+    expect(backend.notified).toEqual([inputEventId(taskId, "elicit-1")]);
     await live.until(taskId, "completed");
     await made.idle();
 
