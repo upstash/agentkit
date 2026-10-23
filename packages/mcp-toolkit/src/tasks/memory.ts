@@ -89,6 +89,15 @@ export class MemoryTaskStore implements TaskStore {
     return resumed ? keys : [];
   }
 
+  async countActive(owner: string): Promise<number> {
+    const now = Date.now();
+    let count = 0;
+    for (const { task, expiresAt } of this.tasks.values()) {
+      if (task.owner === owner && expiresAt > now && !isTerminal(task.status)) count++;
+    }
+    return count;
+  }
+
   private live(taskId: string): { task: Task; expiresAt: number } | undefined {
     const entry = this.tasks.get(taskId);
     if (entry && entry.expiresAt <= Date.now()) {

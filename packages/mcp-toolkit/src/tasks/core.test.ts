@@ -691,6 +691,132 @@ describe("McpTasks over MCP", () => {
   });
 });
 
+describe("errors the caller never sees", () => {
+  let live: Harness | undefined;
+  afterEach(async () => {
+    await live?.close();
+    live = undefined;
+    vi.restoreAllMocks();
+  });
+  const SECRET = /10\.0\.0\.5|WRONGPASS|secret-db/;
+  const GENERIC = "Internal error. Try again later.";
+
+  it("answers an authorize that throws with a fixed message, and logs the real one", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    live = await harness(
+      steppedHandler(1, 1),
+      {},
+      {
+        authorize: () => {
+          throw new Error("db host 10.0.0.5:5432 refused");
+        },
+      },
+    );
+    const result = await live.call("generate_report", { topic: "x" });
+    expect(result).toMatchObject({ isError: true, content: [{ type: "text", text: GENERIC }] });
+    expect(JSON.stringify(result)).not.toMatch(SECRET);
+    expect(String(logged.mock.calls.flat())).toMatch(/10\.0\.0\.5/);
+  });
+
+  it("answers a store that throws with a fixed message on every tool", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    live = await harness(steppedHandler(1, 1));
+    const taskId = await live.start("x");
+    await live.dispatcher.drain();
+    const leak = () =>
+      Promise.reject(new Error("UpstashError: WRONGPASS at https://secret-db.upstash.io"));
+    vi.spyOn(live.store, "get").mockImplementation(leak);
+    vi.spyOn(live.store, "create").mockImplementation(leak);
+    for (const result of [
+      await live.status(taskId),
+      await live.cancel(taskId),
+      await live.call("generate_report", { topic: "y" }),
+    ]) {
+      expect(result).toMatchObject({ isError: true, content: [{ type: "text", text: GENERIC }] });
+      expect(JSON.stringify(result)).not.toMatch(SECRET);
+    }
+  });
+});
+
+describe("limits", () => {
+  let live: Harness | undefined;
+  afterEach(async () => {
+    await live?.close();
+    live = undefined;
+  });
+
+  it("refuses arguments over maxArgsBytes before storing anything", async () => {
+    live = await harness(steppedHandler(1, 1), { maxArgsBytes: 1024 });
+    const create = vi.spyOn(live.store, "create");
+    const result = await live.call("generate_report", { topic: "x".repeat(2000) });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/too large: at most 1024 bytes/);
+    expect(create).not.toHaveBeenCalled();
+    expect(live.dispatcher.dispatched).toEqual([]);
+    expect(
+      (await live.call("generate_report", { topic: "x".repeat(900) })).isError,
+    ).toBeUndefined();
+    await live.dispatcher.drain();
+  });
+
+  it("defaults maxArgsBytes to 64 KiB", async () => {
+    live = await harness(steppedHandler(1, 1));
+    const result = await live.call("generate_report", { topic: "x".repeat(64 * 1024) });
+    expect(text(result)).toMatch(/at most 65536 bytes/);
+  });
+
+  it("caps each caller's active tasks, and frees a slot when one finishes or is cancelled", async () => {
+    const manual = new ManualDispatcher();
+    live = await harness(steppedHandler(1, 1), { dispatcher: manual as never, maxActiveTasks: 2 });
+    const first = await live.start("a");
+    const second = await live.start("b");
+    const refused = await live.call("generate_report", { topic: "c" });
+    expect(refused.isError).toBe(true);
+    expect(text(refused)).toMatch(/Too many running tasks: at most 2/);
+    expect(manual.dispatched).toHaveLength(2);
+    // Another caller has their own slots.
+    expect((await live.call("generate_report", { topic: "c" }, "bob")).isError).toBeUndefined();
+
+    await manual.run(first); // completes
+    const third = await live.start("c");
+    expect((await live.call("generate_report", { topic: "d" })).isError).toBe(true);
+    await live.cancel(second);
+    expect((await live.call("generate_report", { topic: "d" })).isError).toBeUndefined();
+    expect(third).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("counts a task waiting for input as active", async () => {
+    const manual = new ManualDispatcher();
+    live = await harness(steppedHandler(1, 1), { dispatcher: manual as never, maxActiveTasks: 1 });
+    const taskId = await live.start("a");
+    await live.store.update(taskId, { status: "input_required" });
+    expect((await live.call("generate_report", { topic: "b" })).isError).toBe(true);
+  });
+
+  it("defaults maxActiveTasks to 100, turns it off with Infinity, and refuses bad values", async () => {
+    const base = { store: new MemoryTaskStore(), dispatcher: new InlineDispatcher(), principal };
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => new McpTasks({ ...base, maxActiveTasks: bad })).toThrow(/maxActiveTasks/);
+      expect(() => new McpTasks({ ...base, maxArgsBytes: bad })).toThrow(/maxArgsBytes/);
+    }
+    expect(() => new McpTasks({ ...base, maxArgsBytes: Infinity })).toThrow(/maxArgsBytes/);
+
+    const manual = new ManualDispatcher();
+    live = await harness(steppedHandler(1, 1), { dispatcher: manual as never });
+    for (let i = 0; i < 100; i++) await live.start(`t${i}`);
+    expect((await live.call("generate_report", { topic: "over" })).isError).toBe(true);
+    await live.close();
+
+    live = await harness(steppedHandler(1, 1), {
+      dispatcher: new ManualDispatcher() as never,
+      maxActiveTasks: Infinity,
+    });
+    const count = vi.spyOn(live.store, "countActive");
+    for (let i = 0; i < 101; i++) await live.start(`t${i}`);
+    expect(count).not.toHaveBeenCalled();
+  });
+});
+
 describe("wire shape", () => {
   it("keeps a WireTask assignable from what task_status returns", () => {
     const wire: WireTask = {

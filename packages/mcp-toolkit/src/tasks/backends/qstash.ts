@@ -11,6 +11,7 @@ import {
   resolveRedis,
 } from "../../shared/clients.js";
 import { fromBase64, fromUtf8 } from "../../shared/crypto.js";
+import { isTerminal } from "../memory.js";
 import type {
   Task,
   TaskDispatcher,
@@ -88,7 +89,8 @@ const RESPONSE_FIELD = "response:";
 
 /**
  * One Redis hash per task, so concurrent writers only touch their own fields. The TTL is set at
- * creation and never extended.
+ * creation and never extended. A sorted set per owner, scored by expiry, lists the tasks that may
+ * still be active; `countActive` drops the expired and finished ones from it as it counts.
  */
 export class RedisTaskStore implements TaskStore {
   private readonly prefix: string;
@@ -101,7 +103,29 @@ export class RedisTaskStore implements TaskStore {
 
   async create(task: Task): Promise<void> {
     const key = this.key(task.taskId);
-    await this.redis().multi().hset(key, toFields(task)).pexpire(key, task.ttlMs).exec();
+    const active = this.activeKey(task.owner);
+    await this.redis()
+      .multi()
+      .hset(key, toFields(task))
+      .pexpire(key, task.ttlMs)
+      .zadd(active, { score: Date.now() + task.ttlMs, member: task.taskId })
+      // Lives as long as its longest-lived task: set on a new set, then only ever extended.
+      .pexpire(active, task.ttlMs, "NX")
+      .pexpire(active, task.ttlMs, "GT")
+      .exec();
+  }
+
+  async countActive(owner: string): Promise<number> {
+    const active = this.activeKey(owner);
+    await this.redis().zremrangebyscore(active, "-inf", Date.now());
+    const ids = (await this.redis().zrange<string[]>(active, 0, -1)).map(String);
+    if (ids.length === 0) return 0;
+    const pipeline = this.redis().pipeline();
+    for (const id of ids) pipeline.hget(this.key(id), "status");
+    const statuses = await pipeline.exec<(string | null)[]>();
+    const done = ids.filter((_, i) => statuses[i] === null || isTerminal(statuses[i]!));
+    if (done.length > 0) await this.redis().zrem(active, ...done);
+    return ids.length - done.length;
   }
 
   async get(taskId: string): Promise<Task | null> {
@@ -139,6 +163,10 @@ export class RedisTaskStore implements TaskStore {
 
   private key(taskId: string): string {
     return this.prefix + taskId;
+  }
+
+  private activeKey(owner: string): string {
+    return `${this.prefix}active:${owner}`;
   }
 
   private async guardedWrite(taskId: string, patch: TaskPatch): Promise<Task | null> {

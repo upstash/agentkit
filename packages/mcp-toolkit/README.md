@@ -293,6 +293,12 @@ tasks.registerTask(
 );
 ```
 
+**Errors and limits.** When `authorize` or a store throws, the caller sees only `Internal error. Try
+again later.` (a tool error, or `-32603` on `tasks/*` and `events/*`) and the real error goes to
+`console.error`, so a database host or credential in it never reaches the model. Each user may have
+at most 100 tasks working or waiting for input (`maxActiveTasks`), and a task's arguments may be at
+most 64 KiB of JSON (`maxArgsBytes`); past either, the call is refused before anything is stored.
+
 ### Going further
 
 <details>
@@ -671,8 +677,9 @@ The toolkit never stores the caller's token, the request, the plaintext webhook 
 
 **`new McpTasks(options)`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by
 default) and `dispatcher` (an `InProcessDispatcher` by default; a dispatcher needs a store with
-it), `mode` (`"native"`, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and
-`defaults.pollIntervalMs` (2s), in positive whole milliseconds.
+it), `mode` (`"native"`, or `"tools"` for the tool-based handle only), `maxActiveTasks` (100 per
+user working or `input_required`; `Infinity` turns it off), `maxArgsBytes` (64 KiB of JSON),
+`defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2s), in positive whole milliseconds.
 
 **`tasks.registerTask(name, config, handler)`**: `description` and `inputSchema` are required.
 Optional: `title`, `completedMessage`, `authorize(args, { principal, auth, request })`. Call it at

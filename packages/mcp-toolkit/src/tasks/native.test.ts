@@ -5,7 +5,7 @@
  * `tasks/*`).
  */
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod";
 import { McpTasks, type TaskMode } from "./core.js";
 import type { TaskContext } from "./index.js";
@@ -350,6 +350,38 @@ describe("native MCP Tasks", () => {
     expect((await live.get(taskId)).result?.status).toBe("working");
     expect((await live.rpc("tasks/list")).error?.code).toBe(-32601);
     expect((await live.rpc("tasks/result", { taskId })).error?.code).toBe(-32601);
+  });
+
+  it("answers a store that throws with a fixed -32603 on tasks/*, and logs the real error", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    live = harness({ dispatcher: new ManualDispatcher() });
+    const taskId = String((await live.start()).result?.taskId);
+    const leak = () =>
+      Promise.reject(new Error("UpstashError: WRONGPASS at https://secret-db.upstash.io"));
+    vi.spyOn(live.store, "get").mockImplementation(leak);
+    vi.spyOn(live.store, "create").mockImplementation(leak);
+    const generic = { code: -32603, message: "Internal error. Try again later." };
+    const answers = [
+      await live.get(taskId),
+      await live.rpc("tasks/cancel", { taskId }),
+      await live.rpc("tasks/update", {
+        taskId,
+        inputResponses: { "elicit-1": { action: "cancel" } },
+      }),
+    ];
+    for (const answer of answers) expect(answer.error).toEqual(generic);
+    const started = await live.start();
+    expect(started.result).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: generic.message }],
+    });
+    for (const answer of [...answers, started]) {
+      expect(JSON.stringify(answer)).not.toMatch(/WRONGPASS|secret-db/);
+    }
+    expect(String(logged.mock.calls.flat())).toMatch(/WRONGPASS/);
+    // The intended answers are unchanged.
+    expect((await live.get("not-a-uuid")).error?.code).toBe(-32602);
+    logged.mockRestore();
   });
 
   describe('mode: "tools"', () => {

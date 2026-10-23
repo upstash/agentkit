@@ -341,6 +341,20 @@ describe("MemoryTaskStore", () => {
     expect((await store.get(task.taskId))?.statusMessage).toBe("half");
   });
 
+  it("counts an owner's working and input_required tasks, not finished or expired ones", async () => {
+    const store = new MemoryTaskStore();
+    const tasks = [record(), record(), record(), record(20), { ...record(), owner: "other" }];
+    for (const task of tasks) await store.create(task);
+    expect(await store.countActive("o")).toBe(4);
+    await store.update(tasks[0]!.taskId, { status: "input_required" });
+    await store.settle(tasks[1]!.taskId, { status: "completed" });
+    expect(await store.countActive("o")).toBe(3);
+    await sleep(30);
+    expect(await store.countActive("o")).toBe(2);
+    expect(await store.countActive("other")).toBe(1);
+    expect(await store.countActive("nobody")).toBe(0);
+  });
+
   it("expires a record ttlMs after creation, and hands out copies", async () => {
     const store = new MemoryTaskStore();
     const task = record(20);

@@ -77,6 +77,16 @@ backends explicitly silences it. A `dispatcher` without a `store` is refused. Di
 implement the new optional `TaskDispatcher.connect(endpoints)`, which `McpTasks` calls when it is
 constructed. A new task's first status message is now `"Queued"`.
 
+Limits and generic errors. A user may have at most `maxActiveTasks` tasks (default 100; `Infinity`
+turns it off) `working` or `input_required` at once, and a task's arguments may be at most
+`maxArgsBytes` of JSON (default 64 KiB); past either, the tool call is refused with a tool error
+before anything is stored or queued. `TaskStore` gains `countActive(owner)`; `RedisTaskStore` keeps
+a sorted set of task ids per owner for it (concurrent calls can overshoot the limit slightly). When
+`authorize` or a store throws, the caller now gets `Internal error. Try again later.`, as a tool
+error or as `-32603` on `tasks/*` and `events/*`, and the error itself goes to `console.error`;
+before, its message (a database host, a URL with credentials) reached the client and the model. A
+missing or weak `MCP_EVENTS_SECRET_KEY` is now reported the same way on `events/subscribe`.
+
 Clients that declare the extension no longer receive the tool-based handle. To keep the 0.1.0
 behaviour exactly (no `tasks/*` methods, no extension in the capabilities), pass `mode: "tools"`:
 

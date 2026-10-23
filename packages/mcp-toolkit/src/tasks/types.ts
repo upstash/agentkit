@@ -97,6 +97,12 @@ export interface TaskStore {
     responses: Record<string, TaskInputResponse>,
     statusMessage: string,
   ): Promise<string[]>;
+
+  /**
+   * How many of this owner's tasks are `working` or `input_required`, for `maxActiveTasks`. May
+   * prune what it finds expired or finished; need not be exact under concurrent writes.
+   */
+  countActive(owner: string): Promise<number>;
 }
 
 /**

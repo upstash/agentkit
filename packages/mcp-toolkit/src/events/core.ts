@@ -11,7 +11,7 @@ import {
   resolvePrincipal,
   type PrincipalResolver,
 } from "../shared/auth.js";
-import { env } from "../shared/env.js";
+import { env, INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE, logInternalError } from "../shared/env.js";
 import { randomBase64Url, randomHex, sha256Hex } from "../shared/crypto.js";
 import type { DeliveryJob, EventDelivery, EventEnvelope, SubscriptionStore } from "./types.js";
 import { SecretBox, callbackUrlProblem, decodeSecret, postSigned, readCapped } from "./webhooks.js";
@@ -439,8 +439,12 @@ function buildRuntime(options: McpEventsOptions) {
       events: [...definitions.values()].map((d) => d.descriptor),
       nextCursor: null,
     }));
-    low.setRequestHandler("events/subscribe", { params: subscribeParams }, subscribe);
-    low.setRequestHandler("events/unsubscribe", { params: unsubscribeParams }, unsubscribe);
+    low.setRequestHandler("events/subscribe", { params: subscribeParams }, (params, ctx) =>
+      guardMethod("events/subscribe", () => subscribe(params, ctx)),
+    );
+    low.setRequestHandler("events/unsubscribe", { params: unsubscribeParams }, (params, ctx) =>
+      guardMethod("events/unsubscribe", () => unsubscribe(params, ctx)),
+    );
   }
 
   return {
@@ -523,6 +527,21 @@ function echoedChallenge(text: string): unknown {
 function jsonSchema(schema: z.ZodType, io: "input" | "output"): Record<string, unknown> {
   const { $schema: _ignored, ...rest } = z.toJSONSchema(schema, { io }) as Record<string, unknown>;
   return rest;
+}
+
+/**
+ * Runs an `events/*` method. The intended protocol errors pass through; anything else (a store, an
+ * `authorize` that threw) is logged, and the caller gets a fixed message: the error's own text can
+ * carry hostnames, URLs or credentials.
+ */
+async function guardMethod<T>(where: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof ProtocolError) throw error;
+    logInternalError(where, error);
+    throw new ProtocolError(INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE);
+  }
 }
 
 function invalid(message: string, reason: string): ProtocolError {

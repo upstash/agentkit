@@ -200,6 +200,22 @@ describe.skipIf(!hasRedisCreds)("RedisTaskStore (real Redis)", () => {
     });
   });
 
+  it("counts an owner's active tasks, pruning finished and expired ones", async () => {
+    const owner = `owner-${crypto.randomUUID()}`;
+    const tasks = [makeTask({ owner }), makeTask({ owner }), makeTask({ owner, ttlMs: 2_000 })];
+    for (const task of tasks) await store.create(task);
+    await store.create(makeTask({ owner: `${owner}-other` }));
+    expect(await store.countActive(owner)).toBe(3);
+    await store.update(tasks[0]!.taskId, { status: "input_required" });
+    await store.settle(tasks[1]!.taskId, { status: "cancelled" });
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    expect(await store.countActive(owner)).toBe(1);
+    // Pruned: only the active task is left in the owner's set.
+    expect(await redis.zrange(`${prefix}active:${owner}`, 0, -1)).toEqual([tasks[0]!.taskId]);
+    expect(await store.countActive(`${owner}-other`)).toBe(1);
+    expect(await store.countActive("nobody-at-all")).toBe(0);
+  });
+
   it("never creates a task as a side effect of updating a missing one", async () => {
     const ghost = crypto.randomUUID();
     await store.update(ghost, { statusMessage: "x" });

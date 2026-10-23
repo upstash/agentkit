@@ -21,7 +21,7 @@ import {
   type Caller,
   type PrincipalResolver,
 } from "../shared/auth.js";
-import { env, INTERNAL_ERROR } from "../shared/env.js";
+import { env, INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE, logInternalError } from "../shared/env.js";
 import { InProcessDispatcher, isTerminal, MemoryTaskStore } from "./memory.js";
 import type {
   ElicitAnswer,
@@ -51,6 +51,10 @@ const MAX_QUESTIONS = 16;
 const MAX_RESPONSES = 16;
 const MAX_RESPONSE_KEY = 64;
 const MAX_RESPONSES_BYTES = 64 * 1024;
+/** Task arguments, as JSON, unless configured: they are stored with the task for its whole TTL. */
+const DEFAULT_MAX_ARGS_BYTES = 64 * 1024;
+/** Tasks one caller may have working or waiting for input at once, unless configured. */
+const DEFAULT_MAX_ACTIVE_TASKS = 100;
 
 /**
  * How a task tool answers.
@@ -99,6 +103,18 @@ export type McpTasksOptions<TContext = TaskInputContext> = TaskBackends<TContext
    * exactly as 0.x did. See {@link TaskMode}.
    */
   mode?: TaskMode;
+  /**
+   * The most tasks one caller may have `working` or `input_required` at once. A call past it is
+   * refused before anything is stored or queued. Every task is a stored record and a queued run,
+   * so this bounds what one user can make your server keep and do. Defaults to 100. `Infinity`
+   * turns the limit off.
+   */
+  maxActiveTasks?: number;
+  /**
+   * The largest task arguments accepted, in bytes of JSON. A call past it is refused before
+   * anything is stored. Defaults to 64 KiB.
+   */
+  maxArgsBytes?: number;
   defaults?: {
     /** Retention window from creation. Defaults to 1 day. */
     ttlMs?: number;
@@ -238,6 +254,17 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
     options.defaults?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     "defaults.pollIntervalMs",
   );
+  const maxActiveTasks = options.maxActiveTasks ?? DEFAULT_MAX_ACTIVE_TASKS;
+  if (
+    maxActiveTasks !== Infinity &&
+    (!Number.isSafeInteger(maxActiveTasks) || maxActiveTasks < 1)
+  ) {
+    throw new Error(`${label}: maxActiveTasks must be a positive whole number or Infinity`);
+  }
+  const maxArgsBytes = options.maxArgsBytes ?? DEFAULT_MAX_ARGS_BYTES;
+  if (!Number.isSafeInteger(maxArgsBytes) || maxArgsBytes < 1) {
+    throw new Error(`${label}: maxArgsBytes must be a positive whole number of bytes`);
+  }
   // Keyed by tool name: a delivery only carries a task id, and the record names its tool.
   const definitions = new Map<
     string,
@@ -279,7 +306,8 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
                 "the result.",
           inputSchema: config.inputSchema,
         },
-        (async (args: unknown, context: unknown) => startTask(name, args, context)) as never,
+        (async (args: unknown, context: unknown) =>
+          guardTool(name, () => startTask(name, args, context))) as never,
       );
     }
 
@@ -304,27 +332,28 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
         inputSchema,
         annotations: { readOnlyHint: true, idempotentHint: true },
       },
-      (async ({ taskId }: { taskId: string }, context: unknown) => {
-        const caller = await callerId(context);
-        if (!caller) return errorResult(NOT_AUTHENTICATED);
-        let task = await owned(taskId, caller);
-        if (!task) return errorResult(unknownTask(taskId));
-        // The retry of a task_status that asked the user (below): record the answers first.
-        const retried = retriedResponses(context);
-        if (retried !== undefined) {
-          const responses = parseResponses(retried);
-          if (!responses) return errorResult(INVALID_RESPONSES);
-          await answer(task, responses);
-          task = (await owned(taskId, caller)) ?? task;
-        }
-        // A client that can show a form, but not native tasks, still asks the user itself: the
-        // question goes out as this call's own input_required (multi-round-trip, 2026-07-28), and
-        // the client retries the call with the user's answers. The model never answers.
-        if (task.status === "input_required" && task.inputRequests && canElicit(context)) {
-          return inputRequired({ inputRequests: task.inputRequests });
-        }
-        return statusResult(task);
-      }) as never,
+      (async ({ taskId }: { taskId: string }, context: unknown) =>
+        guardTool(STATUS_TOOL, async () => {
+          const caller = await callerId(context);
+          if (!caller) return errorResult(NOT_AUTHENTICATED);
+          let task = await owned(taskId, caller);
+          if (!task) return errorResult(unknownTask(taskId));
+          // The retry of a task_status that asked the user (below): record the answers first.
+          const retried = retriedResponses(context);
+          if (retried !== undefined) {
+            const responses = parseResponses(retried);
+            if (!responses) return errorResult(INVALID_RESPONSES);
+            await answer(task, responses);
+            task = (await owned(taskId, caller)) ?? task;
+          }
+          // A client that can show a form, but not native tasks, still asks the user itself: the
+          // question goes out as this call's own input_required (multi-round-trip, 2026-07-28), and
+          // the client retries the call with the user's answers. The model never answers.
+          if (task.status === "input_required" && task.inputRequests && canElicit(context)) {
+            return inputRequired({ inputRequests: task.inputRequests });
+          }
+          return statusResult(task);
+        })) as never,
     );
 
     server.registerTool(
@@ -337,12 +366,13 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
         inputSchema,
         annotations: { destructiveHint: true, idempotentHint: true },
       },
-      (async ({ taskId }: { taskId: string }, context: unknown) => {
-        const caller = await callerId(context);
-        if (!caller) return errorResult(NOT_AUTHENTICATED);
-        const task = await cancelOwned(taskId, caller);
-        return task ? statusResult(task) : errorResult(unknownTask(taskId));
-      }) as never,
+      (async ({ taskId }: { taskId: string }, context: unknown) =>
+        guardTool(CANCEL_TOOL, async () => {
+          const caller = await callerId(context);
+          if (!caller) return errorResult(NOT_AUTHENTICATED);
+          const task = await cancelOwned(taskId, caller);
+          return task ? statusResult(task) : errorResult(unknownTask(taskId));
+        })) as never,
     );
 
     if (mode === "native") installNative(server);
@@ -359,32 +389,38 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
     // reaches the store.
     const params = z.object({ taskId: z.string() });
 
-    server.server.setRequestHandler("tasks/get", { params }, async ({ taskId }, context) => {
-      const caller = await callerId(context);
-      const task = caller && isTaskId(taskId) ? await owned(taskId, caller) : null;
-      if (!task) throw unknownTaskError(taskId);
-      return nativeDetail(task);
-    });
+    server.server.setRequestHandler("tasks/get", { params }, ({ taskId }, context) =>
+      guardMethod("tasks/get", async () => {
+        const caller = await callerId(context);
+        const task = caller && isTaskId(taskId) ? await owned(taskId, caller) : null;
+        if (!task) throw unknownTaskError(taskId);
+        return nativeDetail(task);
+      }),
+    );
 
-    server.server.setRequestHandler("tasks/cancel", { params }, async ({ taskId }, context) => {
-      const caller = await callerId(context);
-      const task = caller && isTaskId(taskId) ? await cancelOwned(taskId, caller) : null;
-      if (!task) throw unknownTaskError(taskId);
-      return { resultType: "complete" };
-    });
+    server.server.setRequestHandler("tasks/cancel", { params }, ({ taskId }, context) =>
+      guardMethod("tasks/cancel", async () => {
+        const caller = await callerId(context);
+        const task = caller && isTaskId(taskId) ? await cancelOwned(taskId, caller) : null;
+        if (!task) throw unknownTaskError(taskId);
+        return { resultType: "complete" };
+      }),
+    );
 
     // The SDK lifts `inputResponses` out of the params into `ctx.mcpReq.inputResponses`.
-    server.server.setRequestHandler("tasks/update", { params }, async ({ taskId }, context) => {
-      // Checked before anything is read or stored, and the same for every caller and task.
-      const responses = parseResponses(retriedResponses(context));
-      if (!responses) throw new ProtocolError(ProtocolErrorCode.InvalidParams, INVALID_RESPONSES);
-      const caller = await callerId(context);
-      const task = caller && isTaskId(taskId) ? await owned(taskId, caller) : null;
-      if (!task) throw unknownTaskError(taskId);
-      // Unknown or already answered keys, and a task that isn't waiting, are ignored.
-      await answer(task, responses);
-      return { resultType: "complete" };
-    });
+    server.server.setRequestHandler("tasks/update", { params }, ({ taskId }, context) =>
+      guardMethod("tasks/update", async () => {
+        // Checked before anything is read or stored, and the same for every caller and task.
+        const responses = parseResponses(retriedResponses(context));
+        if (!responses) throw new ProtocolError(ProtocolErrorCode.InvalidParams, INVALID_RESPONSES);
+        const caller = await callerId(context);
+        const task = caller && isTaskId(taskId) ? await owned(taskId, caller) : null;
+        if (!task) throw unknownTaskError(taskId);
+        // Unknown or already answered keys, and a task that isn't waiting, are ignored.
+        await answer(task, responses);
+        return { resultType: "complete" };
+      }),
+    );
   }
 
   /**
@@ -422,9 +458,20 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
     const caller = callerOf(context);
     const owner = await callerId(context, caller);
     if (!owner) return errorResult(NOT_AUTHENTICATED);
+    // The arguments are stored for the task's whole TTL.
+    if (new TextEncoder().encode(JSON.stringify(args) ?? "").length > maxArgsBytes) {
+      return errorResult(`The arguments are too large: at most ${maxArgsBytes} bytes as JSON.`);
+    }
     const authorize = definitions.get(name)?.config.authorize;
     if (authorize && !(await authorize(args, { principal: owner, ...caller }))) {
       return errorResult(NOT_AUTHORIZED);
+    }
+    // Two concurrent calls can both pass this check: the limit bounds a caller, it isn't exact.
+    if (maxActiveTasks !== Infinity && (await store.countActive(owner)) >= maxActiveTasks) {
+      return errorResult(
+        `Too many running tasks: at most ${maxActiveTasks} per user. Wait for one to finish, ` +
+          `or cancel one with ${CANCEL_TOOL}.`,
+      );
     }
     const now = new Date().toISOString();
     const task: Task = {
@@ -846,6 +893,33 @@ function textOf(content: unknown): string {
     .map((block) => block.text)
     .join("\n")
     .trim();
+}
+
+/**
+ * Runs a tool handler. An unexpected throw (a store, `authorize`) is logged, and the caller gets a
+ * fixed message: the error's own text can carry hostnames, URLs or credentials.
+ */
+async function guardTool(
+  where: string,
+  fn: () => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  try {
+    return await fn();
+  } catch (error) {
+    logInternalError(where, error);
+    return errorResult(INTERNAL_ERROR_MESSAGE);
+  }
+}
+
+/** Like {@link guardTool}, for a `tasks/*` method: the intended protocol errors pass through. */
+async function guardMethod<T>(where: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof ProtocolError) throw error;
+    logInternalError(where, error);
+    throw new ProtocolError(ProtocolErrorCode.InternalError, INTERNAL_ERROR_MESSAGE);
+  }
 }
 
 function errorResult(text: string): Record<string, unknown> {

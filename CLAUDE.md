@@ -804,6 +804,23 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   a dispatcher gets `run` / `fail` as the argument of its `createExecuteHandler(endpoints)`, and
   also through the optional `TaskDispatcher.connect?(endpoints)`, which the `McpTasks` constructor calls
   once (that is how a dispatcher with no endpoint gets connected).
+- **Generic errors and per-user limits (DX-3209 security review, kept simple).** Every client-facing
+  handler is wrapped: `guardTool` (task tool, `task_status`, `task_cancel`) turns any throw from
+  `authorize` or the store into `isError` `INTERNAL_ERROR_MESSAGE` ("Internal error. Try again
+  later.", `shared/env.ts`), and `guardMethod` (`tasks/get|cancel|update`, `events/subscribe|
+  unsubscribe`) into `ProtocolError(-32603, same text)`; a `ProtocolError` (the intended -32602s,
+  -32015) passes through, and the real error goes to `logInternalError` → `console.error`. Before,
+  a store error like `WRONGPASS at https://…upstash.io` reached the model. A missing/weak
+  `MCP_EVENTS_SECRET_KEY` is now also only in the log (subscribe gets -32603). `authorize`
+  returning `false` and not authenticated keep their own messages. **Limits** in `startTask`, both
+  before `store.create`: `maxArgsBytes` (default 64 KiB, `JSON.stringify(args)` UTF-8 bytes,
+  checked before `authorize`) and `maxActiveTasks` (default 100, `Infinity` = off and skips the
+  count; checked after `authorize`) via `TaskStore.countActive(owner)` (working + input_required).
+  Memory: a scan of the map. Redis: `<prefix>active:<owner>` zset of task ids scored by expiry,
+  `ZADD` in the create `MULTI` with `PEXPIRE NX` + `PEXPIRE GT` (a short-TTL task once expired the
+  whole set with a plain PEXPIRE, caught by the live test); `countActive` = `ZREMRANGEBYSCORE` the
+  expired, pipeline `HGET status` per id, `ZREM` missing/terminal, count the rest. No Lua: two
+  concurrent creates can overshoot by a little, accepted and documented.
 - **In-memory task backends ship, and are the defaults (DX-3209, 1.0.0).** `src/tasks/memory.ts`,
   exported from `/tasks`: `MemoryTaskStore` (lazy expiry `ttlMs` after create, swept at most once a
   minute on `create`, no timers; first terminal write wins; hands out copies) and

@@ -324,6 +324,34 @@ describe("events/subscribe", () => {
     expect(receiver.received).toHaveLength(0);
   });
 
+  it("answers a throwing authorize or store with a fixed -32603, and logs the real error", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { events, subscribe, unsubscribe, store } = setup();
+    events.registerEvent("leaky", {
+      description: "d",
+      payload: z.object({}),
+      authorize: () => {
+        throw new Error("db host 10.0.0.5:5432 refused");
+      },
+    });
+    const thrown = await subscribe({}, { name: "leaky" });
+    expect(thrown.error).toEqual({ code: -32603, message: "Internal error. Try again later." });
+
+    const secret = "UpstashError: WRONGPASS at https://secret-db.upstash.io";
+    vi.spyOn(store, "get").mockRejectedValue(new Error(secret));
+    vi.spyOn(store, "delete").mockRejectedValue(new Error(secret));
+    const failed = await subscribe({ documentId: "doc_1" });
+    expect(failed.error).toEqual({ code: -32603, message: "Internal error. Try again later." });
+    const gone = await unsubscribe({ documentId: "doc_1" }, failed.url);
+    expect(gone.error?.code).toBe(-32603);
+    for (const answer of [thrown, failed, gone]) {
+      expect(JSON.stringify(answer)).not.toMatch(/10\.0\.0\.5|WRONGPASS|secret-db/);
+    }
+    expect(String(logged.mock.calls.flat())).toMatch(/10\.0\.0\.5/);
+    expect(String(logged.mock.calls.flat())).toMatch(/WRONGPASS/);
+    logged.mockRestore();
+  });
+
   it("grants the requested ttl, capped at 30 days", async () => {
     const { subscribe, store } = setup();
     const day = 24 * 60 * 60 * 1000;
@@ -732,9 +760,12 @@ describe("principal", () => {
     try {
       // Constructing McpEvents must not throw (it runs at module scope, at build time)...
       const { subscribe } = setup({ secretKey: undefined });
-      // ...but using it without a key does.
+      // ...but using it without a key does: the host gets a generic error, the log says why.
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
       const result = await subscribe({ documentId: "d" });
-      expect(result.error?.message).toMatch(/secretKey/);
+      expect(result.error).toEqual({ code: -32603, message: "Internal error. Try again later." });
+      expect(String(logged.mock.calls.flat())).toMatch(/secretKey/);
+      logged.mockRestore();
     } finally {
       if (saved !== undefined) process.env.MCP_EVENTS_SECRET_KEY = saved;
     }
@@ -774,8 +805,11 @@ describe("the secret key", () => {
   });
 
   it("refuses a weak key at the first subscribe", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const { subscribe } = setup({ secretKey: "password" });
-    expect((await subscribe({ documentId: "d" })).error?.message).toMatch(/32 random bytes/);
+    expect((await subscribe({ documentId: "d" })).error?.code).toBe(-32603);
+    expect(String(logged.mock.calls.flat())).toMatch(/32 random bytes/);
+    logged.mockRestore();
   });
 
   it("opens nothing that was tampered with or sealed under another key", async () => {
