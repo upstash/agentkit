@@ -277,8 +277,8 @@ The server advertises the extension on `server/discover` (`capabilities.extensio
 <details>
 <summary><b>Keep the old behaviour (tools only)</b></summary>
 
-0.x answered every client with the tool-based handle. To keep exactly that (no `tasks/*`
-methods, no extension in the server's capabilities), set `mode: "tools"`:
+To answer every client with the tool-based handle (no `tasks/*` methods, no extension in the
+server's capabilities), set `mode: "tools"`:
 
 ```ts
 const tasks = createTaskLayer({ principal, mode: "tools" }); // default: "native"
