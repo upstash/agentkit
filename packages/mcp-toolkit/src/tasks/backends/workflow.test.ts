@@ -12,12 +12,8 @@ import * as z from "zod";
 import { insideStep, WorkflowDispatcher, workflowRoute } from "./workflow.js";
 import { createTaskLayer } from "../core.js";
 import type { Task, TaskContext } from "../types.js";
-import {
-  ManualDispatcher,
-  MemoryTaskStore,
-  qstashRequest,
-  testReceiver,
-} from "../../test-support.js";
+import { MemoryTaskStore } from "../memory.js";
+import { ManualDispatcher, qstashRequest, testReceiver } from "../../test-support.js";
 
 const URL = "https://example.com/api/workflow";
 
@@ -154,7 +150,6 @@ describe("the context a handler receives", () => {
     const store = new MemoryTaskStore();
     const dispatcher = new ManualDispatcher<TContext>();
     const tasks = createTaskLayer<TContext>({ store, dispatcher, principal: () => "local" });
-    tasks.createExecuteHandler();
     await store.create(task({ taskId: "t1" }));
     tasks.define(
       "demo",

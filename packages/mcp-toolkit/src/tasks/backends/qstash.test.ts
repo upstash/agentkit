@@ -15,7 +15,7 @@ const makeTask = (overrides: Partial<Task> = {}): Task => {
   return {
     taskId: crypto.randomUUID(),
     status: "working",
-    statusMessage: "Queued for durable execution",
+    statusMessage: "Queued",
     createdAt: now,
     lastUpdatedAt: now,
     ttlMs: 300_000,

@@ -740,11 +740,27 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   nothing else reaches a Redis key) and report a non-owned task as *unknown* (no existence oracle).
   Owners are JSON-encoded on write, so auto-deserialization hands them back as strings and a plain
   `===` compares them. The public `TaskLayer` is only `{ define, register, createExecuteHandler }`;
-  a dispatcher gets `run` / `fail` as the argument of its `createExecuteHandler(endpoints)` (there
-  is no `attach`). Tests drive deliveries with `ManualDispatcher` / `InlineDispatcher` from
-  `src/test-support.ts` — call `tasks.createExecuteHandler()` once to connect them — and the
-  in-memory backends (`MemoryTaskStore`, `MemorySubscriptionStore`, `InlineDelivery`) live there
-  too: they are **not shipped**.
+  a dispatcher gets `run` / `fail` as the argument of its `createExecuteHandler(endpoints)`, and
+  also through the optional `TaskDispatcher.connect?(endpoints)`, which `createTaskLayer` calls once
+  at creation (that is how a dispatcher with no endpoint gets connected; no `attach` on the layer).
+- **In-memory task backends ship, and are the defaults (DX-3209, 1.0.0).** `src/tasks/memory.ts`,
+  exported from `/tasks`: `MemoryTaskStore` (lazy expiry `ttlMs` after create, swept at most once a
+  minute on `create`, no timers; first terminal write wins; hands out copies) and
+  `InProcessDispatcher` (implements `connect`; runs `run(taskId)` on a `setTimeout(0)` after the
+  tool call answers; a throw → `console.error` + `fail({ -32603, "The task handler threw an error",
+  data: { error } })`, no retries; `cancel` is a no-op, `isCancelled()` does the work;
+  `createExecuteHandler` answers 404 but still connects; `drain()` for shutdown and tests; one
+  layer per instance, a second `connect` throws). `store` / `dispatcher` are optional on
+  `createTaskLayer` (`TaskBackends` union: both, store only, or neither); a dispatcher without a
+  store throws (QStash + memory store would run on an instance that never saw the record). Omitting
+  the dispatcher in `NODE_ENV=production` logs one `console.warn` per process; passing the
+  in-memory backends explicitly silences it. The warning avoids the literal `@upstash/` so
+  `grep "@upstash/" dist/tasks/index.js` stays empty. The handle's first `statusMessage` is
+  `"Queued"` (was "Queued for durable execution", untrue in memory). Tests: `src/tasks/memory.test.ts`
+  runs the defaults end to end in native and tools modes. Test doubles stay in
+  `src/test-support.ts`: `ManualDispatcher` (connected by the layer, drive with `run`/`fail`) and
+  `InlineDispatcher` (the shipped `InProcessDispatcher` + a `dispatched` log). The events in-memory
+  backends (`MemorySubscriptionStore`, `InlineDelivery`) are still test-only, **not shipped**.
 - **No `idempotencyKey` (removed 2026-10-08, keep it simple; add back only if someone asks).** Task
   ids are always `crypto.randomUUID()`, so `TaskStore.create` is a plain `MULTI` (`HSET` +
   `PEXPIRE`) returning `void` — no create-if-absent script, since a collision cannot happen.

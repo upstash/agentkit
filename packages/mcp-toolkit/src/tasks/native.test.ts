@@ -9,13 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as z from "zod";
 import { createTaskLayer, type TaskMode } from "./core.js";
 import type { TaskContext } from "./index.js";
-import {
-  InlineDispatcher,
-  ManualDispatcher,
-  MemoryTaskStore,
-  sleep,
-  userIdOf,
-} from "../test-support.js";
+import { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
+import { ManualDispatcher, sleep, userIdOf } from "../test-support.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 const TASKS = "io.modelcontextprotocol/tasks";
@@ -27,20 +22,19 @@ type Rpc = { result?: Record<string, unknown>; error?: { code: number; message: 
 
 type Options = {
   mode?: TaskMode;
-  dispatcher?: InlineDispatcher | ManualDispatcher;
+  dispatcher?: InProcessDispatcher | ManualDispatcher;
   handler?: (args: { topic: string }, task: TaskContext) => Promise<Record<string, unknown>>;
 };
 
 function harness(options: Options = {}) {
   const store = new MemoryTaskStore();
-  const dispatcher = options.dispatcher ?? new InlineDispatcher();
+  const dispatcher = options.dispatcher ?? new InProcessDispatcher();
   const tasks = createTaskLayer({
     store,
     dispatcher,
     principal: userIdOf,
     ...(options.mode ? { mode: options.mode } : {}),
   });
-  tasks.createExecuteHandler();
   tasks.define(
     "generate_report",
     { description: "Generates a report.", inputSchema: z.object({ topic: z.string() }) },
@@ -108,11 +102,10 @@ function harness(options: Options = {}) {
     store,
     /** Waits for every inline delivery to settle. */
     drain: async () => {
-      if (dispatcher instanceof InlineDispatcher) await dispatcher.drain();
+      if (dispatcher instanceof InProcessDispatcher) await dispatcher.drain();
     },
     close: async () => {
       await mcp.close();
-      store.clear();
     },
   };
 }
@@ -132,7 +125,7 @@ describe("native MCP Tasks", () => {
     expect(result).toMatchObject({
       resultType: "task",
       status: "working",
-      statusMessage: "Queued for durable execution",
+      statusMessage: "Queued",
       ttlMs: 86_400_000,
       pollIntervalMs: 2_000,
     });
@@ -303,7 +296,6 @@ describe("native MCP Tasks", () => {
       dispatcher: new ManualDispatcher(),
       principal: () => "local",
     });
-    tasks.createExecuteHandler();
     tasks.define("t", { description: "d", inputSchema: z.object({}) }, async () => ({}));
     const handler = createMcpHandler(() => {
       const server = new McpServer({ name: "test", version: "1.0.0" });
@@ -328,7 +320,6 @@ describe("native MCP Tasks", () => {
     );
     expect(call.result?.structuredContent).toMatchObject({ status: "working" });
     await handler.close();
-    store.clear();
   });
 
   it("does not serve tasks/update (no input_required yet)", async () => {
@@ -359,7 +350,7 @@ describe("native MCP Tasks", () => {
     expect(() =>
       createTaskLayer({
         store: new MemoryTaskStore(),
-        dispatcher: new InlineDispatcher(),
+        dispatcher: new InProcessDispatcher(),
         principal: userIdOf,
         mode: "both" as TaskMode,
       }),

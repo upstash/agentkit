@@ -3,17 +3,12 @@
  * genuine JSON-RPC `tools/call`s over the wire, not direct calls into the layer.
  */
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod";
 import { createTaskLayer } from "./core.js";
 import type { TaskContext, TaskLayer, TaskToolConfig, WireTask } from "./index.js";
-import {
-  InlineDispatcher,
-  ManualDispatcher,
-  MemoryTaskStore,
-  sleep,
-  userIdOf,
-} from "../test-support.js";
+import { MemoryTaskStore } from "./memory.js";
+import { InlineDispatcher, ManualDispatcher, sleep, userIdOf } from "../test-support.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 
@@ -55,8 +50,6 @@ async function harness(
   const store = new MemoryTaskStore();
   const dispatcher = (layer.dispatcher as InlineDispatcher | undefined) ?? new InlineDispatcher();
   const tasks = createTaskLayer({ store, principal, ...layer, dispatcher });
-  // Connects the dispatcher to the layer, as serving the execute route does.
-  tasks.createExecuteHandler();
 
   // Defined once, the way module scope does it in an app.
   tasks.define(
@@ -131,7 +124,6 @@ async function harness(
     dispatcher,
     close: async () => {
       await handlerFor.close();
-      store.clear();
     },
   };
 }
@@ -175,7 +167,6 @@ describe("createTaskLayer over MCP", () => {
       { description: "Generates a report.", inputSchema: z.object({ topic: z.string() }) },
       async ({ topic }) => ({ content: [{ type: "text", text: topic }] }),
     );
-    coldInstance.createExecuteHandler();
     const now = new Date().toISOString();
     const taskId = crypto.randomUUID();
     await store.create({
@@ -191,7 +182,6 @@ describe("createTaskLayer over MCP", () => {
     });
     await dispatcher.run(taskId);
     expect((await store.get(taskId))?.status).toBe("completed");
-    store.clear();
   });
 
   it("refuses to define the same task twice, or under a shared tool's name", () => {
@@ -212,7 +202,7 @@ describe("createTaskLayer over MCP", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent?.status).toBe("working");
-    expect(result.structuredContent?.statusMessage).toBe("Queued for durable execution");
+    expect(result.structuredContent?.statusMessage).toBe("Queued");
     expect(typeof result.structuredContent?.taskId).toBe("string");
     expect(result.structuredContent?.pollIntervalMs).toBe(2_000);
     // The model is told what to do next, in words.
@@ -411,8 +401,7 @@ describe("createTaskLayer over MCP", () => {
       await live.dispatcher.drain();
       // A record written by something other than the layer, with no owner on it.
       const record = await live.store.get(taskId);
-      live.store.clear();
-      live.store.seed({ ...record!, owner: undefined as unknown as string });
+      await live.store.create({ ...record!, owner: undefined as unknown as string });
       expect(text(await live.status(taskId, "alice"))).toMatch(/Unknown task/);
     });
 
@@ -531,6 +520,7 @@ describe("createTaskLayer over MCP", () => {
     });
 
     it("settles failed once the dispatcher stops retrying", async () => {
+      const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
       live = await harness(async () => {
         throw new Error("permanent");
       });
@@ -539,8 +529,15 @@ describe("createTaskLayer over MCP", () => {
 
       const after = await live.status(taskId);
       expect(after.structuredContent?.status).toBe("failed");
-      expect(after.structuredContent?.error).toMatchObject({ code: -32603, message: "permanent" });
-      expect(text(after)).toMatch(/permanent/);
+      // The thrown error is for the logs and the stored record, not the model.
+      expect(after.structuredContent?.error).toEqual({
+        code: -32603,
+        message: "The task handler threw an error",
+      });
+      expect(text(after)).not.toMatch(/permanent/);
+      expect((await live.store.get(taskId))?.error?.data).toEqual({ error: "permanent" });
+      expect(logged).toHaveBeenCalled();
+      logged.mockRestore();
     });
 
     it("fails a task whose handler returns a tool error, and shows that error like a tool would", async () => {

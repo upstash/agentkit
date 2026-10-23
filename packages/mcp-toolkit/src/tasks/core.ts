@@ -19,7 +19,8 @@ import {
   type Caller,
   type PrincipalResolver,
 } from "../shared/auth.js";
-import { INTERNAL_ERROR } from "../shared/env.js";
+import { env, INTERNAL_ERROR } from "../shared/env.js";
+import { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
 import type {
   Task,
   TaskContext,
@@ -50,9 +51,29 @@ const CLIENT_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities";
  */
 export type TaskMode = "native" | "tools";
 
-export type TaskLayerOptions<TContext = unknown> = {
-  store: TaskStore;
-  dispatcher: TaskDispatcher<TContext>;
+/**
+ * Where tasks are kept and how they run. Both omitted: in memory and in this process
+ * ({@link MemoryTaskStore}, {@link InProcessDispatcher}), with no other service and no execute
+ * endpoint, but nothing survives a restart and nothing is shared between instances, so a
+ * serverless or multi-instance deployment needs a shared store and a durable dispatcher, e.g.
+ * `RedisTaskStore` with `QStashDispatcher` or `WorkflowDispatcher`. A dispatcher always comes with
+ * a store: one that delivers through an endpoint may run the task on another instance.
+ */
+export type TaskBackends<TContext = unknown> =
+  | {
+      /** Keeps the task records. Defaults to a {@link MemoryTaskStore}: lost on restart. */
+      store: TaskStore;
+      /** Runs the tasks. Defaults to an {@link InProcessDispatcher}: no retries, lost on exit. */
+      dispatcher: TaskDispatcher<TContext>;
+    }
+  | {
+      /** Keeps the task records. Defaults to a {@link MemoryTaskStore}: lost on restart. */
+      store?: TaskStore;
+      /** Runs the tasks. Defaults to an {@link InProcessDispatcher}: no retries, lost on exit. */
+      dispatcher?: undefined;
+    };
+
+export type TaskLayerOptions<TContext = unknown> = TaskBackends<TContext> & {
   /**
    * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
    * when it can't, and the call is refused as not authenticated. Every task is owned by its
@@ -134,10 +155,12 @@ export type TaskLayer<TContext = unknown> = {
 };
 
 /**
- * Builds a tasks runtime over a store and a dispatcher.
+ * Builds a tasks runtime over a store and a dispatcher. Without them, tasks are kept in memory and
+ * run in this process (see {@link TaskBackends}): fine for a single long-lived server, not for
+ * serverless or several instances.
  *
  * ```ts
- * export const tasks = createTaskLayer({ store, dispatcher, principal });
+ * export const tasks = createTaskLayer({ principal: () => "local" });
  * tasks.define("generate_report", { description, inputSchema }, handler); // module scope
  *
  * export function createServer() {
@@ -150,7 +173,15 @@ export type TaskLayer<TContext = unknown> = {
 export function createTaskLayer<TContext = unknown>(
   options: TaskLayerOptions<TContext>,
 ): TaskLayer<TContext> {
-  const { store, dispatcher } = options;
+  if (options.dispatcher && !options.store) {
+    throw new Error(
+      "createTaskLayer: pass a `store` with your `dispatcher`. The in-memory default would not " +
+        "be shared with the instance that runs the task (use RedisTaskStore).",
+    );
+  }
+  if (!options.dispatcher) warnInMemory(!options.store);
+  const store = options.store ?? new MemoryTaskStore();
+  const dispatcher = options.dispatcher ?? (new InProcessDispatcher() as TaskDispatcher<TContext>);
   const principal = requirePrincipal(options.principal, "createTaskLayer");
   const mode = options.mode ?? "native";
   if (mode !== "native" && mode !== "tools") {
@@ -295,7 +326,7 @@ export function createTaskLayer<TContext = unknown>(
     const task: Task = {
       taskId: crypto.randomUUID(),
       status: "working",
-      statusMessage: "Queued for durable execution",
+      statusMessage: "Queued",
       createdAt: now,
       lastUpdatedAt: now,
       ttlMs,
@@ -395,11 +426,33 @@ export function createTaskLayer<TContext = unknown>(
     return task && task.owner === caller ? task : null;
   }
 
+  const endpoints = { run, fail };
+  dispatcher.connect?.(endpoints);
+
   return {
     define,
     register,
-    createExecuteHandler: () => dispatcher.createExecuteHandler({ run, fail }),
+    createExecuteHandler: () => dispatcher.createExecuteHandler(endpoints),
   };
+}
+
+let warnedInMemory = false;
+
+/**
+ * Once per process, in production: the in-memory defaults lose tasks on restart and break on
+ * serverless, where `tasks/get` may reach an instance that never saw the task. Passing the
+ * backends explicitly (in-memory ones included) is the way to say this is intended.
+ */
+function warnInMemory(noStore: boolean): void {
+  if (warnedInMemory || env("NODE_ENV") !== "production") return;
+  warnedInMemory = true;
+  console.warn(
+    `[mcp-toolkit] createTaskLayer: no ${noStore ? "store or dispatcher" : "dispatcher"} given, so ` +
+      `tasks ${noStore ? "are kept in memory and " : ""}run in this process. They are lost on ` +
+      "restart and do not work across serverless invocations or several instances. Use " +
+      "RedisTaskStore with QStashDispatcher or WorkflowDispatcher (the toolkit's /upstash entry), " +
+      "or pass the in-memory backends explicitly to silence this.",
+  );
 }
 
 const NOT_AUTHENTICATED = "Not authenticated: this server could not identify the caller.";

@@ -17,6 +17,19 @@ failure, the stored code and message (`error.data` stays in Redis). Unknown, exp
 another user's task ids answer `-32602`. `tasks/update` (`input_required`), `tasks/list` and
 `tasks/result` are not served.
 
+In-memory backends, and no backends needed to start. `@upstash/mcp-toolkit/tasks` now exports
+`MemoryTaskStore` and `InProcessDispatcher`, and `store` / `dispatcher` are optional on
+`createTaskLayer`, defaulting to that pair: `createTaskLayer({ principal: () => "local" })` is a
+working setup with no Redis, no QStash and no execute endpoint, only the MCP endpoint. The task runs
+in the same process right after the tool call answers, with the same progress, cancellation, TTL and
+failure semantics as the Upstash backends (a handler that throws fails the task; there are no
+retries). In-memory tasks do not survive a restart and do not work across serverless invocations or
+several instances: use `RedisTaskStore` with `QStashDispatcher` or `WorkflowDispatcher` there. In
+production (`NODE_ENV=production`) the defaults log a one-time warning saying so; passing the
+backends explicitly silences it. A `dispatcher` without a `store` is refused. Dispatchers may
+implement the new optional `TaskDispatcher.connect(endpoints)`, which the layer calls when it is
+created. A new task's first status message is now `"Queued"`.
+
 Breaking: clients that declare the extension no longer receive the tool-based handle. To keep the
 0.x behaviour exactly (no `tasks/*` methods, no extension in the capabilities), pass
 `mode: "tools"`:
