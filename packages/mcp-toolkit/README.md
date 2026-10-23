@@ -741,7 +741,10 @@ interface TaskStore {
   ): Promise<string[]>;
 }
 
-interface TaskDispatcher<TContext = unknown> {
+// CanAsk: whether handlers get task.elicit. TContext: what the transport
+// adds to `task` (WorkflowDispatcher: TaskDispatcher<true, WorkflowContext>).
+// McpTasks reads both off the dispatcher you pass.
+type TaskDispatcher<CanAsk extends boolean = false, TContext = unknown> = {
   dispatch(task: Task): Promise<void>; // called once per task
   cancel(taskId: string): Promise<void>;
   createExecuteHandler(
@@ -749,13 +752,13 @@ interface TaskDispatcher<TContext = unknown> {
   ): (request: Request) => Promise<Response>;
   // called once, by new McpTasks(...)
   connect?(endpoints: TaskEndpoints<TContext>): void;
-  // both, to support task.elicit (and TaskInputContext in TContext)
-  waitForInput?(
-    wait: TaskInputWait,
-    context: TransportContext<TContext>,
-  ): Promise<void>;
-  resume?(taskId: string, keys: string[]): Promise<void>;
-}
+} & (CanAsk extends true
+  ? {
+      // required with CanAsk = true; ruled out otherwise
+      waitForInput(wait: TaskInputWait, context: TContext): Promise<void>;
+      resume(taskId: string, keys: string[]): Promise<void>;
+    }
+  : { waitForInput?: never; resume?: never });
 
 interface SubscriptionStore {
   // false, storing nothing, when a new one would put its subscriber over

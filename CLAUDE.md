@@ -726,12 +726,21 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   extension value (`[TASKS]: true` → -32602 before dispatch). Tests: `src/tasks/native.test.ts`.
 - **Asking the user: `task.elicit` (DX-3209 follow-up).** In-memory and Workflow only; **not
   QStash** (the user rejected the "re-run the handler up to the question" replay design as too
-  odd). Type-level: `TaskInputContext = { elicit }` is part of the dispatcher's `TContext`
-  (`InProcessDispatcher implements TaskDispatcher<TaskInputContext>`, `WorkflowDispatcher` →
-  `WorkflowContext & TaskInputContext`, `McpTasks`' generic **defaults** to `TaskInputContext` so
-  the no-dispatcher default has it); `QStashDispatcher` stays `TaskDispatcher<unknown>`, so
-  `task.elicit` is a type error there (`@ts-expect-error` tests in `input.test.ts`). `run`'s context
-  param is `TransportContext<TContext>` (TContext minus `elicit`, or undefined). Runtime: `elicit`
+  odd). Type-level: asking is its own boolean, **`TaskDispatcher<CanAsk extends boolean = false,
+  TContext = unknown>`** (CanAsk first; a type alias, not an interface: `true` makes
+  `waitForInput` + `resume` required, `false` types them `?: never`). `InProcessDispatcher
+  implements TaskDispatcher<true>`, `WorkflowDispatcher` → `<true, WorkflowContext>`,
+  `QStashDispatcher` / test `ManualDispatcher` → `false`. `implements` never changes a class's
+  type, so CanAsk must be visible in the shape; that's why it's tied to the two methods.
+  **`McpTasks<Dispatcher = InProcessDispatcher>`** is generic over the dispatcher itself and derives
+  `CanAskOf<D>` (`D extends TaskDispatcher<true, never>`) and `ContextOf<D>` (inferred from
+  `createExecuteHandler`'s `TaskEndpoints<infer C>`); a class over `<CanAsk, TContext>` can't infer
+  CanAsk from a structural type without a brand. No dispatcher / store-only → InProcessDispatcher →
+  elicit. Handler: `TaskHandler<Args, CanAsk = false, TContext = unknown>`, `task: TaskContext &
+  (CanAsk extends true ? TaskElicit : unknown) & TContext`; `TaskElicit` lives in `types.ts` but
+  is not exported from `/tasks`. `TaskInputContext` / `TransportContext` are gone; `run(taskId,
+  context: TContext, journal?)` and `waitForInput(wait, context: TContext)`. `task.elicit` is a type
+  error under QStash and non-opted dispatchers (`@ts-expect-error` tests in `input.test.ts`). Runtime: `elicit`
   is on every context; without `dispatcher.waitForInput` it settles the task `failed` ("task.elicit
   needs a dispatcher that can wait…, and QStashDispatcher can't…") and throws the internal
   `TaskStopped`, which `run` swallows (QStash acks 200). Flow: keys by call order `elicit-<n>`,
@@ -880,7 +889,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   event's id reaches the host as `webhook-id`, which is where Standard Webhooks dedupes. Workflow's
   `workflowRunId` is the task id; that is only safe because ids are random (Workflow refuses a
   reused run id). A failed `dispatch` settles the fresh record `failed` ("Could not be queued") and rethrows.
-- **Workflow context is inferred** from the dispatcher (`TaskDispatcher<TContext>`), so
+- **Workflow context is inferred** from the dispatcher (`McpTasks<Dispatcher>` → `ContextOf`), so
   `new McpTasks({ dispatcher: new WorkflowDispatcher(...) })` types `task.run` / `task.sleep` with
   no type argument; a test in `workflow.test.ts` keeps it that way.
 - **`RedisSubscriptionStore` = one index per event** (`<prefix>idx:<event>`, a zset scored by

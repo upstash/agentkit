@@ -62,7 +62,12 @@ ownership rules as `tasks/get` and checks `inputResponses` (at most 16 answers, 
 storing anything. A client without native tasks that can show forms gets the question from
 `task_status` as that call's own `input_required`; any other client's model is told the task is
 waiting for the user, and has no way to answer for them. `TaskStatus` gains `input_required`,
-`TaskStore` gains `respond`, and `TaskDispatcher` gains the optional `waitForInput` and `resume`.
+`TaskStore` gains `respond`. `TaskDispatcher` becomes `TaskDispatcher<CanAsk, TContext>`: a
+dispatcher that can ask (`TaskDispatcher<true, …>`, like `InProcessDispatcher` and
+`WorkflowDispatcher`) implements `waitForInput` and `resume`, and `McpTasks` gives its handlers
+`task.elicit`; `TContext` is still only what the transport adds (the `WorkflowContext`).
+`McpTasks`' type parameter is now the dispatcher (`McpTasks<WorkflowDispatcher>`), inferred from
+the one you pass, and `TaskHandler` is `TaskHandler<Args, CanAsk, TContext>`.
 
 In-memory backends, and no backends needed to start. `@upstash/mcp-toolkit/tasks` now exports
 `MemoryTaskStore` and `InProcessDispatcher`, and `store` / `dispatcher` are optional on

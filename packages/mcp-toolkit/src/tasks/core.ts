@@ -28,12 +28,12 @@ import type {
   Task,
   TaskContext,
   TaskDispatcher,
+  TaskElicit,
+  TaskEndpoints,
   TaskError,
-  TaskInputContext,
   TaskInputResponse,
   TaskJournal,
   TaskStore,
-  TransportContext,
   WireTask,
 } from "./types.js";
 
@@ -75,12 +75,12 @@ export type TaskMode = "native" | "tools";
  * `RedisTaskStore` with `QStashDispatcher` or `WorkflowDispatcher`. A dispatcher always comes with
  * a store: one that delivers through an endpoint may run the task on another instance.
  */
-type TaskBackends<TContext = TaskInputContext> =
+type TaskBackends<Dispatcher> =
   | {
       /** Keeps the task records. Defaults to a {@link MemoryTaskStore}: lost on restart. */
       store: TaskStore;
       /** Runs the tasks. Defaults to an {@link InProcessDispatcher}: no retries, lost on exit. */
-      dispatcher: TaskDispatcher<TContext>;
+      dispatcher: Dispatcher;
     }
   | {
       /** Keeps the task records. Defaults to a {@link MemoryTaskStore}: lost on restart. */
@@ -89,7 +89,21 @@ type TaskBackends<TContext = TaskInputContext> =
       dispatcher?: undefined;
     };
 
-export type McpTasksOptions<TContext = TaskInputContext> = TaskBackends<TContext> & {
+/** Any dispatcher, whatever it can ask and whatever context it adds. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyDispatcher = TaskDispatcher<boolean, any>;
+
+/** Whether a dispatcher can ask the user: it implements `waitForInput` and `resume`. */
+type CanAskOf<Dispatcher> = Dispatcher extends TaskDispatcher<true, never> ? true : false;
+
+/** What a dispatcher's transport adds to the handler's `task`. */
+type ContextOf<Dispatcher> = Dispatcher extends {
+  createExecuteHandler(endpoints: TaskEndpoints<infer TContext>): unknown;
+}
+  ? TContext
+  : unknown;
+
+export type McpTasksOptions<D extends AnyDispatcher = InProcessDispatcher> = TaskBackends<D> & {
   /**
    * Who is calling, usually your user id from `auth`. Required, and it must return an id: throw
    * when it can't, and the call is refused as not authenticated. Every task is owned by its
@@ -160,13 +174,13 @@ type InferArgs<Schema extends StandardSchemaWithJSON> = Schema extends {
   : unknown;
 
 /**
- * A task's implementation. The context is {@link TaskContext} plus whatever the dispatcher adds:
- * `elicit` on a dispatcher that can wait for the user (the in-memory default and Workflow), and the
- * live `WorkflowContext` on Workflow. Return an MCP tool result.
+ * A task's implementation. Its `task` is {@link TaskContext}, plus `elicit` when `CanAsk` (the
+ * dispatcher can wait for the user: the in-memory default and Workflow), plus the transport's
+ * `TContext` (the live `WorkflowContext` on Workflow). Return an MCP tool result.
  */
-export type TaskHandler<Args, TContext = unknown> = (
+export type TaskHandler<Args, CanAsk extends boolean = false, TContext = unknown> = (
   args: Args,
-  task: TaskContext & TContext,
+  task: TaskContext & (CanAsk extends true ? TaskElicit : unknown) & TContext,
 ) => Promise<Record<string, unknown>>;
 
 /**
@@ -186,10 +200,10 @@ export type TaskHandler<Args, TContext = unknown> = (
  * }
  * ```
  */
-export class McpTasks<TContext = TaskInputContext> {
-  readonly #runtime: Runtime<TContext>;
+export class McpTasks<Dispatcher extends AnyDispatcher = InProcessDispatcher> {
+  readonly #runtime: Runtime;
 
-  constructor(options: McpTasksOptions<TContext>) {
+  constructor(options: McpTasksOptions<Dispatcher>) {
     this.#runtime = buildRuntime(options);
   }
 
@@ -201,9 +215,9 @@ export class McpTasks<TContext = TaskInputContext> {
   registerTask<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
-    handler: TaskHandler<InferArgs<Schema>, TContext>,
+    handler: TaskHandler<InferArgs<Schema>, CanAskOf<Dispatcher>, ContextOf<Dispatcher>>,
   ): void {
-    this.#runtime.define(name, config, handler);
+    this.#runtime.define(name, config, handler as TaskHandler<unknown, true, unknown>);
   }
 
   /**
@@ -221,11 +235,14 @@ export class McpTasks<TContext = TaskInputContext> {
   }
 }
 
-type Runtime<TContext> = {
+/** Untyped inside: the handler gets `elicit` on every dispatcher, and whatever context it's given. */
+type AnyHandler = TaskHandler<unknown, true, unknown>;
+
+type Runtime = {
   define<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
-    handler: TaskHandler<InferArgs<Schema>, TContext>,
+    handler: AnyHandler,
   ): void;
   install(server: McpServer): void;
   createExecuteHandler(): (request: Request) => Promise<Response>;
@@ -233,7 +250,7 @@ type Runtime<TContext> = {
 
 const label = "McpTasks";
 
-function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TContext> {
+function buildRuntime(options: McpTasksOptions<AnyDispatcher>): Runtime {
   if (options.dispatcher && !options.store) {
     throw new Error(
       `${label}: pass a \`store\` with your \`dispatcher\`. The in-memory default would not ` +
@@ -242,8 +259,9 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
   }
   if (!options.dispatcher) warnInMemory(!options.store);
   const store = options.store ?? new MemoryTaskStore();
-  const dispatcher =
-    options.dispatcher ?? (new InProcessDispatcher() as unknown as TaskDispatcher<TContext>);
+  // Typed for what the core calls: `waitForInput` / `resume` only where they exist.
+  const dispatcher: TaskDispatcher<boolean, unknown> =
+    options.dispatcher ?? new InProcessDispatcher();
   const principal = requirePrincipal(options.principal, label);
   const mode = options.mode ?? "native";
   if (mode !== "native" && mode !== "tools") {
@@ -268,7 +286,7 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
   // Keyed by tool name: a delivery only carries a task id, and the record names its tool.
   const definitions = new Map<
     string,
-    { config: TaskToolConfig<StandardSchemaWithJSON>; handler: TaskHandler<unknown, TContext> }
+    { config: TaskToolConfig<StandardSchemaWithJSON>; handler: AnyHandler }
   >();
 
   const callerId = (context: unknown, caller: Caller = callerOf(context)) =>
@@ -277,7 +295,7 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
   function define<Schema extends StandardSchemaWithJSON>(
     name: string,
     config: TaskToolConfig<Schema>,
-    handler: TaskHandler<InferArgs<Schema>, TContext>,
+    handler: AnyHandler,
   ): void {
     if (name === STATUS_TOOL || name === CANCEL_TOOL) {
       throw new Error(`"${name}" is reserved for the shared task tools`);
@@ -285,7 +303,7 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
     if (definitions.has(name)) throw new Error(`Task "${name}" is already defined`);
     definitions.set(name, {
       config: config as unknown as TaskToolConfig<StandardSchemaWithJSON>,
-      handler: handler as TaskHandler<unknown, TContext>,
+      handler,
     });
   }
 
@@ -524,11 +542,7 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
    * Runs a delivered task. A throw propagates and leaves the task `working`: only the transport
    * knows whether it will deliver again, so only it records the final failure.
    */
-  async function run(
-    taskId: string,
-    context: TransportContext<TContext>,
-    journal?: TaskJournal,
-  ): Promise<void> {
+  async function run(taskId: string, context: unknown, journal?: TaskJournal): Promise<void> {
     const task = await store.get(taskId);
     // Expired or unknown, or a redelivery of a finished task: nothing to do. A task waiting for
     // input still runs: a replaying transport (Workflow) comes back through here to wait.
@@ -544,7 +558,7 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
     let writes = 0;
     const journaled = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
       journal ? journal(name, fn) : fn();
-    const taskContext: TaskContext & TaskInputContext = {
+    const taskContext: TaskContext & TaskElicit = {
       taskId,
       principal: task.owner,
       update: async (statusMessage) => {
@@ -563,7 +577,7 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
 
     let result: Record<string, unknown>;
     try {
-      result = await definition.handler(task.args, mergeContext<TContext>(taskContext, context));
+      result = await definition.handler(task.args, mergeContext(taskContext, context));
     } catch (error) {
       // Cancelled, expired or failed while asking: the record already says so.
       if (error instanceof TaskStopped) return;
@@ -595,9 +609,9 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
    */
   function elicitFor(
     task: Task,
-    context: TransportContext<TContext>,
+    context: unknown,
     journaled: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
-  ): TaskInputContext["elicit"] {
+  ): TaskElicit["elicit"] {
     const { taskId } = task;
     const expiresAt = Date.parse(task.createdAt) + task.ttlMs;
     let asked = 0;
@@ -960,13 +974,9 @@ const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`;
  * Merges the task context into the transport's, as one object. Assigned onto the instance rather
  * than spread: a `WorkflowContext` keeps its methods on the prototype.
  */
-function mergeContext<TContext>(
-  taskContext: TaskContext & TaskInputContext,
-  supplied: unknown,
-): TaskContext & TContext {
-  if (supplied === undefined || supplied === null)
-    return taskContext as unknown as TaskContext & TContext;
-  return Object.assign(supplied as object, taskContext) as unknown as TaskContext & TContext;
+function mergeContext(taskContext: TaskContext & TaskElicit, supplied: unknown) {
+  if (supplied === undefined || supplied === null) return taskContext;
+  return Object.assign(supplied as object, taskContext);
 }
 
 /**

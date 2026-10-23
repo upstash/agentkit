@@ -14,14 +14,7 @@ import {
   resolveReceiver,
 } from "../../shared/clients.js";
 import { addQStashTelemetry } from "../../telemetry.js";
-import type {
-  Task,
-  TaskDispatcher,
-  TaskEndpoints,
-  TaskInputContext,
-  TaskInputWait,
-  TaskJournal,
-} from "../types.js";
+import type { Task, TaskDispatcher, TaskEndpoints, TaskInputWait, TaskJournal } from "../types.js";
 
 /**
  * The longest single wait for an answer. Each wait ends with a look at the store, so an answer
@@ -49,8 +42,8 @@ export type WorkflowDispatcherConfig = {
 
 type WorkflowPayload = { taskId?: string };
 
-/** What a handler gets on Workflow: the live `WorkflowContext`, and `elicit`. */
-type WorkflowTaskContext = WorkflowContext<WorkflowPayload> & TaskInputContext;
+/** What Workflow adds to a handler's `task`: the live `WorkflowContext`. */
+type WorkflowTaskContext = WorkflowContext<WorkflowPayload>;
 
 /**
  * Runs each task as a Workflow run. Handlers get the live `WorkflowContext`, so `task.run`,
@@ -59,7 +52,7 @@ type WorkflowTaskContext = WorkflowContext<WorkflowPayload> & TaskInputContext;
  * `task.elicit(...)` waits with `context.waitForEvent`, so no function is held open while the user
  * thinks; `tasks/update` stores the answer and then notifies the run.
  */
-export class WorkflowDispatcher implements TaskDispatcher<WorkflowTaskContext> {
+export class WorkflowDispatcher implements TaskDispatcher<true, WorkflowTaskContext> {
   private readonly config: WorkflowDispatcherConfig;
   private readonly client: () => WorkflowClient;
 

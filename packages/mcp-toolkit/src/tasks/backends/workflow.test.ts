@@ -149,7 +149,7 @@ describe("the context a handler receives", () => {
   ) {
     const store = new MemoryTaskStore();
     const dispatcher = new ManualDispatcher<TContext>();
-    const tasks = new McpTasks<TContext>({ store, dispatcher, principal: () => "local" });
+    const tasks = new McpTasks({ store, dispatcher, principal: () => "local" });
     await store.create(task({ taskId: "t1" }));
     tasks.registerTask(
       "demo",

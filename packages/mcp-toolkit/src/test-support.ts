@@ -125,7 +125,7 @@ export function qstashRequest(
  * A dispatcher that records dispatches and runs nothing on its own, so a test drives each
  * delivery by hand, the way a queue would. `McpTasks` connects it when it is created.
  */
-export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<TContext> {
+export class ManualDispatcher<TContext = unknown> implements TaskDispatcher<false, TContext> {
   readonly dispatched: Task[] = [];
   readonly cancelled: string[] = [];
   /** Makes the next `dispatch` throw this error. */

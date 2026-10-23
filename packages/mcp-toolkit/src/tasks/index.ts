@@ -23,7 +23,6 @@ export type {
   TaskDispatcher,
   TaskEndpoints,
   TaskError,
-  TaskInputContext,
   TaskInputResponse,
   TaskInputWait,
   TaskJournal,
@@ -31,6 +30,5 @@ export type {
   TaskStatus,
   TaskStore,
   TerminalTaskStatus,
-  TransportContext,
   WireTask,
 } from "./types.js";

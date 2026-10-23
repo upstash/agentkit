@@ -13,7 +13,6 @@ import type {
   Task,
   TaskDispatcher,
   TaskEndpoints,
-  TaskInputContext,
   TaskInputResponse,
   TaskInputWait,
   TaskPatch,
@@ -130,14 +129,14 @@ export class MemoryTaskStore implements TaskStore {
  * A handler may ask the user with `task.elicit(...)`: it simply waits in this process until
  * `tasks/update` brings the answer, the task is cancelled, or it expires.
  */
-export class InProcessDispatcher implements TaskDispatcher<TaskInputContext> {
-  private endpoints: TaskEndpoints<TaskInputContext> | undefined;
+export class InProcessDispatcher implements TaskDispatcher<true> {
+  private endpoints: TaskEndpoints | undefined;
   private readonly running = new Set<Promise<void>>();
   /** Wake-ups for handlers waiting on an answer, by task id. */
   private readonly waiting = new Map<string, Set<() => void>>();
 
   /** Called by `McpTasks`. One dispatcher serves one `McpTasks`. */
-  connect(endpoints: TaskEndpoints<TaskInputContext>): void {
+  connect(endpoints: TaskEndpoints): void {
     if (this.endpoints && this.endpoints !== endpoints) {
       throw new Error(
         "InProcessDispatcher: already connected to an McpTasks; create one per McpTasks",
@@ -203,9 +202,7 @@ export class InProcessDispatcher implements TaskDispatcher<TaskInputContext> {
   }
 
   /** Not needed: tasks run in process. Answers 404, but still connects it. */
-  createExecuteHandler(
-    endpoints: TaskEndpoints<TaskInputContext>,
-  ): (request: Request) => Promise<Response> {
+  createExecuteHandler(endpoints: TaskEndpoints): (request: Request) => Promise<Response> {
     this.connect(endpoints);
     return async () =>
       new Response("Tasks run in process: this server has no execute endpoint.", { status: 404 });

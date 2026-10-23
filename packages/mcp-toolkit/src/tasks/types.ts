@@ -106,10 +106,22 @@ export interface TaskStore {
 }
 
 /**
- * Durable, at-least-once execution. `TContext` is what the transport gives a running handler:
- * nothing for a queue, the `WorkflowContext` for Upstash Workflow.
+ * Durable, at-least-once execution.
+ *
+ * - `CanAsk`: whether a running handler can ask the user (`task.elicit`). `true` requires
+ *   `waitForInput` and `resume`; `false` (the default) rules them out. `McpTasks` reads it off the
+ *   dispatcher's shape, so the handler's `task` has `elicit` exactly when the dispatcher can wait.
+ * - `TContext`: what the transport adds to the handler's `task`: nothing for a queue, the
+ *   `WorkflowContext` for Upstash Workflow.
  */
-export interface TaskDispatcher<TContext = unknown> {
+export type TaskDispatcher<
+  CanAsk extends boolean = false,
+  TContext = unknown,
+> = DispatcherCore<TContext> &
+  (CanAsk extends true ? DispatcherWaits<TContext> : { waitForInput?: never; resume?: never });
+
+/** What every dispatcher implements. */
+interface DispatcherCore<TContext> {
   /** Durably accepts a delivery. `McpTasks` calls it once per task. */
   dispatch(task: Task): Promise<void>;
 
@@ -124,19 +136,21 @@ export interface TaskDispatcher<TContext = unknown> {
    * `InProcessDispatcher`), keeps them here, so no execute endpoint has to be mounted.
    */
   connect?(endpoints: TaskEndpoints<TContext>): void;
+}
 
+/** What a dispatcher that can ask the user (`TaskDispatcher<true, …>`) adds. */
+interface DispatcherWaits<TContext> {
   /**
-   * Optional, with `resume`: how a running handler waits for the user's answer to `task.elicit`,
-   * without which the dispatcher can't ask the user (declare {@link TaskInputContext} in
-   * `TContext` only if you implement both). It resolves when the store is worth reading again:
-   * when `resume` or `cancel` woke it, or after a while, and at the latest at `wait.expiresAt`.
-   * `McpTasks` reads the store after each wait and calls it again until the question is answered,
-   * cancelled or expired. On a replaying transport, `wait.key` and `wait.round` name it uniquely.
+   * How a running handler waits for the user's answer to `task.elicit`. It resolves when the
+   * store is worth reading again: when `resume` or `cancel` woke it, or after a while, and at the
+   * latest at `wait.expiresAt`. `McpTasks` reads the store after each wait and calls it again until
+   * the question is answered, cancelled or expired. On a replaying transport, `wait.key` and
+   * `wait.round` name it uniquely.
    */
-  waitForInput?(wait: TaskInputWait, context: TransportContext<TContext>): Promise<void>;
+  waitForInput(wait: TaskInputWait, context: TContext): Promise<void>;
 
-  /** Optional. Wakes the handler waiting on these questions: `tasks/update` answered them. */
-  resume?(taskId: string, keys: string[]): Promise<void>;
+  /** Wakes the handler waiting on these questions: `tasks/update` answered them. */
+  resume(taskId: string, keys: string[]): Promise<void>;
 }
 
 /** One wait for an answer: see {@link TaskDispatcher.waitForInput}. */
@@ -153,12 +167,10 @@ export type TaskInputWait = {
 };
 
 /**
- * What a dispatcher that can wait for the user adds to the handler's `task`: `elicit`.
- * `InProcessDispatcher` (the default) and `WorkflowDispatcher` declare it in their context type, so
- * `task.elicit` only exists under them; `QStashDispatcher` doesn't, so under it `task.elicit` is a
- * type error.
+ * The `elicit` method on the handler's `task`, under a dispatcher that can ask the user
+ * (`TaskDispatcher<true, …>`: the in-memory default and `WorkflowDispatcher`).
  */
-export type TaskInputContext = {
+export type TaskElicit = {
   /**
    * Asks the user a question through a form (an MCP elicitation) and waits for the answer. The
    * task is `input_required` meanwhile, and the client shows the form; once the user answers, the
@@ -188,18 +200,10 @@ type SchemaOutput<Schema> = Schema extends {
   ? Output
   : unknown;
 
-/**
- * The context a transport hands `run`: its own part of the handler's context, without what
- * `McpTasks` adds itself (`elicit`). `undefined` when it adds nothing.
- */
-export type TransportContext<TContext> = TContext extends TaskInputContext
-  ? Omit<TContext, keyof TaskInputContext> | undefined
-  : TContext;
-
 /** `McpTasks`' entry points, handed to a dispatcher's `connect` and execute handler. */
 export type TaskEndpoints<TContext = unknown> = {
   /** Runs a delivered task. Rejects if the handler threw, which means "deliver again". */
-  run(taskId: string, context: TransportContext<TContext>, journal?: TaskJournal): Promise<void>;
+  run(taskId: string, context: TContext, journal?: TaskJournal): Promise<void>;
   /** Records a terminal failure, once the transport has stopped retrying. */
   fail(taskId: string, error: TaskError): Promise<void>;
 };

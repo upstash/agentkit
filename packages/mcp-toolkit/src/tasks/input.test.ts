@@ -11,9 +11,16 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import * as z from "zod";
 import { QStashDispatcher, RedisTaskStore } from "./backends/qstash.js";
 import { inputEventId, WorkflowDispatcher, workflowRoute } from "./backends/workflow.js";
-import { McpTasks } from "./core.js";
+import { McpTasks, type TaskHandler } from "./core.js";
 import { InProcessDispatcher, MemoryTaskStore } from "./memory.js";
-import type { TaskContext, TaskEndpoints, TaskInputContext, TaskStore } from "./types.js";
+import type {
+  TaskContext,
+  TaskDispatcher,
+  TaskElicit,
+  TaskEndpoints,
+  TaskInputWait,
+  TaskStore,
+} from "./types.js";
 import {
   cleanupKeys,
   hasRedisCreds,
@@ -32,10 +39,7 @@ const WITH_TASKS = { extensions: { [TASKS]: {} } };
 const URL = "https://example.com/api/workflow";
 
 type Rpc = { result?: Record<string, unknown>; error?: { code: number; message: string } };
-type Handler = (
-  args: { item: string },
-  task: TaskContext & TaskInputContext,
-) => Promise<Record<string, unknown>>;
+type Handler = TaskHandler<{ item: string }, true>;
 
 const publishSchema = z.object({ publish: z.boolean(), note: z.string().optional() });
 
@@ -54,10 +58,10 @@ const askToPublish: Handler = async ({ item }, task) => {
 };
 
 /** An MCP endpoint over `tasks`, and a client that speaks to it as `user`. */
-function endpoint(tasks: McpTasks<never> | McpTasks<unknown> | McpTasks<TaskInputContext>) {
+function endpoint(tasks: Pick<McpTasks, "attach">) {
   const mcp = createMcpHandler(() => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
-    (tasks as McpTasks).attach(server);
+    tasks.attach(server);
     return server;
   });
   let id = 0;
@@ -601,7 +605,7 @@ describe("task.elicit on Workflow", () => {
     const backend = workflow();
     let prepared = 0;
     const made = await backend.make(async (args, task) => {
-      const wf = task as unknown as TaskContext & TaskInputContext & WorkflowContext;
+      const wf = task as unknown as TaskContext & TaskElicit & WorkflowContext;
       await wf.run("prepare", async () => {
         prepared += 1;
       });
@@ -652,7 +656,7 @@ describe("task.elicit on Workflow", () => {
   it("refuses an elicit inside task.run", async () => {
     const backend = workflow();
     const made = await backend.make(async (_args, task) => {
-      const wf = task as unknown as TaskContext & TaskInputContext & WorkflowContext;
+      const wf = task as unknown as TaskContext & TaskElicit & WorkflowContext;
       await wf.run("inner", async () => {
         await task.elicit({ message: "?", requestedSchema: z.object({ ok: z.boolean() }) });
       });
@@ -807,6 +811,56 @@ describe("task.elicit with QStashDispatcher", () => {
       void task.elicit;
       return {};
     });
+  });
+
+  it("reads CanAsk and the context off a custom dispatcher (types)", () => {
+    const handler = { description: "d", inputSchema: z.object({}) };
+    type Extra = { region: string };
+    const core = {
+      dispatch: async () => undefined,
+      cancel: async () => undefined,
+      createExecuteHandler: () => async () => new Response(),
+    };
+    // Doesn't opt in: its context, but no elicit.
+    class Plain implements TaskDispatcher<false, Extra> {
+      dispatch = core.dispatch;
+      cancel = core.cancel;
+      createExecuteHandler(_endpoints: TaskEndpoints<Extra>) {
+        return core.createExecuteHandler();
+      }
+    }
+    new McpTasks({
+      store: new MemoryTaskStore(),
+      dispatcher: new Plain(),
+      principal: () => "local",
+    }).registerTask("g", handler, async (_a, task) => {
+      const region: string = task.region;
+      void region;
+      // @ts-expect-error: a dispatcher that doesn't opt in has no elicit.
+      void task.elicit;
+      return {};
+    });
+    // Opts in: elicit next to its context.
+    class Asking extends Plain implements TaskDispatcher<true, Extra> {
+      async waitForInput(_wait: TaskInputWait, _context: Extra) {}
+      async resume() {}
+    }
+    new McpTasks({
+      store: new MemoryTaskStore(),
+      dispatcher: new Asking(),
+      principal: () => "local",
+    }).registerTask("h", handler, async (_a, task) => {
+      void task.region;
+      await task.elicit({ message: "?", requestedSchema: z.object({ ok: z.boolean() }) });
+      return {};
+    });
+    // `true` requires the waits; `false` rules them out.
+    // @ts-expect-error: TaskDispatcher<true> without waitForInput / resume.
+    const missing: TaskDispatcher<true> = core;
+    // @ts-expect-error: a non-asking dispatcher can't have waitForInput.
+    const extra: TaskDispatcher = { ...core, waitForInput: async () => undefined };
+    void missing;
+    void extra;
   });
 });
 
