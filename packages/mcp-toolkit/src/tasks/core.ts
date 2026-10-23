@@ -109,7 +109,10 @@ export type McpTasksOptions<TContext = TaskInputContext> = TaskBackends<TContext
 
 export type TaskToolConfig<Schema extends StandardSchemaWithJSON> = {
   title?: string;
-  /** What the tool does. The layer appends a sentence about polling `task_status`. */
+  /**
+   * What the tool does. In `"tools"` mode the layer appends a sentence about polling
+   * `task_status`; in native mode it is used as is.
+   */
   description: string;
   /** A Standard Schema (Zod 4, ArkType, Valibot) for the arguments. */
   inputSchema: Schema;
@@ -265,9 +268,15 @@ function buildRuntime<TContext>(options: McpTasksOptions<TContext>): Runtime<TCo
         name,
         {
           title: config.title,
+          // In native mode the description says nothing about polling: a client with native tasks
+          // polls `tasks/get` itself, and a model told to poll calls task_status on top of it.
+          // The tool-based handle carries its own "call task_status" line, for every other client.
           description:
-            `${config.description.trim()} Runs in the background: returns a taskId immediately. ` +
-            `Call ${STATUS_TOOL} with it to get progress and, once completed, the result.`,
+            mode === "native"
+              ? config.description.trim()
+              : `${config.description.trim()} Runs in the background: returns a taskId ` +
+                `immediately. Call ${STATUS_TOOL} with it to get progress and, once completed, ` +
+                "the result.",
           inputSchema: config.inputSchema,
         },
         (async (args: unknown, context: unknown) => startTask(name, args, context)) as never,
