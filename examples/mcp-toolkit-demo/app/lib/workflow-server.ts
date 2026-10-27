@@ -10,7 +10,7 @@
  * and `task.run(...)`, `task.sleep(...)`, `task.call(...)` (the engine's) sit on one object.
  */
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 import { principal } from "./auth";
@@ -27,9 +27,9 @@ export const dispatcher = new WorkflowDispatcher({
 
 /**
  * No type argument needed: the context type is inferred from the dispatcher and flows into
- * `define`, so the compiler rejects a workflow handler wired to a queue.
+ * `registerTask`, so the compiler rejects a workflow handler wired to a queue.
  */
-export const tasks = createTaskLayer({
+export const tasks = new McpTasks({
   store: new RedisTaskStore({ prefix: "mcp:task:workflow:" }),
   dispatcher,
   // Who is calling: the user id the MCP route verified (see `auth.ts`). Throws when there is none.
@@ -39,7 +39,7 @@ export const tasks = createTaskLayer({
 const STEPS = 4;
 
 // Module scope: the workflow endpoint needs the handler on every instance.
-tasks.define(
+tasks.registerTask(
   "generate_report",
   {
     title: "Generate report",
@@ -71,10 +71,10 @@ tasks.define(
   },
 );
 
-if (E2E) tasks.define("always_fail", { ...ALWAYS_FAIL, inputSchema: z.object({}) }, alwaysFail);
+if (E2E) tasks.registerTask("always_fail", { ...ALWAYS_FAIL, inputSchema: z.object({}) }, alwaysFail);
 
 export function createServer(): McpServer {
   const server = new McpServer({ name: "mcp-toolkit-demo-workflow", version: "0.1.0" });
-  tasks.register(server);
+  tasks.attach(server);
   return server;
 }

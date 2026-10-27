@@ -3,13 +3,12 @@
  * TypeScript SDK. The Upstash backends are in `@upstash/mcp-toolkit/upstash`.
  */
 export {
-  createEventLayer,
+  McpEvents,
+  type McpEventsOptions,
   type AuthorizeCaller,
   type EventConfig,
   type EventHandle,
   type EventInputSchema,
-  type EventLayer,
-  type EventLayerOptions,
 } from "./core.js";
 
 export type { Caller, PrincipalResolver } from "../shared/auth.js";

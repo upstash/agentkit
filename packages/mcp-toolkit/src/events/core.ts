@@ -11,7 +11,7 @@ import {
   resolvePrincipal,
   type PrincipalResolver,
 } from "../shared/auth.js";
-import { env } from "../shared/env.js";
+import { env, INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE, logInternalError } from "../shared/env.js";
 import { randomBase64Url, randomHex, sha256Hex } from "../shared/crypto.js";
 import type { DeliveryJob, EventDelivery, EventEnvelope, SubscriptionStore } from "./types.js";
 import { SecretBox, callbackUrlProblem, decodeSecret, postSigned, readCapped } from "./webhooks.js";
@@ -32,7 +32,7 @@ const DEFAULT_MAX_SUBSCRIPTIONS = 8;
 /** The challenge echo is tiny; never read more than this from a callback. */
 const MAX_CHALLENGE_RESPONSE_BYTES = 4096;
 
-export type EventLayerOptions = {
+export type McpEventsOptions = {
   store: SubscriptionStore;
   delivery: EventDelivery;
   /**
@@ -105,20 +105,57 @@ export type EventHandle<Payload extends z.ZodType> = {
   emit(payload: z.input<Payload>, options?: { eventId?: string }): Promise<{ eventId: string }>;
 };
 
-export type EventLayer = {
-  /** Declares an event. Call it at module scope, so every instance knows every event. */
-  define<
+/**
+ * MCP Events for an `McpServer`: declare events with {@link McpEvents.registerEvent} at module
+ * scope, serve the `events/*` methods with {@link McpEvents.attach} in the server factory, and
+ * mount {@link McpEvents.createDeliveryHandler} as the transport's delivery route.
+ *
+ * ```ts
+ * export const events = new McpEvents({ store, delivery, principal });
+ * export const deployFinished = events.registerEvent("deploy_finished", {
+ *   description, input, payload, authorize,
+ * }); // module scope
+ *
+ * export function createServer() {
+ *   const server = new McpServer({ name: "deploys", version: "1.0.0" });
+ *   events.attach(server);
+ *   return server;
+ * }
+ * ```
+ */
+export class McpEvents {
+  readonly #runtime: ReturnType<typeof buildRuntime>;
+
+  constructor(options: McpEventsOptions) {
+    this.#runtime = buildRuntime(options);
+  }
+
+  /**
+   * Declares an event and returns its handle, whose `emit` delivers it. Call it at module scope,
+   * in a module the delivery route also imports: a delivery can reach an instance that never
+   * built a server, and it finds the event here.
+   */
+  registerEvent<
     Input extends EventInputSchema = z.ZodObject<Record<string, never>>,
     Payload extends z.ZodType = z.ZodType,
-  >(
-    name: string,
-    config: EventConfig<Input, Payload>,
-  ): EventHandle<Payload>;
-  /** Declares the `events` capability and serves `events/list`, `/subscribe` and `/unsubscribe`. */
-  register(server: McpServer): void;
+  >(name: string, config: EventConfig<Input, Payload>): EventHandle<Payload> {
+    return this.#runtime.define(name, config);
+  }
+
+  /**
+   * Declares the `events` capability on a server and serves `events/list`, `events/subscribe` and
+   * `events/unsubscribe`. Call it before the server is connected, e.g. inside the
+   * `createMcpHandler` factory.
+   */
+  attach(server: McpServer): void {
+    this.#runtime.register(server);
+  }
+
   /** The transport's delivery endpoint: `export const POST = events.createDeliveryHandler()`. */
-  createDeliveryHandler(): (request: Request) => Promise<Response>;
-};
+  createDeliveryHandler(): (request: Request) => Promise<Response> {
+    return this.#runtime.createDeliveryHandler();
+  }
+}
 
 type Definition = {
   config: EventConfig<EventInputSchema, z.ZodType>;
@@ -147,21 +184,19 @@ const unsubscribeParams = z.looseObject({
 
 const listParams = z.looseObject({ cursor: z.string().nullish() });
 
-export function createEventLayer(options: EventLayerOptions): EventLayer {
+function buildRuntime(options: McpEventsOptions) {
   const { store, delivery } = options;
-  const principal = requirePrincipal(options.principal, "createEventLayer");
+  const principal = requirePrincipal(options.principal, "McpEvents");
   const maxSubscriptions = options.maxSubscriptions ?? DEFAULT_MAX_SUBSCRIPTIONS;
   if (
     maxSubscriptions !== Infinity &&
     (!Number.isSafeInteger(maxSubscriptions) || maxSubscriptions < 1)
   ) {
-    throw new Error(
-      "createEventLayer: maxSubscriptions must be a positive whole number or Infinity",
-    );
+    throw new Error("McpEvents: maxSubscriptions must be a positive whole number or Infinity");
   }
   const definitions = new Map<string, Definition>();
 
-  // Resolved on first use, because layers are built at module scope during framework builds.
+  // Resolved on first use, because the instance is built at module scope during framework builds.
   // There is no default key: a missing one fails the first subscribe or delivery.
   let box: SecretBox | undefined;
   const secretBox = (): SecretBox => {
@@ -169,7 +204,7 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
     const secretKey = options.secretKey ?? env("MCP_EVENTS_SECRET_KEY");
     if (!secretKey) {
       throw new Error(
-        "createEventLayer needs a secretKey (or MCP_EVENTS_SECRET_KEY) to encrypt webhook secrets at rest. Generate one with: openssl rand -base64 32",
+        "McpEvents needs a secretKey (or MCP_EVENTS_SECRET_KEY) to encrypt webhook secrets at rest. Generate one with: openssl rand -base64 32",
       );
     }
     return (box = new SecretBox(secretKey));
@@ -404,11 +439,19 @@ export function createEventLayer(options: EventLayerOptions): EventLayer {
       events: [...definitions.values()].map((d) => d.descriptor),
       nextCursor: null,
     }));
-    low.setRequestHandler("events/subscribe", { params: subscribeParams }, subscribe);
-    low.setRequestHandler("events/unsubscribe", { params: unsubscribeParams }, unsubscribe);
+    low.setRequestHandler("events/subscribe", { params: subscribeParams }, (params, ctx) =>
+      guardMethod("events/subscribe", () => subscribe(params, ctx)),
+    );
+    low.setRequestHandler("events/unsubscribe", { params: unsubscribeParams }, (params, ctx) =>
+      guardMethod("events/unsubscribe", () => unsubscribe(params, ctx)),
+    );
   }
 
-  return { define, register, createDeliveryHandler: () => delivery.createDeliveryHandler(send) };
+  return {
+    define,
+    register,
+    createDeliveryHandler: () => delivery.createDeliveryHandler(send),
+  };
 }
 
 /** JSON with object keys sorted at every level, so equal values serialize identically. */
@@ -484,6 +527,21 @@ function echoedChallenge(text: string): unknown {
 function jsonSchema(schema: z.ZodType, io: "input" | "output"): Record<string, unknown> {
   const { $schema: _ignored, ...rest } = z.toJSONSchema(schema, { io }) as Record<string, unknown>;
   return rest;
+}
+
+/**
+ * Runs an `events/*` method. The intended protocol errors pass through; anything else (a store, an
+ * `authorize` that threw) is logged, and the caller gets a fixed message: the error's own text can
+ * carry hostnames, URLs or credentials.
+ */
+async function guardMethod<T>(where: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof ProtocolError) throw error;
+    logInternalError(where, error);
+    throw new ProtocolError(INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE);
+  }
 }
 
 function invalid(message: string, reason: string): ProtocolError {

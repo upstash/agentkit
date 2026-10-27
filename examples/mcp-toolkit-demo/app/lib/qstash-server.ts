@@ -8,7 +8,7 @@
  * Compare with `workflow-server.ts`, which runs the same-looking tool with no time limit at all.
  */
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 import { principal } from "./auth";
@@ -28,7 +28,7 @@ export const dispatcher = new QStashDispatcher({
  * No type argument: a queue adds nothing to the handler's context, so the handler receives just
  * the `TaskContext` — `taskId`, `update`, `isCancelled`.
  */
-export const tasks = createTaskLayer({
+export const tasks = new McpTasks({
   store: new RedisTaskStore({ prefix: "mcp:task:qstash:" }),
   dispatcher,
   // Who is calling: the user id the MCP route verified (see `auth.ts`). Throws when there is none.
@@ -40,9 +40,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const STEP_NAMES = ["gathering sources", "reading", "outlining", "writing"];
 const STEPS = STEP_NAMES.length;
 
-// Defined at module scope, so every instance knows the handler — including one that only ever
+// Registered at module scope, so every instance knows the handler — including one that only ever
 // serves `/api/execute` and never builds an MCP server.
-tasks.define(
+tasks.registerTask(
   "generate_report",
   {
     title: "Generate report",
@@ -79,11 +79,11 @@ tasks.define(
   },
 );
 
-if (E2E) tasks.define("always_fail", { ...ALWAYS_FAIL, inputSchema: z.object({}) }, alwaysFail);
+if (E2E) tasks.registerTask("always_fail", { ...ALWAYS_FAIL, inputSchema: z.object({}) }, alwaysFail);
 
-/** A fresh server per request: the defined task tool plus `task_status` and `task_cancel`. */
+/** A fresh server per request: the registered task tool plus `task_status` and `task_cancel`. */
 export function createServer(): McpServer {
   const server = new McpServer({ name: "report-desk", version: "0.1.0" });
-  tasks.register(server);
+  tasks.attach(server);
   return server;
 }

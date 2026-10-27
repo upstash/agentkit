@@ -1,6 +1,6 @@
 {
   "name": "eve-extension-demo",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "private": true,
   "type": "module",
   "imports": {
@@ -18,8 +18,8 @@
     "@upstash/agentkit-eve-extension": "workspace:*",
     "@upstash/redis": "^1.38.4",
     "@vercel/connect": "0.2.2",
-    "ai": "7.0.133",
-    "eve": "^0.74.0",
+    "ai": "7.0.150",
+    "eve": "^0.83.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
