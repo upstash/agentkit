@@ -21,7 +21,7 @@ export function verifyDemoToken(request: Request): AuthInfo | null {
   return { token: header ?? "anonymous", clientId: "mcp-toolkit-demo", scopes: [], extra: { userId } };
 }
 
-/** `principal` for both layers: the user id `verifyDemoToken` put in `extra`. */
+/** `principal` for both `McpTasks` and `McpEvents`: the user id `verifyDemoToken` put in `extra`. */
 export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");

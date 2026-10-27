@@ -46,7 +46,7 @@ const persistence = upstashPersistence({
 chat({ adapter, messages, threadId, middleware: [withPersistence(persistence)] });
 ```
 
-Stores `messages`, `runs`, `interrupts` and `metadata` (the full `ChatPersistence` shape). Runs are
+Stores `messages`, `activities` (frontend-only AG-UI activity rows), `runs`, `interrupts` and `metadata` (the full `ChatPersistence` shape). Runs are
 indexed by thread, parent run and detach time, so reconnect (`findActiveRun`), subagent cards
 (`listByParentRun`) and the sandbox reaper (`listReclaimable`) are index reads. Every mutation is a
 single command or one Lua script, so concurrent instances cannot interleave a write.

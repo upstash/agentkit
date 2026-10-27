@@ -15,7 +15,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-eve`](./packages/eve) | Adapter for the Vercel Eve framework. |
 | [`@upstash/agentkit-tanstack-ai`](./packages/tanstack-ai) | Production backends for [TanStack AI](https://tanstack.com/ai) — chat persistence, resumable streams, distributed locks, memory, tool caching, rate limiting and search tools. |
 | [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
-| [`@upstash/mcp-toolkit`](./packages/mcp-toolkit) | Durable building blocks for MCP servers on the official TypeScript SDK. `/tasks`: long-running tools that answer with a task id the model polls, with the record in Redis and the work on QStash or Workflow. `/events`: MCP Events, with subscriptions in Redis and signed webhook deliveries retried by QStash. |
+| [`@upstash/mcp-toolkit`](./packages/mcp-toolkit) | Durable building blocks for MCP servers on the official TypeScript SDK. `/tasks`: long-running tools that answer at once, as a native MCP task for clients with the Tasks extension (Claude Code) or a task id the model polls for everyone else, with the record in Redis and the work on QStash or Workflow. `/events`: MCP Events, with subscriptions in Redis and signed webhook deliveries retried by QStash. |
 | [`upstash-hermes-memory`](./python/hermes-memory) (PyPI) | Memory provider for [Hermes Agent](https://hermes-agent.nousresearch.com) on Upstash Redis Search, sharing memories with `@upstash/agentkit-sdk`. |
 
 ## Core features
@@ -36,7 +36,8 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
   Eve's `defineSandbox` (`UpstashSandbox`, eve ≥ 0.65).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
 - **Durable MCP tasks and events** (`@upstash/mcp-toolkit`) — a long-running MCP tool returns a task
-  id instead of blocking, and the model polls `task_status`; the record lives in Redis and the work
+  instead of blocking: a native MCP task the client polls (Claude Code), or a task id the model
+  polls with `task_status` (every other client); the record lives in Redis and the work
   runs through QStash or Workflow, so it survives the process that accepted the call. MCP Events let
   a host subscribe and get a signed webhook when something happens, including when a task finishes.
 

@@ -59,17 +59,23 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Box } from "@upstash/box";
 import type { BoxConfig, NetworkPolicy as BoxNetworkPolicy } from "@upstash/box";
-import type {
-  MutableNetworkSandboxSession,
-  SandboxNetworkPolicy,
-  SandboxProcess,
-} from "eve/sandbox";
+import type { SandboxNetworkPolicy, SandboxProcess, SandboxSession } from "eve/sandbox";
 import { defineSandboxProvider } from "eve/sandbox/provider";
 import type {
   SandboxDeleteOptions,
   SandboxProviderHandle,
   SandboxProviderResources,
 } from "eve/sandbox/provider";
+
+/**
+ * The session type of an Upstash Box sandbox: eve's {@link SandboxSession} plus `setNetworkPolicy`.
+ * eve ≥0.66 made network policy provider-specific (it left the common session), so this provider
+ * declares it; `ctx.getSandbox(environment)` returns this type.
+ */
+export type UpstashSandboxSession = SandboxSession & {
+  /** Replace the box's egress policy (deny-all by default). */
+  setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void>;
+};
 
 /** Options for `environment.open(...)` — applied once, when eve starts the session's box. */
 export interface UpstashSandboxOpenOptions {
@@ -98,7 +104,7 @@ export type UpstashSandboxEnvironmentOptions = Omit<BoxConfig, "networkPolicy" |
    * `sandbox.setNetworkPolicy("allow-all")` (or an allow-list) first if the setup needs egress.
    * Sessions do **not** inherit the policy you set here.
    */
-  prepare?: (sandbox: MutableNetworkSandboxSession) => Promise<void> | void;
+  prepare?: (sandbox: UpstashSandboxSession) => Promise<void> | void;
   /**
    * A **base Box snapshot** to build on instead of a bare `Box.create` — for heavy, slow-changing
    * setup (browser binaries, a toolchain) you bake and manage yourself, out of band. `prepare` layers
@@ -324,8 +330,8 @@ async function spawnOnBox(box: Box, options: ProcessOptions): Promise<SandboxPro
   };
 }
 
-/** Build Eve's {@link MutableNetworkSandboxSession} over a live Box. */
-function buildSession(box: Box): MutableNetworkSandboxSession {
+/** Build Eve's {@link UpstashSandboxSession} over a live Box. */
+function buildSession(box: Box): UpstashSandboxSession {
   // Eve hands us `/workspace`-rooted (or relative) paths; map them to Box's `/workspace/home`.
   const resolvePath = (path: string): string => toBoxPath(path);
 
@@ -465,14 +471,14 @@ function requireState(state: unknown): UpstashSandboxState {
 }
 
 /** Provider handle over a live box: the session plus eve's lifecycle hooks. */
-function createHandle(box: Box): SandboxProviderHandle<MutableNetworkSandboxSession> {
-  // Set once `onSessionDelete` destroyed the box: eve may still call stop/shutdown on the handle.
+function createHandle(box: Box): SandboxProviderHandle<UpstashSandboxSession> {
+  // Set once `onSandboxDelete` destroyed the box: eve may still call stop/shutdown on the handle.
   let deleted = false;
   return {
     sandbox: buildSession(box),
     // `sandbox.stop()`: release compute, keep the box resumable (`resume` → `Box.get` auto-resumes).
     // Provider errors must reject — keep-alive boxes can't be paused and will.
-    async onSessionStop() {
+    async onSandboxStop() {
       if (deleted) return;
       await box.pause();
     },
@@ -484,7 +490,7 @@ function createHandle(box: Box): SandboxProviderHandle<MutableNetworkSandboxSess
     // `sandbox.delete()`: permanently remove the session's box. The prepared snapshot is shared by
     // every session of the environment and must survive. Errors reject so eve keeps the state and
     // authored code can retry.
-    async onSessionDelete(options?: SandboxDeleteOptions) {
+    async onSandboxDelete(options?: SandboxDeleteOptions) {
       if (deleted) return;
       options?.abortSignal?.throwIfAborted(); // Box's API takes no signal; honour it at the boundary
       await box.delete();
@@ -503,7 +509,7 @@ export const UpstashSandbox = defineSandboxProvider<
   UpstashSandboxOpenOptions | undefined,
   UpstashSandboxArtifact,
   UpstashSandboxState,
-  MutableNetworkSandboxSession
+  UpstashSandboxSession
 >({
   name: "upstash",
   environment(options) {

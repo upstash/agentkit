@@ -7,7 +7,7 @@ import { upstashPersistence } from "./persistence.js";
 import { testBucket, type TestBucket } from "../testing/test-bucket.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
 
-// Every opt-in check the kit offers (as of @tanstack/ai-persistence 0.7.1); none is skipped.
+// Every opt-in check the kit offers (as of @tanstack/ai-persistence 0.10.1); none is skipped.
 const OPT_IN_CHECKS: PersistenceConformanceCheck[] = [
   "messages.metadata",
   "runs.listByThread.state",
@@ -16,7 +16,7 @@ const OPT_IN_CHECKS: PersistenceConformanceCheck[] = [
 const hasBlobToken = Boolean(process.env.UPSTASH_BLOB_TOKEN);
 
 // TanStack AI's own backend conformance suite, run against a real Upstash Redis, with every store
-// present and none skipped: messages, runs, interrupts, metadata, generationRuns, artifacts, blobs.
+// present and none skipped: messages, activities, runs, interrupts, metadata, generationRuns, artifacts, blobs.
 // Blob bytes go to a stand-in bucket whose signed URLs are served over real HTTP with Range support.
 describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
   const redis = testRedis();

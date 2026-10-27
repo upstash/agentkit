@@ -15,7 +15,7 @@ const makeTask = (overrides: Partial<Task> = {}): Task => {
   return {
     taskId: crypto.randomUUID(),
     status: "working",
-    statusMessage: "Queued for durable execution",
+    statusMessage: "Queued",
     createdAt: now,
     lastUpdatedAt: now,
     ttlMs: 300_000,
@@ -127,6 +127,93 @@ describe.skipIf(!hasRedisCreds)("RedisTaskStore (real Redis)", () => {
     const after = await store.get(task.taskId);
     expect(after?.status).toBe("cancelled");
     expect(after?.statusMessage).toBe("Cancelled by client");
+  });
+
+  describe("respond (answers to input_required)", () => {
+    const question = (message: string) => ({
+      method: "elicitation/create" as const,
+      params: {
+        mode: "form" as const,
+        message,
+        requestedSchema: { type: "object" as const, properties: {} },
+      },
+    });
+    const asking = async (keys: string[]) => {
+      const task = makeTask();
+      await store.create(task);
+      await store.update(task.taskId, {
+        status: "input_required",
+        inputRequests: Object.fromEntries(keys.map((key) => [key, question(key)])),
+      });
+      return task;
+    };
+
+    it("resumes once every open question has an answer, and keeps the answers exactly", async () => {
+      const task = await asking(["a", "b"]);
+      const before = await redis.pttl(prefix + task.taskId);
+      // Values that look like other JSON types must come back as they went in.
+      const answerA = { action: "accept" as const, content: { n: "123", ok: true, tags: ["x"] } };
+      expect(
+        await store.respond(task.taskId, { a: answerA, zzz: { action: "decline" } }, "Go"),
+      ).toEqual([]);
+      let current = await store.get(task.taskId);
+      expect(current?.status).toBe("input_required");
+      expect(current?.inputResponses).toEqual({ a: answerA });
+
+      // A second answer to "a" is ignored; "b" closes the set.
+      const keys = await store.respond(
+        task.taskId,
+        { a: { action: "decline" }, b: { action: "cancel" } },
+        "Answer received",
+      );
+      expect(keys.sort()).toEqual(["a", "b"]);
+      current = await store.get(task.taskId);
+      expect(current).toMatchObject({ status: "working", statusMessage: "Answer received" });
+      expect(current?.inputRequests).toBeUndefined();
+      expect(current?.inputResponses).toEqual({ a: answerA, b: { action: "cancel" } });
+      // Only one call resumes it.
+      expect(await store.respond(task.taskId, { b: { action: "accept" } }, "x")).toEqual([]);
+      // The TTL still counts from creation.
+      expect(await redis.pttl(prefix + task.taskId)).toBeLessThanOrEqual(before);
+    });
+
+    it("ignores answers to a task that was cancelled, finished, or is not asking", async () => {
+      const cancelled = await asking(["a"]);
+      await store.settle(cancelled.taskId, { status: "cancelled" });
+      expect(await store.respond(cancelled.taskId, { a: { action: "accept" } }, "x")).toEqual([]);
+      expect((await store.get(cancelled.taskId))?.inputResponses).toBeUndefined();
+      expect((await store.get(cancelled.taskId))?.status).toBe("cancelled");
+
+      const working = makeTask();
+      await store.create(working);
+      expect(await store.respond(working.taskId, { a: { action: "accept" } }, "x")).toEqual([]);
+      expect((await store.get(working.taskId))?.inputResponses).toBeUndefined();
+
+      const ghost = crypto.randomUUID();
+      expect(await store.respond(ghost, { a: { action: "accept" } }, "x")).toEqual([]);
+      expect(await redis.exists(prefix + ghost)).toBe(0);
+    });
+
+    it("lets a cancel settle a task that is waiting for input", async () => {
+      const task = await asking(["a"]);
+      expect((await store.settle(task.taskId, { status: "cancelled" }))?.status).toBe("cancelled");
+    });
+  });
+
+  it("counts an owner's active tasks, pruning finished and expired ones", async () => {
+    const owner = `owner-${crypto.randomUUID()}`;
+    const tasks = [makeTask({ owner }), makeTask({ owner }), makeTask({ owner, ttlMs: 2_000 })];
+    for (const task of tasks) await store.create(task);
+    await store.create(makeTask({ owner: `${owner}-other` }));
+    expect(await store.countActive(owner)).toBe(3);
+    await store.update(tasks[0]!.taskId, { status: "input_required" });
+    await store.settle(tasks[1]!.taskId, { status: "cancelled" });
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    expect(await store.countActive(owner)).toBe(1);
+    // Pruned: only the active task is left in the owner's set.
+    expect(await redis.zrange(`${prefix}active:${owner}`, 0, -1)).toEqual([tasks[0]!.taskId]);
+    expect(await store.countActive(`${owner}-other`)).toBe(1);
+    expect(await store.countActive("nobody-at-all")).toBe(0);
   });
 
   it("never creates a task as a side effect of updating a missing one", async () => {
