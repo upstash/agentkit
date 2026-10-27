@@ -99,14 +99,16 @@ CHAT_SEARCH_SCHEMA = {
 }
 
 
-def _key_part(value: str) -> str:
-    """Encode a user or session id for the middle of a `<prefix>:<user>:<id>` key.
+def _key_part(value: str, what: str) -> str:
+    """Check a user or session id for the middle of a `<prefix>:<user>:<id>` key.
 
-    `:` separates the parts of the key, so it is written as `%3A`, and `%` as `%25` so the encoding
-    stays one-to-one: `alice:work` and `alice_work` remain two users. Ids with neither character,
-    which is all of them in practice, are unchanged and match the keys the TS SDK writes.
+    Ids are used as they are, so they match the keys the TS SDK writes for the same id (`team%ops`
+    included). `:` separates the parts of the key and the TS SDK refuses it, so it is refused here
+    too: any encoding of it could equal another, literal TS id and share that id's memories.
     """
-    return value.replace("%", "%25").replace(":", "%3A")
+    if ":" in value:
+        raise ValueError(f"{what} may not contain ':' (it is the key separator), got {value!r}")
+    return value
 
 
 def _message_text(message: dict[str, Any]) -> str:
@@ -133,6 +135,20 @@ def _message_text(message: dict[str, Any]) -> str:
     return text
 
 
+def _turns_of(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """(user text, reply text) for each user message; the reply is the turn's last assistant text."""
+    turns: list[tuple[str, str]] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            turns.append((_message_text(message), ""))
+        elif role == "assistant" and turns:
+            text = _message_text(message)
+            if text:
+                turns[-1] = (turns[-1][0], text)
+    return turns
+
+
 def rewind_transcript(
     transcript: list[dict[str, str]], history: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
@@ -140,27 +156,28 @@ def rewind_transcript(
 
     `history` is Hermes's conversation for the session after the undo. Hermes does not say how
     many turns were undone, so the cut is found by content: the transcript keeps everything up to
-    the reply to the latest user message that is still in `history`, and drops the rest. When no
-    user message of the transcript is left, every saved turn was undone.
+    the latest saved turn matching the latest turn still in `history`, and drops the rest. When no
+    turn of the transcript is left, every saved turn was undone.
 
-    Within one session id this is the whole conversation: compaction moves Hermes to a new
-    session id, so a transcript never spans a compaction.
+    In-place compaction keeps the session id but summarizes older messages, so `history` can be
+    much shorter than the transcript, and counting occurrences across the two would land on an
+    older turn. A turn is matched by its user text and its reply instead, and the latest match
+    wins, so a repeated "yes" lands on the right turn and retained history is never cut.
     """
-    remaining = [t for t in (_message_text(m) for m in history if m.get("role") == "user") if t]
-    saved = [
-        i
-        for i, entry in enumerate(transcript)
-        if entry.get("role") == "user" and str(entry.get("content", "")).strip()
-    ]
-    for position in range(len(remaining) - 1, -1, -1):
-        text = remaining[position]
-        # The same text can recur ("yes"): the n-th time in Hermes's history is the n-th time in
-        # the transcript, so the cut lands on the right turn.
-        nth = remaining[: position + 1].count(text)
-        matches = [i for i in saved if str(transcript[i]["content"]).strip() == text]
+    saved: list[tuple[int, str, str]] = []
+    for i, entry in enumerate(transcript):
+        if entry.get("role") != "user":
+            continue
+        reply = transcript[i + 1] if i + 1 < len(transcript) else {}
+        answer = str(reply.get("content", "")).strip() if reply.get("role") == "assistant" else ""
+        saved.append((i, str(entry.get("content", "")).strip(), answer))
+    # Walk back past turns that were never saved, such as a compaction summary.
+    for user, reply in reversed([t for t in _turns_of(history) if t[0]]):
+        same_user = [s for s in saved if s[1] == user]
+        matches = [s for s in same_user if s[2] == reply] if reply else same_user
         if not matches:
             continue
-        i = matches[min(nth, len(matches)) - 1]
+        i = matches[-1][0]
         end = i + 1
         if end < len(transcript) and transcript[end].get("role") == "assistant":
             end += 1
@@ -248,8 +265,8 @@ class UpstashMemoryProvider(MemoryProvider):
             or kwargs.get("agent_identity")
             or "default"
         )
-        self._user_id = _key_part(str(user))
-        self._session_id = _key_part(session_id or "")
+        self._user_id = _key_part(str(user), "user id")
+        self._session_id = self._session_key(session_id)
         self._write_enabled = (kwargs.get("agent_context") or "") in _WRITING_CONTEXTS
 
     def system_prompt_block(self) -> str:
@@ -287,7 +304,7 @@ class UpstashMemoryProvider(MemoryProvider):
     ) -> None:
         if not self._chats or not self._write_enabled:
             return
-        sid = _key_part(session_id) if session_id else self._session_id
+        sid = self._session_key(session_id) if session_id else self._session_id
         if not sid:
             return
         with self._lock:
@@ -308,7 +325,7 @@ class UpstashMemoryProvider(MemoryProvider):
     def on_session_switch(
         self, new_session_id: str, *, rewound: bool = False, **kwargs: Any
     ) -> None:
-        self._session_id = _key_part(new_session_id or "")
+        self._session_id = self._session_key(new_session_id)
         if rewound:
             # /undo keeps the session id but truncates Hermes's history. The next sync (or the
             # session end) cuts the saved transcript back to match, before anything is appended.
@@ -325,6 +342,15 @@ class UpstashMemoryProvider(MemoryProvider):
             transcript[:] = rewind_transcript(transcript, list(messages or []))
             self._rewound.discard(sid)
             self._save_transcript(sid, transcript)
+
+    @staticmethod
+    def _session_key(session_id: str | None) -> str:
+        """The session id for transcript keys, or "" (no transcript) when it can't be one."""
+        try:
+            return _key_part(session_id or "", "session id")
+        except ValueError as error:
+            logger.warning("upstash chat history skipped: %s", error)
+            return ""
 
     def _load_transcript(self, sid: str) -> list[dict[str, str]]:
         transcript = self._transcripts.get(sid)

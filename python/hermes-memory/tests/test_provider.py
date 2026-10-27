@@ -42,7 +42,7 @@ def provider(redis, prefix, monkeypatch):
     monkeypatch.setenv("UPSTASH_HERMES_CHAT_PREFIX", f"{prefix}:chat")
     monkeypatch.delenv("UPSTASH_HERMES_USER_ID", raising=False)
     provider = UpstashMemoryProvider(redis)
-    provider.initialize("20261022_120000_ab:cd", platform="cli", agent_identity="arda")
+    provider.initialize("20261022_120000_abcd", platform="cli", agent_identity="arda")
     provider._memory.index.ensure()
     provider._chats.index.ensure()
     yield provider
@@ -50,9 +50,9 @@ def provider(redis, prefix, monkeypatch):
     provider._chats.index.drop()
 
 
-def test_user_and_session_ids_are_made_key_safe(provider):
+def test_user_and_session_ids_are_used_as_they_are(provider):
     assert provider._user_id == "arda"
-    assert provider._session_id == "20261022_120000_ab%3Acd"
+    assert provider._session_id == "20261022_120000_abcd"
 
 
 def test_save_then_prefetch(provider):
@@ -118,12 +118,36 @@ def test_subagents_read_but_never_write(provider, redis):
     assert sub._memory.count(user_id="arda") == 0
 
 
-def test_key_parts_are_encoded_one_to_one():
-    assert _key_part("arda") == "arda"
-    assert _key_part("alice:work") == "alice%3Awork"
-    assert _key_part("50%:off") == "50%25%3Aoff"
-    ids = ["alice:work", "alice_work", "alice%3Awork", "alice%work"]
-    assert len({_key_part(i) for i in ids}) == len(ids)
+def test_key_parts_match_the_ts_sdk():
+    # The TS SDK stores these literally, so the provider must too, or the two read different keys.
+    assert _key_part("team%ops", "user id") == "team%ops"
+    assert _key_part("alice%3Awork", "user id") == "alice%3Awork"
+    # The TS SDK refuses `:`, and any encoding of it could equal a literal TS id like the above.
+    with pytest.raises(ValueError):
+        _key_part("alice:work", "user id")
+
+
+def test_a_user_id_with_a_colon_is_refused(monkeypatch):
+    monkeypatch.setenv("UPSTASH_HERMES_USER_ID", "alice:work")
+    with pytest.raises(ValueError, match="user id"):
+        UpstashMemoryProvider(object()).initialize("s", platform="cli")
+
+
+def test_a_session_id_with_a_colon_keeps_no_transcript(provider):
+    provider.sync_turn("hi", "hello", session_id="ab:cd")
+    assert provider._transcripts == {}
+
+
+def test_ids_with_percent_are_shared_with_the_ts_sdk(provider, redis):
+    # A TS `AgentMemory.add(text, { userId: "team%ops" })` writes this key and document.
+    key = f"{provider._memory.prefix}:team%ops:from-ts"
+    doc = {"text": "the deploy freeze starts friday", "userId": "team%ops", "createdAt": 1}
+    redis.execute(["JSON.SET", key, "$", json.dumps(doc)])
+    provider._user_id = _key_part("team%ops", "user id")
+    assert provider._memory.get("from-ts", user_id=provider._user_id) is not None
+    assert json.loads(provider.handle_tool_call("upstash_memory_forget", {"id": "from-ts"})) == {
+        "forgotten": True
+    }
 
 
 def test_prefixes_come_from_the_hermes_profile(monkeypatch):
@@ -157,12 +181,46 @@ def test_rewind_drops_the_undone_turns():
     assert rewind_transcript(saved, []) == []
 
 
-def test_rewind_counts_repeated_messages():
+def test_rewind_matches_repeated_messages_by_their_reply():
     saved = _turns(("yes", "1"), ("yes", "2"), ("no", "3"))
     assert rewind_transcript(saved, _turns(("yes", "1"))) == _turns(("yes", "1"))
     assert rewind_transcript(saved, _turns(("yes", "1"), ("yes", "2"))) == _turns(
         ("yes", "1"), ("yes", "2")
     )
+
+
+# In-place compaction keeps the session id: the opening stays, the middle becomes a summary.
+_SAVED = _turns(
+    ("opening goal", "g"), ("yes", "1"), ("middle details", "m"), ("yes", "2"), ("undo this", "u")
+)
+_COMPACTED = _turns(("opening goal", "g")) + [
+    {"role": "user", "content": "[CONTEXT SUMMARY] the user agreed twice and gave details"},
+    {"role": "assistant", "content": "noted"},
+    *_turns(("yes", "2")),
+]
+
+
+def test_rewind_after_in_place_compaction_keeps_the_retained_turns():
+    assert rewind_transcript(_SAVED, _COMPACTED) == _SAVED[:8]
+
+
+def test_undo_after_in_place_compaction_then_a_new_turn(provider):
+    for user, reply in zip(_SAVED[::2], _SAVED[1::2]):
+        provider.sync_turn(user["content"], reply["content"], session_id="s-compact")
+    provider.on_session_switch("s-compact", rewound=True)
+    history = _COMPACTED + _turns(("next step", "n"))
+    provider.sync_turn("next step", "n", session_id="s-compact", messages=history)
+    doc = provider._chats.get_chat("s-compact", user_id="arda")
+    assert doc["messages"] == _SAVED[:8] + _turns(("next step", "n"))
+
+
+def test_undo_after_in_place_compaction_then_exit(provider):
+    for user, reply in zip(_SAVED[::2], _SAVED[1::2]):
+        provider.sync_turn(user["content"], reply["content"], session_id="s-compact-exit")
+    provider.on_session_switch("s-compact-exit", rewound=True)
+    provider.on_session_end(_COMPACTED)
+    doc = provider._chats.get_chat("s-compact-exit", user_id="arda")
+    assert doc["messages"] == _SAVED[:8]
 
 
 def test_rewind_matches_multimodal_messages_as_hermes_flattens_them():

@@ -44,8 +44,9 @@ these):
 | Memory | `agentkit:memory:<user>:<id>` → JSON `{text, userId, createdAt, ...metadata}` | `agentkit_memory` (`text`, `userId`) |
 | Chat | `agentkit:chat:<user>:<session>` → JSON `{userId, sessionId, userMessages, modelMessages, messages, createdAt, updatedAt}` | `agentkit_chat` |
 
-A `:` or `%` in a user or session id is written as `%3A` / `%25`, so distinct ids never share a
-key. Indexes are created on first use. `AgentMemory` and `ChatHistory` are importable on their own for
+User and session ids are used as they are, so the same id reads the same keys from Hermes and the
+TS SDK. Like the TS SDK, the provider refuses a user id with `:` (the key separator), and keeps no
+transcript for a session id with one. Indexes are created on first use. `AgentMemory` and `ChatHistory` are importable on their own for
 use outside Hermes.
 
 ## Development
