@@ -27,6 +27,13 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false # never use caching in release builds
 
+      # `pnpm ci:version` re-locks uv.lock after bumping Python package versions, and
+      # `pnpm ci:publish:python` builds and uploads them, so both need uv.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: false # never use caching in release builds (setup-uv defaults to on)
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -35,6 +42,7 @@ jobs:
 
       # Opens/updates a "Version Packages" PR, or publishes to npm when one is merged.
       - name: Create Release Pull Request or Publish
+        id: changesets
         uses: changesets/action@v1
         with:
           # Dedicated scripts — `version`/`release` would collide with pnpm's built-in commands.
@@ -43,3 +51,13 @@ jobs:
           createGithubReleases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # PyPI's counterpart to `changeset publish`. It runs in publish mode only, i.e. when no
+      # changesets are pending (the Version Packages PR has merged). It is keyed on what PyPI
+      # already has, so a re-run is safe and a package at 0.0.0 is skipped. It must run in this
+      # workflow, because tags pushed with GITHUB_TOKEN do not trigger other workflows.
+      - name: Publish Python packages to PyPI
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: pnpm ci:publish:python
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

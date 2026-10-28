@@ -22,9 +22,12 @@
     "lint:fix": "eslint . --fix && prettier --write .",
     "typecheck": "pnpm --filter @upstash/agentkit-sdk build && pnpm -r --filter \"./packages/*\" typecheck",
     "clean": "pnpm -r --filter \"./packages/*\" clean",
+    "py:lint": "uv run ruff check python && uv run ruff format --check python",
+    "py:test": "uv run pytest",
     "changeset": "changeset",
-    "ci:version": "changeset version && node scripts/sync-version.mjs",
-    "ci:publish": "changeset publish"
+    "ci:version": "changeset version && node scripts/sync-version.mjs && uv lock",
+    "ci:publish": "changeset publish",
+    "ci:publish:python": "node scripts/publish-python.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.7",

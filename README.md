@@ -16,6 +16,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
 | [`@upstash/agentkit-tanstack-ai`](./packages/tanstack-ai) | Production backends for [TanStack AI](https://tanstack.com/ai) — chat persistence, resumable streams, distributed locks, memory, tool caching, rate limiting and search tools. |
 | [`@upstash/agentkit-eve-extension`](./packages/eve-extension) | The same capabilities as a mountable [Eve extension](https://eve.dev/docs/extensions) — one file in `agent/extensions/` adds memory tools, search tools, and durable chat history the agent can search. |
 | [`@upstash/mcp-toolkit`](./packages/mcp-toolkit) | Durable building blocks for MCP servers on the official TypeScript SDK. `/tasks`: long-running tools that answer at once, as a native MCP task for clients with the Tasks extension (Claude Code) or a task id the model polls for everyone else, with the record in Redis and the work on QStash or Workflow. `/events`: MCP Events, with subscriptions in Redis and signed webhook deliveries retried by QStash. |
+| [`upstash-hermes-memory`](./python/hermes-memory) (PyPI) | Memory provider for [Hermes Agent](https://hermes-agent.nousresearch.com) on Upstash Redis Search. Work in progress. |
 
 ## Core features
 
@@ -59,6 +60,10 @@ pnpm build      # build all packages
 pnpm test       # run all tests (against a real Upstash Redis; LLM calls mocked unless OPENAI_API_KEY is set)
 pnpm lint       # eslint + prettier
 pnpm typecheck  # tsc across packages
+
+uv sync --all-packages   # Python packages under python/ (uv workspace)
+pnpm py:lint             # ruff
+pnpm py:test             # pytest
 ```
 
 Tests need `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (in a repo-root `.env`); suites that

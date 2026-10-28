@@ -1,0 +1,16 @@
+[project]
+name = "upstash-hermes-memory"
+version = "0.0.0"
+description = "Upstash Redis memory provider for Hermes Agent: long-term memory, searchable chat history and recall on Redis Search, with no separate vector database."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["upstash-redis>=1.8.0"]
+
+[project.urls]
+Homepage = "https://github.com/upstash/agentkit"
+Repository = "https://github.com/upstash/agentkit"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
