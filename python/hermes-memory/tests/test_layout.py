@@ -15,6 +15,10 @@ class Recorder:
         self.commands.append(command)
         return True
 
+    def expire(self, key, seconds):
+        self.commands.append(["EXPIRE", key, seconds])
+        return True
+
 
 def test_index_names_follow_the_ts_default():
     assert index_name_for("agentkit:memory") == "agentkit_memory"
@@ -87,3 +91,13 @@ def test_telemetry_opt_outs(monkeypatch):
     monkeypatch.setenv("UPSTASH_DISABLE_TELEMETRY", "1")
     add_telemetry(redis)
     assert redis._headers["Upstash-Telemetry-Sdk"] == "py-upstash-redis@v1.8.0"
+
+
+def test_chat_ttl_is_applied_whenever_set_like_the_ts_sdk():
+    # TS ChatHistory sends EXPIRE when ttlSeconds is defined, so 0 expires the chat at once.
+    for ttl, expected in ((None, []), (0, [0]), (3600, [3600])):
+        redis = Recorder()
+        ChatHistory(redis, ttl_seconds=ttl, enable_telemetry=False).save_chat(
+            "s1", [{"role": "user", "content": "hi"}], user_id="u1"
+        )
+        assert [c[2] for c in redis.commands if c[0] == "EXPIRE"] == expected

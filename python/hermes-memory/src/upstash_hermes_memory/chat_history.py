@@ -119,7 +119,8 @@ class ChatHistory:
             doc["title"] = title
         key = self._key(user_id, session_id)
         self.redis.execute(["JSON.SET", key, "$", dumps(doc)])
-        if self.ttl_seconds:
+        # Any TTL that was set is applied, 0 included (expire now), as the TS ChatHistory does.
+        if self.ttl_seconds is not None:
             self.redis.expire(key, self.ttl_seconds)
         return doc
 
