@@ -20,7 +20,7 @@ embeddings — keep that in mind when naming/among scoring.
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
 | `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — native MCP Tasks for clients that declare the extension, else start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (the `McpTasks` / `McpEvents` classes, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
-| `upstash-hermes-memory` (`python/hermes-memory`, **PyPI**) | Hermes Agent memory provider on Redis Search. **Scaffold at `0.0.0`** (unreleased) until the port lands (DX-3182). See **Python packages** below. |
+| `upstash-hermes-memory` (`python/hermes-memory`, **PyPI**) | Hermes Agent memory provider (`UpstashMemoryProvider`, entry point `hermes_agent.memory_providers: upstash`) plus Python ports of `AgentMemory` / `ChatHistory` that write the TS keys and indexes byte for byte. See **Python packages** below. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
 `eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
@@ -1434,6 +1434,11 @@ Python lives **beside** the pnpm workspace, not instead of any of it:
   non-zero version merges. Nothing else to touch.
 - Python tests share the test Redis (10-index cap) with vitest: run them **after** the Node tests,
   never in parallel, and reuse the TS key prefixes/index names when the data is meant to be shared.
+  Live tests take a unique `prefix` fixture and drop their indexes; call `index.wait_indexing()`
+  after a write or delete before asserting on search results (`SEARCH.COUNT` lags otherwise).
+- `upstash-hermes-memory` e2e: `uv run python python/hermes-memory/e2e/hermes_e2e.py` drives a real
+  Hermes (temporary `HERMES_HOME`, package on `PYTHONPATH`, `gpt-5-mini` via `OPENAI_API_KEY`; Hermes
+  sends `reasoning.effort`, so non-reasoning models like `gpt-4o-mini` fail) and checks Redis.
 
 ## Commands
 - **Setup gotcha — use pnpm 11.5.3, matching the `packageManager` pin.** Root `package.json` pins
