@@ -8,5 +8,20 @@ recalled by a Hermes agent on the same database.
 """
 
 from ._version import VERSION
+from .chat_history import ChatHistory
+from .memory import AgentMemory, MemoryRecord
+from .provider import UpstashMemoryProvider
 
-__all__ = ["VERSION"]
+__all__ = [
+    "VERSION",
+    "AgentMemory",
+    "ChatHistory",
+    "MemoryRecord",
+    "UpstashMemoryProvider",
+    "register",
+]
+
+
+def register(ctx) -> None:
+    """Hermes plugin entry point (`hermes_agent.memory_providers`)."""
+    ctx.register_memory_provider(UpstashMemoryProvider())

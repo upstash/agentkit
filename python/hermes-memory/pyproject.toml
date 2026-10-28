@@ -7,6 +7,11 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["upstash-redis>=1.8.0"]
 
+# Hermes discovers pip-installed memory providers through this group; the entry-point name is the
+# value of `memory.provider` in Hermes's config.yaml.
+[project.entry-points."hermes_agent.memory_providers"]
+upstash = "upstash_hermes_memory:register"
+
 [project.urls]
 Homepage = "https://github.com/upstash/agentkit"
 Repository = "https://github.com/upstash/agentkit"
