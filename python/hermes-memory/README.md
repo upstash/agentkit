@@ -37,6 +37,13 @@ these):
 | `UPSTASH_HERMES_USER_ID` | Whose memories these are. Defaults to the gateway user, then the Hermes profile name, then `default`. |
 | `UPSTASH_HERMES_MEMORY_PREFIX`, `UPSTASH_HERMES_CHAT_PREFIX` | Key prefixes. Default `agentkit:memory` and `agentkit:chat`, the TS SDK's defaults, so the two share memories. |
 
+## Telemetry
+
+On by default, like the other Upstash SDKs: requests to your Upstash database carry
+`upstash-hermes-memory@<version>` in the `Upstash-Telemetry-Sdk` header, next to the tag
+`upstash-redis` already sends. Nothing else is collected and nothing goes anywhere but your
+database. Set `UPSTASH_DISABLE_TELEMETRY=1` to turn it off.
+
 ## Redis layout
 
 | | Key | Index |

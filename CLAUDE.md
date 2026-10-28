@@ -1424,7 +1424,8 @@ Python lives **beside** the pnpm workspace, not instead of any of it:
   and writes its `CHANGELOG.md`. `privatePackages: { version: true, tag: false }`: changesets never
   tags or publishes it.
 - `scripts/sync-version.mjs` copies that version into `pyproject.toml` and
-  `src/<module>/_version.py` (`VERSION`, for telemetry), discovering packages by folder; `ci:version`
+  `src/<module>/_version.py` (`VERSION`, for telemetry), plus `plugin.yaml` when the package has one (the
+  Hermes plugin manifest), discovering packages by folder; `ci:version`
   then runs `uv lock`, so the Version Packages PR carries a consistent `uv.lock`. **Never edit a
   Python version by hand** — `sync-version.mjs --check` fails CI on drift.
 - `scripts/publish-python.mjs` (`pnpm ci:publish:python`) is PyPI's `changeset publish`: for every

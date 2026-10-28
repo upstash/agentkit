@@ -1,0 +1,12 @@
+# Manifest Hermes reads when this directory is installed as a plugin (the plugin catalog points
+# `subdir` here). pip installs use the entry point in pyproject.toml instead. Catalog rules:
+# https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission
+name: upstash
+# Copied from package.json by scripts/sync-version.mjs, like pyproject.toml.
+version: "0.1.0"
+description: "Upstash Redis memory provider: long-term memory, searchable chat history and recall on Redis Search, sharing keys with @upstash/agentkit-sdk."
+# Also declared in the catalog entry; older Hermes releases only enforce this one (catalog rule 14).
+requires_hermes: ">=0.19"
+requires_env:
+  - UPSTASH_REDIS_REST_URL
+  - UPSTASH_REDIS_REST_TOKEN
