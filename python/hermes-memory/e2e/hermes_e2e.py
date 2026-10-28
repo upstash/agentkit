@@ -137,13 +137,15 @@ def main() -> None:
         }
         print(f"  HERMES_HOME={home}\n  prefixes {memory_prefix} / {chat_prefix}")
 
-        def hermes(prompt: str, user: str = USER_ID) -> tuple[str, list[str]]:
+        def hermes(
+            prompt: str, user: str = USER_ID, hermes_home: Path = home
+        ) -> tuple[str, list[str]]:
             """Run one fresh one-shot session; return its answer and the tools it called."""
             cmd = [*hermes_python(), "-z", prompt, "--provider", "openai-api", "-m", args.model]
             done = subprocess.run(
                 cmd,
                 check=False,
-                env={**env, "UPSTASH_HERMES_USER_ID": user},
+                env={**env, "HERMES_HOME": str(hermes_home), "UPSTASH_HERMES_USER_ID": user},
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -152,7 +154,7 @@ def main() -> None:
                 print(done.stdout, done.stderr, sep="\n")
                 raise SystemExit(f"hermes exited with {done.returncode}")
             # Hermes records every session in $HERMES_HOME/state.db, tool results included.
-            with sqlite3.connect(home / "state.db") as db:
+            with sqlite3.connect(hermes_home / "state.db") as db:
                 (session,) = db.execute(
                     "SELECT session_id FROM messages WHERE role = 'user' AND content = ?"
                     " ORDER BY id DESC LIMIT 1",
@@ -191,7 +193,13 @@ def main() -> None:
 
         step("control: the same question as a user with no memories")
         print("  > " + RECALL_PROMPT)
-        control, _ = hermes(RECALL_PROMPT, user=f"{USER_ID}-control")
+        # Its own HERMES_HOME: Hermes's built-in session_search reads the sessions in state.db,
+        # whoever they belonged to, so a shared home would let it find sessions 1 and 2. This
+        # checks the Redis side only, which is what the provider controls.
+        control_home = work / "control-home"
+        control_home.mkdir()
+        shutil.copy(home / "config.yaml", control_home / "config.yaml")
+        control, _ = hermes(RECALL_PROMPT, user=f"{USER_ID}-control", hermes_home=control_home)
         check("Pamuk" not in control, "another user's session does not know the cat's name")
 
         step("Hermes's built-in stores stayed empty")
