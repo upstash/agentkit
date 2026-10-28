@@ -1,5 +1,5 @@
 import { defineExtension } from "eve/extension";
-import type { SessionContext } from "eve/tools";
+import type { SessionRef } from "./lib/session";
 import { z } from "zod";
 import type { Redis } from "@upstash/redis";
 import type { AnySearchSchema } from "@upstash/agentkit-sdk";
@@ -7,13 +7,13 @@ import type { AnySearchSchema } from "@upstash/agentkit-sdk";
 /**
  * The user all data is scoped under (the tenant boundary for memory and chat history). A string
  * shares one scope across all callers (fine for a single-user agent); a function derives it per call
- * from eve's `SessionContext` — the base both tool and hook `ctx` extend, so one function serves
+ * from eve's `SessionRef` (the `session` every tool and hook `ctx` carries), so one function serves
  * every contribution (`(ctx) => ctx.session.auth.current?.principalId ?? …`). Defaults to the
  * authenticated principal (`auth.current`, falling back to `initiator`), then the session id.
  */
 const userId = z.union([
   z.string().min(1),
-  z.custom<(ctx: SessionContext) => string>((value) => typeof value === "function"),
+  z.custom<(ctx: SessionRef) => string>((value) => typeof value === "function"),
 ]);
 
 export default defineExtension({

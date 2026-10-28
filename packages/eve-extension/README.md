@@ -15,7 +15,7 @@ no repeated schemas; upgrades come through the package manager.
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
-Start from an eve project (eve ≥ 0.83.0 — the prebuilt extension is built with eve 0.83.0 and its compatibility manifest requires tool contract v102 (dynamicTool v92, hook v51), which eve 0.83.0 is the first release to support; the package declares this as its `eve` peer range), then:
+Start from an eve project (eve ≥ 0.85.0 — the prebuilt extension is built with eve 0.85.0, and eve 0.84+ checks the version an extension was built with against its own: 0.84.x and older refuse a dist built with 0.85.0; the package declares this as its `eve` peer range), then:
 
 ```bash
 pnpm add @upstash/agentkit-eve-extension
@@ -117,8 +117,7 @@ Don't want the model reading history at all? Keep the capture and
 The search tools' descriptions and input schemas are generated from your `search.schema`
 (field-by-field filter guidance for the model), and whether the chat-history tools apply at all
 depends on `chatHistory` — neither is known until the mount config binds at runtime. So both sets are
-contributed as [dynamic tools](https://eve.dev/docs/guides/dynamic-capabilities) resolved at
-`session.started`: unconfigured, they resolve to nothing rather than erroring when the model calls
+contributed as [dynamic tools](https://eve.dev/docs/guides/dynamic-capabilities) resolved by `defineDynamic` before each model call: unconfigured, they resolve to nothing rather than erroring when the model calls
 them. Only the memory tools are static.
 
 ## Overriding or disabling contributions

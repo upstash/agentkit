@@ -9,7 +9,7 @@ import { includes } from "eve/evals/expect";
 // has fired on the same turn.
 //
 // eve ≥0.59 eval API: `t.send` opens a fresh session and resolves to the settled turn, which
-// carries the reply (`turn.message`) and its own assertion scope.
+// carries the reply (`turn.reply`, was `turn.message`) and its own assertion scope.
 export default defineEval({
   async test(t) {
     const turn = await t.send("Please remember my favorite color.");
@@ -18,6 +18,6 @@ export default defineEval({
     // The dynamic search tools are resolved at session start; a schema eve cannot replay makes
     // the resolver fail and the tools silently disappear, which `eve build` does not catch.
     turn.calledTool("agentkit__search_count");
-    t.check(turn.message, includes("Saved:"));
+    t.check(turn.reply, includes("Saved:"));
   },
 });
