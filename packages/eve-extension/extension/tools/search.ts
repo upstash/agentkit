@@ -15,18 +15,14 @@ import { searchDefs, trySearchDefs } from "../lib/runtime";
  * mounts. Plain JSON Schema data needs no durable factory — eve rehydrates it into its own
  * validator — and `z.toJSONSchema` keeps every field description the model is taught with.
  */
-export default defineDynamic({
-  events: {
-    "session.started": () => {
-      const defs = trySearchDefs();
-      if (!defs) return null;
-      // Plain JSON data, computed here so the schema factory's closure holds only that (see above).
-      const inputSchema = z.toJSONSchema(defs.search.inputSchema);
-      return defineTool({
-        description: defs.search.description,
-        inputSchema,
-        execute: (input: Record<string, unknown>) => searchDefs().search.execute(input),
-      });
-    },
-  },
+export default defineDynamic(() => {
+  const defs = trySearchDefs();
+  if (!defs) return null;
+  // Plain JSON data, computed here so the schema factory's closure holds only that (see above).
+  const inputSchema = z.toJSONSchema(defs.search.inputSchema);
+  return defineTool({
+    description: defs.search.description,
+    inputSchema,
+    execute: (input: Record<string, unknown>) => searchDefs().search.execute(input),
+  });
 });

@@ -216,13 +216,13 @@ importers:
         version: 1.38.4
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(@ai-sdk/mcp@2.0.86(zod@4.4.3))(ai@7.0.155(zod@4.4.3))(eve@0.83.3(@opentelemetry/api@1.9.1)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)))
+        version: 0.2.2(@ai-sdk/mcp@2.0.86(zod@4.4.3))(ai@7.0.155(zod@4.4.3))(eve@0.85.0)
       ai:
         specifier: 7.0.155
         version: 7.0.155(zod@4.4.3)
       eve:
-        specifier: ^0.83.3
-        version: 0.83.3(@opentelemetry/api@1.9.1)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))
+        specifier: ^0.85.0
+        version: 0.85.0(@opentelemetry/api@1.9.1)(@vercel/connect@0.2.2)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -404,8 +404,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: ^0.83.3
-        version: 0.83.3(@opentelemetry/api@1.9.1)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))
+        specifier: ^0.85.0
+        version: 0.85.0(@opentelemetry/api@1.9.1)(@vercel/connect@0.2.2)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -3668,20 +3668,36 @@ packages:
       microsandbox:
         optional: true
 
-  eve@0.83.3:
-    resolution: {integrity: sha512-KhQfm8rS3sttgAQLxjTdQhVXULJO2c2anVyoMSCTb7aBVeN6RXDFRcepChOBeL/fpP/YLTLU7hj5Qcq0OTB3SA==}
+  eve@0.85.0:
+    resolution: {integrity: sha512-34rSRCGUlM7crePe22f361mVdic4ktFCrAJsFfWSjlgsDn3NZhjqcRnaM/SS6wUMtdALPpkgwBTdTtDCUJC0rg==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
+      '@linqapp/sdk': ^0.47.1
+      '@nuxt/kit': ^4.0.0
+      '@nuxt/schema': ^4.0.0
       '@opentelemetry/api': ^1.0.0
+      '@vercel/connect': ^2.5.2
       ai: ^7.0.137
       braintrust: ^3.0.0
       chat: ^4.42.0
       dd-trace: ^6.13.0
-      just-bash: ^3.1.0
+      just-bash: ^3.6.0
       next: ^16.0.0
+      react: ^19.0.0
+      svelte: ^5.0.0
+      vite: ^8.3.1
+      vue: ^3.5.0
     peerDependenciesMeta:
+      '@linqapp/sdk':
+        optional: true
+      '@nuxt/kit':
+        optional: true
+      '@nuxt/schema':
+        optional: true
       '@opentelemetry/api':
+        optional: true
+      '@vercel/connect':
         optional: true
       braintrust:
         optional: true
@@ -3692,6 +3708,14 @@ packages:
       just-bash:
         optional: true
       next:
+        optional: true
+      react:
+        optional: true
+      svelte:
+        optional: true
+      vite:
+        optional: true
+      vue:
         optional: true
 
   eventsource-parser@3.1.1:
@@ -7725,13 +7749,13 @@ snapshots:
       ai: 7.0.154(zod@4.4.3)
       eve: 0.82.0(@opentelemetry/api@1.9.1)(ai@7.0.154(zod@4.4.3))
 
-  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.86(zod@4.4.3))(ai@7.0.155(zod@4.4.3))(eve@0.83.3(@opentelemetry/api@1.9.1)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)))':
+  '@vercel/connect@0.2.2(@ai-sdk/mcp@2.0.86(zod@4.4.3))(ai@7.0.155(zod@4.4.3))(eve@0.85.0)':
     dependencies:
       '@vercel/oidc': 3.6.1
     optionalDependencies:
       '@ai-sdk/mcp': 2.0.86(zod@4.4.3)
       ai: 7.0.155(zod@4.4.3)
-      eve: 0.83.3(@opentelemetry/api@1.9.1)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))
+      eve: 0.85.0(@opentelemetry/api@1.9.1)(@vercel/connect@0.2.2)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -8359,14 +8383,17 @@ snapshots:
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
 
-  eve@0.83.3(@opentelemetry/api@1.9.1)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)):
+  eve@0.85.0(@opentelemetry/api@1.9.1)(@vercel/connect@0.2.2)(ai@7.0.155(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
       ai: 7.0.155(zod@4.4.3)
       nitro: 3.0.260903-beta
       undici: 8.10.2
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
+      '@vercel/connect': 0.2.2(@ai-sdk/mcp@2.0.86(zod@4.4.3))(ai@7.0.155(zod@4.4.3))(eve@0.85.0)
       next: 16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react: 19.2.6
+      vite: 5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)
 
   eventsource-parser@3.1.1: {}
 

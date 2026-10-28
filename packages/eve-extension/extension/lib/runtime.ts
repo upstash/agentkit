@@ -6,7 +6,7 @@ import {
   type SearchToolDefs,
 } from "@upstash/agentkit-sdk";
 import { Redis } from "@upstash/redis";
-import type { SessionContext } from "eve/tools";
+import type { SessionRef } from "./session";
 import extension from "../extension";
 import { VERSION } from "./version";
 
@@ -22,7 +22,7 @@ export function sanitizeId(value: string): string {
 }
 
 /** Resolve the per-call user from config (string or function), defaulting to principal → session id. */
-export function resolveUserId(ctx: SessionContext): string {
+export function resolveUserId(ctx: SessionRef): string {
   const { userId } = extension.config;
   if (typeof userId === "string") return sanitizeId(userId);
   if (typeof userId === "function") return sanitizeId(userId(ctx));
@@ -132,7 +132,7 @@ export function requireChatHistory(): ChatHistory<StoredChatMessage> {
  * dispatched in order, so the read-modify-write doesn't race itself.
  */
 export async function appendChatMessage(
-  ctx: SessionContext,
+  ctx: SessionRef,
   role: StoredChatMessage["role"],
   content: string,
 ): Promise<void> {
