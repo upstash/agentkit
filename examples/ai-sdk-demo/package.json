@@ -9,11 +9,11 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.71",
-    "@ai-sdk/react": "^4.0.154",
+    "@ai-sdk/react": "^4.0.159",
     "@upstash/agentkit-ai-sdk": "workspace:*",
     "@upstash/agentkit-sdk": "workspace:*",
     "@upstash/redis": "^1.38.4",
-    "ai": "7.0.150",
+    "ai": "7.0.155",
     "dotenv": "^16.4.5",
     "next": "16.2.9",
     "react": "19.2.6",
