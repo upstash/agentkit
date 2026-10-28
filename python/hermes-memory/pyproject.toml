@@ -1,6 +1,6 @@
 [project]
 name = "upstash-hermes-memory"
-version = "0.0.0"
+version = "0.1.0"
 description = "Upstash Redis memory provider for Hermes Agent: long-term memory, searchable chat history and recall on Redis Search, with no separate vector database."
 readme = "README.md"
 license = "MIT"
