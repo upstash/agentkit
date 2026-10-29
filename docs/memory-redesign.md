@@ -98,6 +98,10 @@ knows its own. Neither needs to know how many records the other wrote.
 
 ## Lifecycle
 
+> **Update (eve 0.84):** eve removed the `compaction.requested` / `compaction.completed` hooks, so the
+> provider now registers only `turn.started` (recall) and `turn.completed` (capture). The rows below
+> describe the original design.
+
 | eve phase | what happens |
 | --- | --- |
 | `turn.started` | recall — one `$smart` query filtered to `source:agent, deleted:false`, plus a `count` of this scope's non-agent records |

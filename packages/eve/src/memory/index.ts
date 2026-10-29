@@ -23,21 +23,18 @@
  *
  * ## Lifecycle
  *
- * eve drives a slot at four points. Both integrations recall at the same two; only
- * {@link redisMemory} writes, and it writes at `turn.completed` only — capture needs the turn's own
- * input, which `compaction.requested` does not carry (`turn` is nullable there).
+ * {@link redisMemory} hooks the two points eve 0.84+ gives a memory provider: it recalls at
+ * `turn.started` and writes at `turn.completed` (capture needs the turn's own input). eve no longer
+ * has a `compaction.completed` recall hook, so recall is not repeated after compaction.
  *
  * | phase | `fileMemory({ backend: redisDocuments() })` | {@link redisMemory} |
  * | --- | --- | --- |
  * | `turn.started` | read the document, inject it whole | ranked recall → one keyed message, before the model runs |
  * | `turn.completed` | — | write captures (`rememberMessages`), wait for indexing |
- * | `compaction.requested` | — | — |
- * | `compaction.completed` | read and inject against the new checkpoint | recall again against the new checkpoint |
  *
  * Capture runs *after* the response is delivered, which is what makes the `waitIndexing()` there
- * free. Recall runs a second time at `compaction.completed` so memory is re-injected against the
- * fresh checkpoint instead of being folded into the summary, and is cached per eve `operationId`
- * because eve treats that id as an idempotency key and rejects a replay that differs.
+ * free. Recall is cached per eve `operationId` because eve treats that id as an idempotency key and
+ * rejects a replay that differs.
  *
  * Neither replaces `defineMemoryRecallTool`/`defineMemorySaveTool` from the package root. Those are
  * plain eve tools you drop into `agent/tools/*.ts` — they work on any eve version, need no memory

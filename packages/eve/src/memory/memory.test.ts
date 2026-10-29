@@ -43,6 +43,7 @@ function operationContext(options: {
   input?: unknown[];
   messages?: unknown[];
   sessionId?: string;
+  sequence?: number;
 }) {
   return {
     abortSignal: signal,
@@ -58,22 +59,20 @@ function operationContext(options: {
     },
     messages: options.messages ?? [],
     operationId: options.operationId ?? `op-${Math.random().toString(36).slice(2)}`,
-    turn: { id: "turn-1", input: options.input ?? [], sequence: 1 },
+    turn: { id: "turn-1", input: options.input ?? [], sequence: options.sequence ?? 1 },
   };
 }
 
 type Recall = NonNullable<MemoryProvider["recall"]["turn.started"]>;
 type Capture = NonNullable<NonNullable<MemoryProvider["capture"]>["turn.completed"]>;
 
-/** The two lifecycle points eve can ask a provider to recall at. */
-type RecallHook = "turn.started" | "compaction.completed";
-/** The two lifecycle points eve can ask a provider to capture at. */
-type CaptureHook = "turn.completed" | "compaction.requested";
+/** The lifecycle point eve 0.84+ asks a provider to recall at (`compaction.completed` is gone). */
+type RecallHook = "turn.started";
+/** The lifecycle point this provider captures at (`compaction.requested` is not registered). */
+type CaptureHook = "turn.completed";
 
 /**
- * Run a provider's recall at `hook` and return the single keyed message's content. Both hooks go
- * through here so `compaction.completed` — the one eve only reaches after a compaction checkpoint,
- * and so the easiest to leave wired-but-broken — is exercised exactly like `turn.started`.
+ * Run a provider's recall at `hook` and return the single keyed message's content.
  */
 async function recallAt(
   provider: MemoryProvider,
@@ -212,10 +211,12 @@ describe("eve memory integration (offline)", () => {
 
   it("redisMemory() implements eve's MemoryProvider surface", () => {
     const provider = redisMemory({ redis: offlineRedis });
-    // eve requires `recall["turn.started"]`; the other three handlers are optional but we register
-    // all of them, which is what makes recall and capture automatic.
+    // eve requires `recall["turn.started"]`; `turn.completed` capture is optional but registered,
+    // which is what makes recall and capture automatic.
     expect(typeof provider.recall["turn.started"]).toBe("function");
-    expect(typeof provider.recall["compaction.completed"]).toBe("function");
+    // eve 0.84 removed the `compaction.completed` recall hook; registering it would make eve reject
+    // the whole slot ("provider.recall Unknown key").
+    expect(Object.keys(provider.recall)).toEqual(["turn.started"]);
     expect(typeof provider.capture?.["turn.completed"]).toBe("function");
     // No `compaction.requested` — messages are stored as they happen, so nothing is lost to the
     // summarizer, and it was the only context where the ordering `sequence` could be null.
@@ -286,7 +287,7 @@ describe("eve memory integration (offline)", () => {
 //
 // The live suite below proves the round trip end to end, but it cannot prove *which* calls
 // happened: a provider that recalled from an in-process cache, queried the wrong index, or never
-// wired `compaction.completed` at all could still satisfy it. These do that part deterministically
+// wired a removed hook could still satisfy it. These do that part deterministically
 // — no network, no BM25, no indexing lag.
 // -------------------------------------------------------------------------------------------
 
@@ -327,32 +328,32 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     });
   });
 
-  it("recall['compaction.completed'] runs the same recall against the same locked scope", async () => {
-    const recall = vi.spyOn(AgentMemory.prototype, "recall").mockResolvedValue([]);
-    const provider = redisMemory({
-      redis: scriptedRedis().redis,
-      topK: 3,
-      minScore: 0.25,
-      replayCacheTtlSeconds: 0,
-    });
+  // eve 0.84+ hands a memory *tool* no `turn`, so `save_memory` cannot read the sequence its record
+  // is ordered by (`read_session` sorts on it). `turn.started` leaves it behind for the tool.
+  it("save_memory orders its record by the sequence of the turn that recalled", async () => {
+    vi.spyOn(AgentMemory.prototype, "recall").mockResolvedValue([]);
+    const add = vi.spyOn(AgentMemory.prototype, "add").mockResolvedValue({ id: "fact1" } as never);
+    const provider = redisMemory({ redis: scriptedRedis().redis, waitForIndexing: false });
 
-    // eve only reaches this hook after a compaction checkpoint, so nothing else in the suite would
-    // notice if it were registered but broken.
-    const content = await recallAt(
+    await recallAt(
       provider,
-      "compaction.completed",
-      operationContext({ scopeKey: SCOPE, input: [userMessage("what theme do I like?")] }),
+      "turn.started",
+      operationContext({ scopeKey: SCOPE, sessionId: "s-seq", sequence: 7 }),
     );
 
-    expect(recall).toHaveBeenCalledTimes(1);
-    expect(recall).toHaveBeenCalledWith({
-      userId: USER_ID,
-      topK: 3,
-      query: "what theme do I like?",
-      minScore: 0.25,
-      filter: { source: { $eq: "agent" }, deleted: { $eq: false } },
+    // The tools context is exactly eve's `MemoryToolsContext`: no `turn`.
+    const { turn: _turn, ...toolsContext } = operationContext({
+      scopeKey: SCOPE,
+      sessionId: "s-seq",
     });
-    expect(content).toContain("# Recalled memories for recall");
+    const tools = await provider.tools!(toolsContext as never);
+    await callTool(tools, "save_memory", { text: "The user deploys on Fridays" });
+
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ sessionId: "s-seq", source: "agent", sequence: 7 }),
+      }),
+    );
   });
 
   it("recall reaches Redis as a userId-scoped $smart query on the shared agentkit:memory index", async () => {
@@ -1191,30 +1192,6 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     expect(content).toContain(`${id}: ${stored.text}`);
   });
 
-  it("recalls again at compaction.completed, against the same locked scope", async () => {
-    const scope = newScope("compaction");
-    const tools = await provider.tools!(
-      operationContext({ scopeKey: scope, slot: "recall" }) as never,
-    );
-    await callTool(tools, "save_memory", { text: "The user's deploy target is Vercel" });
-    await index.waitIndexing();
-
-    // There is no `compaction.requested` capture any more — messages are stored as they happen, so
-    // nothing is left to rescue before the summarizer runs.
-    expect(provider.capture?.["compaction.requested"]).toBeUndefined();
-
-    const content = await pollUntil(
-      () =>
-        recallAt(
-          provider,
-          "compaction.completed",
-          operationContext({ scopeKey: scope, input: [userMessage("what is the deploy target?")] }),
-        ),
-      (c) => c.includes("Vercel"),
-    );
-    expect(content).toContain("Vercel");
-  });
-
   it("rejects a model-supplied memory id that could address another scope's key", async () => {
     const tools = await provider.tools!(operationContext({ scopeKey }) as never);
     await expect(callTool(tools, "forget_memory", { id: "../../other:key" })).rejects.toThrow(
@@ -1269,10 +1246,11 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
       ],
     });
     const both = redisMemory({ redis, rememberMessages: "all" });
-    const tools = await both.tools!({
-      ...context,
-      turn: { id: "t", input: [], sequence: 1 },
-    } as never);
+    // eve always recalls at `turn.started` before the model can call a tool, and that is where the
+    // turn's sequence reaches `save_memory` (a memory tool's context has no `turn` in eve 0.84+).
+    await recallAt(both, "turn.started", context);
+    const { turn: _turn, ...toolsContext } = context;
+    const tools = await both.tools!(toolsContext as never);
 
     // A curated fact saved mid-turn, then both halves of the turn captured at turn end —
     // `"all"` is needed for the assistant's reply, which the default no longer stores.

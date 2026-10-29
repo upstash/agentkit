@@ -2,7 +2,7 @@
  * Sandbox provider for **Eve** (`eve/sandbox`, https://eve.dev/docs/sandbox), powered by
  * **Upstash Box** (`@upstash/box`) — a serverless cloud sandbox for AI agents.
  *
- * `UpstashSandbox` is an Eve sandbox **provider** (eve ≥0.64's `defineSandboxProvider()` contract),
+ * `UpstashSandbox` is an Eve sandbox **provider** (eve ≥0.87's `defineSandboxProvider()` contract),
  * used exactly like eve's built-in `VercelSandbox`:
  *
  * ```ts
@@ -60,12 +60,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { Box } from "@upstash/box";
 import type { BoxConfig, NetworkPolicy as BoxNetworkPolicy } from "@upstash/box";
 import type { SandboxNetworkPolicy, SandboxProcess, SandboxSession } from "eve/sandbox";
-import { defineSandboxProvider } from "eve/sandbox/provider";
-import type {
-  SandboxDeleteOptions,
-  SandboxProviderHandle,
-  SandboxProviderResources,
-} from "eve/sandbox/provider";
+import { SandboxSessionGoneError, defineSandboxProvider } from "eve/sandbox/provider";
+import type { SandboxConnection } from "eve/sandbox/provider";
 
 /**
  * The session type of an Upstash Box sandbox: eve's {@link SandboxSession} plus `setNetworkPolicy`.
@@ -86,7 +82,11 @@ export interface UpstashSandboxOpenOptions {
 /**
  * Options for `UpstashSandbox.environment(...)` — the **Upstash Box** `BoxConfig` as-is (`runtime`,
  * `size`, `apiKey`/`baseUrl`, `keepAlive`, `initCommand`, `env`, `git`, `skills`, `mcpServers`,
- * `attachHeaders`, `timeout`, …), plus two AgentKit fields: `prepare` and `baseSnapshot`.
+ * `attachHeaders`, `timeout`, …), plus the AgentKit field `baseSnapshot`. eve adds the standard `prepare(sandbox)` option itself:
+ * setup every session's box inherits (installing packages, cloning a repo, warming caches), run once
+ * per environment generation inside a temporary box and captured as a Box snapshot. The box starts
+ * deny-all, so call `sandbox.setNetworkPolicy("allow-all")` (or an allow-list) first if the setup
+ * needs egress; sessions do **not** inherit the policy you set there.
  *
  * Omitted from `BoxConfig`: `networkPolicy` (egress is deny-all at creation and opened per session —
  * see {@link UpstashSandboxOpenOptions}) and `name` (box names are unique per account, and every
@@ -97,14 +97,6 @@ export interface UpstashSandboxOpenOptions {
  * `UPSTASH_BOX_API_KEY` over an inline `apiKey` so rotating the key doesn't do that.
  */
 export type UpstashSandboxEnvironmentOptions = Omit<BoxConfig, "networkPolicy" | "name"> & {
-  /**
-   * Setup every session's box inherits — installing packages, cloning a repo, warming caches. Runs
-   * once per environment generation inside a temporary box (after workspace seeds and skills are
-   * written); the result is captured as a Box snapshot. The box starts deny-all: call
-   * `sandbox.setNetworkPolicy("allow-all")` (or an allow-list) first if the setup needs egress.
-   * Sessions do **not** inherit the policy you set here.
-   */
-  prepare?: (sandbox: UpstashSandboxSession) => Promise<void> | void;
   /**
    * A **base Box snapshot** to build on instead of a bare `Box.create` — for heavy, slow-changing
    * setup (browser binaries, a toolchain) you bake and manage yourself, out of band. `prepare` layers
@@ -204,8 +196,8 @@ export function toBoxNetworkPolicy(policy: SandboxNetworkPolicy): BoxNetworkPoli
   return {
     mode: "custom",
     ...(allowedDomains ? { allowedDomains } : {}),
-    ...(policy.subnets?.allow ? { allowedCidrs: policy.subnets.allow } : {}),
-    ...(policy.subnets?.deny ? { deniedCidrs: policy.subnets.deny } : {}),
+    ...(policy.subnets?.allow ? { allowedCidrs: [...policy.subnets.allow] } : {}),
+    ...(policy.subnets?.deny ? { deniedCidrs: [...policy.subnets.deny] } : {}),
   };
 }
 
@@ -216,37 +208,6 @@ function shellQuote(value: string): string {
 const toBase64 = (data: string | Uint8Array): string =>
   Buffer.from(data as Uint8Array).toString("base64");
 const fromBase64 = (b64: string): Uint8Array => new Uint8Array(Buffer.from(b64, "base64"));
-
-function bytesToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
-
-async function streamToBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) chunks.push(value);
-  }
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    out.set(c, offset);
-    offset += c.length;
-  }
-  return out;
-}
-
-async function streamToText(stream: ReadableStream<Uint8Array>): Promise<string> {
-  return new TextDecoder().decode(await streamToBytes(stream));
-}
 
 /** A writable byte stream plus its controller, closed exactly once. */
 function pushStream(): {
@@ -278,8 +239,8 @@ function pushStream(): {
 interface ProcessOptions {
   command: string;
   workingDirectory?: string;
-  env?: Record<string, string>;
-  abortSignal?: AbortSignal;
+  env?: Readonly<Record<string, string>>;
+  signal?: AbortSignal;
 }
 
 /**
@@ -288,7 +249,7 @@ interface ProcessOptions {
  * tree, so a cancelled turn doesn't leave a runaway command in the box.
  */
 async function spawnOnBox(box: Box, options: ProcessOptions): Promise<SandboxProcess> {
-  options.abortSignal?.throwIfAborted();
+  options.signal?.throwIfAborted();
   const stdout = pushStream();
   const stderr = pushStream();
   const handle = await box.exec.session({
@@ -301,16 +262,16 @@ async function spawnOnBox(box: Box, options: ProcessOptions): Promise<SandboxPro
     onStderr: stderr.push,
   });
   const onAbort = () => handle.kill("KILL");
-  options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  options.signal?.addEventListener("abort", onAbort, { once: true });
   const exited = handle.wait().then(
     (exitCode) => {
-      options.abortSignal?.removeEventListener("abort", onAbort);
+      options.signal?.removeEventListener("abort", onAbort);
       stdout.end();
       stderr.end();
       return { exitCode };
     },
     (err: unknown) => {
-      options.abortSignal?.removeEventListener("abort", onAbort);
+      options.signal?.removeEventListener("abort", onAbort);
       stdout.end(err);
       stderr.end(err);
       throw err;
@@ -330,121 +291,64 @@ async function spawnOnBox(box: Box, options: ProcessOptions): Promise<SandboxPro
   };
 }
 
-/** Build Eve's {@link UpstashSandboxSession} over a live Box. */
-function buildSession(box: Box): UpstashSandboxSession {
-  // Eve hands us `/workspace`-rooted (or relative) paths; map them to Box's `/workspace/home`.
-  const resolvePath = (path: string): string => toBoxPath(path);
-
+/** Build eve's byte-level {@link SandboxConnection} over a live Box; eve derives the session from it. */
+function buildConnection(box: Box): SandboxConnection<{
+  setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void>;
+}> {
   return {
-    resolvePath,
-    spawn: (options) => spawnOnBox(box, options),
-    async run(options) {
-      const proc = await spawnOnBox(box, options);
-      const [stdout, stderr, { exitCode }] = await Promise.all([
-        streamToText(proc.stdout),
-        streamToText(proc.stderr),
-        proc.wait(),
-      ]);
-      options.abortSignal?.throwIfAborted();
-      return { exitCode, stdout, stderr };
+    // Eve hands us `/workspace`-rooted paths; map them to Box's `/workspace/home`.
+    spawn(options) {
+      if (options.stdin) {
+        throw new Error(
+          "UpstashSandbox: spawning a process with a writable stdin is not supported.",
+        );
+      }
+      return spawnOnBox(box, options);
     },
     async readFile({ path }) {
+      const boxPath = toBoxPath(path);
       try {
-        return bytesToStream(
-          fromBase64(await box.files.read(resolvePath(path), { encoding: "base64" })),
-        );
-      } catch {
-        return null;
+        return fromBase64(await box.files.read(boxPath, { encoding: "base64" }));
+      } catch (err) {
+        // `null` is reserved for a path that does not exist; a directory or unreadable path rejects.
+        const probe = await box.exec.command(`test -e ${shellQuote(boxPath)}`);
+        if ((probe.exitCode ?? 0) !== 0) return null;
+        throw err;
       }
     },
-    async readBinaryFile({ path }) {
-      try {
-        return fromBase64(await box.files.read(resolvePath(path), { encoding: "base64" }));
-      } catch {
-        return null;
+    async writeFiles({ files, signal }) {
+      for (const file of files) {
+        signal?.throwIfAborted();
+        await box.files.write({
+          path: toBoxPath(file.path),
+          content: toBase64(file.content),
+          encoding: "base64",
+        });
       }
-    },
-    async readTextFile({ path, startLine, endLine }) {
-      try {
-        const text = await box.files.read(resolvePath(path));
-        if (startLine === undefined && endLine === undefined) return text;
-        const lines = text.split("\n");
-        return lines.slice((startLine ?? 1) - 1, endLine ?? lines.length).join("\n");
-      } catch {
-        return null;
-      }
-    },
-    async writeFile({ path, content }) {
-      const bytes = await streamToBytes(content);
-      await box.files.write({
-        path: resolvePath(path),
-        content: toBase64(bytes),
-        encoding: "base64",
-      });
-    },
-    async writeBinaryFile({ path, content }) {
-      await box.files.write({
-        path: resolvePath(path),
-        content: toBase64(content),
-        encoding: "base64",
-      });
-    },
-    async writeTextFile({ path, content }) {
-      await box.files.write({ path: resolvePath(path), content });
-    },
-    async setNetworkPolicy(policy) {
-      await box.updateNetworkPolicy(toBoxNetworkPolicy(policy));
     },
     async removePath({ path, force, recursive }) {
       const flags = `${recursive ? "r" : ""}${force ? "f" : ""}`;
       const run = await box.exec.command(
-        `rm ${flags ? `-${flags}` : ""} ${shellQuote(resolvePath(path))}`.trim(),
+        `rm ${flags ? `-${flags}` : ""} ${shellQuote(toBoxPath(path))}`.trim(),
       );
       if ((run.exitCode ?? 0) !== 0) {
         throw new Error(`UpstashSandbox: removing "${path}" failed: ${run.stderr || run.result}`);
       }
     },
+    // `sandbox.stop()`: release compute, keep the box resumable (`resume` -> `Box.get` auto-resumes).
+    // Provider errors must reject: keep-alive boxes can't be paused and will.
+    async stop() {
+      await box.pause();
+    },
+    extensions: {
+      async setNetworkPolicy(policy) {
+        await box.updateNetworkPolicy(toBoxNetworkPolicy(policy));
+      },
+    },
   };
 }
 
-/**
- * Eve's compiled workspace seeds and skills, flattened to absolute target paths (workspace files land
- * under `/workspace`, skills under `$HOME/.agents/skills`).
- */
-function resourceFiles(
-  resources: SandboxProviderResources,
-): { path: string; content: string | Uint8Array }[] {
-  return [resources.workspace, resources.skills].flatMap((tree) =>
-    tree === undefined
-      ? []
-      : tree.files.map((f) => ({
-          path: `${tree.targetPath}/${f.relativePath}`,
-          content: f.content,
-        })),
-  );
-}
-
-/** Write eve's resources into a box, expanding `$HOME` and bridging `/workspace` → `/workspace/home`. */
-async function writeResources(
-  box: Box,
-  files: { path: string; content: string | Uint8Array }[],
-): Promise<void> {
-  let home: string | undefined;
-  for (const file of files) {
-    let path = file.path;
-    if (path.startsWith("$HOME/")) {
-      home ??= (await box.exec.command('printf %s "$HOME"')).stdout.trim();
-      if (!home) throw new Error("UpstashSandbox: could not resolve $HOME inside the box.");
-      path = `${home}/${path.slice("$HOME/".length)}`;
-    }
-    const binary = typeof file.content !== "string";
-    await box.files.write({
-      path: toBoxPath(path),
-      content: binary ? toBase64(file.content) : (file.content as string),
-      ...(binary ? { encoding: "base64" as const } : {}),
-    });
-  }
-}
+const SNAPSHOT_RESTORE_FAILED = "UpstashSandbox: could not restore Upstash Box snapshot";
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -470,33 +374,19 @@ function requireState(state: unknown): UpstashSandboxState {
   return s as UpstashSandboxState;
 }
 
-/** Provider handle over a live box: the session plus eve's lifecycle hooks. */
-function createHandle(box: Box): SandboxProviderHandle<UpstashSandboxSession> {
-  // Set once `onSandboxDelete` destroyed the box: eve may still call stop/shutdown on the handle.
-  let deleted = false;
-  return {
-    sandbox: buildSession(box),
-    // `sandbox.stop()`: release compute, keep the box resumable (`resume` → `Box.get` auto-resumes).
-    // Provider errors must reject — keep-alive boxes can't be paused and will.
-    async onSandboxStop() {
-      if (deleted) return;
-      await box.pause();
-    },
-    // Server stopping: nothing may be left running, but failures must not block teardown.
-    async onRuntimeShutdown() {
-      if (deleted) return;
-      await box.pause().catch(() => {});
-    },
-    // `sandbox.delete()`: permanently remove the session's box. The prepared snapshot is shared by
-    // every session of the environment and must survive. Errors reject so eve keeps the state and
-    // authored code can retry.
-    async onSandboxDelete(options?: SandboxDeleteOptions) {
-      if (deleted) return;
-      options?.abortSignal?.throwIfAborted(); // Box's API takes no signal; honour it at the boundary
-      await box.delete();
-      deleted = true;
-    },
-  };
+/** A box's `getStatus()` for a lookup: `null` when it is deleted, errored or cannot be fetched. */
+async function liveBox(
+  lookup: () => Promise<Box>,
+): Promise<{ box: Box; error?: undefined } | { box?: undefined; error: unknown }> {
+  try {
+    const box = await lookup();
+    // `Box.get` also returns deleted boxes (their record lingers with that status), so check.
+    const { status } = await box.getStatus();
+    if (status === "deleted" || status === "error") throw new Error(`box status is "${status}"`);
+    return { box };
+  } catch (error) {
+    return { error };
+  }
 }
 
 /**
@@ -505,15 +395,16 @@ function createHandle(box: Box): SandboxProviderHandle<UpstashSandboxSession> {
  * `defineSandbox()`.
  */
 export const UpstashSandbox = defineSandboxProvider<
-  UpstashSandboxEnvironmentOptions | undefined,
+  UpstashSandboxEnvironmentOptions,
   UpstashSandboxOpenOptions | undefined,
   UpstashSandboxArtifact,
   UpstashSandboxState,
-  UpstashSandboxSession
+  { setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void> }
 >({
   name: "upstash",
   environment(options) {
-    const { prepare: prepareHook, baseSnapshot, ...boxOptions } = options ?? {};
+    // `prepare` never reaches the provider: eve strips it and runs it inside `ctx.populate()`.
+    const { baseSnapshot, ...boxOptions } = options;
 
     /** `BoxConfig` for new boxes: the user's options, pause-based idle, deny-all egress, a name. */
     const boxConfig = (name: string): BoxConfig => ({
@@ -545,37 +436,46 @@ export const UpstashSandbox = defineSandboxProvider<
         return await Box.fromSnapshot(snapshotId, boxConfig(name));
       } catch (err) {
         throw new Error(
-          `UpstashSandbox: could not restore Upstash Box snapshot "${snapshotId}" (${errorMessage(err)}). ` +
+          `${SNAPSHOT_RESTORE_FAILED} "${snapshotId}" (${errorMessage(err)}). ` +
             `If it was deleted, rebuild (\`eve build\`) or redeploy to prepare the environment again.`,
           { cause: err },
         );
       }
     };
 
+    /**
+     * The box name derived from the session id. eve requires `start()` to be an idempotent upsert
+     * and `onSessionEnd()` to delete "whatever exists for the session" even with no recorded state,
+     * so a session's box must be findable by something other than a stored id.
+     */
+    const sessionBoxName = (sessionId: string): string =>
+      `eve-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
+
     return {
       async prepare(ctx) {
-        const files = resourceFiles(ctx.resources);
-        // Nothing to bake → no temporary box, no snapshot; sessions start from the base (if any).
-        if (files.length === 0 && !prepareHook) return { snapshotId: null };
+        // Nothing to bake (no seeds, skills or authored `prepare`) -> no temporary box, no snapshot;
+        // sessions start from the base (if any).
+        if (ctx.isEmpty) return { snapshotId: null };
 
         const box = await createBox(
           `eve-prep-${randomBytes(4).toString("hex")}`,
           await resolveBaseSnapshot(),
         );
         try {
-          await writeResources(box, files);
-          if (prepareHook) await prepareHook(buildSession(box));
+          // Seeds `/workspace` and `$HOME/.agents/skills`, then runs the authored `prepare` with a
+          // session over this connection.
+          await ctx.populate(buildConnection(box));
           const snapshot = await box.snapshot({
-            name: `eve-${ctx.sourceRevision}`.replace(/[^\w.-]/g, "-").slice(0, 120),
+            name: `eve-${ctx.templateKey({ provider: "upstash" })}`
+              .replace(/[^\w.-]/g, "-")
+              .slice(0, 120),
           });
-          ctx.log?.(`Prepared Upstash Box snapshot ${snapshot.id}`);
+          ctx.log(`Prepared Upstash Box snapshot ${snapshot.id}`);
           return { snapshotId: snapshot.id };
         } catch (err) {
           throw new Error(
             `UpstashSandbox: failed to prepare the sandbox environment: ${errorMessage(err)}`,
-            {
-              cause: err,
-            },
+            { cause: err },
           );
         } finally {
           // Snapshots outlive the box they were taken from.
@@ -585,13 +485,35 @@ export const UpstashSandbox = defineSandboxProvider<
 
       async start(ctx, openOptions, artifact) {
         const { snapshotId } = requireArtifact(artifact);
-        // Unique per start (box names are account-wide); the session hash makes boxes traceable
-        // to their eve session in the Box console.
-        const sessionTag = createHash("sha256").update(ctx.session.id).digest("hex").slice(0, 12);
-        const box = await createBox(
-          `eve-${sessionTag}-${randomBytes(3).toString("hex")}`,
-          snapshotId ?? (await resolveBaseSnapshot()),
-        );
+        const name = sessionBoxName(ctx.session.id);
+
+        // Idempotent upsert: a repeated or concurrent start for the same session finds its box.
+        const existing = await liveBox(() => Box.get(name, connection));
+        if (existing.box) {
+          return {
+            connection: buildConnection(existing.box),
+            state: { boxId: existing.box.id, version: 1 },
+          };
+        }
+
+        const restoreFrom = snapshotId ?? (await resolveBaseSnapshot());
+        let box: Box;
+        try {
+          box = await createBox(name, restoreFrom);
+        } catch (err) {
+          // Lost a race with a concurrent start, or a deleted box still holds the name.
+          const raced = await liveBox(() => Box.get(name, connection));
+          if (raced.box) {
+            return {
+              connection: buildConnection(raced.box),
+              state: { boxId: raced.box.id, version: 1 },
+            };
+          }
+          // Box names are account-wide: a lingering deleted record keeps its name, so retry with a
+          // suffix. (`onSessionEnd` finds this box through the recorded state.)
+          if (errorMessage(err).startsWith(SNAPSHOT_RESTORE_FAILED)) throw err;
+          box = await createBox(`${name}-${randomBytes(3).toString("hex")}`, restoreFrom);
+        }
         try {
           if (openOptions?.networkPolicy) {
             await box.updateNetworkPolicy(toBoxNetworkPolicy(openOptions.networkPolicy));
@@ -601,27 +523,37 @@ export const UpstashSandbox = defineSandboxProvider<
           await box.delete().catch(() => {});
           throw err;
         }
-        return { handle: createHandle(box), state: { boxId: box.id, version: 1 } };
+        return { connection: buildConnection(box), state: { boxId: box.id, version: 1 } };
       },
 
       async resume(_ctx, artifact, state) {
         requireArtifact(artifact);
         const { boxId } = requireState(state);
-        let box: Box;
-        try {
-          box = await Box.get(boxId, connection);
-          // `Box.get` also returns deleted boxes (their record lingers with that status), so check.
-          const { status } = await box.getStatus();
-          if (status === "deleted" || status === "error")
-            throw new Error(`box status is "${status}"`);
-        } catch (err) {
-          throw new Error(
+        const found = await liveBox(() => Box.get(boxId, connection));
+        if (!found.box) {
+          throw new SandboxSessionGoneError(
             `UpstashSandbox: the session's Upstash Box "${boxId}" is no longer available ` +
-              `(${errorMessage(err)}). Call sandbox.delete() to start a fresh sandbox for this session.`,
-            { cause: err },
+              `(${errorMessage(found.error)}). Call sandbox.delete() to start a fresh sandbox for this session.`,
           );
         }
-        return createHandle(box);
+        return buildConnection(found.box);
+      },
+
+      // `sandbox.delete()` and session end: permanently remove the session's box. The prepared
+      // snapshot is shared by every session of the environment and must survive. Must succeed when
+      // nothing exists; real failures reject so eve keeps the state and authored code can retry.
+      async onSessionEnd(ctx, state, endOptions) {
+        endOptions.signal?.throwIfAborted(); // Box's API takes no signal; honour it at the boundary
+        const target = state ? requireState(state).boxId : sessionBoxName(ctx.session.id);
+        let box: Box;
+        try {
+          box = await Box.get(target, connection);
+        } catch {
+          return; // nothing exists
+        }
+        const { status } = await box.getStatus().catch(() => ({ status: "deleted" }));
+        if (status === "deleted") return;
+        await box.delete();
       },
     };
   },

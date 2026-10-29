@@ -123,23 +123,21 @@ Neither replaces the [memory tools](#memory-tools) above: those need no memory s
 version, and stay the right choice for purely model-driven memory.
 
 <details>
-<summary>When each hook runs (the four lifecycle points)</summary>
+<summary>When each hook runs (the two lifecycle points)</summary>
 
-eve drives a memory slot at four points. Both integrations recall at the same two; only
+eve 0.84+ drives a memory provider at two points. Both integrations recall at `turn.started`; only
 `redisMemory()` writes.
 
 | eve phase | `fileMemory({ backend: redisDocuments() })` | `redisMemory()` |
 | --- | --- | --- |
 | `turn.started` | read the document, inject it whole | BM25 `$smart` recall for the turn's user text → one keyed message, injected **before** the model runs |
 | `turn.completed` | — | write this turn's messages (`rememberMessages`), then wait for indexing |
-| `compaction.requested` | — | nothing — messages are stored as they happen, so the summarizer takes nothing with it |
-| `compaction.completed` | read and inject against the new checkpoint | recall again against the new checkpoint |
 
-Two consequences worth knowing. Capture runs **after** the response is delivered, which is why
+One consequence worth knowing: capture runs **after** the response is delivered, which is why
 blocking on Redis Search's `waitIndexing()` there costs the caller nothing and makes what you just
-said recallable on the very next turn. And recall runs a second time at `compaction.completed` so
-memory is re-injected against the fresh checkpoint rather than being folded into the summary — eve
-excludes recalled records from the summarizer for the same reason.
+said recallable on the very next turn. (Older eve versions also had `compaction.requested` /
+`compaction.completed` hooks; eve 0.84 removed them, and with every turn's messages stored as they
+happen there is nothing to rescue before the summarizer runs.)
 
 Recall is also cached per eve `operationId` (1h). eve requires providers to treat that id as an
 idempotency key — *"replaying a recall with a different result is an error"* — and a live ranked
@@ -229,9 +227,9 @@ conversation changes topic.
 `scope.key` that is used as the storage partition. Derive it from verified session auth, never from
 model input — `byPrincipal` from `eve/memory/scope` is the built-in shorthand.
 
-**Requires eve ≥ 0.45.2** (`eve/memory` landed in 0.45.1, `eve/memory/file` in 0.45.2). The package
-as a whole requires **eve ≥ 0.65** (its `eve` peer range), because the `./sandbox` provider targets the
-eve 0.64+ provider API.
+**Requires eve ≥ 0.87.0** (the package's `eve` peer range): the memory providers and the `./sandbox`
+provider target eve 0.87's APIs (`ctx.populate`, `onSessionEnd`, `signal` on sandbox and memory
+inputs), and the typings only match from that release.
 
 </details>
 
@@ -344,7 +342,7 @@ export const environment = UpstashSandbox.environment({
 export default defineSandbox(() => environment.open());
 ```
 
-Requires **eve ≥ 0.65** and **`@upstash/box` ≥ 0.7.1** (an optional peer, only needed when you import
+Requires **eve ≥ 0.87.0** and **`@upstash/box` ≥ 0.7.1** (an optional peer, only needed when you import
 `@upstash/agentkit-eve/sandbox`). The provider reads `UPSTASH_BOX_API_KEY` when eve prepares the
 environment (at `eve build`) and at run time.
 

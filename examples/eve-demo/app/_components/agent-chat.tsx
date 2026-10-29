@@ -23,7 +23,7 @@ export function AgentChat({
   // Send the selected user as a header so the agent scopes memory + cached tools to this user. The
   // parent remounts this component (via a `key`) when the user changes, so a fresh session starts.
   const agent = useEveAgent({ headers: { "x-user-id": userId } });
-  const busy = agent.status === "submitted" || agent.status === "streaming";
+  const busy = agent.status !== "idle";
 
   function send(text: string) {
     const value = text.trim();
@@ -66,31 +66,31 @@ export function AgentChat({
         ) : null}
 
         <div className="messages">
-          {agent.data.messages.length === 0 && (
+          {agent.messages.length === 0 && (
             <p className="muted">
-              An eve agent backed by <code>@upstash/agentkit-eve</code>. It has memory tools
-              (<code>recall_memory</code> / <code>save_memory</code>), schema-driven Redis Search tools
-              over a books index (<code>search_books</code> / <code>aggregate_books</code> /{" "}
+              An eve agent backed by <code>@upstash/agentkit-eve</code>. It has memory tools (
+              <code>recall_memory</code> / <code>save_memory</code>), schema-driven Redis Search
+              tools over a books index (<code>search_books</code> / <code>aggregate_books</code> /{" "}
               <code>count_books</code>), and a cached <code>get_weather</code> tool; requests are
               rate-limited at the channel.
             </p>
           )}
-          {agent.data.messages.map((m) => {
+          {agent.messages.map((m) => {
             const text = m.parts.map((part) => (part.type === "text" ? part.text : "")).join("");
             return (
               <div className="card" key={m.id}>
                 <div className="muted">{m.role === "user" ? "You" : "Assistant"}</div>
                 {/* Show every tool the agent called, with its state + result. */}
                 {m.parts.map((part, i) =>
-                  part.type === "dynamic-tool" ? (
+                  part.type === "tool" ? (
                     <div className="tool-call" key={i}>
-                      <span className="tool-tag">🔧 {part.toolName}</span>
+                      <span className="tool-tag">🔧 {part.name}</span>
                       <span className="muted"> · {part.state}</span>
                       {part.output != null ? (
                         <pre className="tool-io">{JSON.stringify(part.output, null, 2)}</pre>
                       ) : null}
-                      {part.errorText ? (
-                        <pre className="tool-io tool-err">{part.errorText}</pre>
+                      {part.error ? (
+                        <pre className="tool-io tool-err">{part.error.message}</pre>
                       ) : null}
                     </div>
                   ) : null,
