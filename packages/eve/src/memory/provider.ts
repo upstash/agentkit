@@ -15,7 +15,7 @@
  * });
  * ```
  *
- * BM25 (`$smart`) recall at `turn.started` / `compaction.completed`, plus `save_memory` /
+ * BM25 (`$smart`) recall at `turn.started`, plus `save_memory` /
  * `search_memory` / `read_session` / `forget_memory` tools bound to the slot's locked scope.
  * Automatic capture of the caller's messages is on by default (`rememberMessages`).
  *
@@ -41,7 +41,6 @@
 import { AgentMemory, stableHash } from "@upstash/agentkit-sdk";
 import { Redis, s } from "@upstash/redis";
 import type {
-  MemoryCompactionCompletedContext,
   MemoryCompactionRequestedContext,
   MemoryOperationContext,
   MemoryProvider,
@@ -55,8 +54,8 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { addTelemetry } from "../telemetry.js";
 
-/** Context shared by every recall handler this provider registers. */
-export type RedisMemoryRecallContext = MemoryTurnStartedContext | MemoryCompactionCompletedContext;
+/** Context of the recall handler this provider registers (eve 0.84+ only has `turn.started`). */
+export type RedisMemoryRecallContext = MemoryTurnStartedContext;
 /** Context shared by every capture handler this provider registers. */
 export type RedisMemoryCaptureContext =
   | MemoryTurnCompletedContext
@@ -347,8 +346,8 @@ function latestModelTexts(messages: readonly ContextMessage[]): string[] {
  * a no-op: every memory's id is a hash of its text ({@link memoryIdFor}), so re-storing identical
  * text overwrites one Redis key instead of growing the store.
  *
- * At `compaction.requested` the turn can be `null` (a standalone compaction with no active turn);
- * there is no new user text then, so nothing is captured.
+ * (Historical: eve <0.84 had `compaction.requested`, where the turn could be `null`;
+ * there is no new user text then, so nothing is captured.)
  */
 function defaultExtractMemories(context: RedisMemoryCaptureContext): string[] {
   return userTexts(context.turn?.input ?? []);
@@ -492,7 +491,7 @@ function formatRecall(
 
 /**
  * A full eve {@link MemoryProvider} backed by AgentKit's {@link AgentMemory} on Upstash Redis:
- * ranked (BM25 `$smart`) recall at `turn.started` and `compaction.completed`, plus
+ * ranked (BM25 `$smart`) recall at `turn.started`, plus
  * `save_memory`/`search_memory`/`forget_memory` tools bound to the slot's locked scope. Automatic capture and
  * conversation capture are both opt-in.
  *
@@ -542,9 +541,23 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
   const replayKey = (context: MemoryOperationContext): string =>
     `${replayPrefix}:${toKeyPart(context.memory.scope.key)}:${toKeyPart(context.operationId)}`;
 
+  // eve 0.84+ gives a memory *tool* no `turn`, so `save_memory` cannot read the sequence its record
+  // is ordered by. `turn.started` runs first and does have it: it leaves the number here, keyed by
+  // scope + session, for the tools of the same turn to pick up.
+  const sequenceTtl = Math.max(replayTtl, 3_600);
+  const sequenceKey = (scopeKey: string, sessionId: string): string =>
+    `${replayPrefix}:sequence:${toKeyPart(scopeKey)}:${toKeyPart(sessionId)}`;
+
   const recall = async (context: RedisMemoryRecallContext): Promise<MemoryRecallResult> => {
     context.abortSignal.throwIfAborted();
     const userId = toKeyPart(context.memory.scope.key);
+    await redis.set(
+      sequenceKey(context.memory.scope.key, context.session.id),
+      context.turn.sequence,
+      {
+        ex: sequenceTtl,
+      },
+    );
 
     // Replay-stability first. eve records a digest of the accepted result and rejects a replay that
     // differs; a provider only needs its own cache when its store can change before that replay,
@@ -659,7 +672,10 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
               sessionId: toKeyPart(context.session.id),
               source: "agent",
               deleted: false,
-              sequence: context.turn.sequence,
+              sequence:
+                (await redis.get<number>(
+                  sequenceKey(context.memory.scope.key, context.session.id),
+                )) ?? 0,
               subIndex: 0,
             },
           });
@@ -827,7 +843,6 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
   return {
     recall: {
       "turn.started": recall,
-      "compaction.completed": recall,
     },
     // No `compaction.requested`. It existed to grab facts before history was summarized away; once
     // every turn's messages are stored as they happen, nothing is lost at compaction and the hook

@@ -70,7 +70,7 @@ export default defineEval({
     let recalled = "";
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const turn = await session.send("What colour do I like?");
-      recalled = turn.message ?? "";
+      recalled = turn.reply ?? "";
       if (recalled.includes(NONCE)) break;
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
@@ -87,7 +87,7 @@ export default defineEval({
 
     // 5. The saved document comes back in the next turn's recalled context.
     const recap = await session.send("Anything else you know?");
-    t.check(recap.message, includes("Persistent memories for profile"));
-    t.check(recap.message, includes("deploy target is Vercel"));
+    t.check(recap.reply, includes("Persistent memories for profile"));
+    t.check(recap.reply, includes("deploy target is Vercel"));
   },
 });

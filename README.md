@@ -33,7 +33,7 @@ are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/intr
   documents (so they work off Vercel), and `redisMemory()` is a full provider with ranked recall and
   automatic capture.
 - **Code sandbox** (Eve only) — an [Upstash Box](https://github.com/upstash/box) sandbox provider for
-  Eve's `defineSandbox` (`UpstashSandbox`, eve ≥ 0.65).
+  Eve's `defineSandbox` (`UpstashSandbox`, eve ≥ 0.87).
 - **Tool-call cache** — memoize deterministic tool results keyed by arguments.
 - **Durable MCP tasks and events** (`@upstash/mcp-toolkit`) — a long-running MCP tool returns a task
   instead of blocking: a native MCP task the client polls (Claude Code), or a task id the model
