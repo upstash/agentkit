@@ -11,5 +11,13 @@ dev = ["pytest>=8", "ruff>=0.6"]
 line-length = 100
 target-version = "py311"
 
+# A Hermes directory plugin's entry point is `__init__.py` at the plugin root, and the root is a
+# hyphenated `python/<name>` folder.
+[tool.ruff.lint.per-file-ignores]
+"python/*/__init__.py" = ["N999"]
+
 [tool.pytest.ini_options]
 testpaths = ["python"]
+# The plugin-root `__init__.py` makes `python/<name>` look like a package to the default
+# `prepend` mode, which then fails to import it; importlib mode imports test files on their own.
+addopts = ["--import-mode=importlib"]

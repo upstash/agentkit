@@ -21,6 +21,12 @@ def test_version_matches_package_json():
     assert VERSION == package_json["version"]
 
 
+def test_version_matches_plugin_manifest():
+    # Catalog installs read plugin.yaml, not pyproject.toml; sync-version.mjs stamps both.
+    manifest = (PACKAGE_DIR / "plugin.yaml").read_text()
+    assert re.search(r'^version: "(.*)"$', manifest, re.MULTILINE).group(1) == VERSION
+
+
 def test_package_json_names_the_distribution():
     # sync-version.mjs derives the module path from this name, and publish-python.mjs queries PyPI
     # with it, so it has to be the PyPI project name exactly.

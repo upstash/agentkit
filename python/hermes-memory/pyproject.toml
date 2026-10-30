@@ -5,7 +5,8 @@ description = "Upstash Redis memory provider for Hermes Agent: long-term memory,
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["upstash-redis>=1.8.0"]
+# Upper bound: the Hermes plugin catalog asks for one on every dependency (catalog rule 10).
+dependencies = ["upstash-redis>=1.8.0,<2"]
 
 # Hermes discovers pip-installed memory providers through this group; the entry-point name is the
 # value of `memory.provider` in Hermes's config.yaml.
