@@ -60,14 +60,14 @@
   "devDependencies": {
     "@upstash/box": "^0.7.5",
     "@upstash/redis": "^1.38.4",
-    "ai": "7.0.157",
+    "ai": "7.0.159",
     "dotenv": "^16.4.5",
-    "eve": "^0.90.0"
+    "eve": "^0.91.0"
   },
   "peerDependencies": {
     "@upstash/box": ">=0.7.1",
     "@upstash/redis": ">=1.38.4",
-    "eve": ">=0.87.0"
+    "eve": ">=0.87.0 || >=1.0.0-0"
   },
   "peerDependenciesMeta": {
     "@upstash/box": {
