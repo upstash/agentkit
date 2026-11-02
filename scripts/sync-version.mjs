@@ -71,6 +71,16 @@ for (const dir of pythonDirs) {
     version,
     pyproject.replace(/^version = ".*"$/m, `version = "${version}"`),
   );
+  // A Hermes plugin manifest (catalog installs read it instead of pyproject.toml) carries the version too.
+  if (existsSync(join(root, pkgDir, "plugin.yaml"))) {
+    const manifest = readFileSync(join(root, pkgDir, "plugin.yaml"), "utf8");
+    stamp(
+      pkgDir,
+      "plugin.yaml",
+      version,
+      manifest.replace(/^version: .*$/m, `version: "${version}"`),
+    );
+  }
   const { name } = JSON.parse(readFileSync(join(root, pkgDir, "package.json"), "utf8"));
   stamp(
     pkgDir,

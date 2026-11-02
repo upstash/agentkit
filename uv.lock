@@ -185,7 +185,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "upstash-redis", specifier = ">=1.8.0" }]
+requires-dist = [{ name = "upstash-redis", specifier = ">=1.8.0,<2" }]
 
 [[package]]
 name = "upstash-redis"
