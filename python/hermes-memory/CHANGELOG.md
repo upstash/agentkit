@@ -1,5 +1,12 @@
 # upstash-hermes-memory
 
+## 0.1.1
+
+### Patch Changes
+
+- 7822958: Prepare for the Hermes plugin catalog: add `plugin.yaml` and a directory `__init__.py`, cap
+  `upstash-redis` below 2, and document telemetry and how to turn it off.
+
 ## 0.1.0
 
 ### Minor Changes
