@@ -23,17 +23,49 @@ def dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+DEFAULT_NAMESPACE = "agentkit"
+
+# The one index AgentMemory and ChatHistory share by default (the TS `SharedIndexSchema`, field
+# for field and in the same order). Upstash's Free plan allows one search index per database.
+# `kind` ("memory" or "chat") keeps the two apart in every query.
+SHARED_SCHEMA: list[Field] = [
+    ("kind", "TEXT", True),
+    ("userId", "TEXT", True),
+    ("text", "TEXT", False),
+    ("sessionId", "TEXT", True),
+    ("userMessages", "TEXT", False),
+    ("modelMessages", "TEXT", False),
+]
+
+
+def shared_index(redis: Any, namespace: str) -> "SearchIndex":
+    """The shared index of a namespace, covering `<namespace>:memory:` and `<namespace>:chat:`.
+
+    Both stores build this same definition, so whichever reads first creates it and the other's
+    EXISTSOK create is a no-op; the TS SDK builds it identically.
+    """
+    return SearchIndex(
+        redis,
+        name=index_name_for(namespace),
+        prefix=[f"{namespace}:memory:", f"{namespace}:chat:"],
+        schema=SHARED_SCHEMA,
+    )
+
+
 class SearchIndex:
-    def __init__(self, redis: Any, *, name: str, prefix: str, schema: Sequence[Field]):
+    def __init__(
+        self, redis: Any, *, name: str, prefix: str | Sequence[str], schema: Sequence[Field]
+    ):
         self.redis = redis
         self.name = name
-        self.prefix = prefix
+        self.prefixes = [prefix] if isinstance(prefix, str) else list(prefix)
         self.schema = list(schema)
         self._ready = False
         self._lock = threading.Lock()
 
     def create_command(self) -> list[str]:
-        cmd = ["SEARCH.CREATE", self.name, "EXISTSOK", "ON", "JSON", "PREFIX", "1", self.prefix]
+        cmd = ["SEARCH.CREATE", self.name, "EXISTSOK", "ON", "JSON", "PREFIX"]
+        cmd += [str(len(self.prefixes)), *self.prefixes]
         cmd.append("SCHEMA")
         for field, type_, no_tokenize in self.schema:
             cmd += [field, type_] + (["NOTOKENIZE"] if no_tokenize else [])

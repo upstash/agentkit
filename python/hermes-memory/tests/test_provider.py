@@ -38,16 +38,13 @@ def test_tool_errors_come_back_as_json():
 
 @pytest.fixture
 def provider(redis, prefix, monkeypatch):
-    monkeypatch.setenv("UPSTASH_HERMES_MEMORY_PREFIX", f"{prefix}:memory")
-    monkeypatch.setenv("UPSTASH_HERMES_CHAT_PREFIX", f"{prefix}:chat")
+    monkeypatch.setenv("UPSTASH_HERMES_NAMESPACE", prefix)
     monkeypatch.delenv("UPSTASH_HERMES_USER_ID", raising=False)
     provider = UpstashMemoryProvider(redis)
     provider.initialize("20261022_120000_abcd", platform="cli", agent_identity="arda")
-    provider._memory.index.ensure()
-    provider._chats.index.ensure()
+    provider._memory.index.ensure()  # the one index memory and chats share
     yield provider
     provider._memory.index.drop()
-    provider._chats.index.drop()
 
 
 def test_user_and_session_ids_are_used_as_they_are(provider):
@@ -150,20 +147,17 @@ def test_ids_with_percent_are_shared_with_the_ts_sdk(provider, redis):
     }
 
 
-def test_prefixes_come_from_the_hermes_profile(monkeypatch):
+def test_the_namespace_comes_from_the_hermes_profile(monkeypatch):
     # In a multiplexed gateway a profile's .env is only reachable through get_secret.
-    profile = {
-        "UPSTASH_HERMES_MEMORY_PREFIX": "team:memory",
-        "UPSTASH_HERMES_CHAT_PREFIX": "team:chat",
-    }
-    monkeypatch.delenv("UPSTASH_HERMES_MEMORY_PREFIX", raising=False)
-    monkeypatch.delenv("UPSTASH_HERMES_CHAT_PREFIX", raising=False)
+    profile = {"UPSTASH_HERMES_NAMESPACE": "team"}
+    monkeypatch.delenv("UPSTASH_HERMES_NAMESPACE", raising=False)
     monkeypatch.setattr(
         provider_module, "get_secret", lambda name, default=None: profile.get(name, default)
     )
     provider = UpstashMemoryProvider(object())
     provider.initialize("s", platform="cli")
     assert (provider._memory.prefix, provider._chats.prefix) == ("team:memory", "team:chat")
+    assert provider._memory.index.name == provider._chats.index.name == "team"
 
 
 def _turns(*texts):

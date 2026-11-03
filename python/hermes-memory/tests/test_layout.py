@@ -26,20 +26,40 @@ def test_index_names_follow_the_ts_default():
     assert index_name_for("my-app.mem:v2") == "my_app_mem_v2"
 
 
-def test_memory_index_matches_reactive_search_index():
+SHARED_CREATE = (
+    "SEARCH.CREATE agentkit EXISTSOK ON JSON PREFIX 2 agentkit:memory: agentkit:chat: SCHEMA "
+    "kind TEXT NOTOKENIZE userId TEXT NOTOKENIZE text TEXT sessionId TEXT NOTOKENIZE "
+    "userMessages TEXT modelMessages TEXT"
+)
+
+
+def test_memory_and_chats_share_one_index_by_default():
+    # Upstash's Free plan allows one search index per database.
     memory = AgentMemory(Recorder(), enable_telemetry=False)
+    chats = ChatHistory(Recorder(), enable_telemetry=False)
+    assert " ".join(memory.index.create_command()) == SHARED_CREATE
+    assert " ".join(chats.index.create_command()) == SHARED_CREATE
+
+
+def test_a_prefix_gives_a_store_its_own_index_like_the_ts_sdk():
+    memory = AgentMemory(Recorder(), prefix="agentkit:memory", enable_telemetry=False)
     assert " ".join(memory.index.create_command()) == (
         "SEARCH.CREATE agentkit_memory EXISTSOK ON JSON PREFIX 1 agentkit:memory: "
         "SCHEMA text TEXT userId TEXT NOTOKENIZE"
     )
-
-
-def test_chat_index_matches_reactive_search_index():
-    chats = ChatHistory(Recorder(), enable_telemetry=False)
+    chats = ChatHistory(Recorder(), prefix="agentkit:chat", enable_telemetry=False)
     assert " ".join(chats.index.create_command()) == (
         "SEARCH.CREATE agentkit_chat EXISTSOK ON JSON PREFIX 1 agentkit:chat: SCHEMA "
         "userId TEXT NOTOKENIZE sessionId TEXT NOTOKENIZE userMessages TEXT modelMessages TEXT"
     )
+
+
+def test_chats_are_tagged_and_memories_keep_the_ts_shape():
+    redis = Recorder()
+    ChatHistory(redis, enable_telemetry=False).save_chat("s1", [], user_id="u1")
+    (_get, chat_set) = redis.commands
+    assert chat_set[1] == "agentkit:chat:u1:s1"
+    assert chat_set[3].startswith('{"kind":"chat","userId":"u1"')
 
 
 def test_memory_document_matches_agent_memory():

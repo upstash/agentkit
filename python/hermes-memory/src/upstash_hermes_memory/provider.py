@@ -13,9 +13,10 @@ Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
 - UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN (required)
 - UPSTASH_HERMES_USER_ID: whose memories these are. Defaults to the gateway user, then the Hermes
   profile name, then "default".
-- UPSTASH_HERMES_MEMORY_PREFIX / UPSTASH_HERMES_CHAT_PREFIX: key prefixes. The defaults are the
-  TS SDK's (`agentkit:memory`, `agentkit:chat`), so memories are shared with AgentKit apps that
-  use the same database.
+- UPSTASH_HERMES_NAMESPACE: key namespace, default `agentkit`. Memories live at
+  `<namespace>:memory:…` (the TS SDK's default keys, so they are shared with AgentKit apps on the
+  same database) and chats at `<namespace>:chat:…`, both in one search index, so the provider
+  works on Upstash's Free plan (one index per database).
 """
 
 import json
@@ -24,9 +25,8 @@ import os
 import threading
 from typing import Any
 
-from .chat_history import DEFAULT_PREFIX as CHAT_PREFIX
+from ._search import DEFAULT_NAMESPACE
 from .chat_history import ChatHistory
-from .memory import DEFAULT_PREFIX as MEMORY_PREFIX
 from .memory import AgentMemory, MemoryRecord
 
 try:  # Inside Hermes. Outside it (tests, plain library use) the provider is a plain class.
@@ -251,14 +251,11 @@ class UpstashMemoryProvider(MemoryProvider):
                 url=get_secret("UPSTASH_REDIS_REST_URL", ""),
                 token=get_secret("UPSTASH_REDIS_REST_TOKEN", ""),
             )
-        # Like the credentials, the prefixes are read per Hermes profile: a multiplexed gateway
-        # keeps each profile's .env out of os.environ.
-        self._memory = AgentMemory(
-            self._redis, prefix=get_secret("UPSTASH_HERMES_MEMORY_PREFIX", "") or MEMORY_PREFIX
-        )
-        self._chats = ChatHistory(
-            self._redis, prefix=get_secret("UPSTASH_HERMES_CHAT_PREFIX", "") or CHAT_PREFIX
-        )
+        # Like the credentials, the namespace is read per Hermes profile: a multiplexed gateway
+        # keeps each profile's .env out of os.environ. Memory and chats share its one index.
+        namespace = get_secret("UPSTASH_HERMES_NAMESPACE", "") or DEFAULT_NAMESPACE
+        self._memory = AgentMemory(self._redis, namespace=namespace)
+        self._chats = ChatHistory(self._redis, namespace=namespace)
         user = (
             get_secret("UPSTASH_HERMES_USER_ID", "")
             or kwargs.get("user_id")

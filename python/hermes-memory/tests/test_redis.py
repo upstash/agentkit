@@ -20,7 +20,7 @@ def test_round_trip(redis):
 
 @pytest.fixture
 def memory(redis, prefix):
-    memory = AgentMemory(redis, prefix=f"{prefix}:memory", enable_telemetry=False)
+    memory = AgentMemory(redis, namespace=prefix, enable_telemetry=False)
     # Index first, then seed: writes are indexed as writes, never left to the create-time backfill.
     memory.index.ensure()
     yield memory
@@ -29,7 +29,7 @@ def memory(redis, prefix):
 
 @pytest.fixture
 def chats(redis, prefix):
-    chats = ChatHistory(redis, prefix=f"{prefix}:chat", enable_telemetry=False)
+    chats = ChatHistory(redis, namespace=f"{prefix}:c", enable_telemetry=False)
     chats.index.ensure()
     yield chats
     chats.index.drop()
@@ -138,3 +138,22 @@ def test_search_recovers_when_another_client_drops_the_index(redis, memory):
     redis.execute(["SEARCH.DROP", memory.index.name])
     hits = memory.recall("office", user_id="u1")
     assert [h.text for h in hits] == ["the office moved to Kadikoy"]
+
+
+def test_memories_and_chats_stay_apart_in_the_shared_index(redis, prefix):
+    memory = AgentMemory(redis, namespace=prefix, enable_telemetry=False)
+    chats = ChatHistory(redis, namespace=prefix, enable_telemetry=False)
+    assert memory.index.name == chats.index.name  # one index for both
+    memory.index.ensure()
+    try:
+        memory.add("prefers dark roast coffee", user_id="u1", id="m1")
+        chats.save_chat("s1", [{"role": "user", "content": "coffee plans"}], user_id="u1")
+        memory.index.wait_indexing()
+
+        assert [m.id for m in memory.list(user_id="u1")] == ["m1"]
+        assert memory.count(user_id="u1") == 1
+        assert [m.id for m in memory.recall("coffee", user_id="u1")] == ["m1"]
+        assert [c["sessionId"] for c in chats.list_chats(user_id="u1")] == ["s1"]
+        assert [h.session_id for h in chats.search_chats("coffee", user_id="u1")] == ["s1"]
+    finally:
+        memory.index.drop()
