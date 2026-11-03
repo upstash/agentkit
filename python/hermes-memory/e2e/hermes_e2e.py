@@ -84,10 +84,11 @@ def main() -> None:
     from upstash_redis import Redis
 
     run = uuid.uuid4().hex[:8]
-    memory_prefix, chat_prefix = f"e2e:hermes:{run}:memory", f"e2e:hermes:{run}:chat"
+    namespace = f"e2e:hermes:{run}"
+    memory_prefix, chat_prefix = f"{namespace}:memory", f"{namespace}:chat"
     redis = Redis.from_env()
-    memory = AgentMemory(redis, prefix=memory_prefix, enable_telemetry=False)
-    chats = ChatHistory(redis, prefix=chat_prefix, enable_telemetry=False)
+    memory = AgentMemory(redis, namespace=namespace, enable_telemetry=False)
+    chats = ChatHistory(redis, namespace=namespace, enable_telemetry=False)
     work = Path(tempfile.mkdtemp(prefix="hermes-e2e-"))
     failures: list[str] = []
 
@@ -132,8 +133,7 @@ def main() -> None:
             **os.environ,
             "HERMES_HOME": str(home),
             "PYTHONPATH": str(site),
-            "UPSTASH_HERMES_MEMORY_PREFIX": memory_prefix,
-            "UPSTASH_HERMES_CHAT_PREFIX": chat_prefix,
+            "UPSTASH_HERMES_NAMESPACE": namespace,
         }
         print(f"  HERMES_HOME={home}\n  prefixes {memory_prefix} / {chat_prefix}")
 
@@ -259,8 +259,15 @@ def main() -> None:
                 capture_output=True,
                 text=True,
             )
-            print(f"  TS AgentMemory.recall -> {out.stdout.strip() or out.stderr.strip()[:300]}")
-            check("Pamuk" in out.stdout, "the TS SDK recalls the memory Hermes saved")
+            if "Exceeded max index count" in out.stderr:
+                # The TS AgentMemory builds its own index, which a one-index (Free plan) database
+                # refuses; Hermes itself needs only the one it already has.
+                print("  (skipped: the TS SDK needs a second index, and this database allows one)")
+            else:
+                print(
+                    f"  TS AgentMemory.recall -> {out.stdout.strip() or out.stderr.strip()[:300]}"
+                )
+                check("Pamuk" in out.stdout, "the TS SDK recalls the memory Hermes saved")
         else:
             print("  (skipped: build packages/sdk to cross-check with the TS SDK)")
     finally:
@@ -269,11 +276,10 @@ def main() -> None:
                 f"\n--keep: left {memory_prefix}* and {chat_prefix}* in Redis, HERMES_HOME {work}"
             )
         else:
-            for index in (memory.index, chats.index):
-                try:
-                    index.drop()
-                except Exception as error:  # noqa: BLE001 - cleanup is best effort
-                    print(f"  could not drop {index.name}: {error}")
+            try:
+                memory.index.drop()  # the one index memory and chats share
+            except Exception as error:  # noqa: BLE001 - cleanup is best effort
+                print(f"  could not drop {memory.index.name}: {error}")
             for prefix in (memory_prefix, chat_prefix):
                 cursor = 0
                 while True:

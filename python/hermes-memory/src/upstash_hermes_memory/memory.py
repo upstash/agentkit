@@ -1,11 +1,15 @@
 """Python port of `AgentMemory` from `@upstash/agentkit-sdk` (packages/sdk/src/memory.ts).
 
 Same keys, same documents, same index: a memory saved by the TS SDK is recalled here and the other
-way round, as long as both sides use the same prefix.
+way round, as long as both sides use the same namespace (default `agentkit`).
 
-    key    <prefix>:<userId>:<id>
-    value  JSON {"text", "userId", "createdAt" (epoch ms), ...metadata}
-    index  SEARCH.CREATE <name> EXISTSOK ON JSON PREFIX 1 <prefix>: SCHEMA text TEXT userId TEXT NOTOKENIZE
+    key    <namespace>:memory:<userId>:<id>
+    value  JSON {"text", "userId", "createdAt" (epoch ms), ...metadata}, exactly what the TS SDK writes
+    index  the namespace's one shared index, with ChatHistory (see `_search.SHARED_SCHEMA`)
+
+Chats in the shared index carry `kind: "chat"`; memories carry no `kind`, so a memory written by a
+TS app is found here too. Reads drop chat rows by key prefix, and `count` subtracts the chats.
+Passing `prefix` (or `index_name`) gives the store its own index over `<prefix>:` instead.
 """
 
 import time
@@ -13,14 +17,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from ._search import SearchIndex, dumps, index_name_for
+from ._search import DEFAULT_NAMESPACE, SearchIndex, dumps, index_name_for, shared_index
 from ._telemetry import add_telemetry
 
-DEFAULT_PREFIX = "agentkit:memory"
+DEFAULT_PREFIX = f"{DEFAULT_NAMESPACE}:memory"
 
 # The document's own fields. Metadata is spread next to them, so it must not replace them: a
 # `userId` in metadata would move the memory into another user's searches.
-RESERVED_FIELDS = frozenset({"text", "userId", "createdAt"})
+RESERVED_FIELDS = frozenset({"kind", "text", "userId", "createdAt"})
 
 
 def _check_id(value: str, what: str) -> None:
@@ -49,21 +53,35 @@ class AgentMemory:
         self,
         redis: Any,
         *,
-        prefix: str = DEFAULT_PREFIX,
+        namespace: str = DEFAULT_NAMESPACE,
+        prefix: str | None = None,
         index_name: str | None = None,
         min_score: float = 0,
         enable_telemetry: bool = True,
     ):
         self.redis = redis
-        self.prefix = prefix
         self.min_score = min_score
-        self.index = SearchIndex(
-            redis,
-            name=index_name or index_name_for(prefix),
-            prefix=f"{prefix}:",
-            schema=[("text", "TEXT", False), ("userId", "TEXT", True)],
-        )
+        self.shared = prefix is None and index_name is None
+        if self.shared:
+            self.prefix = f"{namespace}:memory"
+            self.index = shared_index(redis, namespace)
+        else:
+            self.prefix = prefix or DEFAULT_PREFIX
+            self.index = SearchIndex(
+                redis,
+                name=index_name or index_name_for(self.prefix),
+                prefix=f"{self.prefix}:",
+                schema=[("text", "TEXT", False), ("userId", "TEXT", True)],
+            )
         add_telemetry(redis, enabled=enable_telemetry)
+
+    def _filter(self, user_id: str) -> dict[str, Any]:
+        return {"userId": {"$eq": user_id}}
+
+    def _memories(self, rows: list[Any], user_id: str) -> list[Any]:
+        """Only this store's rows: on the shared index, a user's chats match a userId filter too."""
+        mine = self._key(user_id, "")
+        return [row for row in rows if row.key.startswith(mine)]
 
     def _key(self, user_id: str, id: str) -> str:
         return f"{self.prefix}:{user_id}:{id}"
@@ -90,11 +108,11 @@ class AgentMemory:
     def recall(self, query: str, *, user_id: str, top_k: int = 5) -> list[MemoryRecord]:
         """The `top_k` memories closest to `query` ($smart: full-text plus fuzzy matching)."""
         _check_id(user_id, "user_id")
-        filter: dict[str, Any] = {"userId": {"$eq": user_id}}
+        filter = self._filter(user_id)
         has_query = bool(query and query.strip())
         if has_query:
             filter["text"] = {"$smart": query}
-        rows = self.index.query(filter, limit=top_k)
+        rows = self._memories(self.index.query(filter, limit=top_k), user_id)
         min_score = self.min_score if has_query else 0
         return [
             r for r in (self._record(row, user_id) for row in rows) if (r.score or 0) >= min_score
@@ -102,12 +120,16 @@ class AgentMemory:
 
     def list(self, *, user_id: str, limit: int = 100) -> list[MemoryRecord]:
         _check_id(user_id, "user_id")
-        rows = self.index.query({"userId": {"$eq": user_id}}, limit=limit)
+        rows = self._memories(self.index.query(self._filter(user_id), limit=limit), user_id)
         return [self._record(row, user_id) for row in rows]
 
     def count(self, *, user_id: str) -> int:
         _check_id(user_id, "user_id")
-        return self.index.count({"userId": {"$eq": user_id}})
+        total = self.index.count(self._filter(user_id))
+        if not self.shared:
+            return total
+        chats = self.index.count({"kind": {"$eq": "chat"}, "userId": {"$eq": user_id}})
+        return max(total - chats, 0)
 
     def get(self, id: str, *, user_id: str) -> MemoryRecord | None:
         _check_id(user_id, "user_id")
