@@ -145,6 +145,31 @@ def test_removals_leave_other_targets_and_saved_memories_alone(provider):
     assert sorted(h.metadata.get("target", "") for h in hits) == ["", "memory"]
 
 
+def test_repeated_adds_keep_one_mirror_and_a_removal_deletes_it(provider):
+    # Hermes reports a repeated add of an existing entry as a success and mirrors it again.
+    for _ in range(25):
+        provider.on_memory_write("add", "user", "Prefers answers in Turkish")
+    assert _texts(provider, "Prefers answers in Turkish") == ["Prefers answers in Turkish"]
+    provider.on_memory_write(
+        "remove", "user", "", metadata={"previous_content": "Prefers answers in Turkish"}
+    )
+    assert _texts(provider, "Prefers answers in Turkish") == []
+
+
+def test_removals_find_every_legacy_mirror_beyond_the_top_hits(provider):
+    # Mirrors written by 0.1.x have random ids; 25 copies plus 25 better-ranked saved memories
+    # used to leave copies behind past the first 20 hits.
+    memory = provider._memory
+    for _ in range(25):
+        memory.add("Turkish", user_id="arda", metadata={"source": "hermes"})
+        memory.add("Turkish", user_id="arda", metadata={"source": "hermes", "target": "user"})
+    memory.index.wait_indexing()
+    provider.on_memory_write("remove", "user", "", metadata={"previous_content": "Turkish"})
+    hits = memory.recall("Turkish", user_id="arda", top_k=100)
+    assert len(hits) == 25
+    assert all("target" not in h.metadata for h in hits)
+
+
 def test_old_text_alone_only_removes_an_unambiguous_match(provider):
     provider.on_memory_write("add", "user", "Drinks tea in the morning")
     provider.on_memory_write("add", "user", "Drinks coffee in the evening")

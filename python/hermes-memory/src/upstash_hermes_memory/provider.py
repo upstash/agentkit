@@ -19,6 +19,7 @@ Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
   use the same database.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -51,8 +52,14 @@ _PREFETCH_TOP_K = 5
 _EXCERPT_CHARS = 300
 # Built-in memory tool actions Hermes forwards (a patch arrives as a replace).
 _MIRRORED_ACTIONS = {"add", "replace", "remove"}
-# How many recalled memories are checked for the entry a replace or remove changed.
-_MIRROR_CANDIDATES = 20
+
+
+def _mirror_id(target: str, text: str) -> str:
+    """The id of a built-in memory entry's mirror: one key per entry, so repeated adds of the
+    same entry overwrite it and a replace or remove can delete it without searching."""
+    digest = hashlib.sha256(f"{target}\n{text.strip()}".encode()).hexdigest()[:32]
+    return f"hermes-{digest}"
+
 
 SAVE_SCHEMA = {
     "name": "upstash_memory_save",
@@ -392,12 +399,16 @@ class UpstashMemoryProvider(MemoryProvider):
             if action in ("replace", "remove"):
                 self._forget_mirrored(target, metadata or {})
             if action in ("add", "replace") and content:
-                self._remember(content, {"source": "hermes", "target": target})
+                self._remember(
+                    content,
+                    {"source": "hermes", "target": target},
+                    id=_mirror_id(target, content),
+                )
         except Exception as error:  # noqa: BLE001 - as above
             logger.warning("upstash memory mirror failed: %s", error)
 
     def _forget_mirrored(self, target: str, metadata: dict[str, Any]) -> None:
-        """Delete the mirrored copy of the entry a replace or remove changed.
+        """Delete every mirrored copy of the entry a replace or remove changed.
 
         `previous_content` (the full old entry) is matched exactly. Older Hermes versions only send
         `old_text`, a substring of the entry, so it is used only when exactly one mirrored entry
@@ -411,21 +422,35 @@ class UpstashMemoryProvider(MemoryProvider):
             return
         candidates = [
             r
-            for r in self._memory.recall(query, user_id=self._user_id, top_k=_MIRROR_CANDIDATES)
+            for r in self._all_matches(query)
             if r.metadata.get("source") == "hermes" and r.metadata.get("target") == target
         ]
         if previous:
-            stale = [r for r in candidates if r.text.strip() == previous]
+            # The stable id finds the mirror even when it ranks low; copies mirrored before ids
+            # were stable (0.1.x) have random ids, so every exact match goes too.
+            stale_ids = {_mirror_id(target, previous)}
+            stale_ids.update(r.id for r in candidates if r.text.strip() == previous)
         else:
-            stale = [r for r in candidates if old_text in r.text]
-            if len(stale) != 1:
+            stale_ids = {r.id for r in candidates if old_text in r.text}
+            if len(stale_ids) != 1:
                 return
-        for record in stale:
-            self._memory.forget(record.id, user_id=self._user_id)
-        if stale:
-            self._memory.index.wait_indexing()
+        for id in stale_ids:
+            self._memory.forget(id, user_id=self._user_id)
+        self._memory.index.wait_indexing()
 
-    def _remember(self, text: str, metadata: dict[str, Any]) -> MemoryRecord:
+    def _all_matches(self, query: str) -> list[MemoryRecord]:
+        """Every memory of this user matching `query`, not just the best few."""
+        assert self._memory is not None
+        total = self._memory.index.count(
+            {"userId": {"$eq": self._user_id}, "text": {"$smart": query}}
+        )
+        if total <= 0:
+            return []
+        return self._memory.recall(query, user_id=self._user_id, top_k=total)
+
+    def _remember(
+        self, text: str, metadata: dict[str, Any], *, id: str | None = None
+    ) -> MemoryRecord:
         """Save a fact so that it is searchable once this returns.
 
         Recall reads Redis Search, which indexes a write shortly after it lands. Waiting here
@@ -434,7 +459,7 @@ class UpstashMemoryProvider(MemoryProvider):
         """
         assert self._memory is not None
         self._memory.index.ensure()
-        record = self._memory.add(text, user_id=self._user_id, metadata=metadata)
+        record = self._memory.add(text, user_id=self._user_id, id=id, metadata=metadata)
         self._memory.index.wait_indexing()
         return record
 
