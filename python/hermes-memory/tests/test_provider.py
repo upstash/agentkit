@@ -196,10 +196,19 @@ def test_key_parts_match_the_ts_sdk():
         _key_part("alice:work", "user id")
 
 
-def test_a_user_id_with_a_colon_is_refused(monkeypatch):
+def test_a_refused_user_id_leaves_the_provider_inactive(monkeypatch):
+    # Hermes swallows an initialize error and keeps the provider, so it must not fall back to
+    # another user ("default") or keep writing.
     monkeypatch.setenv("UPSTASH_HERMES_USER_ID", "alice:work")
-    with pytest.raises(ValueError, match="user id"):
-        UpstashMemoryProvider(object()).initialize("s", platform="cli")
+    provider = UpstashMemoryProvider(object())
+    provider.initialize("s", platform="cli")
+    assert provider._memory is None and provider._chats is None
+    assert provider.prefetch("anything") == ""
+    assert provider.system_prompt_block() == ""
+    assert "error" in json.loads(provider.handle_tool_call("upstash_memory_search", {"query": "x"}))
+    assert "error" in json.loads(provider.handle_tool_call("upstash_memory_save", {"text": "x"}))
+    provider.sync_turn("hi", "hello", session_id="s")
+    provider.on_memory_write("add", "memory", "a fact")  # no stores: nothing to write to
 
 
 def test_a_session_id_with_a_colon_keeps_no_transcript(provider):
@@ -237,6 +246,63 @@ def _turns(*texts):
     for user, assistant in texts:
         out += [{"role": "user", "content": user}, {"role": "assistant", "content": assistant}]
     return out
+
+
+def _stamped(*texts, start=1000.0):
+    """A Hermes history: each user message carries the timestamp Hermes gives it."""
+    out = []
+    for n, (user, assistant) in enumerate(texts):
+        out += [
+            {"role": "user", "content": user, "timestamp": start + n},
+            {"role": "assistant", "content": assistant},
+        ]
+    return out
+
+
+def _saved(history):
+    """The transcript sync_turn saves for that history: user turns keep their stamp as `ts`."""
+    return [
+        {
+            "role": m["role"],
+            "content": m["content"],
+            **({"ts": m["timestamp"]} if "timestamp" in m else {}),
+        }
+        for m in history
+    ]
+
+
+def test_rewind_by_time_tells_identical_turns_apart():
+    history = _stamped(("yes", "okay"), ("yes", "okay"))
+    saved = _saved(history)
+    # /undo of the second exchange: Hermes keeps only the first one.
+    assert rewind_transcript(saved, history[:2]) == saved[:2]
+    assert rewind_transcript(saved, []) == []
+
+
+def test_rewind_by_time_keeps_turns_compaction_summarized():
+    history = _stamped(
+        ("opening goal", "a"), ("yes", "b"), ("middle", "c"), ("yes", "d"), ("undo this", "e")
+    )
+    saved = _saved(history)
+    # In-place compaction left a summary plus the latest "yes"; then the last turn was undone.
+    compacted = [{"role": "user", "content": "[summary]", "timestamp": 1003.5}, *history[6:8]]
+    assert rewind_transcript(saved, compacted) == saved[:8]
+
+
+def test_sync_turn_stamps_each_saved_turn(provider):
+    provider.sync_turn("hi", "hello", session_id="s-ts", messages=_stamped(("hi", "hello")))
+    doc = provider._chats.get_chat("s-ts", user_id="arda")
+    assert doc["messages"][0]["ts"] == 1000.0
+
+
+def test_undo_of_an_identical_turn_removes_it_from_redis(provider):
+    both = _stamped(("yes", "okay"), ("yes", "okay"))
+    provider.sync_turn("yes", "okay", session_id="s-dup", messages=both[:2])
+    provider.sync_turn("yes", "okay", session_id="s-dup", messages=both)
+    provider.on_session_switch("s-dup", rewound=True)
+    provider.on_session_end(both[:2])  # exit right after /undo
+    doc = provider._chats.get_chat("s-dup", user_id="arda")
+    assert [m["content"] for m in doc["messages"]] == ["yes", "okay"]
 
 
 def test_rewind_drops_the_undone_turns():

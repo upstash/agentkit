@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime
 from typing import Any
 
 from ._search import DEFAULT_NAMESPACE
@@ -161,21 +162,62 @@ def _turns_of(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return turns
 
 
+def _epoch(value: Any) -> float | None:
+    """A Hermes message timestamp (epoch seconds, or an ISO string) as epoch seconds."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _cut_by_time(transcript: list[dict[str, Any]], history: list[dict[str, Any]]):
+    """The `/undo` cut by timestamp, or None when the timestamps to do it are missing.
+
+    Hermes stamps every message when it enters the conversation, and each saved turn carries its
+    user message's stamp (`ts`). Every turn up to the latest user message Hermes still has stays;
+    a later one was undone. Identical turns ("yes" / "okay" twice) are told apart, and compaction
+    cannot cut anything older.
+    """
+    stamps = [_epoch(m.get("timestamp")) for m in history if m.get("role") == "user"]
+    stamps = [s for s in stamps if s is not None]
+    users = [e for e in transcript if e.get("role") == "user"]
+    if not stamps or not users or any(not isinstance(e.get("ts"), float) for e in users):
+        return None
+    cutoff = max(stamps)
+    kept, keep = [], False
+    for entry in transcript:
+        if entry.get("role") == "user":
+            keep = entry["ts"] <= cutoff
+        if keep:
+            kept.append(entry)
+    return kept
+
+
 def rewind_transcript(
-    transcript: list[dict[str, str]], history: list[dict[str, Any]]
-) -> list[dict[str, str]]:
+    transcript: list[dict[str, Any]], history: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Cut a saved transcript back to what Hermes still has after `/undo`.
 
+    By timestamp when every saved turn and Hermes's history carry one (see `_cut_by_time`).
+    Otherwise (turns saved by an older version, or a history without stamps) by content:
+
     `history` is Hermes's conversation for the session after the undo. Hermes does not say how
-    many turns were undone, so the cut is found by content: the transcript keeps everything up to
-    the latest saved turn matching the latest turn still in `history`, and drops the rest. When no
-    turn of the transcript is left, every saved turn was undone.
+    many turns were undone, so the transcript keeps everything up to the latest saved turn
+    matching the latest turn still in `history`, and drops the rest. When no turn of the
+    transcript is left, every saved turn was undone.
 
     In-place compaction keeps the session id but summarizes older messages, so `history` can be
     much shorter than the transcript, and counting occurrences across the two would land on an
     older turn. A turn is matched by its user text and its reply instead, and the latest match
     wins, so a repeated "yes" lands on the right turn and retained history is never cut.
     """
+    by_time = _cut_by_time(transcript, history)
+    if by_time is not None:
+        return by_time
     saved: list[tuple[int, str, str]] = []
     for i, entry in enumerate(transcript):
         if entry.get("role") != "user":
@@ -256,6 +298,21 @@ class UpstashMemoryProvider(MemoryProvider):
         pass
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
+        # Hermes logs a failed initialize and keeps the provider, so a refused identity must
+        # leave it inactive (no stores: nothing read, nothing written), never on a fallback user.
+        self._memory = self._chats = None
+        self._write_enabled = False
+        user = (
+            get_secret("UPSTASH_HERMES_USER_ID", "")
+            or kwargs.get("user_id")
+            or kwargs.get("agent_identity")
+            or "default"
+        )
+        try:
+            user_id = _key_part(str(user), "user id")
+        except ValueError as error:
+            logger.warning("upstash memory is off for this session: %s", error)
+            return
         if self._redis is None:
             from upstash_redis import Redis
 
@@ -268,17 +325,13 @@ class UpstashMemoryProvider(MemoryProvider):
         namespace = get_secret("UPSTASH_HERMES_NAMESPACE", "") or DEFAULT_NAMESPACE
         self._memory = AgentMemory(self._redis, namespace=namespace)
         self._chats = ChatHistory(self._redis, namespace=namespace)
-        user = (
-            get_secret("UPSTASH_HERMES_USER_ID", "")
-            or kwargs.get("user_id")
-            or kwargs.get("agent_identity")
-            or "default"
-        )
-        self._user_id = _key_part(str(user), "user id")
+        self._user_id = user_id
         self._session_id = self._session_key(session_id)
         self._write_enabled = (kwargs.get("agent_context") or "") in _WRITING_CONTEXTS
 
     def system_prompt_block(self) -> str:
+        if not self._memory:
+            return ""
         return (
             "# Upstash Memory\n"
             f"Long-term memory is stored in Upstash Redis for user `{self._user_id}`. Memories "
@@ -326,7 +379,19 @@ class UpstashMemoryProvider(MemoryProvider):
                 transcript[:] = rewind_transcript(transcript, history[:-1])
                 self._rewound.discard(sid)
             if user_content:
-                transcript.append({"role": "user", "content": user_content})
+                entry: dict[str, Any] = {"role": "user", "content": user_content}
+                # The turn's own stamp, so /undo can cut by time (see `_cut_by_time`).
+                stamp = next(
+                    (
+                        _epoch(m.get("timestamp"))
+                        for m in reversed(messages or [])
+                        if m.get("role") == "user"
+                    ),
+                    None,
+                )
+                if stamp is not None:
+                    entry["ts"] = stamp
+                transcript.append(entry)
             if assistant_content:
                 transcript.append({"role": "assistant", "content": assistant_content})
             self._save_transcript(sid, transcript)
