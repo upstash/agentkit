@@ -98,13 +98,60 @@ def test_a_resumed_session_appends_instead_of_overwriting(provider, redis):
     assert [m["content"] for m in doc["messages"]] == ["first", "one", "second", "two"]
 
 
+def _texts(provider, query):
+    return sorted(h.text for h in provider._memory.recall(query, user_id="arda", top_k=20))
+
+
 def test_built_in_memory_writes_are_mirrored(provider):
     provider.on_memory_write("add", "user", "Prefers answers in Turkish")
-    provider.on_memory_write("remove", "user", "Prefers answers in Turkish")  # not mirrored
     hits = provider._memory.recall("Turkish", user_id="arda")  # mirroring waits for indexing
     assert [(h.text, h.metadata) for h in hits] == [
         ("Prefers answers in Turkish", {"source": "hermes", "target": "user"})
     ]
+
+
+def test_built_in_corrections_replace_the_mirrored_fact(provider):
+    # The shape Hermes sends (memory_manager.notify_memory_tool_write); a patch arrives like this too.
+    provider.on_memory_write("add", "user", "Lives in Ankara")
+    provider.on_memory_write(
+        "replace",
+        "user",
+        "Lives in Izmir",
+        metadata={"old_text": "Ankara", "previous_content": "Lives in Ankara"},
+    )
+    assert _texts(provider, "Lives in") == ["Lives in Izmir"]
+
+
+def test_built_in_removals_delete_the_mirrored_fact(provider):
+    provider.on_memory_write("add", "user", "Prefers answers in Turkish")
+    provider.on_memory_write("add", "user", "Prefers short answers")
+    provider.on_memory_write(
+        "remove",
+        "user",
+        "",
+        metadata={"old_text": "Turkish", "previous_content": "Prefers answers in Turkish"},
+    )
+    assert _texts(provider, "Prefers answers") == ["Prefers short answers"]
+
+
+def test_removals_leave_other_targets_and_saved_memories_alone(provider):
+    provider.handle_tool_call("upstash_memory_save", {"text": "Uses a standing desk"})
+    provider.on_memory_write("add", "memory", "Uses a standing desk")
+    provider.on_memory_write("add", "user", "Uses a standing desk")
+    provider.on_memory_write(
+        "remove", "user", "", metadata={"previous_content": "Uses a standing desk"}
+    )
+    hits = provider._memory.recall("standing desk", user_id="arda", top_k=20)
+    assert sorted(h.metadata.get("target", "") for h in hits) == ["", "memory"]
+
+
+def test_old_text_alone_only_removes_an_unambiguous_match(provider):
+    provider.on_memory_write("add", "user", "Drinks tea in the morning")
+    provider.on_memory_write("add", "user", "Drinks coffee in the evening")
+    provider.on_memory_write("remove", "user", "", metadata={"old_text": "Drinks"})  # ambiguous
+    assert len(_texts(provider, "Drinks")) == 2
+    provider.on_memory_write("remove", "user", "", metadata={"old_text": "tea"})
+    assert _texts(provider, "Drinks") == ["Drinks coffee in the evening"]
 
 
 def test_subagents_read_but_never_write(provider, redis):

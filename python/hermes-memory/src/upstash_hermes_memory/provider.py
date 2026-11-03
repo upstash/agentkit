@@ -6,7 +6,8 @@ Enable it with `memory.provider: upstash` in Hermes's config.yaml. Hermes finds 
 What it does inside Hermes:
 - Before each turn, recalls the memories closest to the user's message into the prompt.
 - After each turn, saves the session's transcript as a searchable ChatHistory document.
-- Mirrors facts the built-in `memory` tool adds, so they are searchable in Redis too.
+- Mirrors the built-in `memory` tool (adds, corrections and removals), so Redis holds the same
+  facts.
 - Gives the model four tools: upstash_memory_save / _search / _forget and upstash_chat_search.
 
 Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
@@ -48,6 +49,10 @@ logger = logging.getLogger(__name__)
 _WRITING_CONTEXTS = {"", "primary"}
 _PREFETCH_TOP_K = 5
 _EXCERPT_CHARS = 300
+# Built-in memory tool actions Hermes forwards (a patch arrives as a replace).
+_MIRRORED_ACTIONS = {"add", "replace", "remove"}
+# How many recalled memories are checked for the entry a replace or remove changed.
+_MIRROR_CANDIDATES = 20
 
 SAVE_SCHEMA = {
     "name": "upstash_memory_save",
@@ -374,13 +379,51 @@ class UpstashMemoryProvider(MemoryProvider):
     def on_memory_write(
         self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None
     ) -> None:
-        """Mirror facts the built-in `memory` tool adds, so Redis holds them too."""
-        if action != "add" or not content or not self._memory or not self._write_enabled:
+        """Mirror built-in `memory` tool writes, so Redis holds the same facts Hermes does.
+
+        Hermes sends `add`, `replace` and `remove` (a patch arrives as a replace whose `content` is
+        the whole edited entry). For replace and remove, `metadata["previous_content"]` is the full
+        entry before the write: the copy mirrored from it is deleted, and a replace then saves
+        `content` in its place, so a corrected or deleted fact is no longer recalled.
+        """
+        if action not in _MIRRORED_ACTIONS or not self._memory or not self._write_enabled:
             return
         try:
-            self._remember(content, {"source": "hermes", "target": target})
+            if action in ("replace", "remove"):
+                self._forget_mirrored(target, metadata or {})
+            if action in ("add", "replace") and content:
+                self._remember(content, {"source": "hermes", "target": target})
         except Exception as error:  # noqa: BLE001 - as above
             logger.warning("upstash memory mirror failed: %s", error)
+
+    def _forget_mirrored(self, target: str, metadata: dict[str, Any]) -> None:
+        """Delete the mirrored copy of the entry a replace or remove changed.
+
+        `previous_content` (the full old entry) is matched exactly. Older Hermes versions only send
+        `old_text`, a substring of the entry, so it is used only when exactly one mirrored entry
+        contains it. Memories saved with upstash_memory_save are never touched.
+        """
+        assert self._memory is not None
+        previous = str(metadata.get("previous_content") or "").strip()
+        old_text = str(metadata.get("old_text") or "").strip()
+        query = previous or old_text
+        if not query:
+            return
+        candidates = [
+            r
+            for r in self._memory.recall(query, user_id=self._user_id, top_k=_MIRROR_CANDIDATES)
+            if r.metadata.get("source") == "hermes" and r.metadata.get("target") == target
+        ]
+        if previous:
+            stale = [r for r in candidates if r.text.strip() == previous]
+        else:
+            stale = [r for r in candidates if old_text in r.text]
+            if len(stale) != 1:
+                return
+        for record in stale:
+            self._memory.forget(record.id, user_id=self._user_id)
+        if stale:
+            self._memory.index.wait_indexing()
 
     def _remember(self, text: str, metadata: dict[str, Any]) -> MemoryRecord:
         """Save a fact so that it is searchable once this returns.
