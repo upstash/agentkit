@@ -17,9 +17,9 @@
     "@ai-sdk/openai": "^4.0.71",
     "@upstash/agentkit-eve-extension": "workspace:*",
     "@upstash/redis": "^1.38.4",
-    "@vercel/connect": "2.7.0",
+    "@vercel/connect": "2.5.6",
     "ai": "7.0.159",
-    "eve": "^1.0.0-rc.1",
+    "eve": "^0.91.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
