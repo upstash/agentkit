@@ -13,7 +13,9 @@ describe.skipIf(!hasRedisCreds)("createRateLimit (live Redis)", () => {
   it("allows the first call and blocks the next once over the limit", async () => {
     const ratelimit = createRateLimit({
       redis,
-      limiter: Ratelimit.slidingWindow(1, "60 s"),
+      // A token bucket has no window edge: a sliding window rounds the previous window's weight
+      // down, so a second call right after a minute boundary got through and failed CI.
+      limiter: Ratelimit.tokenBucket(1, "60 s", 1),
       prefix,
     });
     const id = "user-1";

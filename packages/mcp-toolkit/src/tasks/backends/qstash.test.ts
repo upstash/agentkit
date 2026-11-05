@@ -62,11 +62,13 @@ describe.skipIf(!hasRedisCreds)("RedisTaskStore (real Redis)", () => {
     expect(initial).toBeGreaterThan(0);
     expect(initial).toBeLessThanOrEqual(60_000);
 
+    // Let the TTL run down well past PTTL's millisecond jitter, so a reset would show.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await store.update(task.taskId, { statusMessage: "Step 1/4" });
     const afterUpdate = await redis.pttl(prefix + task.taskId);
     // Still counting down from creation rather than reset — a chatty handler must not be able to
     // keep a task alive past its retention window.
-    expect(afterUpdate).toBeLessThanOrEqual(initial);
+    expect(afterUpdate).toBeLessThanOrEqual(60_000 - 250);
     expect(afterUpdate).toBeGreaterThan(0);
   });
 

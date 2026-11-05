@@ -6,27 +6,30 @@ Enable it with `memory.provider: upstash` in Hermes's config.yaml. Hermes finds 
 What it does inside Hermes:
 - Before each turn, recalls the memories closest to the user's message into the prompt.
 - After each turn, saves the session's transcript as a searchable ChatHistory document.
-- Mirrors facts the built-in `memory` tool adds, so they are searchable in Redis too.
+- Mirrors the built-in `memory` tool (adds, corrections and removals), so Redis holds the same
+  facts.
 - Gives the model four tools: upstash_memory_save / _search / _forget and upstash_chat_search.
 
 Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
 - UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN (required)
 - UPSTASH_HERMES_USER_ID: whose memories these are. Defaults to the gateway user, then the Hermes
   profile name, then "default".
-- UPSTASH_HERMES_MEMORY_PREFIX / UPSTASH_HERMES_CHAT_PREFIX: key prefixes. The defaults are the
-  TS SDK's (`agentkit:memory`, `agentkit:chat`), so memories are shared with AgentKit apps that
-  use the same database.
+- UPSTASH_HERMES_NAMESPACE: key namespace, default `agentkit`. Memories live at
+  `<namespace>:memory:…` (the TS SDK's default keys, so they are shared with AgentKit apps on the
+  same database) and chats at `<namespace>:chat:…`, both in one search index, so the provider
+  works on Upstash's Free plan (one index per database).
 """
 
+import hashlib
 import json
 import logging
 import os
 import threading
+from datetime import datetime
 from typing import Any
 
-from .chat_history import DEFAULT_PREFIX as CHAT_PREFIX
+from ._search import DEFAULT_NAMESPACE
 from .chat_history import ChatHistory
-from .memory import DEFAULT_PREFIX as MEMORY_PREFIX
 from .memory import AgentMemory, MemoryRecord
 
 try:  # Inside Hermes. Outside it (tests, plain library use) the provider is a plain class.
@@ -48,6 +51,16 @@ logger = logging.getLogger(__name__)
 _WRITING_CONTEXTS = {"", "primary"}
 _PREFETCH_TOP_K = 5
 _EXCERPT_CHARS = 300
+# Built-in memory tool actions Hermes forwards (a patch arrives as a replace).
+_MIRRORED_ACTIONS = {"add", "replace", "remove"}
+
+
+def _mirror_id(target: str, text: str) -> str:
+    """The id of a built-in memory entry's mirror: one key per entry, so repeated adds of the
+    same entry overwrite it and a replace or remove can delete it without searching."""
+    digest = hashlib.sha256(f"{target}\n{text.strip()}".encode()).hexdigest()[:32]
+    return f"hermes-{digest}"
+
 
 SAVE_SCHEMA = {
     "name": "upstash_memory_save",
@@ -149,21 +162,62 @@ def _turns_of(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return turns
 
 
+def _epoch(value: Any) -> float | None:
+    """A Hermes message timestamp (epoch seconds, or an ISO string) as epoch seconds."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _cut_by_time(transcript: list[dict[str, Any]], history: list[dict[str, Any]]):
+    """The `/undo` cut by timestamp, or None when the timestamps to do it are missing.
+
+    Hermes stamps every message when it enters the conversation, and each saved turn carries its
+    user message's stamp (`ts`). Every turn up to the latest user message Hermes still has stays;
+    a later one was undone. Identical turns ("yes" / "okay" twice) are told apart, and compaction
+    cannot cut anything older.
+    """
+    stamps = [_epoch(m.get("timestamp")) for m in history if m.get("role") == "user"]
+    stamps = [s for s in stamps if s is not None]
+    users = [e for e in transcript if e.get("role") == "user"]
+    if not stamps or not users or any(not isinstance(e.get("ts"), float) for e in users):
+        return None
+    cutoff = max(stamps)
+    kept, keep = [], False
+    for entry in transcript:
+        if entry.get("role") == "user":
+            keep = entry["ts"] <= cutoff
+        if keep:
+            kept.append(entry)
+    return kept
+
+
 def rewind_transcript(
-    transcript: list[dict[str, str]], history: list[dict[str, Any]]
-) -> list[dict[str, str]]:
+    transcript: list[dict[str, Any]], history: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Cut a saved transcript back to what Hermes still has after `/undo`.
 
+    By timestamp when every saved turn and Hermes's history carry one (see `_cut_by_time`).
+    Otherwise (turns saved by an older version, or a history without stamps) by content:
+
     `history` is Hermes's conversation for the session after the undo. Hermes does not say how
-    many turns were undone, so the cut is found by content: the transcript keeps everything up to
-    the latest saved turn matching the latest turn still in `history`, and drops the rest. When no
-    turn of the transcript is left, every saved turn was undone.
+    many turns were undone, so the transcript keeps everything up to the latest saved turn
+    matching the latest turn still in `history`, and drops the rest. When no turn of the
+    transcript is left, every saved turn was undone.
 
     In-place compaction keeps the session id but summarizes older messages, so `history` can be
     much shorter than the transcript, and counting occurrences across the two would land on an
     older turn. A turn is matched by its user text and its reply instead, and the latest match
     wins, so a repeated "yes" lands on the right turn and retained history is never cut.
     """
+    by_time = _cut_by_time(transcript, history)
+    if by_time is not None:
+        return by_time
     saved: list[tuple[int, str, str]] = []
     for i, entry in enumerate(transcript):
         if entry.get("role") != "user":
@@ -244,6 +298,21 @@ class UpstashMemoryProvider(MemoryProvider):
         pass
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
+        # Hermes logs a failed initialize and keeps the provider, so a refused identity must
+        # leave it inactive (no stores: nothing read, nothing written), never on a fallback user.
+        self._memory = self._chats = None
+        self._write_enabled = False
+        user = (
+            get_secret("UPSTASH_HERMES_USER_ID", "")
+            or kwargs.get("user_id")
+            or kwargs.get("agent_identity")
+            or "default"
+        )
+        try:
+            user_id = _key_part(str(user), "user id")
+        except ValueError as error:
+            logger.warning("upstash memory is off for this session: %s", error)
+            return
         if self._redis is None:
             from upstash_redis import Redis
 
@@ -251,25 +320,18 @@ class UpstashMemoryProvider(MemoryProvider):
                 url=get_secret("UPSTASH_REDIS_REST_URL", ""),
                 token=get_secret("UPSTASH_REDIS_REST_TOKEN", ""),
             )
-        # Like the credentials, the prefixes are read per Hermes profile: a multiplexed gateway
-        # keeps each profile's .env out of os.environ.
-        self._memory = AgentMemory(
-            self._redis, prefix=get_secret("UPSTASH_HERMES_MEMORY_PREFIX", "") or MEMORY_PREFIX
-        )
-        self._chats = ChatHistory(
-            self._redis, prefix=get_secret("UPSTASH_HERMES_CHAT_PREFIX", "") or CHAT_PREFIX
-        )
-        user = (
-            get_secret("UPSTASH_HERMES_USER_ID", "")
-            or kwargs.get("user_id")
-            or kwargs.get("agent_identity")
-            or "default"
-        )
-        self._user_id = _key_part(str(user), "user id")
+        # Like the credentials, the namespace is read per Hermes profile: a multiplexed gateway
+        # keeps each profile's .env out of os.environ. Memory and chats share its one index.
+        namespace = get_secret("UPSTASH_HERMES_NAMESPACE", "") or DEFAULT_NAMESPACE
+        self._memory = AgentMemory(self._redis, namespace=namespace)
+        self._chats = ChatHistory(self._redis, namespace=namespace)
+        self._user_id = user_id
         self._session_id = self._session_key(session_id)
         self._write_enabled = (kwargs.get("agent_context") or "") in _WRITING_CONTEXTS
 
     def system_prompt_block(self) -> str:
+        if not self._memory:
+            return ""
         return (
             "# Upstash Memory\n"
             f"Long-term memory is stored in Upstash Redis for user `{self._user_id}`. Memories "
@@ -317,7 +379,19 @@ class UpstashMemoryProvider(MemoryProvider):
                 transcript[:] = rewind_transcript(transcript, history[:-1])
                 self._rewound.discard(sid)
             if user_content:
-                transcript.append({"role": "user", "content": user_content})
+                entry: dict[str, Any] = {"role": "user", "content": user_content}
+                # The turn's own stamp, so /undo can cut by time (see `_cut_by_time`).
+                stamp = next(
+                    (
+                        _epoch(m.get("timestamp"))
+                        for m in reversed(messages or [])
+                        if m.get("role") == "user"
+                    ),
+                    None,
+                )
+                if stamp is not None:
+                    entry["ts"] = stamp
+                transcript.append(entry)
             if assistant_content:
                 transcript.append({"role": "assistant", "content": assistant_content})
             self._save_transcript(sid, transcript)
@@ -374,15 +448,81 @@ class UpstashMemoryProvider(MemoryProvider):
     def on_memory_write(
         self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None
     ) -> None:
-        """Mirror facts the built-in `memory` tool adds, so Redis holds them too."""
-        if action != "add" or not content or not self._memory or not self._write_enabled:
+        """Mirror built-in `memory` tool writes, so Redis holds the same facts Hermes does.
+
+        Hermes sends `add`, `replace` and `remove` (a patch arrives as a replace whose `content` is
+        the whole edited entry). For replace and remove, `metadata["previous_content"]` is the full
+        entry before the write: the copy mirrored from it is deleted, and a replace then saves
+        `content` in its place, so a corrected or deleted fact is no longer recalled.
+        """
+        if action not in _MIRRORED_ACTIONS or not self._memory or not self._write_enabled:
             return
         try:
-            self._remember(content, {"source": "hermes", "target": target})
+            if action in ("replace", "remove"):
+                self._forget_mirrored(target, metadata or {})
+            if action in ("add", "replace") and content:
+                self._remember(
+                    content,
+                    {"source": "hermes", "target": target},
+                    id=_mirror_id(target, content),
+                )
         except Exception as error:  # noqa: BLE001 - as above
             logger.warning("upstash memory mirror failed: %s", error)
 
-    def _remember(self, text: str, metadata: dict[str, Any]) -> MemoryRecord:
+    def _forget_mirrored(self, target: str, metadata: dict[str, Any]) -> None:
+        """Delete every mirrored copy of the entry a replace or remove changed.
+
+        `previous_content` (the full old entry) is matched exactly. Older Hermes versions only send
+        `old_text`, a substring of the entry, so it is used only when exactly one mirrored entry
+        contains it. A substring is not a search term ("ordinarycomp" does not match
+        "extraordinarycompany" in full-text search), so that path checks every memory of the user.
+        Memories saved with upstash_memory_save are never touched.
+        """
+        assert self._memory is not None
+        previous = str(metadata.get("previous_content") or "").strip()
+        old_text = str(metadata.get("old_text") or "").strip()
+        if not previous and not old_text:
+            return
+        found = self._all_matches(previous) if previous else self._all_memories()
+        candidates = [
+            r
+            for r in found
+            if r.metadata.get("source") == "hermes" and r.metadata.get("target") == target
+        ]
+        if previous:
+            # The stable id finds the mirror even when it ranks low; copies mirrored before ids
+            # were stable (0.1.x) have random ids, so every exact match goes too.
+            stale_ids = {_mirror_id(target, previous)}
+            stale_ids.update(r.id for r in candidates if r.text.strip() == previous)
+        else:
+            stale_ids = {r.id for r in candidates if old_text in r.text}
+            if len(stale_ids) != 1:
+                return
+        for id in stale_ids:
+            self._memory.forget(id, user_id=self._user_id)
+        self._memory.index.wait_indexing()
+
+    def _all_matches(self, query: str) -> list[MemoryRecord]:
+        """Every memory of this user matching `query`, not just the best few."""
+        assert self._memory is not None
+        total = self._memory.index.count(
+            {**self._memory._filter(self._user_id), "text": {"$smart": query}}
+        )
+        if total <= 0:
+            return []
+        return self._memory.recall(query, user_id=self._user_id, top_k=total)
+
+    def _all_memories(self) -> list[MemoryRecord]:
+        """Every memory of this user, for the substring match that search can't do."""
+        assert self._memory is not None
+        total = self._memory.count(user_id=self._user_id)
+        if total <= 0:
+            return []
+        return self._memory.list(user_id=self._user_id, limit=total)
+
+    def _remember(
+        self, text: str, metadata: dict[str, Any], *, id: str | None = None
+    ) -> MemoryRecord:
         """Save a fact so that it is searchable once this returns.
 
         Recall reads Redis Search, which indexes a write shortly after it lands. Waiting here
@@ -391,7 +531,7 @@ class UpstashMemoryProvider(MemoryProvider):
         """
         assert self._memory is not None
         self._memory.index.ensure()
-        record = self._memory.add(text, user_id=self._user_id, metadata=metadata)
+        record = self._memory.add(text, user_id=self._user_id, id=id, metadata=metadata)
         self._memory.index.wait_indexing()
         return record
 

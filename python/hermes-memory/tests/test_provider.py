@@ -38,16 +38,13 @@ def test_tool_errors_come_back_as_json():
 
 @pytest.fixture
 def provider(redis, prefix, monkeypatch):
-    monkeypatch.setenv("UPSTASH_HERMES_MEMORY_PREFIX", f"{prefix}:memory")
-    monkeypatch.setenv("UPSTASH_HERMES_CHAT_PREFIX", f"{prefix}:chat")
+    monkeypatch.setenv("UPSTASH_HERMES_NAMESPACE", prefix)
     monkeypatch.delenv("UPSTASH_HERMES_USER_ID", raising=False)
     provider = UpstashMemoryProvider(redis)
     provider.initialize("20261022_120000_abcd", platform="cli", agent_identity="arda")
-    provider._memory.index.ensure()
-    provider._chats.index.ensure()
+    provider._memory.index.ensure()  # the one index memory and chats share
     yield provider
     provider._memory.index.drop()
-    provider._chats.index.drop()
 
 
 def test_user_and_session_ids_are_used_as_they_are(provider):
@@ -98,13 +95,93 @@ def test_a_resumed_session_appends_instead_of_overwriting(provider, redis):
     assert [m["content"] for m in doc["messages"]] == ["first", "one", "second", "two"]
 
 
+def _texts(provider, query):
+    return sorted(h.text for h in provider._memory.recall(query, user_id="arda", top_k=20))
+
+
 def test_built_in_memory_writes_are_mirrored(provider):
     provider.on_memory_write("add", "user", "Prefers answers in Turkish")
-    provider.on_memory_write("remove", "user", "Prefers answers in Turkish")  # not mirrored
     hits = provider._memory.recall("Turkish", user_id="arda")  # mirroring waits for indexing
     assert [(h.text, h.metadata) for h in hits] == [
         ("Prefers answers in Turkish", {"source": "hermes", "target": "user"})
     ]
+
+
+def test_built_in_corrections_replace_the_mirrored_fact(provider):
+    # The shape Hermes sends (memory_manager.notify_memory_tool_write); a patch arrives like this too.
+    provider.on_memory_write("add", "user", "Lives in Ankara")
+    provider.on_memory_write(
+        "replace",
+        "user",
+        "Lives in Izmir",
+        metadata={"old_text": "Ankara", "previous_content": "Lives in Ankara"},
+    )
+    assert _texts(provider, "Lives in") == ["Lives in Izmir"]
+
+
+def test_built_in_removals_delete_the_mirrored_fact(provider):
+    provider.on_memory_write("add", "user", "Prefers answers in Turkish")
+    provider.on_memory_write("add", "user", "Prefers short answers")
+    provider.on_memory_write(
+        "remove",
+        "user",
+        "",
+        metadata={"old_text": "Turkish", "previous_content": "Prefers answers in Turkish"},
+    )
+    assert _texts(provider, "Prefers answers") == ["Prefers short answers"]
+
+
+def test_removals_leave_other_targets_and_saved_memories_alone(provider):
+    provider.handle_tool_call("upstash_memory_save", {"text": "Uses a standing desk"})
+    provider.on_memory_write("add", "memory", "Uses a standing desk")
+    provider.on_memory_write("add", "user", "Uses a standing desk")
+    provider.on_memory_write(
+        "remove", "user", "", metadata={"previous_content": "Uses a standing desk"}
+    )
+    hits = provider._memory.recall("standing desk", user_id="arda", top_k=20)
+    assert sorted(h.metadata.get("target", "") for h in hits) == ["", "memory"]
+
+
+def test_repeated_adds_keep_one_mirror_and_a_removal_deletes_it(provider):
+    # Hermes reports a repeated add of an existing entry as a success and mirrors it again.
+    for _ in range(25):
+        provider.on_memory_write("add", "user", "Prefers answers in Turkish")
+    assert _texts(provider, "Prefers answers in Turkish") == ["Prefers answers in Turkish"]
+    provider.on_memory_write(
+        "remove", "user", "", metadata={"previous_content": "Prefers answers in Turkish"}
+    )
+    assert _texts(provider, "Prefers answers in Turkish") == []
+
+
+def test_removals_find_every_legacy_mirror_beyond_the_top_hits(provider):
+    # Mirrors written by 0.1.x have random ids; 25 copies plus 25 better-ranked saved memories
+    # used to leave copies behind past the first 20 hits.
+    memory = provider._memory
+    for _ in range(25):
+        memory.add("Turkish", user_id="arda", metadata={"source": "hermes"})
+        memory.add("Turkish", user_id="arda", metadata={"source": "hermes", "target": "user"})
+    memory.index.wait_indexing()
+    provider.on_memory_write("remove", "user", "", metadata={"previous_content": "Turkish"})
+    hits = memory.recall("Turkish", user_id="arda", top_k=100)
+    assert len(hits) == 25
+    assert all("target" not in h.metadata for h in hits)
+
+
+def test_old_text_alone_only_removes_an_unambiguous_match(provider):
+    provider.on_memory_write("add", "user", "Drinks tea in the morning")
+    provider.on_memory_write("add", "user", "Drinks coffee in the evening")
+    provider.on_memory_write("remove", "user", "", metadata={"old_text": "Drinks"})  # ambiguous
+    assert len(_texts(provider, "Drinks")) == 2
+    provider.on_memory_write("remove", "user", "", metadata={"old_text": "tea"})
+    assert _texts(provider, "Drinks") == ["Drinks coffee in the evening"]
+
+
+def test_old_text_alone_finds_a_substring_search_would_miss(provider):
+    # Full-text search doesn't match "ordinarycomp" inside "extraordinarycompany".
+    provider.on_memory_write("add", "user", "Works at extraordinarycompany")
+    provider.on_memory_write("add", "user", "Drinks tea in the morning")
+    provider.on_memory_write("remove", "user", "", metadata={"old_text": "ordinarycomp"})
+    assert [m.text for m in provider._memory.list(user_id="arda")] == ["Drinks tea in the morning"]
 
 
 def test_subagents_read_but_never_write(provider, redis):
@@ -127,10 +204,19 @@ def test_key_parts_match_the_ts_sdk():
         _key_part("alice:work", "user id")
 
 
-def test_a_user_id_with_a_colon_is_refused(monkeypatch):
+def test_a_refused_user_id_leaves_the_provider_inactive(monkeypatch):
+    # Hermes swallows an initialize error and keeps the provider, so it must not fall back to
+    # another user ("default") or keep writing.
     monkeypatch.setenv("UPSTASH_HERMES_USER_ID", "alice:work")
-    with pytest.raises(ValueError, match="user id"):
-        UpstashMemoryProvider(object()).initialize("s", platform="cli")
+    provider = UpstashMemoryProvider(object())
+    provider.initialize("s", platform="cli")
+    assert provider._memory is None and provider._chats is None
+    assert provider.prefetch("anything") == ""
+    assert provider.system_prompt_block() == ""
+    assert "error" in json.loads(provider.handle_tool_call("upstash_memory_search", {"query": "x"}))
+    assert "error" in json.loads(provider.handle_tool_call("upstash_memory_save", {"text": "x"}))
+    provider.sync_turn("hi", "hello", session_id="s")
+    provider.on_memory_write("add", "memory", "a fact")  # no stores: nothing to write to
 
 
 def test_a_session_id_with_a_colon_keeps_no_transcript(provider):
@@ -150,20 +236,17 @@ def test_ids_with_percent_are_shared_with_the_ts_sdk(provider, redis):
     }
 
 
-def test_prefixes_come_from_the_hermes_profile(monkeypatch):
+def test_the_namespace_comes_from_the_hermes_profile(monkeypatch):
     # In a multiplexed gateway a profile's .env is only reachable through get_secret.
-    profile = {
-        "UPSTASH_HERMES_MEMORY_PREFIX": "team:memory",
-        "UPSTASH_HERMES_CHAT_PREFIX": "team:chat",
-    }
-    monkeypatch.delenv("UPSTASH_HERMES_MEMORY_PREFIX", raising=False)
-    monkeypatch.delenv("UPSTASH_HERMES_CHAT_PREFIX", raising=False)
+    profile = {"UPSTASH_HERMES_NAMESPACE": "team"}
+    monkeypatch.delenv("UPSTASH_HERMES_NAMESPACE", raising=False)
     monkeypatch.setattr(
         provider_module, "get_secret", lambda name, default=None: profile.get(name, default)
     )
     provider = UpstashMemoryProvider(object())
     provider.initialize("s", platform="cli")
     assert (provider._memory.prefix, provider._chats.prefix) == ("team:memory", "team:chat")
+    assert provider._memory.index.name == provider._chats.index.name == "team"
 
 
 def _turns(*texts):
@@ -171,6 +254,63 @@ def _turns(*texts):
     for user, assistant in texts:
         out += [{"role": "user", "content": user}, {"role": "assistant", "content": assistant}]
     return out
+
+
+def _stamped(*texts, start=1000.0):
+    """A Hermes history: each user message carries the timestamp Hermes gives it."""
+    out = []
+    for n, (user, assistant) in enumerate(texts):
+        out += [
+            {"role": "user", "content": user, "timestamp": start + n},
+            {"role": "assistant", "content": assistant},
+        ]
+    return out
+
+
+def _saved(history):
+    """The transcript sync_turn saves for that history: user turns keep their stamp as `ts`."""
+    return [
+        {
+            "role": m["role"],
+            "content": m["content"],
+            **({"ts": m["timestamp"]} if "timestamp" in m else {}),
+        }
+        for m in history
+    ]
+
+
+def test_rewind_by_time_tells_identical_turns_apart():
+    history = _stamped(("yes", "okay"), ("yes", "okay"))
+    saved = _saved(history)
+    # /undo of the second exchange: Hermes keeps only the first one.
+    assert rewind_transcript(saved, history[:2]) == saved[:2]
+    assert rewind_transcript(saved, []) == []
+
+
+def test_rewind_by_time_keeps_turns_compaction_summarized():
+    history = _stamped(
+        ("opening goal", "a"), ("yes", "b"), ("middle", "c"), ("yes", "d"), ("undo this", "e")
+    )
+    saved = _saved(history)
+    # In-place compaction left a summary plus the latest "yes"; then the last turn was undone.
+    compacted = [{"role": "user", "content": "[summary]", "timestamp": 1003.5}, *history[6:8]]
+    assert rewind_transcript(saved, compacted) == saved[:8]
+
+
+def test_sync_turn_stamps_each_saved_turn(provider):
+    provider.sync_turn("hi", "hello", session_id="s-ts", messages=_stamped(("hi", "hello")))
+    doc = provider._chats.get_chat("s-ts", user_id="arda")
+    assert doc["messages"][0]["ts"] == 1000.0
+
+
+def test_undo_of_an_identical_turn_removes_it_from_redis(provider):
+    both = _stamped(("yes", "okay"), ("yes", "okay"))
+    provider.sync_turn("yes", "okay", session_id="s-dup", messages=both[:2])
+    provider.sync_turn("yes", "okay", session_id="s-dup", messages=both)
+    provider.on_session_switch("s-dup", rewound=True)
+    provider.on_session_end(both[:2])  # exit right after /undo
+    doc = provider._chats.get_chat("s-dup", user_id="arda")
+    assert [m["content"] for m in doc["messages"]] == ["yes", "okay"]
 
 
 def test_rewind_drops_the_undone_turns():

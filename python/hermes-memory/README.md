@@ -8,7 +8,8 @@ your AI SDK app saves is recalled by your Hermes agent, and the other way round.
 
 - **Recall:** before each turn, the memories closest to the user's message are added to the prompt.
 - **Chat history:** after each turn, the session's transcript is saved as a searchable document.
-- **Mirroring:** facts the built-in `memory` tool adds are also saved to Redis.
+- **Mirroring:** facts the built-in `memory` tool adds are also saved to Redis, and when Hermes
+  corrects (`replace`/`patch`) or removes one, the Redis copy is updated or deleted too.
 - **Tools:** `upstash_memory_save`, `upstash_memory_search`, `upstash_memory_forget` and
   `upstash_chat_search` (search past conversations).
 
@@ -35,7 +36,7 @@ these):
 | --- | --- |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Required. From the [Upstash console](https://console.upstash.com/redis). |
 | `UPSTASH_HERMES_USER_ID` | Whose memories these are. Defaults to the gateway user, then the Hermes profile name, then `default`. |
-| `UPSTASH_HERMES_MEMORY_PREFIX`, `UPSTASH_HERMES_CHAT_PREFIX` | Key prefixes. Default `agentkit:memory` and `agentkit:chat`, the TS SDK's defaults, so the two share memories. |
+| `UPSTASH_HERMES_NAMESPACE` | Key namespace. Default `agentkit`, so memories sit at the TS SDK's default keys and are shared with AgentKit apps on the same database. |
 
 ## Telemetry
 
@@ -46,10 +47,14 @@ database. Set `UPSTASH_DISABLE_TELEMETRY=1` to turn it off.
 
 ## Redis layout
 
-| | Key | Index |
+| | Key | Value |
 | --- | --- | --- |
-| Memory | `agentkit:memory:<user>:<id>` → JSON `{text, userId, createdAt, ...metadata}` | `agentkit_memory` (`text`, `userId`) |
-| Chat | `agentkit:chat:<user>:<session>` → JSON `{userId, sessionId, userMessages, modelMessages, messages, createdAt, updatedAt}` | `agentkit_chat` |
+| Memory | `agentkit:memory:<user>:<id>` | JSON `{text, userId, createdAt, ...metadata}`, as the TS SDK writes it |
+| Chat | `agentkit:chat:<user>:<session>` | JSON `{kind: "chat", userId, sessionId, userMessages, modelMessages, messages, createdAt, updatedAt}` |
+
+Memory and chats share **one** search index, `agentkit`, covering both prefixes, so the provider
+works on Upstash's Free plan, which allows one index per database. An AgentKit TS app on the same
+database still creates its own memory index, so using both needs a plan with more than one index.
 
 User and session ids are used as they are, so the same id reads the same keys from Hermes and the
 TS SDK. Like the TS SDK, the provider refuses a user id with `:` (the key separator), and keeps no

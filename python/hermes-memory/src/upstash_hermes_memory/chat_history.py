@@ -1,10 +1,12 @@
 """Python port of `ChatHistory` from `@upstash/agentkit-sdk` (packages/sdk/src/chat-history.ts).
 
-    key    <prefix>:<userId>:<sessionId>
-    value  JSON {"userId", "sessionId", "userMessages", "modelMessages", "messages",
-                 "createdAt", "updatedAt" (epoch ms), "title"?}
-    index  SEARCH.CREATE <name> EXISTSOK ON JSON PREFIX 1 <prefix>: SCHEMA
-           userId TEXT NOTOKENIZE sessionId TEXT NOTOKENIZE userMessages TEXT modelMessages TEXT
+    key    <namespace>:chat:<userId>:<sessionId>
+    value  JSON {"kind": "chat", "userId", "sessionId", "userMessages", "modelMessages",
+                 "messages", "createdAt", "updatedAt" (epoch ms), "title"?}
+    index  the namespace's shared index, with AgentMemory (see `_search.SHARED_SCHEMA`)
+
+Passing `prefix` (or `index_name`) gives the store its own index over `<prefix>:` instead, with
+the documents written without `kind`, as before.
 
 `userMessages` / `modelMessages` are the searchable text of each side, extracted the same way as
 the TS default extractor; `messages` keeps the raw transcript and is not indexed.
@@ -14,11 +16,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ._search import SearchIndex, dumps, index_name_for
+from ._search import DEFAULT_NAMESPACE, SearchIndex, dumps, index_name_for, shared_index
 from ._telemetry import add_telemetry
 from .memory import _check_id
 
-DEFAULT_PREFIX = "agentkit:chat"
+DEFAULT_PREFIX = f"{DEFAULT_NAMESPACE}:chat"
 
 
 def extract_text(messages: list[dict[str, Any]]) -> dict[str, str]:
@@ -63,28 +65,41 @@ class ChatHistory:
         self,
         redis: Any,
         *,
-        prefix: str = DEFAULT_PREFIX,
+        namespace: str = DEFAULT_NAMESPACE,
+        prefix: str | None = None,
         index_name: str | None = None,
         ttl_seconds: int | None = None,
         min_score: float = 0,
         enable_telemetry: bool = True,
     ):
         self.redis = redis
-        self.prefix = prefix
         self.ttl_seconds = ttl_seconds
         self.min_score = min_score
-        self.index = SearchIndex(
-            redis,
-            name=index_name or index_name_for(prefix),
-            prefix=f"{prefix}:",
-            schema=[
-                ("userId", "TEXT", True),
-                ("sessionId", "TEXT", True),
-                ("userMessages", "TEXT", False),
-                ("modelMessages", "TEXT", False),
-            ],
-        )
+        if prefix is None and index_name is None:
+            self.prefix = f"{namespace}:chat"
+            self.kind: str | None = "chat"
+            self.index = shared_index(redis, namespace)
+        else:
+            self.prefix = prefix or DEFAULT_PREFIX
+            self.kind = None
+            self.index = SearchIndex(
+                redis,
+                name=index_name or index_name_for(self.prefix),
+                prefix=f"{self.prefix}:",
+                schema=[
+                    ("userId", "TEXT", True),
+                    ("sessionId", "TEXT", True),
+                    ("userMessages", "TEXT", False),
+                    ("modelMessages", "TEXT", False),
+                ],
+            )
         add_telemetry(redis, enabled=enable_telemetry)
+
+    def _query(self, filter: dict[str, Any], limit: int | None) -> list[Any]:
+        """Query with `kind` added on the shared index, so memories never match (as the TS SDK does)."""
+        if self.kind:
+            filter = {"$and": [{"kind": {"$eq": self.kind}}, filter]}
+        return self.index.query(filter, limit=limit)
 
     def _key(self, user_id: str, session_id: str) -> str:
         return f"{self.prefix}:{user_id}:{session_id}"
@@ -107,6 +122,7 @@ class ChatHistory:
         existing = self.get_chat(session_id, user_id=user_id) or {}
         now = int(time.time() * 1000)
         doc: dict[str, Any] = {
+            **({"kind": self.kind} if self.kind else {}),
             "userId": user_id,
             "sessionId": session_id,
             **extract_text(messages),
@@ -127,7 +143,7 @@ class ChatHistory:
     def list_chats(self, *, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         """Chats of a user, most recently updated first."""
         _check_id(user_id, "user_id")
-        rows = self.index.query({"userId": {"$eq": user_id}}, limit=limit)
+        rows = self._query({"userId": {"$eq": user_id}}, limit)
         docs = [row.data for row in rows if isinstance(row.data, dict)]
         return sorted(docs, key=lambda d: d.get("updatedAt") or 0, reverse=True)
 
@@ -146,7 +162,7 @@ class ChatHistory:
             }
         else:
             text = {f"{target}Messages": {"$smart": query}}
-        rows = self.index.query({"$and": [{"userId": {"$eq": user_id}}, text]}, limit=limit)
+        rows = self._query({"$and": [{"userId": {"$eq": user_id}}, text]}, limit)
         hits = []
         for row in rows:
             data = row.data if isinstance(row.data, dict) else {}
