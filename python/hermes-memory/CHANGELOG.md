@@ -1,5 +1,15 @@
 # upstash-hermes-memory
 
+## 0.2.0
+
+### Minor Changes
+
+- 0b64d2d: **Breaking:** memory and chat history now share one Redis Search index (`agentkit`, over `agentkit:memory:` and `agentkit:chat:`), so the provider works on Upstash's Free plan, which allows one index per database. Before, it created two (`agentkit_memory` and `agentkit_chat`) and failed with `ERR Exceeded max index count of 1`. `UPSTASH_HERMES_NAMESPACE` replaces `UPSTASH_HERMES_MEMORY_PREFIX` and `UPSTASH_HERMES_CHAT_PREFIX`. Chats saved before this change are not found by the new index; memories keep their keys and shape and are still shared with AgentKit TS apps.
+
+### Patch Changes
+
+- 0b64d2d: Mirror corrections and removals from the built-in `memory` tool: when Hermes replaces, patches or removes an entry, the copy mirrored to Redis is deleted (and a replace saves the new text), so a corrected or deleted fact is no longer recalled.
+
 ## 0.1.1
 
 ### Patch Changes
