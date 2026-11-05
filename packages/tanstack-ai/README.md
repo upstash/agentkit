@@ -179,9 +179,22 @@ const keys = storedProviderKeys(credentials, { tenantId, userId }); // the user'
 A `CredentialStore` for provider API keys and OAuth tokens users or organizations saved. One Redis hash
 per owner (`tenantId` + `userId`), so `list` returns ids and types only, never a secret. `getVersioned` +
 `setIf` are compare-and-set on a revision that never comes back after a `delete`, so concurrent
-instances refreshing one OAuth token do not clobber each other. Set `encryptionKey` (32 bytes, base64:
-`openssl rand -base64 32`) to encrypt secrets at rest with AES-256-GCM, bound to the owner and id;
-without it they are stored as plain JSON. Needs `@tanstack/ai` >= 1.0.0.
+instances refreshing one OAuth token do not clobber each other. Needs `@tanstack/ai` >= 1.0.0.
+
+**Encryption at rest.** Set `encryptionKey` (32 bytes: a `Uint8Array`, or a base64 / base64url / hex string,
+e.g. `openssl rand -base64 32`) to encrypt secrets with AES-256-GCM. Without it they are stored as plain
+JSON. Things to know:
+
+- The ciphertext is bound to the key `prefix`, the owner, the id, and the clear-text type and expiry shown by
+  `list`. **Changing `prefix`, or copying rows to another prefix, makes every encrypted row undecryptable**;
+  editing the type or expiry in Redis makes that row fail to decrypt.
+- Credentials saved before you added a key are still read as plaintext. Anyone who can *write* to your Redis
+  could therefore swap an encrypted credential for a plaintext one. After re-saving your credentials with the
+  key, set `requireEncryption: true` to refuse plaintext rows.
+- The revision is not part of the ciphertext, so someone with write access to your Redis can replay an older
+  ciphertext of the same credential. Encryption protects against reading the data, not against a writer.
+- Expired `secret_answer` credentials are not removed by the store; delete them after reading, as the
+  harness does.
 
 ## Tool caching and rate limiting
 
