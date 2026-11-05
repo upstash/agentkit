@@ -58,7 +58,7 @@ class AgentMemory:
         prefix: str | None = None,
         index_name: str | None = None,
         min_score: float = 0,
-        enable_telemetry: bool = True,
+        enable_telemetry: bool = False,
     ):
         self.redis = redis
         self.min_score = min_score

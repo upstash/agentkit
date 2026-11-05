@@ -2,8 +2,8 @@
 # `subdir` here). pip installs use the entry point in pyproject.toml instead. Catalog rules:
 # https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission
 name: upstash
-# Copied from package.json by scripts/sync-version.mjs, like pyproject.toml.
-version: "0.2.0"
+# Copied from pyproject.toml by scripts/sync-version.mjs.
+version: "0.2.1"
 description: "Upstash Redis memory provider: long-term memory, searchable chat history and recall on Redis Search, sharing keys with @upstash/agentkit-sdk."
 # Also declared in the catalog entry; older Hermes releases only enforce this one (catalog rule 14).
 requires_hermes: ">=0.19"

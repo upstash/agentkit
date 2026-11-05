@@ -51,8 +51,8 @@ def test_wheel_contents(tmp_path):
         names = zf.namelist()
         for module in ("__init__", "_version", "memory", "chat_history", "provider"):
             assert f"upstash_hermes_memory/{module}.py" in names
-        # Tests and the private package.json are repo plumbing, not part of the distribution.
-        assert not any(n.startswith("tests/") or n.endswith("package.json") for n in names)
+        # Tests are repo plumbing, not part of the distribution.
+        assert not any(n.startswith("tests/") for n in names)
         metadata = Parser().parsestr(zf.read(f"{dist_info}/METADATA").decode())
         entry_points = zf.read(f"{dist_info}/entry_points.txt").decode()
 

@@ -1,5 +1,20 @@
 # upstash-hermes-memory
 
+Written by hand: this package is not versioned by Changesets. To release, bump `version` in
+`pyproject.toml`, run `node scripts/sync-version.mjs` and `uv lock`, and add a `## <version>`
+section here. The release workflow publishes any version PyPI does not have yet.
+
+## 0.2.1
+
+### Patch Changes
+
+- Telemetry is now opt-in, as the Hermes plugin catalog requires: nothing is tagged unless
+  `UPSTASH_HERMES_TELEMETRY=1` is set, and the provider creates its `upstash-redis` client with
+  `allow_telemetry=False` too, so it sends none of the client's own telemetry headers either.
+  `AgentMemory` and `ChatHistory` default to `enable_telemetry=False`.
+- The plugin directory no longer contains a `package.json`, so `hermes plugins install` no longer
+  asks to install Node dependencies or prints "Skipped Node deps".
+
 ## 0.2.0
 
 ### Minor Changes
