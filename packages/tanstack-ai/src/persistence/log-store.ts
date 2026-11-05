@@ -219,21 +219,29 @@ function assertMs(name: string, value: number, allowZero: boolean): void {
   }
 }
 
+/** The most records one `append` writes. Larger batches would outrun the Lua script time limit. */
+const MAX_APPEND_RECORDS = 10_000;
+
 const tilde = (v: unknown) => String(v).slice(1);
 
 export interface UpstashLogStoreConfig {
   /**
    * How often `subscribe` checks Redis for writes from other machines (the REST API keeps no
    * blocking reads). Writes through the same store call listeners immediately.
-   * @default 100
+   * @default 250
    */
   pollIntervalMs?: number;
 }
 
 interface Watch {
   listeners: Set<() => void>;
-  /** The highest change counter seen: a poll reports only what is above it. */
-  known: number;
+  /** The highest change counter the listeners were told about: each counter value is reported once. */
+  reported: number;
+  /** The highest counter a poll has read. The first read is the baseline, not a change. */
+  observed: number;
+  baselined: boolean;
+  /** A poll is in flight: the next tick skips, so slow requests never pile up. */
+  busy: boolean;
   timer?: ReturnType<typeof setInterval>;
 }
 
@@ -250,7 +258,7 @@ export function redisLogStore(
   prefix: string,
   config: UpstashLogStoreConfig = {},
 ): LogStore {
-  const pollMs = config.pollIntervalMs ?? 100;
+  const pollMs = config.pollIntervalMs ?? 250;
   const due = `${prefix}:logDue`;
   const hosts = `${prefix}:logHosts`;
   const keys = (logId: string) => {
@@ -286,13 +294,23 @@ export function redisLogStore(
   const changed = (logId: string, tick: unknown) => {
     const watch = watches.get(logId);
     if (!watch) return;
-    watch.known = Math.max(watch.known, Number(tick));
+    // A poll may have seen this write's counter before the write's own reply arrived, and already
+    // called the listeners for it: report each counter value once.
+    if (Number(tick) <= watch.reported) return;
+    watch.reported = Number(tick);
     fire(watch);
   };
 
   return {
     async append({ logId, seq, epoch, records, consumes = [] }) {
       if (records.length === 0 && consumes.length === 0) return;
+      if (records.length > MAX_APPEND_RECORDS) {
+        // One Lua script runs the whole batch; past the server's script time limit it is killed after
+        // part of the writes, which would break the atomic-batch guarantee.
+        throw new RangeError(
+          `append takes at most ${MAX_APPEND_RECORDS} records per call, got ${records.length}. Split the batch.`,
+        );
+      }
       let badJson: unknown;
       let bad = false;
       const json = records.map((record) => {
@@ -349,31 +367,45 @@ export function redisLogStore(
     subscribe({ logId, listener }) {
       let watch = watches.get(logId);
       if (!watch) {
-        const created: Watch = { listeners: new Set(), known: 0 };
+        const created: Watch = {
+          listeners: new Set(),
+          reported: 0,
+          observed: 0,
+          baselined: false,
+          busy: false,
+        };
         watch = created;
         watches.set(logId, created);
         const tickKey = keys(logId)[6]!;
-        // Baseline first, then poll for writes from other machines.
-        void redis
-          .get<number>(tickKey)
-          .then((tick) => {
+        // The first successful read of the counter is the baseline; later reads above it are writes
+        // from other machines. A failed read (a REST blip) just tries again on the next tick.
+        const check = async () => {
+          if (created.busy) return;
+          created.busy = true;
+          try {
+            const tick = Number((await redis.get<number>(tickKey)) ?? 0);
             if (watches.get(logId) !== created) return;
-            created.known = Math.max(created.known, Number(tick ?? 0));
-            created.timer = setInterval(() => {
-              void redis
-                .get<number>(tickKey)
-                .then((now) => {
-                  if (watches.get(logId) !== created || now == null) return;
-                  if (Number(now) > created.known) {
-                    created.known = Number(now);
-                    fire(created);
-                  }
-                })
-                .catch(() => {});
-            }, pollMs);
-            created.timer.unref?.();
-          })
-          .catch(() => {});
+            if (!created.baselined) {
+              // Not marked as reported: if this read already includes a write made through this store,
+              // that write's own reply still has to call the listeners.
+              created.baselined = true;
+              created.observed = Math.max(created.observed, tick);
+            } else if (tick > created.observed) {
+              created.observed = tick;
+              if (tick > created.reported) {
+                created.reported = tick;
+                fire(created);
+              }
+            }
+          } catch {
+            // retried on the next tick
+          } finally {
+            created.busy = false;
+          }
+        };
+        created.timer = setInterval(() => void check(), pollMs);
+        created.timer.unref?.();
+        void check();
       }
       watch.listeners.add(listener);
       const current = watch;

@@ -84,7 +84,7 @@ const { entries, cursor } = await sessions.list({ tenantId, memberId: userId, li
 `stores.log` is TanStack AI's `LogStore`: the append-only log a host keeps for a session tree (events,
 transcript, inputs, tool steps), with the pieces that let several machines share it safely.
 
-- `append` writes a batch at the next position and consumes pending input offers in the same atomic step; a
+- `append` writes a batch (at most 10,000 records per call) at the next position and consumes pending input offers in the same atomic step; a
   second writer at the same position gets a `LogConflictError` and nothing is written.
 - `acquireOwnership` / `renewOwnership` / `releaseOwnership` give one owner at a time a lease with an epoch;
   every fenced write (`append`, `putSnapshot`, `truncate`, `pinToWorkers`) carries the epoch, so a host that
@@ -94,7 +94,7 @@ transcript, inputs, tool steps), with the pieces that let several machines share
   `pinToWorkers` for worker affinity).
 - `putSnapshot` / `truncate` keep a log short; `read` after a truncate point rejects with `LogTruncatedError`.
 - `subscribe` calls the listener after each write through this store immediately, and polls for writes from
-  other machines every `logPollIntervalMs` (default 100 ms, since the REST API keeps no blocking reads).
+  other machines every `logPollIntervalMs` (default 250 ms, since the REST API keeps no blocking reads; polls never overlap).
 
 ## Resumable streams
 

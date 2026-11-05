@@ -59,7 +59,7 @@ export interface UpstashPersistenceConfig {
   enableTelemetry?: boolean;
   /**
    * How often the `log` store checks Redis for writes by other machines on behalf of `subscribe`.
-   * @default 100
+   * @default 250
    */
   logPollIntervalMs?: number;
 }

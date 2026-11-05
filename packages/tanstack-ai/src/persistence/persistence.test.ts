@@ -350,4 +350,91 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
       { logId: "007", harness: "001", reason: "offered" },
     ]);
   });
+
+  /** A Redis client whose chosen calls are slowed: `before` delays the call, `after` delays its reply. */
+  const slowed = (
+    delays: Partial<Record<"get" | "eval", { before?: number; after?: number }>>,
+  ): typeof redis =>
+    new Proxy(redis, {
+      get(target, prop, receiver) {
+        const delay = delays[prop as "get" | "eval"];
+        const real = Reflect.get(target, prop, receiver) as (...a: unknown[]) => Promise<unknown>;
+        if (!delay) return real;
+        return async (...args: unknown[]) => {
+          if (delay.before) await new Promise((r) => setTimeout(r, delay.before));
+          const result = await real.apply(target, args);
+          if (delay.after) await new Promise((r) => setTimeout(r, delay.after));
+          return result;
+        };
+      },
+    });
+
+  it("log: a poll that sees a write before its reply arrives does not call the listener twice", async () => {
+    // The append's reply is held back 250 ms, so the 10 ms poll reads the new counter first.
+    const { log } = upstashPersistence({
+      redis: slowed({ eval: { after: 250 } }),
+      prefix: `${prefix}:once`,
+      logPollIntervalMs: 10,
+    }).stores;
+    let calls = 0;
+    const stop = log.subscribe({ logId: "once", listener: () => void (calls += 1) });
+    await new Promise((r) => setTimeout(r, 60)); // the baseline read is done
+    await log.append({ logId: "once", seq: 1, epoch: 0, records: [{ type: "one" }] });
+    await new Promise((r) => setTimeout(r, 100));
+    stop();
+    expect(calls).toBe(1);
+  });
+
+  it("log: a baseline read that already includes a local write does not swallow its notification", async () => {
+    // The baseline read is issued 100 ms late, after the append ran, and the append's reply is held
+    // back, so the baseline sees the new counter before the append returns.
+    const { log } = upstashPersistence({
+      redis: slowed({ get: { before: 100 }, eval: { after: 300 } }),
+      prefix: `${prefix}:absorb`,
+      logPollIntervalMs: 1000,
+    }).stores;
+    let calls = 0;
+    const stop = log.subscribe({ logId: "absorb", listener: () => void (calls += 1) });
+    await log.append({ logId: "absorb", seq: 1, epoch: 0, records: [{ type: "one" }] });
+    await new Promise((r) => setTimeout(r, 100));
+    stop();
+    expect(calls).toBe(1);
+  });
+
+  it("log: a failed first poll does not silence a subscription", async () => {
+    const logPrefix = `${prefix}:blip`;
+    let failed = false;
+    const flaky = new Proxy(redis, {
+      get(target, prop, receiver) {
+        if (prop === "get") {
+          return (...args: unknown[]) => {
+            if (!failed) {
+              failed = true;
+              return Promise.reject(new Error("REST blip"));
+            }
+            return (target.get as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const a = upstashPersistence({ redis: flaky, prefix: logPrefix, logPollIntervalMs: 20 }).stores
+      .log;
+    const b = upstashPersistence({ redis, prefix: logPrefix }).stores.log;
+    let calls = 0;
+    const stop = a.subscribe({ logId: "blip", listener: () => void (calls += 1) });
+    await new Promise((r) => setTimeout(r, 120)); // the retry baselines
+    await b.append({ logId: "blip", seq: 1, epoch: 0, records: [{ type: "x" }] });
+    await expect.poll(() => calls, { timeout: 2000 }).toBe(1);
+    stop();
+  });
+
+  it("log: append rejects a batch over the cap and writes nothing", async () => {
+    const { log } = upstashPersistence({ redis, prefix: `${prefix}:cap` }).stores;
+    const records = Array.from({ length: 10_001 }, (_, i) => ({ type: "r", i }));
+    await expect(log.append({ logId: "cap", seq: 1, epoch: 0, records })).rejects.toThrow(
+      /at most 10000/,
+    );
+    expect(await log.read({ logId: "cap" })).toEqual([]);
+  });
 });
