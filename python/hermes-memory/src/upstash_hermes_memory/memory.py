@@ -8,7 +8,8 @@ way round, as long as both sides use the same namespace (default `agentkit`).
     index  the namespace's one shared index, with ChatHistory (see `_search.SHARED_SCHEMA`)
 
 Chats in the shared index carry `kind: "chat"`; memories carry no `kind`, so a memory written by a
-TS app is found here too. Reads drop chat rows by key prefix, and `count` subtracts the chats.
+TS app is found here too. Every query excludes chat rows (`$mustNot`), so chats never use up a
+`limit` or show up in `count`.
 Passing `prefix` (or `index_name`) gives the store its own index over `<prefix>:` instead.
 """
 
@@ -76,7 +77,11 @@ class AgentMemory:
         add_telemetry(redis, enabled=enable_telemetry)
 
     def _filter(self, user_id: str) -> dict[str, Any]:
-        return {"userId": {"$eq": user_id}}
+        if not self.shared:
+            return {"userId": {"$eq": user_id}}
+        # Excluded in the query, not afterwards: a chat row counted against LIMIT would hide a
+        # memory behind it. Memories have no `kind` and Search has no `$ne`, hence `$mustNot`.
+        return {"userId": {"$eq": user_id}, "$mustNot": [{"kind": {"$eq": "chat"}}]}
 
     def _memories(self, rows: list[Any], user_id: str) -> list[Any]:
         """Only this store's rows: on the shared index, a user's chats match a userId filter too."""
@@ -125,11 +130,7 @@ class AgentMemory:
 
     def count(self, *, user_id: str) -> int:
         _check_id(user_id, "user_id")
-        total = self.index.count(self._filter(user_id))
-        if not self.shared:
-            return total
-        chats = self.index.count({"kind": {"$eq": "chat"}, "userId": {"$eq": user_id}})
-        return max(total - chats, 0)
+        return self.index.count(self._filter(user_id))
 
     def get(self, id: str, *, user_id: str) -> MemoryRecord | None:
         _check_id(user_id, "user_id")

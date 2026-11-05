@@ -474,17 +474,19 @@ class UpstashMemoryProvider(MemoryProvider):
 
         `previous_content` (the full old entry) is matched exactly. Older Hermes versions only send
         `old_text`, a substring of the entry, so it is used only when exactly one mirrored entry
-        contains it. Memories saved with upstash_memory_save are never touched.
+        contains it. A substring is not a search term ("ordinarycomp" does not match
+        "extraordinarycompany" in full-text search), so that path checks every memory of the user.
+        Memories saved with upstash_memory_save are never touched.
         """
         assert self._memory is not None
         previous = str(metadata.get("previous_content") or "").strip()
         old_text = str(metadata.get("old_text") or "").strip()
-        query = previous or old_text
-        if not query:
+        if not previous and not old_text:
             return
+        found = self._all_matches(previous) if previous else self._all_memories()
         candidates = [
             r
-            for r in self._all_matches(query)
+            for r in found
             if r.metadata.get("source") == "hermes" and r.metadata.get("target") == target
         ]
         if previous:
@@ -504,11 +506,19 @@ class UpstashMemoryProvider(MemoryProvider):
         """Every memory of this user matching `query`, not just the best few."""
         assert self._memory is not None
         total = self._memory.index.count(
-            {"userId": {"$eq": self._user_id}, "text": {"$smart": query}}
+            {**self._memory._filter(self._user_id), "text": {"$smart": query}}
         )
         if total <= 0:
             return []
         return self._memory.recall(query, user_id=self._user_id, top_k=total)
+
+    def _all_memories(self) -> list[MemoryRecord]:
+        """Every memory of this user, for the substring match that search can't do."""
+        assert self._memory is not None
+        total = self._memory.count(user_id=self._user_id)
+        if total <= 0:
+            return []
+        return self._memory.list(user_id=self._user_id, limit=total)
 
     def _remember(
         self, text: str, metadata: dict[str, Any], *, id: str | None = None

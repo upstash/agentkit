@@ -176,6 +176,14 @@ def test_old_text_alone_only_removes_an_unambiguous_match(provider):
     assert _texts(provider, "Drinks") == ["Drinks coffee in the evening"]
 
 
+def test_old_text_alone_finds_a_substring_search_would_miss(provider):
+    # Full-text search doesn't match "ordinarycomp" inside "extraordinarycompany".
+    provider.on_memory_write("add", "user", "Works at extraordinarycompany")
+    provider.on_memory_write("add", "user", "Drinks tea in the morning")
+    provider.on_memory_write("remove", "user", "", metadata={"old_text": "ordinarycomp"})
+    assert [m.text for m in provider._memory.list(user_id="arda")] == ["Drinks tea in the morning"]
+
+
 def test_subagents_read_but_never_write(provider, redis):
     sub = UpstashMemoryProvider(redis)
     sub.initialize("s-sub", platform="cli", agent_identity="arda", agent_context="subagent")

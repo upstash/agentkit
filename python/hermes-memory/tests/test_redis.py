@@ -157,3 +157,22 @@ def test_memories_and_chats_stay_apart_in_the_shared_index(redis, prefix):
         assert [h.session_id for h in chats.search_chats("coffee", user_id="u1")] == ["s1"]
     finally:
         memory.index.drop()
+
+
+def test_chats_never_use_up_the_memory_limit(redis, prefix):
+    memory = AgentMemory(redis, namespace=prefix, enable_telemetry=False)
+    chats = ChatHistory(redis, namespace=prefix, enable_telemetry=False)
+    memory.index.ensure()
+    try:
+        for i in range(8):
+            chats.save_chat(f"s{i}", [{"role": "user", "content": "hi"}], user_id="u1")
+        memory.add("prefers dark roast coffee", user_id="u1", id="m1")
+        memory.index.wait_indexing()
+
+        assert memory.count(user_id="u1") == 1
+        assert [m.id for m in memory.list(user_id="u1", limit=1)] == ["m1"]
+        assert [m.id for m in memory.recall("", user_id="u1", top_k=1)] == ["m1"]
+        assert [m.id for m in memory.recall("coffee", user_id="u1", top_k=1)] == ["m1"]
+        assert len(chats.list_chats(user_id="u1")) == 8
+    finally:
+        memory.index.drop()
