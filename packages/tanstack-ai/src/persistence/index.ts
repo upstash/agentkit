@@ -6,3 +6,6 @@ export type { UpstashPersistenceConfig, UpstashPersistenceStores } from "./persi
 // Blob store (bytes in Upstash Blob, records in Redis) — included by upstashPersistence({ bucket }).
 export { upstashBlobStore } from "./blob-store.js";
 export type { BlobBucketLike, UpstashBlobStoreConfig } from "./blob-store.js";
+
+// Session index (`SessionIndexStore`) — included by upstashPersistence() as `stores.sessions`.
+export { redisSessionIndexStore as upstashSessionIndex } from "./sessions.js";

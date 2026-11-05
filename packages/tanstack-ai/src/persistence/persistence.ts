@@ -12,6 +12,7 @@ import type {
   InterruptStore,
   MessageStore,
   MetadataStore,
+  SessionIndexStore,
 } from "@tanstack/ai-persistence";
 import { addTelemetry } from "../telemetry.js";
 import {
@@ -25,6 +26,7 @@ import {
 } from "./records.js";
 import { redisArtifactStore, redisGenerationRunStore } from "./generation-stores.js";
 import { upstashBlobStore } from "./blob-store.js";
+import { redisSessionIndexStore } from "./sessions.js";
 import type { BlobBucketLike } from "./blob-store.js";
 
 export interface UpstashPersistenceConfig {
@@ -59,6 +61,8 @@ export interface UpstashPersistenceConfig {
 export type UpstashPersistenceStores = ChatPersistenceStores & {
   generationRuns: GenerationRunStore;
   artifacts: ArtifactStore;
+  /** The session index: one entry per tenant and thread (title, members, usage, ...). */
+  sessions: SessionIndexStore;
   blobs?: BlobStore;
 };
 
@@ -104,6 +108,9 @@ return 1`;
  * - **metadata**: one document per `(namespace, key)`, both parts escaped so they never collide.
  * - **generationRuns** / **artifacts**: one-shot generation jobs (image, video, speech) and records of
  *   what they produced.
+ * - **sessions**: the session index (`SessionIndexStore`): one entry per `(tenantId, threadId)` with
+ *   members, title, usage and app metadata; `list` reads newest-first per tenant and `upsertIf` is a
+ *   compare-and-set on a revision.
  * - **blobs** (when `bucket` is given): the produced bytes in Upstash Blob, records in Redis.
  *
  * Records are RedisJSON documents written by single commands or single Lua scripts, so concurrent
@@ -368,6 +375,7 @@ export function upstashPersistence(
       metadata,
       generationRuns: redisGenerationRunStore(redis, p),
       artifacts: redisArtifactStore(redis, p),
+      sessions: redisSessionIndexStore(redis, p),
       ...(blobs ? { blobs } : {}),
     },
   } as AIPersistence<UpstashPersistenceStores>;

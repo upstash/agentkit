@@ -1,0 +1,214 @@
+import type { Redis } from "@upstash/redis";
+import { Redis as RedisClient } from "@upstash/redis";
+import type { Credential, CredentialScope, CredentialStore } from "@tanstack/ai/byok";
+import { addTelemetry } from "../telemetry.js";
+import { KEY_LOCKING, assertId } from "../persistence/records.js";
+
+export interface UpstashCredentialsConfig {
+  /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
+  redis?: Redis;
+  /** Base key prefix. Defaults to `agentkit:tanstack`. */
+  prefix?: string;
+  /**
+   * Encrypt the secret part of every credential at rest with AES-256-GCM. A 32-byte key, as raw
+   * bytes or base64 (`openssl rand -base64 32`). Credentials written without a key stay readable
+   * after you add one; credentials written with a key need that key to be read. Strongly
+   * recommended: without it the secrets sit in Redis as plain JSON.
+   */
+  encryptionKey?: string | Uint8Array;
+  /**
+   * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
+   * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
+   */
+  enableTelemetry?: boolean;
+}
+
+/**
+ * Write a credential into its owner's hash, optionally compare-and-set on the revision. The stored
+ * value is `{"r":<revision>,<rest>`; the revision comes from a counter that only grows, so a
+ * revision never comes back after a `delete`.
+ * KEYS: owner hash, revision counter. ARGV: credential id, the JSON object text after `{"r":N,`,
+ * "1" to compare, expected revision ("" = absent). Returns the new revision, or -1 on a conflict.
+ */
+const SET = `${KEY_LOCKING}if ARGV[3] == "1" then
+  local cur = redis.call("HGET", KEYS[1], ARGV[1])
+  local r = ""
+  if cur then r = string.match(cur, '^{"r":(%d+),') or "" end
+  if r ~= ARGV[4] then return -1 end
+end
+local rev = redis.call("INCR", KEYS[2])
+redis.call("HSET", KEYS[1], ARGV[1], '{"r":' .. rev .. ',' .. ARGV[2])
+return rev`;
+
+/** What is stored per credential. `t`/`x` stay in the clear so `list` never decrypts. */
+interface Stored {
+  r: number;
+  t: Credential["type"];
+  x?: number;
+  /** The credential, when not encrypted. */
+  c?: Credential;
+  /** Base64 AES-GCM IV and ciphertext of the credential JSON, when encrypted. */
+  iv?: string;
+  ct?: string;
+}
+
+const b64 = {
+  encode: (bytes: Uint8Array) => globalThis.btoa(String.fromCharCode(...bytes)),
+  decode: (text: string) => Uint8Array.from(globalThis.atob(text), (c) => c.charCodeAt(0)),
+};
+
+function toKeyBytes(key: string | Uint8Array): Uint8Array {
+  const bytes = typeof key === "string" ? b64.decode(key) : key;
+  if (bytes.length !== 32) {
+    throw new Error(
+      "@upstash/agentkit-tanstack-ai: `encryptionKey` must be 32 bytes (base64 or raw), e.g. `openssl rand -base64 32`.",
+    );
+  }
+  return bytes;
+}
+
+/** A segment no encoded id can equal: `encodeURIComponent` never emits a bare "%n". */
+const NONE = "%none";
+const seg = (v: string | undefined) => (v === undefined ? NONE : encodeURIComponent(v));
+
+/**
+ * `CredentialStore` (TanStack AI's BYOK contract, `@tanstack/ai/byok`) on Upstash Redis: provider
+ * API keys and OAuth tokens a user or a tenant saved, for `storedProviderKeys()` and connectors.
+ *
+ * One hash per owner (`tenantId` + `userId`; an owner with neither is one shared bucket), one field
+ * per credential id, so `list` is a single `HGETALL` and never returns a secret value. Revisions are
+ * monotonic, so `getVersioned` + `setIf` give compare-and-set for OAuth refresh across instances.
+ * Pass `encryptionKey` to encrypt secrets at rest (AES-256-GCM, bound to the owner and id).
+ *
+ * ```ts
+ * import { storedProviderKeys } from "@tanstack/ai/byok/server";
+ * import { upstashCredentials } from "@upstash/agentkit-tanstack-ai/byok";
+ *
+ * const credentials = upstashCredentials({ encryptionKey: process.env.CREDENTIALS_KEY });
+ * const keys = storedProviderKeys(credentials, { userId, tenantId });
+ * ```
+ */
+export function upstashCredentials(config: UpstashCredentialsConfig = {}): CredentialStore {
+  const redis = config.redis ?? RedisClient.fromEnv();
+  addTelemetry(redis, config.enableTelemetry);
+  const p = config.prefix ?? "agentkit:tanstack";
+  const counter = `${p}:credentialRevision`;
+  const owner = (scope: CredentialScope) =>
+    `${p}:credentials:${seg(scope.tenantId)}:${seg(scope.userId)}`;
+
+  const keyBytes =
+    config.encryptionKey === undefined ? undefined : toKeyBytes(config.encryptionKey);
+  let cryptoKey: ReturnType<typeof crypto.subtle.importKey> | undefined;
+  const aesKey = () =>
+    (cryptoKey ??= crypto.subtle.importKey("raw", keyBytes! as never, "AES-GCM", false, [
+      "encrypt",
+      "decrypt",
+    ]));
+  const aad = (scope: CredentialScope, id: string) =>
+    new TextEncoder().encode(`${owner(scope)}|${id}`);
+
+  /** The JSON text after `{"r":N,` for a credential. */
+  async function pack(scope: CredentialScope, id: string, credential: Credential): Promise<string> {
+    const stored: Omit<Stored, "r"> = {
+      t: credential.type,
+      ...(credential.type !== "api_key" && credential.expiresAt !== undefined
+        ? { x: credential.expiresAt }
+        : {}),
+    };
+    if (keyBytes) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv, additionalData: aad(scope, id) },
+        await aesKey(),
+        new TextEncoder().encode(JSON.stringify(credential)),
+      );
+      stored.iv = b64.encode(iv);
+      stored.ct = b64.encode(new Uint8Array(ct));
+    } else {
+      stored.c = credential;
+    }
+    return JSON.stringify(stored).slice(1);
+  }
+
+  async function unpack(scope: CredentialScope, id: string, stored: Stored): Promise<Credential> {
+    if (stored.c) return stored.c;
+    if (!stored.ct || !stored.iv) {
+      throw new Error(
+        `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} is corrupt.`,
+      );
+    }
+    if (!keyBytes) {
+      throw new Error(
+        `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} is encrypted; pass \`encryptionKey\`.`,
+      );
+    }
+    const plain = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: b64.decode(stored.iv) as never,
+        additionalData: aad(scope, id),
+      },
+      await aesKey(),
+      b64.decode(stored.ct) as never,
+    );
+    return JSON.parse(new TextDecoder().decode(plain)) as Credential;
+  }
+
+  const read = async (scope: CredentialScope, id: string) => {
+    assertId(id, "id");
+    return (await redis.hget<Stored>(owner(scope), id)) ?? null;
+  };
+
+  async function write(
+    scope: CredentialScope,
+    id: string,
+    credential: Credential,
+    compare?: { revision: string | null },
+  ): Promise<number> {
+    assertId(id, "id");
+    return (await redis.eval(
+      SET,
+      [owner(scope), counter],
+      [id, await pack(scope, id, credential), compare ? "1" : "0", compare?.revision ?? ""],
+    )) as number;
+  }
+
+  return {
+    async get({ scope, id }) {
+      const stored = await read(scope, id);
+      return stored ? unpack(scope, id, stored) : null;
+    },
+
+    async getVersioned({ scope, id }) {
+      const stored = await read(scope, id);
+      return stored
+        ? { credential: await unpack(scope, id, stored), revision: String(stored.r) }
+        : null;
+    },
+
+    async set({ scope, id, credential }) {
+      await write(scope, id, credential);
+    },
+
+    async setIf({ scope, id, credential, expectedRevision }) {
+      const result = await write(scope, id, credential, { revision: expectedRevision });
+      return result === -1
+        ? { ok: false, reason: "conflict" }
+        : { ok: true, revision: String(result) };
+    },
+
+    async delete({ scope, id }) {
+      assertId(id, "id");
+      await redis.hdel(owner(scope), id);
+    },
+
+    async list(scope) {
+      const all = (await redis.hgetall<Record<string, Stored>>(owner(scope))) ?? {};
+      return Object.entries(all).map(([id, stored]) => ({
+        id,
+        type: stored.t,
+        ...(stored.x !== undefined ? { expiresAt: stored.x } : {}),
+      }));
+    },
+  };
+}

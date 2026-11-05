@@ -28,6 +28,10 @@
     "./memory": {
       "types": "./dist/memory.d.ts",
       "import": "./dist/memory.js"
+    },
+    "./byok": {
+      "types": "./dist/byok.d.ts",
+      "import": "./dist/byok.js"
     }
   },
   "files": [
@@ -65,9 +69,9 @@
     "@upstash/blob": "0.0.7"
   },
   "peerDependencies": {
-    "@tanstack/ai": ">=0.65.0",
+    "@tanstack/ai": ">=1.0.0",
     "@tanstack/ai-memory": ">=0.2.8",
-    "@tanstack/ai-persistence": ">=0.8.0",
+    "@tanstack/ai-persistence": ">=1.0.0",
     "@upstash/blob": ">=0.0.7"
   },
   "peerDependenciesMeta": {
