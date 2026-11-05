@@ -22,6 +22,40 @@ from .memory import _check_id
 
 DEFAULT_PREFIX = f"{DEFAULT_NAMESPACE}:chat"
 
+# Appends messages to an existing chat in place, in one atomic step, so a long session costs one
+# turn's worth of bytes per write instead of the whole transcript (twice: the raw messages plus the
+# extracted search text). Returns 0 without writing when the chat does not exist (or has no
+# `messages` array), so the caller falls back to a full save.
+# ARGV: updatedAt, then for userMessages and modelMessages each the new text as a JSON string
+# alone and with a leading "\n" (empty when that side has no text), then one JSON value per message.
+# The text is encoded by the caller, as `JSON.stringify` would, never by cjson in the script.
+_APPEND_SCRIPT = """#!lua flags=allow-key-locking
+local key = KEYS[1]
+if redis.call('EXISTS', key) == 0 then return 0 end
+local kind = redis.call('JSON.TYPE', key, '$.messages')
+if type(kind) ~= 'table' or kind[1] ~= 'array' then return 0 end
+local function add_text(path, alone, joined)
+  if alone == '' then return end
+  local len = redis.call('JSON.STRLEN', key, path)
+  if type(len) == 'table' and type(len[1]) == 'number' then
+    if len[1] > 0 then
+      redis.call('JSON.STRAPPEND', key, path, joined)
+    else
+      redis.call('JSON.STRAPPEND', key, path, alone)
+    end
+  else
+    redis.call('JSON.SET', key, path, alone)
+  end
+end
+add_text('$.userMessages', ARGV[2], ARGV[3])
+add_text('$.modelMessages', ARGV[4], ARGV[5])
+if #ARGV > 5 then
+  redis.call('JSON.ARRAPPEND', key, '$.messages', unpack(ARGV, 6))
+end
+redis.call('JSON.SET', key, '$.updatedAt', ARGV[1])
+return 1
+"""
+
 
 def extract_text(messages: list[dict[str, Any]]) -> dict[str, str]:
     """Split a transcript into searchable user and model text (the TS `defaultExtractText`)."""
@@ -139,6 +173,40 @@ class ChatHistory:
         if self.ttl_seconds is not None:
             self.redis.expire(key, self.ttl_seconds)
         return doc
+
+    def append_messages(
+        self, session_id: str, messages: list[dict[str, Any]], *, user_id: str
+    ) -> bool:
+        """Append messages to a saved chat in place; False (nothing written) if there is none.
+
+        The document ends up exactly as `save_chat` with the whole transcript would leave it, but
+        only the new messages and their text travel, so the write does not grow with the session.
+        """
+        _check_id(user_id, "user_id")
+        _check_id(session_id, "session_id")
+        text = extract_text(messages)
+
+        def encoded(side: str) -> list[str]:
+            return [dumps(text[side]), dumps("\n" + text[side])] if text[side] else ["", ""]
+
+        key = self._key(user_id, session_id)
+        appended = self.redis.execute(
+            [
+                "EVAL",
+                _APPEND_SCRIPT,
+                "1",
+                key,
+                str(int(time.time() * 1000)),
+                *encoded("userMessages"),
+                *encoded("modelMessages"),
+                *(dumps(message) for message in messages),
+            ]
+        )
+        if appended != 1:
+            return False
+        if self.ttl_seconds is not None:
+            self.redis.expire(key, self.ttl_seconds)
+        return True
 
     def list_chats(self, *, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         """Chats of a user, most recently updated first."""

@@ -178,7 +178,7 @@ wheels = [
 
 [[package]]
 name = "upstash-hermes-memory"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "python/hermes-memory" }
 dependencies = [
     { name = "upstash-redis" },

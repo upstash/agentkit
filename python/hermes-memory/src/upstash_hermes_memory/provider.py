@@ -177,6 +177,10 @@ def _epoch(value: Any) -> float | None:
     return None
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _cut_by_time(transcript: list[dict[str, Any]], history: list[dict[str, Any]]):
     """The `/undo` cut by timestamp, or None when the timestamps to do it are missing.
 
@@ -188,7 +192,9 @@ def _cut_by_time(transcript: list[dict[str, Any]], history: list[dict[str, Any]]
     stamps = [_epoch(m.get("timestamp")) for m in history if m.get("role") == "user"]
     stamps = [s for s in stamps if s is not None]
     users = [e for e in transcript if e.get("role") == "user"]
-    if not stamps or not users or any(not isinstance(e.get("ts"), float) for e in users):
+    # Redis hands a whole-number stamp back as an int (`1000.0` is read as `1000`), so any number
+    # counts; only a turn without one (saved by an older version) forces the content cut.
+    if not stamps or not users or any(not _is_number(e.get("ts")) for e in users):
         return None
     cutoff = max(stamps)
     kept, keep = [], False
@@ -250,8 +256,6 @@ class UpstashMemoryProvider(MemoryProvider):
         self._user_id = "default"
         self._session_id = ""
         self._write_enabled = True
-        # Transcript per session, loaded from Redis on first use so a resumed session appends.
-        self._transcripts: dict[str, list[dict[str, str]]] = {}
         # Sessions Hermes rewound (/undo): their transcript is cut back on the next sync.
         self._rewound: set[str] = set()
         self._lock = threading.Lock()
@@ -376,32 +380,35 @@ class UpstashMemoryProvider(MemoryProvider):
         sid = self._session_key(session_id) if session_id else self._session_id
         if not sid:
             return
+        new: list[dict[str, Any]] = []
+        if user_content:
+            entry: dict[str, Any] = {"role": "user", "content": user_content}
+            # The turn's own stamp, so /undo can cut by time (see `_cut_by_time`).
+            stamp = next(
+                (
+                    _epoch(m.get("timestamp"))
+                    for m in reversed(messages or [])
+                    if m.get("role") == "user"
+                ),
+                None,
+            )
+            if stamp is not None:
+                entry["ts"] = stamp
+            new.append(entry)
+        if assistant_content:
+            new.append({"role": "assistant", "content": assistant_content})
         with self._lock:
-            transcript = self._load_transcript(sid)
             if sid in self._rewound and messages is not None:
-                # `messages` ends with this turn, which Hermes appended after the undo.
+                # `messages` ends with this turn, which Hermes appended after the undo. The only
+                # path that reads and rewrites the whole transcript.
                 history = list(messages)
                 while history and history[-1].get("role") != "user":
                     history.pop()
-                transcript[:] = rewind_transcript(transcript, history[:-1])
+                transcript = rewind_transcript(self._load_transcript(sid), history[:-1])
                 self._rewound.discard(sid)
-            if user_content:
-                entry: dict[str, Any] = {"role": "user", "content": user_content}
-                # The turn's own stamp, so /undo can cut by time (see `_cut_by_time`).
-                stamp = next(
-                    (
-                        _epoch(m.get("timestamp"))
-                        for m in reversed(messages or [])
-                        if m.get("role") == "user"
-                    ),
-                    None,
-                )
-                if stamp is not None:
-                    entry["ts"] = stamp
-                transcript.append(entry)
-            if assistant_content:
-                transcript.append({"role": "assistant", "content": assistant_content})
-            self._save_transcript(sid, transcript)
+                self._save_transcript(sid, transcript + new)
+            elif new:
+                self._append_transcript(sid, new)
 
     def on_session_switch(
         self, new_session_id: str, *, rewound: bool = False, **kwargs: Any
@@ -419,8 +426,7 @@ class UpstashMemoryProvider(MemoryProvider):
         if not self._chats or not self._write_enabled or sid not in self._rewound:
             return
         with self._lock:
-            transcript = self._load_transcript(sid)
-            transcript[:] = rewind_transcript(transcript, list(messages or []))
+            transcript = rewind_transcript(self._load_transcript(sid), list(messages or []))
             self._rewound.discard(sid)
             self._save_transcript(sid, transcript)
 
@@ -433,16 +439,23 @@ class UpstashMemoryProvider(MemoryProvider):
             logger.warning("upstash chat history skipped: %s", error)
             return ""
 
-    def _load_transcript(self, sid: str) -> list[dict[str, str]]:
-        transcript = self._transcripts.get(sid)
-        if transcript is None:
-            assert self._chats is not None
-            existing = self._chats.get_chat(sid, user_id=self._user_id) or {}
-            transcript = list(existing.get("messages") or [])
-            self._transcripts[sid] = transcript
-        return transcript
+    def _load_transcript(self, sid: str) -> list[dict[str, Any]]:
+        """The saved transcript, read fresh: only /undo needs it, so it is never cached."""
+        assert self._chats is not None
+        existing = self._chats.get_chat(sid, user_id=self._user_id) or {}
+        return list(existing.get("messages") or [])
 
-    def _save_transcript(self, sid: str, transcript: list[dict[str, str]]) -> None:
+    def _append_transcript(self, sid: str, new: list[dict[str, Any]]) -> None:
+        """Add a turn to the saved transcript in place; the first turn of a session creates it."""
+        assert self._chats is not None
+        try:
+            self._chats.index.ensure()
+            if not self._chats.append_messages(sid, new, user_id=self._user_id):
+                self._chats.save_chat(sid, new, user_id=self._user_id)
+        except Exception as error:  # noqa: BLE001 - a Redis outage must never break a turn
+            logger.warning("upstash chat history save failed: %s", error)
+
+    def _save_transcript(self, sid: str, transcript: list[dict[str, Any]]) -> None:
         assert self._chats is not None
         try:
             # Create the index before the first write rather than leaving it to the first
@@ -543,7 +556,6 @@ class UpstashMemoryProvider(MemoryProvider):
         return record
 
     def shutdown(self) -> None:
-        self._transcripts.clear()
         self._rewound.clear()
 
     # -- tools ---------------------------------------------------------------------------------

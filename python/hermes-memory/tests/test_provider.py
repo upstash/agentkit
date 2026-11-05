@@ -95,6 +95,28 @@ def test_a_resumed_session_appends_instead_of_overwriting(provider, redis):
     assert [m["content"] for m in doc["messages"]] == ["first", "one", "second", "two"]
 
 
+def test_a_turn_sends_only_itself_once_the_chat_exists(provider, redis):
+    # A long session must not re-send (or re-read) its whole transcript every turn: Redis caps a
+    # request at 10 MB, so a full rewrite would stop saving the chat after a few months.
+    provider.sync_turn("first " + "x" * 5000, "one", session_id="s-big")
+    sent = []
+    execute = redis.execute
+
+    def recording(command):
+        sent.append(command)
+        return execute(command)
+
+    redis.execute = recording
+    try:
+        provider.sync_turn("second", "two", session_id="s-big")
+    finally:
+        redis.execute = execute
+    assert [c[0] for c in sent] == ["EVAL"]
+    assert sum(len(str(part)) for part in sent[0][2:]) < 500
+    doc = provider._chats.get_chat("s-big", user_id="arda")
+    assert [m["content"][:5] for m in doc["messages"]] == ["first", "one", "secon", "two"]
+
+
 def _texts(provider, query):
     return sorted(h.text for h in provider._memory.recall(query, user_id="arda", top_k=20))
 
@@ -219,9 +241,9 @@ def test_a_refused_user_id_leaves_the_provider_inactive(monkeypatch):
     provider.on_memory_write("add", "memory", "a fact")  # no stores: nothing to write to
 
 
-def test_a_session_id_with_a_colon_keeps_no_transcript(provider):
+def test_a_session_id_with_a_colon_keeps_no_transcript(provider, redis):
     provider.sync_turn("hi", "hello", session_id="ab:cd")
-    assert provider._transcripts == {}
+    assert not redis.keys(f"{provider._chats.prefix}:*")
 
 
 def test_ids_with_percent_are_shared_with_the_ts_sdk(provider, redis):
@@ -346,6 +368,13 @@ def test_undo_of_an_identical_turn_removes_it_from_redis(provider):
     provider.on_session_end(both[:2])  # exit right after /undo
     doc = provider._chats.get_chat("s-dup", user_id="arda")
     assert [m["content"] for m in doc["messages"]] == ["yes", "okay"]
+
+
+def test_rewind_by_time_accepts_stamps_redis_returned_as_ints():
+    # RedisJSON reads `1000.0` back as `1000`; a resumed session's saved turns arrive that way.
+    both = _stamped(("yes", "okay"), ("yes", "okay"))
+    saved = [{**e, "ts": int(e["ts"])} if "ts" in e else e for e in _saved(both)]
+    assert rewind_transcript(saved, both[:2]) == saved[:2]
 
 
 def test_rewind_drops_the_undone_turns():

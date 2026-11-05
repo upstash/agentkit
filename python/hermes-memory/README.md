@@ -7,7 +7,8 @@ your AI SDK app saves is recalled by your Hermes agent, and the other way round.
 ## What it does in Hermes
 
 - **Recall:** before each turn, the memories closest to the user's message are added to the prompt.
-- **Chat history:** after each turn, the session's transcript is saved as a searchable document.
+- **Chat history:** after each turn, the turn is appended in place to the session's searchable
+  transcript document, so a write stays the size of one turn however long the session runs.
 - **Mirroring:** facts the built-in `memory` tool adds are also saved to Redis, and when Hermes
   corrects (`replace`/`patch`) or removes one, the Redis copy is updated or deleted too.
 - **Tools:** `upstash_memory_save`, `upstash_memory_search`, `upstash_memory_forget` and

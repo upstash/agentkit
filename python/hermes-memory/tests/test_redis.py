@@ -176,3 +176,48 @@ def test_chats_never_use_up_the_memory_limit(redis, prefix):
         assert len(chats.list_chats(user_id="u1")) == 8
     finally:
         memory.index.drop()
+
+
+_TURNS = [
+    {"role": "user", "content": "plan a trip to Lisbon", "ts": 1000.5},
+    {"role": "assistant", "content": 'When? "May" is ✨ nice'},
+    {"role": "user", "content": "   "},
+    {"role": "assistant", "parts": [{"type": "text", "text": "a/b <tag> \\ çay"}]},
+    {"role": "user", "content": "May"},
+]
+
+
+def _without_times(doc):
+    return {k: v for k, v in doc.items() if k not in ("createdAt", "updatedAt")}
+
+
+def test_append_leaves_the_same_document_as_a_full_save(chats):
+    # Appending one message at a time must end where saving the whole transcript ends, byte for
+    # byte on the text fields, including the first non-empty text of a side and unicode/escapes.
+    chats.save_chat("full", _TURNS, user_id="u1", title="Trip")
+    chats.save_chat("appended", _TURNS[:1], user_id="u1", title="Trip")
+    created = chats.get_chat("appended", user_id="u1")["createdAt"]
+    for message in _TURNS[1:]:
+        assert chats.append_messages("appended", [message], user_id="u1")
+
+    full = chats.get_chat("full", user_id="u1")
+    appended = chats.get_chat("appended", user_id="u1")
+    assert _without_times({**appended, "sessionId": "full"}) == _without_times(full)
+    assert appended["createdAt"] == created
+    assert appended["updatedAt"] >= created
+
+    chats.index.wait_indexing()
+    hits = chats.search_chats("Lisbon", user_id="u1")
+    assert sorted(h.session_id for h in hits) == ["appended", "full"]
+
+
+def test_append_fills_a_side_that_had_no_text_yet(chats):
+    chats.save_chat("s", [{"role": "assistant", "content": "hello"}], user_id="u1")
+    assert chats.append_messages("s", [{"role": "user", "content": "hi"}], user_id="u1")
+    doc = chats.get_chat("s", user_id="u1")
+    assert (doc["userMessages"], doc["modelMessages"]) == ("hi", "hello")
+
+
+def test_append_to_a_missing_chat_writes_nothing(chats, redis):
+    assert not chats.append_messages("nope", [{"role": "user", "content": "x"}], user_id="u1")
+    assert chats.get_chat("nope", user_id="u1") is None
