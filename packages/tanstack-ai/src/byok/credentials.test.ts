@@ -156,4 +156,57 @@ describe.skipIf(!hasRedisCreds)("upstashCredentials (live Redis)", () => {
       "user-key",
     );
   });
+
+  it("requireEncryption refuses a plaintext row swapped in for an encrypted one", async () => {
+    const p = `${prefix}:rq`;
+    const store = upstashCredentials({
+      redis,
+      prefix: p,
+      encryptionKey: key,
+      requireEncryption: true,
+    });
+    const scope = { userId: "u" };
+    await store.set({ scope, id: "openai", credential: { type: "api_key", value: "real" } });
+    expect(await store.get({ scope, id: "openai" })).toEqual({ type: "api_key", value: "real" });
+    await redis.hset(`${p}:credentials:%none:u`, {
+      openai: '{"r":1,"t":"api_key","c":{"type":"api_key","value":"ATTACKER"}}',
+    });
+    await expect(store.get({ scope, id: "openai" })).rejects.toThrow(/requireEncryption/);
+    expect(() => upstashCredentials({ redis, requireEncryption: true })).toThrow(/needs an/);
+  });
+
+  it("authenticates the clear-text type and expiry that list shows", async () => {
+    const p = `${prefix}:aad`;
+    const store = upstashCredentials({ redis, prefix: p, encryptionKey: key });
+    const scope = { userId: "u" };
+    await store.set({ scope, id: "gh", credential: oauth });
+    const hash = `${p}:credentials:%none:u`;
+    const row = (await redis.hget<Record<string, unknown>>(hash, "gh"))!;
+    await redis.hset(hash, { gh: JSON.stringify({ ...row, x: 9999999999999 }) });
+    await expect(store.get({ scope, id: "gh" })).rejects.toThrow();
+  });
+
+  it("stores a large encrypted credential, and accepts base64url and hex keys", async () => {
+    const big = { type: "api_key" as const, value: "k".repeat(400_000) };
+    const store = upstashCredentials({ redis, prefix: `${prefix}:big`, encryptionKey: key });
+    await store.set({ scope: { userId: "u" }, id: "big", credential: big });
+    expect(await store.get({ scope: { userId: "u" }, id: "big" })).toEqual(big);
+    const raw = randomBytes(32);
+    const forms = [raw.toString("base64"), raw.toString("base64url"), raw.toString("hex"), raw];
+    const first = upstashCredentials({ redis, prefix: `${prefix}:keys`, encryptionKey: forms[0]! });
+    await first.set({ scope: {}, id: "k", credential: { type: "api_key", value: "v" } });
+    for (const form of forms.slice(1)) {
+      const other = upstashCredentials({ redis, prefix: `${prefix}:keys`, encryptionKey: form });
+      expect(await other.get({ scope: {}, id: "k" })).toEqual({ type: "api_key", value: "v" });
+    }
+    expect(() => upstashCredentials({ redis, encryptionKey: "not a key!" })).toThrow(/32 bytes/);
+    expect(() => upstashCredentials({ redis, encryptionKey: "a".repeat(32) })).toThrow(/32 bytes/);
+  });
+
+  it("rejects the reserved id __proto__", async () => {
+    const store = upstashCredentials({ redis, prefix: `${prefix}:pr` });
+    await expect(
+      store.set({ scope: {}, id: "__proto__", credential: { type: "api_key", value: "x" } }),
+    ).rejects.toThrow(/__proto__/);
+  });
 });
