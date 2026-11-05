@@ -38,7 +38,12 @@ describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
     // A fresh keyspace per case: the suite assumes each persistence starts empty.
     () =>
       upstashPersistence({ redis, prefix: `${prefix}:${++n}`, bucket, blobPathPrefix: `t/${n}/` }),
-    { checks: OPT_IN_CHECKS },
+    {
+      checks: OPT_IN_CHECKS,
+      // A second store set on the same keyspace: another machine on the same database.
+      twin: () =>
+        upstashPersistence({ redis, prefix: `${prefix}:${n}`, bucket, blobPathPrefix: `t/${n}/` }),
+    },
   );
 
   it("serves byte ranges with an HTTP Range request, and cleans up bucket objects on delete", async () => {
@@ -325,5 +330,24 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
     expect(
       (await sessions.list({ search: "NEEDLE", limit: 1 })).entries.map((e) => e.threadId),
     ).toEqual(["1000"]);
+  });
+
+  it("log: concurrent appends at one position let exactly one win; numeric-looking ids round-trip", async () => {
+    const { log } = upstashPersistence({ redis, prefix: `${prefix}:logx` }).stores;
+    const logId = "007";
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, (_, i) =>
+        log.append({ logId, seq: 1, epoch: 0, records: [{ type: "w", i }] }),
+      ),
+    );
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await log.read({ logId })).toHaveLength(1);
+    expect(
+      await log.offerInput({ logId, harness: "001", inputId: "010", record: { type: "in" } }),
+    ).toBe("offered");
+    expect((await log.listOfferedInputs({ logId })).map((o) => o.inputId)).toEqual(["010"]);
+    expect(await log.listLogsWithoutOwner({ limit: 10, harnesses: ["001"] })).toEqual([
+      { logId: "007", harness: "001", reason: "offered" },
+    ]);
   });
 });
