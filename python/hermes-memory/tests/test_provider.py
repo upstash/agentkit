@@ -95,6 +95,88 @@ def test_a_resumed_session_appends_instead_of_overwriting(provider, redis):
     assert [m["content"] for m in doc["messages"]] == ["first", "one", "second", "two"]
 
 
+def test_a_turn_sends_only_itself_once_the_chat_exists(provider, redis):
+    # A long session must not re-send (or re-read) its whole transcript every turn: Redis caps a
+    # request at 10 MB, so a full rewrite would stop saving the chat after a few months.
+    provider.sync_turn("first " + "x" * 5000, "one", session_id="s-big")
+    sent = []
+    execute = redis.execute
+
+    def recording(command):
+        sent.append(command)
+        return execute(command)
+
+    redis.execute = recording
+    try:
+        provider.sync_turn("second", "two", session_id="s-big")
+    finally:
+        redis.execute = execute
+    assert [c[0] for c in sent] == ["EVAL"]
+    assert sum(len(str(part)) for part in sent[0][2:]) < 500
+    doc = provider._chats.get_chat("s-big", user_id="arda")
+    assert [m["content"][:5] for m in doc["messages"]] == ["first", "one", "secon", "two"]
+
+
+def _fail_next_write(provider, monkeypatch):
+    """Make the next chat write raise, as a network blip would; later writes go through."""
+    chats = provider._chats
+    calls = {"failed": False}
+
+    def failing(method):
+        real = getattr(chats, method)
+
+        def wrapper(*args, **kwargs):
+            if not calls["failed"]:
+                calls["failed"] = True
+                raise ConnectionError("blip")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(chats, method, wrapper)
+
+    failing("append_messages")
+    failing("save_chat")
+    return calls
+
+
+def _contents(provider, sid):
+    doc = provider._chats.get_chat(sid, user_id="arda")
+    return [m["content"] for m in doc["messages"]] if doc else None
+
+
+def test_a_failed_first_turn_is_saved_by_the_next_one(provider, monkeypatch):
+    _fail_next_write(provider, monkeypatch)
+    provider.sync_turn("u1", "a1", session_id="s-f1")
+    assert _contents(provider, "s-f1") is None
+    provider.sync_turn("u2", "a2", session_id="s-f1")
+    assert _contents(provider, "s-f1") == ["u1", "a1", "u2", "a2"]
+
+
+def test_a_failed_later_turn_is_saved_by_the_next_one(provider, monkeypatch):
+    provider.sync_turn("u1", "a1", session_id="s-f2")
+    _fail_next_write(provider, monkeypatch)
+    provider.sync_turn("u2", "a2", session_id="s-f2")
+    provider.sync_turn("u3", "a3", session_id="s-f2")
+    assert _contents(provider, "s-f2") == ["u1", "a1", "u2", "a2", "u3", "a3"]
+
+
+def test_a_failed_write_after_undo_still_cuts_and_keeps_the_turn(provider, monkeypatch):
+    for user, reply in (("x", "1"), ("y", "2"), ("z", "3")):
+        provider.sync_turn(user, reply, session_id="s-f3")
+    provider.on_session_switch("s-f3", rewound=True)  # /undo of z
+    _fail_next_write(provider, monkeypatch)
+    after_undo = _turns(("x", "1"), ("y", "2"), ("w", "4"))
+    provider.sync_turn("w", "4", session_id="s-f3", messages=after_undo)
+    provider.sync_turn("v", "5", session_id="s-f3", messages=after_undo + _turns(("v", "5")))
+    assert _contents(provider, "s-f3") == ["x", "1", "y", "2", "w", "4", "v", "5"]
+
+
+def test_session_end_retries_a_failed_turn(provider, monkeypatch):
+    _fail_next_write(provider, monkeypatch)
+    provider.sync_turn("u1", "a1", session_id=provider._session_id)
+    provider.on_session_end(_turns(("u1", "a1")))
+    assert _contents(provider, provider._session_id) == ["u1", "a1"]
+
+
 def _texts(provider, query):
     return sorted(h.text for h in provider._memory.recall(query, user_id="arda", top_k=20))
 
@@ -219,9 +301,9 @@ def test_a_refused_user_id_leaves_the_provider_inactive(monkeypatch):
     provider.on_memory_write("add", "memory", "a fact")  # no stores: nothing to write to
 
 
-def test_a_session_id_with_a_colon_keeps_no_transcript(provider):
+def test_a_session_id_with_a_colon_keeps_no_transcript(provider, redis):
     provider.sync_turn("hi", "hello", session_id="ab:cd")
-    assert provider._transcripts == {}
+    assert not redis.keys(f"{provider._chats.prefix}:*")
 
 
 def test_ids_with_percent_are_shared_with_the_ts_sdk(provider, redis):
@@ -346,6 +428,13 @@ def test_undo_of_an_identical_turn_removes_it_from_redis(provider):
     provider.on_session_end(both[:2])  # exit right after /undo
     doc = provider._chats.get_chat("s-dup", user_id="arda")
     assert [m["content"] for m in doc["messages"]] == ["yes", "okay"]
+
+
+def test_rewind_by_time_accepts_stamps_redis_returned_as_ints():
+    # RedisJSON reads `1000.0` back as `1000`; a resumed session's saved turns arrive that way.
+    both = _stamped(("yes", "okay"), ("yes", "okay"))
+    saved = [{**e, "ts": int(e["ts"])} if "ts" in e else e for e in _saved(both)]
+    assert rewind_transcript(saved, both[:2]) == saved[:2]
 
 
 def test_rewind_drops_the_undone_turns():
