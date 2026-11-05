@@ -117,6 +117,66 @@ def test_a_turn_sends_only_itself_once_the_chat_exists(provider, redis):
     assert [m["content"][:5] for m in doc["messages"]] == ["first", "one", "secon", "two"]
 
 
+def _fail_next_write(provider, monkeypatch):
+    """Make the next chat write raise, as a network blip would; later writes go through."""
+    chats = provider._chats
+    calls = {"failed": False}
+
+    def failing(method):
+        real = getattr(chats, method)
+
+        def wrapper(*args, **kwargs):
+            if not calls["failed"]:
+                calls["failed"] = True
+                raise ConnectionError("blip")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(chats, method, wrapper)
+
+    failing("append_messages")
+    failing("save_chat")
+    return calls
+
+
+def _contents(provider, sid):
+    doc = provider._chats.get_chat(sid, user_id="arda")
+    return [m["content"] for m in doc["messages"]] if doc else None
+
+
+def test_a_failed_first_turn_is_saved_by_the_next_one(provider, monkeypatch):
+    _fail_next_write(provider, monkeypatch)
+    provider.sync_turn("u1", "a1", session_id="s-f1")
+    assert _contents(provider, "s-f1") is None
+    provider.sync_turn("u2", "a2", session_id="s-f1")
+    assert _contents(provider, "s-f1") == ["u1", "a1", "u2", "a2"]
+
+
+def test_a_failed_later_turn_is_saved_by_the_next_one(provider, monkeypatch):
+    provider.sync_turn("u1", "a1", session_id="s-f2")
+    _fail_next_write(provider, monkeypatch)
+    provider.sync_turn("u2", "a2", session_id="s-f2")
+    provider.sync_turn("u3", "a3", session_id="s-f2")
+    assert _contents(provider, "s-f2") == ["u1", "a1", "u2", "a2", "u3", "a3"]
+
+
+def test_a_failed_write_after_undo_still_cuts_and_keeps_the_turn(provider, monkeypatch):
+    for user, reply in (("x", "1"), ("y", "2"), ("z", "3")):
+        provider.sync_turn(user, reply, session_id="s-f3")
+    provider.on_session_switch("s-f3", rewound=True)  # /undo of z
+    _fail_next_write(provider, monkeypatch)
+    after_undo = _turns(("x", "1"), ("y", "2"), ("w", "4"))
+    provider.sync_turn("w", "4", session_id="s-f3", messages=after_undo)
+    provider.sync_turn("v", "5", session_id="s-f3", messages=after_undo + _turns(("v", "5")))
+    assert _contents(provider, "s-f3") == ["x", "1", "y", "2", "w", "4", "v", "5"]
+
+
+def test_session_end_retries_a_failed_turn(provider, monkeypatch):
+    _fail_next_write(provider, monkeypatch)
+    provider.sync_turn("u1", "a1", session_id=provider._session_id)
+    provider.on_session_end(_turns(("u1", "a1")))
+    assert _contents(provider, provider._session_id) == ["u1", "a1"]
+
+
 def _texts(provider, query):
     return sorted(h.text for h in provider._memory.recall(query, user_id="arda", top_k=20))
 

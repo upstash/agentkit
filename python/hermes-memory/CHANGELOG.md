@@ -14,7 +14,8 @@ section here. The release workflow publishes any version PyPI does not have yet.
   once it passed Upstash's 10 MB request limit. `ChatHistory.append_messages` now adds the turn
   with one atomic script (`JSON.ARRAPPEND` / `JSON.STRAPPEND`), and the document ends up exactly
   as a full save would leave it, so the layout stays shared with the TS `ChatHistory`. Only
-  `/undo` still reads and rewrites the transcript.
+  `/undo` still reads and rewrites the transcript. A turn (or `/undo`) whose write fails, for
+  example on a network blip, stays pending and is written with the next turn or at session end.
 - `/undo` cuts by timestamp again for sessions resumed after a restart: Redis returns a
   whole-number stamp such as `1000.0` as `1000`, which made the cut fall back to matching by
   content, so of two identical turns the wrong one could be removed.
