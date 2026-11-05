@@ -61,6 +61,7 @@ describe.skipIf(!hasRedisCreds)("createSearchTools (live Redis, real chat loop)"
     await drain(
       chat({
         adapter: adapter as never,
+        threadId: "t",
         messages: [{ role: "user", content: "headphones?" }],
         tools,
       }),
