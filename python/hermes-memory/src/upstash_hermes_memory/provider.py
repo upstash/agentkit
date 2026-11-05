@@ -18,6 +18,8 @@ Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
   `<namespace>:memory:…` (the TS SDK's default keys, so they are shared with AgentKit apps on the
   same database) and chats at `<namespace>:chat:…`, both in one search index, so the provider
   works on Upstash's Free plan (one index per database).
+- UPSTASH_HERMES_TELEMETRY: set to `1` to send telemetry (off by default, as the plugin catalog
+  requires). `UPSTASH_DISABLE_TELEMETRY` still turns it off.
 """
 
 import hashlib
@@ -29,6 +31,7 @@ from datetime import datetime
 from typing import Any
 
 from ._search import DEFAULT_NAMESPACE
+from ._telemetry import OPT_IN_ENV, OPT_OUT_ENV, is_opt_in
 from .chat_history import ChatHistory
 from .memory import AgentMemory, MemoryRecord
 
@@ -313,18 +316,22 @@ class UpstashMemoryProvider(MemoryProvider):
         except ValueError as error:
             logger.warning("upstash memory is off for this session: %s", error)
             return
+        # Telemetry is opt-in (plugin catalog rule 13), for upstash-redis's own headers as well as
+        # ours, so the client is created with allow_telemetry off unless the user asked for it.
+        telemetry = is_opt_in(get_secret(OPT_IN_ENV, "")) and not get_secret(OPT_OUT_ENV, "")
         if self._redis is None:
             from upstash_redis import Redis
 
             self._redis = Redis(
                 url=get_secret("UPSTASH_REDIS_REST_URL", ""),
                 token=get_secret("UPSTASH_REDIS_REST_TOKEN", ""),
+                allow_telemetry=telemetry,
             )
         # Like the credentials, the namespace is read per Hermes profile: a multiplexed gateway
         # keeps each profile's .env out of os.environ. Memory and chats share its one index.
         namespace = get_secret("UPSTASH_HERMES_NAMESPACE", "") or DEFAULT_NAMESPACE
-        self._memory = AgentMemory(self._redis, namespace=namespace)
-        self._chats = ChatHistory(self._redis, namespace=namespace)
+        self._memory = AgentMemory(self._redis, namespace=namespace, enable_telemetry=telemetry)
+        self._chats = ChatHistory(self._redis, namespace=namespace, enable_telemetry=telemetry)
         self._user_id = user_id
         self._session_id = self._session_key(session_id)
         self._write_enabled = (kwargs.get("agent_context") or "") in _WRITING_CONTEXTS

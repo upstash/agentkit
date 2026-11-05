@@ -249,6 +249,41 @@ def test_the_namespace_comes_from_the_hermes_profile(monkeypatch):
     assert provider._memory.index.name == provider._chats.index.name == "team"
 
 
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, False),
+        ({"UPSTASH_HERMES_TELEMETRY": "0"}, False),
+        ({"UPSTASH_HERMES_TELEMETRY": "1"}, True),
+        ({"UPSTASH_HERMES_TELEMETRY": "true", "UPSTASH_DISABLE_TELEMETRY": "1"}, False),
+    ],
+)
+def test_telemetry_is_opt_in_for_the_redis_client_too(monkeypatch, env, expected):
+    # Catalog rule 13: no telemetry unless asked, including upstash-redis's own headers.
+    import upstash_redis
+
+    created = {}
+
+    class FakeRedis:
+        def __init__(self, url, token, allow_telemetry=True):
+            created["allow_telemetry"] = allow_telemetry
+            self._headers = (
+                {"Upstash-Telemetry-Sdk": "py-upstash-redis@v1.8.0"} if allow_telemetry else {}
+            )
+
+    for name in ("UPSTASH_HERMES_TELEMETRY", "UPSTASH_DISABLE_TELEMETRY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(upstash_redis, "Redis", FakeRedis)
+    monkeypatch.setattr(
+        provider_module, "get_secret", lambda name, default=None: env.get(name, default)
+    )
+    provider = UpstashMemoryProvider()
+    provider.initialize("s", platform="cli")
+    assert created["allow_telemetry"] is expected
+    tagged = "upstash-hermes-memory@" in provider._redis._headers.get("Upstash-Telemetry-Sdk", "")
+    assert tagged is expected
+
+
 def _turns(*texts):
     out = []
     for user, assistant in texts:

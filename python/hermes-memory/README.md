@@ -37,13 +37,16 @@ these):
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Required. From the [Upstash console](https://console.upstash.com/redis). |
 | `UPSTASH_HERMES_USER_ID` | Whose memories these are. Defaults to the gateway user, then the Hermes profile name, then `default`. |
 | `UPSTASH_HERMES_NAMESPACE` | Key namespace. Default `agentkit`, so memories sit at the TS SDK's default keys and are shared with AgentKit apps on the same database. |
+| `UPSTASH_HERMES_TELEMETRY` | Set to `1` to send telemetry. Off by default; see [Telemetry](#telemetry). |
 
 ## Telemetry
 
-On by default, like the other Upstash SDKs: requests to your Upstash database carry
-`upstash-hermes-memory@<version>` in the `Upstash-Telemetry-Sdk` header, next to the tag
-`upstash-redis` already sends. Nothing else is collected and nothing goes anywhere but your
-database. Set `UPSTASH_DISABLE_TELEMETRY=1` to turn it off.
+Off by default. Set `UPSTASH_HERMES_TELEMETRY=1` to opt in: requests to your Upstash database then
+carry `upstash-hermes-memory@<version>` in the `Upstash-Telemetry-Sdk` header, next to the
+`upstash-redis` client's own telemetry headers (SDK version, Python version, platform). Nothing
+else is collected and nothing goes anywhere but your database. Without the opt-in the provider
+creates its Redis client with `allow_telemetry=False`, so none of these headers are sent.
+`UPSTASH_DISABLE_TELEMETRY=1` turns telemetry off even when opted in.
 
 ## Redis layout
 

@@ -97,19 +97,28 @@ def test_ids_with_colons_are_refused():
         raise AssertionError(f"accepted user_id {bad!r}")
 
 
-def test_telemetry_tags_the_client_once(monkeypatch):
+def test_telemetry_is_off_by_default(monkeypatch):
+    # The Hermes plugin catalog requires telemetry to be opt-in (catalog rule 13).
     monkeypatch.delenv("UPSTASH_DISABLE_TELEMETRY", raising=False)
     redis = Recorder()
     AgentMemory(redis)
     ChatHistory(redis)
+    add_telemetry(redis)
+    assert redis._headers["Upstash-Telemetry-Sdk"] == "py-upstash-redis@v1.8.0"
+
+
+def test_telemetry_when_enabled_tags_the_client_once(monkeypatch):
+    monkeypatch.delenv("UPSTASH_DISABLE_TELEMETRY", raising=False)
+    redis = Recorder()
+    AgentMemory(redis, enable_telemetry=True)
+    ChatHistory(redis, enable_telemetry=True)
     assert redis._headers["Upstash-Telemetry-Sdk"] == f"py-upstash-redis@v1.8.0,{SDK_TELEMETRY}"
 
 
-def test_telemetry_opt_outs(monkeypatch):
+def test_the_opt_out_wins_over_enabled(monkeypatch):
     redis = Recorder()
-    add_telemetry(redis, enabled=False)
     monkeypatch.setenv("UPSTASH_DISABLE_TELEMETRY", "1")
-    add_telemetry(redis)
+    add_telemetry(redis, enabled=True)
     assert redis._headers["Upstash-Telemetry-Sdk"] == "py-upstash-redis@v1.8.0"
 
 

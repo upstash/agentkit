@@ -70,7 +70,7 @@ class ChatHistory:
         index_name: str | None = None,
         ttl_seconds: int | None = None,
         min_score: float = 0,
-        enable_telemetry: bool = True,
+        enable_telemetry: bool = False,
     ):
         self.redis = redis
         self.ttl_seconds = ttl_seconds

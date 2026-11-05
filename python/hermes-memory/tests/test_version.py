@@ -1,4 +1,3 @@
-import json
 import re
 import tomllib
 from importlib.metadata import version
@@ -10,34 +9,25 @@ PACKAGE_DIR = Path(__file__).parents[1]
 
 
 def test_version_matches_pyproject():
-    # The telemetry constant and the published version must agree; sync-version.mjs keeps them so.
+    # pyproject.toml is the source; sync-version.mjs copies it into _version.py and plugin.yaml.
     pyproject = tomllib.loads((PACKAGE_DIR / "pyproject.toml").read_text())
     assert VERSION == pyproject["project"]["version"]
 
 
-def test_version_matches_package_json():
-    # Changesets bumps the private package.json; that is the source the other two are copied from.
-    package_json = json.loads((PACKAGE_DIR / "package.json").read_text())
-    assert VERSION == package_json["version"]
+def test_no_package_json_in_the_plugin_directory():
+    # Hermes reads a package.json in a plugin directory as Node dependencies and asks to `npm ci`
+    # them ("Skipped Node deps" when declined), so the version lives in pyproject.toml only.
+    assert not (PACKAGE_DIR / "package.json").exists()
 
 
 def test_version_matches_plugin_manifest():
-    # Catalog installs read plugin.yaml, not pyproject.toml; sync-version.mjs stamps both.
+    # Catalog installs read plugin.yaml, not pyproject.toml; sync-version.mjs copies the version.
     manifest = (PACKAGE_DIR / "plugin.yaml").read_text()
     assert re.search(r'^version: "(.*)"$', manifest, re.MULTILINE).group(1) == VERSION
 
 
-def test_package_json_names_the_distribution():
-    # sync-version.mjs derives the module path from this name, and publish-python.mjs queries PyPI
-    # with it, so it has to be the PyPI project name exactly.
-    package_json = json.loads((PACKAGE_DIR / "package.json").read_text())
-    pyproject = tomllib.loads((PACKAGE_DIR / "pyproject.toml").read_text())
-    assert package_json["name"] == pyproject["project"]["name"]
-    assert package_json["private"] is True
-
-
 def test_version_is_plain_semver():
-    # Changesets writes semver; anything else would not round-trip through PEP 440 unchanged.
+    # Plain semver round-trips through PEP 440 unchanged, so the tag, PyPI and plugin.yaml agree.
     assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", VERSION)
 
 

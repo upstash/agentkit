@@ -1419,25 +1419,36 @@ Python lives **beside** the pnpm workspace, not instead of any of it:
 
 - **uv workspace** at the root (`pyproject.toml`, members `python/*`, one `uv.lock`). `pnpm py:lint`
   (ruff) and `pnpm py:test` (pytest) run across every member; `uv sync --all-packages` sets it up.
-- **Changesets is still the only versioning tool.** Each Python package carries a **private
-  `package.json`** whose only job is to hold the version, and `python/*` is in `pnpm-workspace.yaml`
-  so changesets sees it. `pnpm changeset` lists it like any npm package; `changeset version` bumps it
-  and writes its `CHANGELOG.md`. `privatePackages: { version: true, tag: false }`: changesets never
-  tags or publishes it.
-- `scripts/sync-version.mjs` copies that version into `pyproject.toml` and
-  `src/<module>/_version.py` (`VERSION`, for telemetry), plus `plugin.yaml` when the package has one (the
-  Hermes plugin manifest), discovering packages by folder; `ci:version`
-  then runs `uv lock`, so the Version Packages PR carries a consistent `uv.lock`. **Never edit a
-  Python version by hand** — `sync-version.mjs --check` fails CI on drift.
-- `scripts/publish-python.mjs` (`pnpm ci:publish:python`) is PyPI's `changeset publish`: for every
-  `python/*` whose version is **not on PyPI yet**, `uv build` + `uv publish` (trusted publishing,
-  no token), then tag `<name>@<version>` + GitHub release from the CHANGELOG section. Idempotent and
-  keyed on the registry. **`0.0.0` = unreleased** and is always skipped, so a scaffold can merge
-  without reaching PyPI. `--dry-run` prints the plan.
-- **Adding a package:** `python/<name>/` with `package.json` (private, `0.0.0`), `pyproject.toml`
-  (`[project] name` = the package.json name), `src/<name with _>/_version.py`, tests. Then register a
-  PyPI **trusted publisher** for it (repo `upstash/agentkit`, workflow `release.yml`) before its first
-  non-zero version merges. Nothing else to touch.
+- **Python packages are NOT versioned by Changesets** (dropped 2026-11 for the Hermes plugin
+  catalog). The version lives in `pyproject.toml` only. A Python package must **not** contain a
+  `package.json`: Hermes's installer (`hermes_cli/plugins_cmd_install.py`) treats any
+  `package.json` in the plugin directory as Node dependencies, asks to `npm ci` them and prints
+  "Skipped Node deps" when declined — that was the catalog reviewer's complaint about the old
+  private version-carrier `package.json`. `python/*` is therefore not in `pnpm-workspace.yaml`
+  either, and `CHANGELOG.md` is written by hand (`## <version>` sections; the release reads them).
+  `tests/test_version.py` guards the no-`package.json` rule.
+- **Releasing a Python package:** bump `version` in `pyproject.toml`, run
+  `node scripts/sync-version.mjs` (copies it into `src/<module>/_version.py` (`VERSION`, for
+  telemetry) and `plugin.yaml` when the package has one), then `uv lock`, and add the CHANGELOG
+  section, all in one PR. **Never edit `_version.py`/`plugin.yaml` versions by hand** —
+  `sync-version.mjs --check` fails CI on drift. Both scripts read `[project]` name/version via
+  `scripts/pyproject.mjs`.
+- `scripts/publish-python.mjs` (`pnpm ci:publish:python`) runs on **every push to main** (no
+  longer gated on "no pending changesets"): for every `python/*` whose version is **not on PyPI
+  yet**, `uv build` + `uv publish` (trusted publishing, no token), then tag `<name>@<version>` +
+  GitHub release from the CHANGELOG section. Idempotent and keyed on the registry. **`0.0.0` =
+  unreleased** and is always skipped. `--dry-run` prints the plan. So merging a version bump
+  publishes it.
+- **Adding a package:** `python/<name>/` with `pyproject.toml` (`version = "0.0.0"` until the first
+  release), `src/<name with _>/_version.py`, tests. Then register a PyPI **trusted publisher** for
+  it (repo `upstash/agentkit`, workflow `release.yml`) before its first non-zero version merges.
+- **Telemetry in `upstash-hermes-memory` is opt-in** (catalog rule 13: "Telemetry and usage
+  reporting are opt-in"). `AgentMemory`/`ChatHistory` default `enable_telemetry=False`; the
+  provider enables it only for `UPSTASH_HERMES_TELEMETRY=1` (read via `get_secret`, per profile)
+  and creates its `upstash_redis.Redis` with `allow_telemetry=` the same flag, because
+  upstash-redis sends its own `py-upstash-redis`/runtime/platform headers by default.
+  `UPSTASH_DISABLE_TELEMETRY` wins over the opt-in. This deliberately differs from the TS
+  packages, where telemetry is on by default.
 - Python tests share the test Redis (10-index cap) with vitest: run them **after** the Node tests,
   never in parallel, and reuse the TS key prefixes/index names when the data is meant to be shared.
   Live tests take a unique `prefix` fixture and drop their indexes; call `index.wait_indexing()`

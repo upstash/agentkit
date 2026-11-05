@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-// Publishes the Python packages under `python/*` to PyPI. The `changeset publish` step of the release
-// workflow only knows npm, so this runs right after it and plays the same role for PyPI: whatever
-// version Changesets left in a package's private `package.json` is published if PyPI does not have it
-// yet. Like `changeset publish`, it is idempotent and keyed on the registry, not on what changed in
-// the last commit, so a failed or re-run release simply picks up where it stopped.
+// Publishes the Python packages under `python/*` to PyPI. Python packages are not versioned by
+// Changesets: the version is bumped by hand in `pyproject.toml`, and whatever version is there is
+// published if PyPI does not have it yet. It runs on every push to main and is idempotent and keyed
+// on the registry, not on what changed in the last commit, so a failed or re-run release simply
+// picks up where it stopped.
 //
 // `0.0.0` means "not released yet" (a scaffold), and is skipped, so a package can live in the repo
-// before its first changeset without anything reaching PyPI.
+// before its first release without anything reaching PyPI.
 //
-// It then tags `<name>@<version>` and opens a GitHub release with that version's CHANGELOG section,
-// matching what changesets does for the npm packages. The uploaded files, the tag and the release
-// are each checked on their own, so a run that stopped part way is completed by the next one.
+// It then tags `<name>@<version>` and opens a GitHub release with that version's section of the
+// hand-written CHANGELOG.md (`## <version>`), matching what changesets does for the npm packages.
+// The uploaded files, the tag and the release are each checked on their own, so a run that stopped
+// part way is completed by the next one.
 //
 //   node scripts/publish-python.mjs             # publish (CI: needs `id-token: write` + GH_TOKEN)
 //   node scripts/publish-python.mjs --dry-run   # print what would be published, change nothing
@@ -18,6 +19,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pyprojectOf } from "./pyproject.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dryRun = process.argv.includes("--dry-run");
@@ -49,7 +51,7 @@ const filesOnPyPI = async (name, version) => {
 const isComplete = (files) =>
   files.some((f) => f.endsWith(".whl")) && files.some((f) => f.endsWith(".tar.gz"));
 
-/** The `## <version>` section of a changesets-written CHANGELOG.md, without its heading. */
+/** The `## <version>` section of a CHANGELOG.md, without its heading. */
 const releaseNotes = (pkgDir, version) => {
   const path = join(root, pkgDir, "CHANGELOG.md");
   if (!existsSync(path)) return "";
@@ -65,7 +67,7 @@ const dirs = existsSync(pythonRoot)
 
 for (const dir of dirs) {
   const pkgDir = `python/${dir}`;
-  const { name, version } = JSON.parse(readFileSync(join(root, pkgDir, "package.json"), "utf8"));
+  const { name, version } = pyprojectOf(join(root, pkgDir));
   if (version === "0.0.0") {
     console.log(`${name}: 0.0.0 (unreleased), skipping`);
     continue;
