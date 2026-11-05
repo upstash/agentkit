@@ -1439,6 +1439,9 @@ Python lives **beside** the pnpm workspace, not instead of any of it:
   GitHub release from the CHANGELOG section. Idempotent and keyed on the registry. **`0.0.0` =
   unreleased** and is always skipped. `--dry-run` prints the plan. So merging a version bump
   publishes it.
+  `release.yml` runs `git checkout --detach ${{ github.sha }}` before it: in version mode
+  `changesets/action` (default `commitMode: git-cli`) leaves HEAD on its `changeset-release/main`
+  "Version Packages" commit, and an untagged `git tag` would land there instead of on main.
 - **Adding a package:** `python/<name>/` with `pyproject.toml` (`version = "0.0.0"` until the first
   release), `src/<name with _>/_version.py`, tests. Then register a PyPI **trusted publisher** for
   it (repo `upstash/agentkit`, workflow `release.yml`) before its first non-zero version merges.

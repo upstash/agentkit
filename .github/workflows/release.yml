@@ -56,7 +56,18 @@ jobs:
       # changesets are pending. It is keyed on what PyPI already has, so a re-run is safe and a
       # package at 0.0.0 is skipped. It must run in this workflow, because tags pushed with
       # GITHUB_TOKEN do not trigger other workflows.
+      #
+      # In version mode changesets/action leaves the checkout on its `changeset-release/main`
+      # commit ("Version Packages"), so go back to the pushed commit first: the tag and GitHub
+      # release must point at main, not at a commit the next run force-pushes away. Both steps run
+      # even if the npm step failed, so a Python release is not held up by an unrelated failure.
+      - name: Return to the pushed commit
+        id: pushed
+        if: ${{ !cancelled() }}
+        run: git checkout --force --detach ${{ github.sha }}
+
       - name: Publish Python packages to PyPI
+        if: ${{ !cancelled() && steps.pushed.outcome == 'success' }}
         run: pnpm ci:publish:python
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
