@@ -66,13 +66,16 @@ describe.skipIf(!hasRedisCreds)("toolCache middleware (live Redis, real chat loo
     await drain(
       chat({
         adapter: scriptedAdapter(turns("Paris")) as never,
+        threadId: "t",
         messages,
         tools,
         middleware: [mw],
       }),
     );
     const second = scriptedAdapter(turns("Paris"));
-    await drain(chat({ adapter: second as never, messages, tools, middleware: [mw] }));
+    await drain(
+      chat({ adapter: second as never, threadId: "t", messages, tools, middleware: [mw] }),
+    );
 
     expect(counter.weather).toBe(1); // second run was a cache hit
     expect(counter.email).toBe(2); // not allowlisted: always runs
@@ -90,6 +93,7 @@ describe.skipIf(!hasRedisCreds)("toolCache middleware (live Redis, real chat loo
       drain(
         chat({
           adapter: scriptedAdapter(turns(city)) as never,
+          threadId: "t",
           messages,
           tools,
           middleware: [toolCache({ tools: ["get_weather"], userId, redis, prefix })],
@@ -122,10 +126,34 @@ describe.skipIf(!hasRedisCreds)("toolCache middleware (live Redis, real chat loo
         { text: "ok" },
       ]);
     const messages = [{ role: "user" as const, content: "w" }];
-    await drain(chat({ adapter: script() as never, messages, tools: [flaky], middleware: [mw] }));
+    await drain(
+      chat({
+        adapter: script() as never,
+        threadId: "t",
+        messages,
+        tools: [flaky],
+        middleware: [mw],
+      }),
+    );
     fail = false;
-    await drain(chat({ adapter: script() as never, messages, tools: [flaky], middleware: [mw] }));
-    await drain(chat({ adapter: script() as never, messages, tools: [flaky], middleware: [mw] }));
+    await drain(
+      chat({
+        adapter: script() as never,
+        threadId: "t",
+        messages,
+        tools: [flaky],
+        middleware: [mw],
+      }),
+    );
+    await drain(
+      chat({
+        adapter: script() as never,
+        threadId: "t",
+        messages,
+        tools: [flaky],
+        middleware: [mw],
+      }),
+    );
     expect(runs).toBe(2); // failure, then a real success, then a hit
   });
 });
@@ -145,7 +173,9 @@ describe.skipIf(!hasRedisCreds)("rateLimit middleware (live Redis, real chat loo
     const outcomes: string[] = [];
     for (const adapter of adapters) {
       try {
-        const chunks = await drain(chat({ adapter: adapter as never, messages, middleware: [mw] }));
+        const chunks = await drain(
+          chat({ adapter: adapter as never, threadId: "t", messages, middleware: [mw] }),
+        );
         const err = chunks.find((c) => (c as { type: string }).type === "RUN_ERROR");
         outcomes.push(err ? `error:${(err as { message?: string }).message}` : "ok");
       } catch (error) {

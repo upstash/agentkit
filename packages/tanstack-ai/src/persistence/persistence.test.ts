@@ -80,7 +80,14 @@ describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
 
   it("deleting an artifact while it is re-saved elsewhere leaves no dangling index entry", async () => {
     const { artifacts } = upstashPersistence({ redis, prefix: `${prefix}:artdel` }).stores;
-    const base = { artifactId: "x", name: "n", mimeType: "text/plain", size: 1, createdAt: 1 };
+    const base = {
+      artifactId: "x",
+      blobKey: "bk",
+      name: "n",
+      mimeType: "text/plain",
+      size: 1,
+      createdAt: 1,
+    };
     await artifacts.save({ ...base, runId: "r1", threadId: "t1" });
     await Promise.all([
       artifacts.delete("x"),
@@ -250,6 +257,7 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
     const { artifacts } = upstashPersistence({ redis, prefix }).stores;
     const base = {
       artifactId: "a1",
+      blobKey: "bk",
       name: "img.png",
       mimeType: "image/png",
       size: 3,
@@ -265,7 +273,14 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
 
   it("concurrent saves of one artifact settle on a single indexed copy", async () => {
     const { artifacts } = upstashPersistence({ redis, prefix }).stores;
-    const base = { artifactId: "a2", name: "x", mimeType: "text/plain", size: 1, createdAt: 1 };
+    const base = {
+      artifactId: "a2",
+      blobKey: "bk",
+      name: "x",
+      mimeType: "text/plain",
+      size: 1,
+      createdAt: 1,
+    };
     await Promise.all(
       ["ra", "rb", "rc"].map((runId) => artifacts.save({ ...base, runId, threadId: `t-${runId}` })),
     );
