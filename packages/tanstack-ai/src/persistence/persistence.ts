@@ -10,6 +10,7 @@ import type {
   GenerationRunStore,
   InterruptRecord,
   InterruptStore,
+  LogStore,
   MessageStore,
   MetadataStore,
   SessionIndexStore,
@@ -27,6 +28,7 @@ import {
 import { redisArtifactStore, redisGenerationRunStore } from "./generation-stores.js";
 import { upstashBlobStore } from "./blob-store.js";
 import { redisSessionIndexStore } from "./sessions.js";
+import { redisLogStore } from "./log-store.js";
 import type { BlobBucketLike } from "./blob-store.js";
 
 export interface UpstashPersistenceConfig {
@@ -55,6 +57,11 @@ export interface UpstashPersistenceConfig {
    * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
    */
   enableTelemetry?: boolean;
+  /**
+   * How often the `log` store checks Redis for writes by other machines on behalf of `subscribe`.
+   * @default 250
+   */
+  logPollIntervalMs?: number;
 }
 
 /** The stores {@link upstashPersistence} returns; `blobs` is present when a `bucket` is passed. */
@@ -63,6 +70,8 @@ export type UpstashPersistenceStores = ChatPersistenceStores & {
   artifacts: ArtifactStore;
   /** The session index: one entry per tenant and thread (title, members, usage, ...). */
   sessions: SessionIndexStore;
+  /** The append-only session log: records, ownership fence, input lane, snapshots. */
+  log: LogStore;
   blobs?: BlobStore;
 };
 
@@ -111,6 +120,9 @@ return 1`;
  * - **sessions**: the session index (`SessionIndexStore`): one entry per `(tenantId, threadId)` with
  *   members, title, usage and app metadata; `list` reads newest-first per tenant and `upsertIf` is a
  *   compare-and-set on a revision.
+ * - **log**: the append-only session log (`LogStore`): records at consecutive positions, the
+ *   ownership fence with epochs, the input lane, snapshots, truncation and worker affinity; each call is
+ *   one Lua script and the store clock is the Redis clock.
  * - **blobs** (when `bucket` is given): the produced bytes in Upstash Blob, records in Redis.
  *
  * Records are RedisJSON documents written by single commands or single Lua scripts, so concurrent
@@ -376,6 +388,11 @@ export function upstashPersistence(
       generationRuns: redisGenerationRunStore(redis, p),
       artifacts: redisArtifactStore(redis, p),
       sessions: redisSessionIndexStore(redis, p),
+      log: redisLogStore(redis, p, {
+        ...(config.logPollIntervalMs !== undefined
+          ? { pollIntervalMs: config.logPollIntervalMs }
+          : {}),
+      }),
       ...(blobs ? { blobs } : {}),
     },
   } as AIPersistence<UpstashPersistenceStores>;

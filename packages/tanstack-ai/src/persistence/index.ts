@@ -9,3 +9,5 @@ export type { BlobBucketLike, UpstashBlobStoreConfig } from "./blob-store.js";
 
 // Session index (`SessionIndexStore`) — included by upstashPersistence() as `stores.sessions`.
 export { redisSessionIndexStore as upstashSessionIndex } from "./sessions.js";
+export { redisLogStore as upstashLogStore } from "./log-store.js";
+export type { UpstashLogStoreConfig } from "./log-store.js";
