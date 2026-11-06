@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     persistence: "src/persistence/index.ts",
     memory: "src/memory/index.ts",
+    byok: "src/byok/index.ts",
   },
   format: ["esm"],
   dts: true,

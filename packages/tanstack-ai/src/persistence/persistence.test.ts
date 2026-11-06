@@ -291,4 +291,39 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
       "a2",
     ]);
   });
+
+  it("sessions: paginates a batch larger than one scan in exact (updatedAt, threadId) order, numeric ids intact", async () => {
+    const { sessions } = upstashPersistence({ redis, prefix: `${prefix}:sess` }).stores;
+    const ids = Array.from({ length: 230 }, (_, i) => String(1000 + i)); // numeric-looking ids
+    await Promise.all(
+      ids.map((threadId, i) =>
+        sessions.upsert({
+          threadId,
+          members: [],
+          createdAt: 1,
+          updatedAt: i < 215 ? 500 : 600 + i, // one big tie group, then distinct newer ones
+        }),
+      ),
+    );
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await sessions.list({ limit: 50, ...(cursor ? { cursor } : {}) });
+      seen.push(...page.entries.map((e) => e.threadId));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    const expected = [...ids.slice(215).reverse(), ...ids.slice(0, 215)];
+    expect(seen).toEqual(expected);
+    // A filter that matches few entries still fills the page by scanning on.
+    await sessions.upsert({
+      threadId: "1000",
+      members: [],
+      createdAt: 1,
+      updatedAt: 500,
+      title: "needle",
+    });
+    expect(
+      (await sessions.list({ search: "NEEDLE", limit: 1 })).entries.map((e) => e.threadId),
+    ).toEqual(["1000"]);
+  });
 });

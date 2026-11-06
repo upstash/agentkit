@@ -64,6 +64,21 @@ const persistence = upstashPersistence({ bucket: Bucket.fromEnv() });
 The bytes go to the bucket and each blob's record (size, content type, custom metadata) to Redis, so
 `head` and `list` are Redis reads and byte ranges are served with an HTTP `Range` request.
 
+### Session index
+
+`upstashPersistence()` also returns `stores.sessions`, TanStack AI's `SessionIndexStore`: one entry per
+`(tenantId, threadId)` that a "your chats" list reads (title, members, harness, usage, pinned/archived,
+your own `metadata`). `list` is newest-first per tenant with `memberId`, `search`, `harness`,
+`parentThreadId` and `metadata` filters and a cursor; `upsertIf` writes only at the revision you read
+(`getVersioned`), so hosts on several machines do not overwrite each other. The index holds no
+messages, and `delete` removes only the entry. Use it on its own with `upstashSessionIndex(redis, prefix)`.
+
+```ts
+const { sessions } = upstashPersistence().stores;
+await sessions.upsert({ tenantId, threadId, members: [{ userId, role: "owner" }], title, createdAt: now, updatedAt: now });
+const { entries, cursor } = await sessions.list({ tenantId, memberId: userId, limit: 20 });
+```
+
 ## Resumable streams
 
 ```ts
@@ -132,6 +147,37 @@ chat({
 - Each turn's user message is captured (`captureUserMessages: false` for model-curated only).
 - Memory is per user across threads by default (`scopeBy: "thread"` for per-conversation);
   `tenantId` and `namespace` always partition.
+
+## Stored credentials (BYOK)
+
+```ts
+import { storedProviderKeys } from "@tanstack/ai/byok/server";
+import { upstashCredentials } from "@upstash/agentkit-tanstack-ai/byok";
+
+const credentials = upstashCredentials({ encryptionKey: process.env.CREDENTIALS_KEY });
+await credentials.set({ scope: { tenantId, userId }, id: "openai", credential: { type: "api_key", value } });
+const keys = storedProviderKeys(credentials, { tenantId, userId }); // the user's key, else the tenant's
+```
+
+A `CredentialStore` for provider API keys and OAuth tokens users or organizations saved. One Redis hash
+per owner (`tenantId` + `userId`), so `list` returns ids and types only, never a secret. `getVersioned` +
+`setIf` are compare-and-set on a revision that never comes back after a `delete`, so concurrent
+instances refreshing one OAuth token do not clobber each other. Needs `@tanstack/ai` >= 1.0.0.
+
+**Encryption at rest.** Set `encryptionKey` (32 bytes: a `Uint8Array`, or a base64 / base64url / hex string,
+e.g. `openssl rand -base64 32`) to encrypt secrets with AES-256-GCM. Without it they are stored as plain
+JSON. Things to know:
+
+- The ciphertext is bound to the key `prefix`, the owner, the id, and the clear-text type and expiry shown by
+  `list`. **Changing `prefix`, or copying rows to another prefix, makes every encrypted row undecryptable**;
+  editing the type or expiry in Redis makes that row fail to decrypt.
+- Credentials saved before you added a key are still read as plaintext. Anyone who can *write* to your Redis
+  could therefore swap an encrypted credential for a plaintext one. After re-saving your credentials with the
+  key, set `requireEncryption: true` to refuse plaintext rows.
+- The revision is not part of the ciphertext, so someone with write access to your Redis can replay an older
+  ciphertext of the same credential. Encryption protects against reading the data, not against a writer.
+- Expired `secret_answer` credentials are not removed by the store; delete them after reading, as the
+  harness does.
 
 ## Tool caching and rate limiting
 
