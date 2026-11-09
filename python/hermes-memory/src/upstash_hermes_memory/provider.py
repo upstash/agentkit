@@ -20,10 +20,6 @@ Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
   works on Upstash's Free plan (one index per database).
 - UPSTASH_HERMES_TELEMETRY: set to `1` to send telemetry (off by default, as the plugin catalog
   requires). `UPSTASH_DISABLE_TELEMETRY` still turns it off.
-- UPSTASH_HERMES_SEMANTIC: set to `1` to recall memories by meaning as well as by words (hybrid
-  search with Upstash Redis Search's managed embeddings). Off by default. A new index is created
-  with embeddings; an existing one keeps keyword recall until it is migrated with
-  `python -m upstash_hermes_memory.migrate --to hybrid` (Hermes stopped).
 """
 
 import hashlib
@@ -36,8 +32,6 @@ from typing import Any
 
 from ._search import DEFAULT_NAMESPACE
 from ._telemetry import OPT_IN_ENV, OPT_OUT_ENV, is_opt_in
-
-SEMANTIC_ENV = "UPSTASH_HERMES_SEMANTIC"
 from .chat_history import ChatHistory
 from .memory import AgentMemory, MemoryRecord
 
@@ -58,11 +52,10 @@ logger = logging.getLogger(__name__)
 
 # Hermes only lets the primary agent write; subagents, cron jobs and flushes read.
 _WRITING_CONTEXTS = {"", "primary"}
-_PREFETCH_TOP_K = 5
 # Hybrid search always returns its `LIMIT` (the $ann side has no relevance threshold, and its
 # similarity scores do not separate related from unrelated memories well enough for a cutoff), so
-# automatic recall injects fewer memories when it is on. The search tool's own limit is unchanged.
-_PREFETCH_TOP_K_SEMANTIC = 3
+# automatic recall injects only a few. The search tool has its own limit.
+_PREFETCH_TOP_K = 3
 _EXCERPT_CHARS = 300
 # Built-in memory tool actions Hermes forwards (a patch arrives as a replace).
 _MIRRORED_ACTIONS = {"add", "replace", "remove"}
@@ -315,15 +308,6 @@ class UpstashMemoryProvider(MemoryProvider):
                 "required": False,
                 "env_var": "UPSTASH_HERMES_USER_ID",
             },
-            {
-                "key": "semantic",
-                "description": (
-                    "Recall memories by meaning as well as by words (1 to enable; an existing "
-                    "index needs `python -m upstash_hermes_memory.migrate --to hybrid`)"
-                ),
-                "required": False,
-                "env_var": SEMANTIC_ENV,
-            },
         ]
 
     def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
@@ -360,15 +344,8 @@ class UpstashMemoryProvider(MemoryProvider):
         # Like the credentials, the namespace is read per Hermes profile: a multiplexed gateway
         # keeps each profile's .env out of os.environ. Memory and chats share its one index.
         namespace = get_secret("UPSTASH_HERMES_NAMESPACE", "") or DEFAULT_NAMESPACE
-        # Both stores get the same flag, so whichever creates the shared index creates it the same
-        # way. It is read per profile like the namespace, so profiles can differ.
-        semantic = is_opt_in(get_secret(SEMANTIC_ENV, ""))
-        self._memory = AgentMemory(
-            self._redis, namespace=namespace, semantic=semantic, enable_telemetry=telemetry
-        )
-        self._chats = ChatHistory(
-            self._redis, namespace=namespace, semantic=semantic, enable_telemetry=telemetry
-        )
+        self._memory = AgentMemory(self._redis, namespace=namespace, enable_telemetry=telemetry)
+        self._chats = ChatHistory(self._redis, namespace=namespace, enable_telemetry=telemetry)
         self._user_id = user_id
         self._session_id = self._session_key(session_id)
         self._write_enabled = (kwargs.get("agent_context") or "") in _WRITING_CONTEXTS
@@ -391,8 +368,7 @@ class UpstashMemoryProvider(MemoryProvider):
         if not self._memory or not query.strip():
             return ""
         try:
-            top_k = _PREFETCH_TOP_K_SEMANTIC if self._memory.semantic else _PREFETCH_TOP_K
-            hits = self._memory.recall(query, user_id=self._user_id, top_k=top_k)
+            hits = self._memory.recall(query, user_id=self._user_id, top_k=_PREFETCH_TOP_K)
         except Exception as error:  # noqa: BLE001 - a Redis outage must never break a turn
             logger.warning("upstash memory recall failed: %s", error)
             return ""

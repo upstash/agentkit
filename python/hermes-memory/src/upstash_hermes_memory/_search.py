@@ -1,8 +1,9 @@
 """A Redis Search index that is created on first use, shared by AgentMemory and ChatHistory.
 
 A store with its own `prefix` sends the commands `ReactiveSearchIndex` sends from the TS SDK,
-argument for argument, so such an index is the same from either language (unless `semantic` makes
-`text` HYBRID, which the TS SDK does not do yet). The default shared index is Python-only.
+argument for argument, except that memory `text` is HYBRID here (the TS SDK still creates it as
+TEXT), so the two languages cannot share an index over the same name. The default shared index is
+Python-only.
 """
 
 import json
@@ -31,41 +32,30 @@ RETRIEVERS = frozenset({"$rrf", "$ann"})
 
 # The one index AgentMemory and ChatHistory share by default (Python only: the TS SDK gives each
 # store its own index). Upstash's Free plan allows one search index per database.
-# `kind` ("memory" or "chat") keeps the two apart in every query.
+# `kind` ("memory" or "chat") keeps the two apart in every query. Only the memory `text` is HYBRID
+# (full-text plus an embedding for `$ann`): chat transcripts stay TEXT, since a HYBRID field gets
+# one embedding for its whole value and `userMessages` / `modelMessages` hold a whole session each.
 SHARED_SCHEMA: list[Field] = [
     ("kind", "TEXT", True),
     ("userId", "TEXT", True),
-    ("text", "TEXT", False),
+    ("text", "HYBRID", False),
     ("sessionId", "TEXT", True),
     ("userMessages", "TEXT", False),
     ("modelMessages", "TEXT", False),
 ]
 
 
-def with_hybrid_text(schema: Sequence[Field]) -> list[Field]:
-    """`schema` with the memory `text` field as HYBRID (full-text plus an embedding for `$ann`).
-
-    Only `text` changes: chat transcripts stay TEXT, since a HYBRID field gets one embedding for
-    its whole value and `userMessages` / `modelMessages` hold a whole session each.
-    """
-    return [(f, "HYBRID" if f == "text" else t, nt) for f, t, nt in schema]
-
-
-def shared_index(redis: Any, namespace: str, *, semantic: bool = False) -> "SearchIndex":
+def shared_index(redis: Any, namespace: str) -> "SearchIndex":
     """The shared index of a namespace, covering `<namespace>:memory:` and `<namespace>:chat:`.
 
     Both stores build this same definition, so whichever reads first creates it and the other's
-    EXISTSOK create is a no-op. `semantic` only decides what a new index is created with: an
-    existing index with `text` as either TEXT or HYBRID is used as it is (see `SearchIndex.ensure`),
-    and changing it is a maintenance step (`python -m upstash_hermes_memory.migrate`).
+    EXISTSOK create is a no-op.
     """
-    hybrid = with_hybrid_text(SHARED_SCHEMA)
     return SearchIndex(
         redis,
         name=index_name_for(namespace),
         prefix=[f"{namespace}:memory:", f"{namespace}:chat:"],
-        schema=hybrid if semantic else SHARED_SCHEMA,
-        accepted=[SHARED_SCHEMA, hybrid],
+        schema=SHARED_SCHEMA,
     )
 
 
@@ -73,95 +63,16 @@ def _is_config_mismatch(error: Exception) -> bool:
     return "different configuration" in str(error)
 
 
-def describe(redis: Any, name: str) -> dict[str, Any] | None:
-    """SEARCH.DESCRIBE as {"name", "type", "prefixes", "language", "schema"}, or None if missing.
-
-    `name` is the index DESCRIBE resolved, which differs from the argument for an alias.
-
-    Accepts the client's parsed `IndexDescription` as well as the raw reply, so it does not depend
-    on the client knowing every field type (upstash-redis 1.8 has no HYBRID enum member).
-    """
-    raw = redis.execute(["SEARCH.DESCRIBE", name])
-    if raw is None or raw == []:
-        return None
-    if isinstance(raw, list):
-        pairs = dict(zip(raw[0::2], raw[1::2]))
-        fields = [
-            (f[0], str(f[1]).upper(), "NOTOKENIZE" in f[2:], "NOSTEM" in f[2:], "FROM" in f[2:])
-            for f in pairs.get("schema") or []
-        ]
-        found_name = pairs.get("name")
-        data_type, prefixes, language = (
-            pairs.get("type"),
-            pairs.get("prefixes"),
-            pairs.get("language"),
-        )
-    else:
-        fields = [
-            (
-                n,
-                str(getattr(i.type, "value", i.type)).upper(),
-                i.no_tokenize,
-                i.no_stem,
-                bool(i.alias),
-            )
-            for n, i in raw.schema.items()
-        ]
-        found_name = raw.name
-        data_type, prefixes, language = raw.data_type, raw.prefixes, raw.language
-    return {
-        "name": found_name,
-        "type": str(getattr(data_type, "value", data_type) or "").upper(),
-        "prefixes": sorted(prefixes or []),
-        "language": str(getattr(language, "value", language) or "").lower(),
-        # NOSTEM and FROM are never set by this package, so their presence is a mismatch.
-        "schema": sorted(fields),
-    }
-
-
-def matches(
-    description: dict[str, Any] | None,
-    prefixes: Sequence[str],
-    schema: Sequence[Field],
-    name: str | None = None,
-) -> bool:
-    """Whether a `describe()` result is exactly the index this package would create (and, with
-    `name`, that index itself rather than an alias pointing at another one)."""
-    if description is None:
-        return False
-    return (
-        (name is None or description["name"] == name)
-        and description["type"] == "JSON"
-        and description["prefixes"] == sorted(prefixes)
-        and description["language"] in ("", "english")
-        and description["schema"] == sorted((f, t, nt, False, False) for f, t, nt in schema)
-    )
-
-
 class SearchIndex:
     def __init__(
-        self,
-        redis: Any,
-        *,
-        name: str,
-        prefix: str | Sequence[str],
-        schema: Sequence[Field],
-        accepted: Sequence[Sequence[Field]] = (),
+        self, redis: Any, *, name: str, prefix: str | Sequence[str], schema: Sequence[Field]
     ):
         self.redis = redis
         self.name = name
         self.prefixes = [prefix] if isinstance(prefix, str) else list(prefix)
         self.schema = list(schema)
-        # Other definitions an existing index may have and still be used as it is.
-        self.accepted = [list(s) for s in accepted if list(s) != self.schema]
-        # The definition the index actually has, known once `ensure()` has run.
-        self.actual_schema: list[Field] | None = None
         self._ready = False
         self._lock = threading.Lock()
-
-    def field_type(self, field: str) -> str | None:
-        """The type `field` has in the live index (after `ensure()`), e.g. "TEXT" or "HYBRID"."""
-        return next((t for f, t, _ in self.actual_schema or [] if f == field), None)
 
     def create_command(self) -> list[str]:
         cmd = ["SEARCH.CREATE", self.name, "EXISTSOK", "ON", "JSON", "PREFIX"]
@@ -174,9 +85,8 @@ class SearchIndex:
     def ensure(self) -> None:
         """Create the index if it does not exist yet. A no-op after the first call.
 
-        An existing index whose definition differs only in a way this package knows (an `accepted`
-        schema, such as `text` TEXT vs HYBRID) is used as it is, never dropped: rebuilding an index
-        under running clients is unsafe, so it is left to `python -m upstash_hermes_memory.migrate`.
+        An index of this name with another definition (one from 0.2.x has `text` as TEXT) is never
+        dropped here, since other clients may be using it; the error says how to replace it.
         """
         if self._ready:
             return
@@ -185,21 +95,18 @@ class SearchIndex:
                 return
             try:
                 self.redis.execute(self.create_command())
-                actual = self.schema
             except Exception as error:
-                if not (self.accepted and _is_config_mismatch(error)):
+                if not _is_config_mismatch(error):
                     raise
-                found = describe(self.redis, self.name)
-                actual = next(
-                    (s for s in self.accepted if matches(found, self.prefixes, s, self.name)), None
-                )
-                if actual is None:
-                    raise
+                raise RuntimeError(
+                    f"search index {self.name} exists with a different definition, for example "
+                    f"from upstash-hermes-memory 0.2.x. Stop every client, run `SEARCH.DROP "
+                    f"{self.name}` (documents are kept and indexed again) and start again."
+                ) from error
             # 1 once pending updates are searchable; 0 means the index is gone (dropped right
             # after the create): stay not-ready, so the next call creates it again.
             if self.redis.execute(["SEARCH.WAITINDEXING", self.name]) != 1:
                 raise RuntimeError(f"search index {self.name} disappeared while it was created")
-            self.actual_schema = list(actual)
             self._ready = True
 
     def query(self, filter: dict[str, Any], limit: int | None = None) -> list[Any]:

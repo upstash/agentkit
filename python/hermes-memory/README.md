@@ -7,7 +7,7 @@ your AI SDK app saves is recalled by your Hermes agent, and the other way round.
 ## What it does in Hermes
 
 - **Recall:** before each turn, the memories closest to the user's message are added to the prompt.
-  By default by keyword; with [semantic recall](#semantic-recall) also by meaning.
+  By keyword and by meaning; see [Semantic recall](#semantic-recall).
 - **Chat history:** after each turn, the turn is appended in place to the session's searchable
   transcript document, so a write stays the size of one turn however long the session runs.
 - **Mirroring:** facts the built-in `memory` tool adds are also saved to Redis, and when Hermes
@@ -40,35 +40,20 @@ these):
 | `UPSTASH_HERMES_USER_ID` | Whose memories these are. Defaults to the gateway user, then the Hermes profile name, then `default`. |
 | `UPSTASH_HERMES_NAMESPACE` | Key namespace. Default `agentkit`, so memories sit at the TS SDK's default keys and are shared with AgentKit apps on the same database. |
 | `UPSTASH_HERMES_TELEMETRY` | Set to `1` to send telemetry. Off by default; see [Telemetry](#telemetry). |
-| `UPSTASH_HERMES_SEMANTIC` | Set to `1` to recall memories by meaning as well as by words. Off by default; see [Semantic recall](#semantic-recall). |
 
 ## Semantic recall
 
 Keyword recall (`$smart`: phrase, term and fuzzy matching) only finds a memory that shares words
-with the message: "where is the assistant hosted" misses "Hermes runs on the ops Box". With
-`UPSTASH_HERMES_SEMANTIC=1`, the memory `text` field is a `HYBRID` field, which Upstash Redis
-Search embeds itself (no separate vector database), and recall merges a keyword query with a
-semantic `$ann` query using `$rrf`
+with the message: "where is the assistant hosted" misses "Hermes runs on the ops Box". So the
+memory `text` field is a `HYBRID` field, which Upstash Redis Search embeds itself (no separate
+vector database), and recall merges a keyword query with a semantic `$ann` query using `$rrf`
 ([Hybrid Search](https://upstash.com/docs/redis/search/hybrid-search)).
 
-- A **new** index is created that way. An **existing** index keeps working with keyword recall
-  (a warning says so) until you migrate it. Stop every client of the namespace (Hermes gateway,
-  desktop app, cron jobs, other profiles on it), then:
-
-  ```bash
-  # UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN set in the environment (the script reads no files)
-  python -m upstash_hermes_memory.migrate --to hybrid
-  ```
-
-  For a directory (catalog) install, run it from the plugin's `src` directory with a Python that
-  has `upstash-redis`. The script waits for pending indexing, saves a baseline (counts and a
-  sample of memory keys) at `<namespace>:migrate:baseline`, drops and recreates the index over
-  the same keys (which it never touches), and checks the result against the baseline. If it is
-  interrupted, running the same command again resumes and checks.
-- **Rollback:** `--to keyword` restores the 0.2.x index; do that before installing 0.2.x again,
-  which fails on a hybrid index. Turning the variable off is not enough: an existing hybrid index
-  keeps embedding new memories, it is only no longer queried by meaning.
-- Automatic recall injects up to **3** memories instead of 5: the semantic side has no relevance
+- **Upgrading from 0.2.x:** the old index has `text` as `TEXT` and is not supported. Recall fails
+  until you replace it: stop every client of the namespace (Hermes gateway, desktop app, cron jobs,
+  other profiles on it) and run `SEARCH.DROP agentkit` (or your namespace's index). Your memories
+  and chats are kept, and the next start creates the new index and indexes them again.
+- Automatic recall injects up to **3** memories: the semantic side has no relevance
   threshold and returns up to its limit even for unrelated text, and in a small-store test its
   similarity scores did not separate related from unrelated memories well enough for a cutoff. `upstash_memory_search` keeps its limit.
 - Results carry `retrieval: "hybrid"` or `"keyword"`. Hybrid scores are rank-fusion values that
@@ -119,5 +104,4 @@ there. One session saves two facts; a fresh session started right after must nam
 calling any tool (checked in Hermes's `state.db`), so they can only come from the automatic recall;
 and a control session as another user must not know them. The script then checks the keys and
 transcripts in Redis (and, if `packages/sdk` is built, that the TS `AgentMemory` recalls them too)
-before cleaning up. Tests that rebuild indexes (`test_semantic_redis.py`) need a database of their
-own: never point `UPSTASH_REDIS_REST_*` at a database with data you care about when running them.
+before cleaning up.

@@ -8,7 +8,8 @@ starting work; it captures the non-obvious decisions and gotchas that aren't vis
 **Everything runs on Upstash Redis. No vector database, ever.** All "semantic"/similarity features use
 **Upstash Redis Search** with the **`$smart` fuzzy operator** — via `@upstash/redis`'s `redis.search`
 API, **not** RediSearch `FT.*` and **not** `@upstash/vector`. Matching is lexical/fuzzy (BM25), not
-embeddings — keep that in mind when naming/among scoring.
+embeddings — keep that in mind when naming/among scoring. The one exception is `upstash-hermes-memory`, whose memory
+`text` is a Redis Search `HYBRID` field with managed embeddings (still no separate vector database).
 
 ## Packages
 

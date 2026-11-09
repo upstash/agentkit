@@ -8,15 +8,13 @@ section here. The release workflow publishes any version PyPI does not have yet.
 
 ### Minor Changes
 
-- Semantic recall, opt in with `UPSTASH_HERMES_SEMANTIC=1` (or `AgentMemory(semantic=True)`): the
-  memory `text` field becomes a Redis Search `HYBRID` field, and recall merges keyword (`$smart`)
-  and semantic (`$ann`) results with `$rrf`. Off by default; nothing changes without the flag.
-- `python -m upstash_hermes_memory.migrate --to hybrid|keyword` rebuilds an existing shared index
-  either way, with clients stopped, and checks the counts afterwards. An existing index is never
-  dropped at runtime: with the flag on and an unmigrated index, recall stays keyword and warns.
+- **Breaking:** recall is hybrid only. The memory `text` field is a Redis Search `HYBRID` field and
+  recall merges keyword (`$smart`) and semantic (`$ann`) results with `$rrf`. An index from 0.2.x
+  (`text` as `TEXT`) is refused with an error: stop every client and run `SEARCH.DROP <index>`.
+  Documents are kept and indexed again on the next start. Stores with their own `prefix` change too.
 - `AgentMemory.recall` takes `mode="auto"|"keyword"`; records carry `retrieval`. A failed hybrid
   query falls back to keyword once. `min_score` applies to keyword results only.
-- Automatic recall injects 3 memories in semantic mode (5 otherwise).
+- Automatic recall injects 3 memories instead of 5.
 - `upstash_memory_search` results include `retrieval`.
 - Fix: an empty result from a retriever query no longer sends `SEARCH.COUNT` with that query
   (Search rejects `$ann` in COUNT); the missing-index check counts `{}` instead.
