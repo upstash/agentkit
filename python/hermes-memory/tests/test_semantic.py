@@ -5,14 +5,26 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 import pytest
 from upstash_hermes_memory import AgentMemory, ChatHistory, UpstashMemoryProvider
 from upstash_hermes_memory import provider as provider_module
-from upstash_hermes_memory._search import SHARED_SCHEMA, shared_index, with_hybrid_text
+from upstash_hermes_memory._search import (
+    SHARED_SCHEMA,
+    describe,
+    matches,
+    shared_index,
+    with_hybrid_text,
+)
 from upstash_hermes_memory.migrate import MigrationError, migrate
 from upstash_redis.errors import UpstashError
+from upstash_redis.search import deserialize_describe_response
 
 MISMATCH = "ERR Index agentkit already exists with a different configuration"
+HYBRID = with_hybrid_text(SHARED_SCHEMA)
+USER = {"userId": {"$eq": "u1"}, "$mustNot": [{"kind": {"$eq": "chat"}}]}
+PREFIXES = ["agentkit:memory:", "agentkit:chat:"]
+quiet = print  # migration log lines show up in pytest output on failure only
 
 
 @dataclass
@@ -22,6 +34,10 @@ class Row:
     data: dict[str, Any]
 
 
+def memory_row(id, text="x", score=1.0):
+    return Row(f"agentkit:memory:u1:{id}", score, {"text": text, "userId": "u1", "createdAt": 1})
+
+
 def describe_reply(schema, name="agentkit", prefixes=("agentkit:chat:", "agentkit:memory:")):
     fields = [[f, t] + (["NOTOKENIZE"] if nt else []) for f, t, nt in schema]
     return ["name", name, "type", "JSON", "prefixes", list(prefixes), "language", "english",
@@ -29,13 +45,23 @@ def describe_reply(schema, name="agentkit", prefixes=("agentkit:chat:", "agentki
 
 
 class FakeRedis:
-    """Answers search commands from a small script; records every command it gets."""
+    """A small model of Upstash Redis Search, enough for the index lifecycle and recall.
 
-    def __init__(self, index_schema=None, rows=(), fail_hybrid=False, count=None):
-        self.index_schema = index_schema  # None: no index
-        self.rows = list(rows)
-        self.fail_hybrid = fail_hybrid
-        self.count = count
+    Memory rows and a chat count are the index contents; `pending` memories become searchable at
+    the next WAITINDEXING, as asynchronous indexing does. Every command is recorded.
+    """
+
+    def __init__(self, index_schema=None, memories=(), chats=0, *, parsed=False, alias_of=None):
+        self.index_schema = list(index_schema) if index_schema else None
+        self.memories = list(memories)
+        self.chats = chats
+        self.pending: list[Row] = []
+        self.parsed = parsed  # answer DESCRIBE like the client does (an IndexDescription)
+        self.alias_of = alias_of  # DESCRIBE resolves the name to this index
+        self.hybrid_error: Exception | None = None
+        self.keyword_error: Exception | None = None
+        self.wait_result: int | None = None
+        self.kv: dict[str, str] = {}
         self.commands: list[list[Any]] = []
         self._headers: dict[str, str] = {}
 
@@ -49,25 +75,46 @@ class FakeRedis:
             self.index_schema = schema
             return 1
         if op == "SEARCH.DESCRIBE":
-            return describe_reply(self.index_schema) if self.index_schema else None
+            if not self.index_schema:
+                return None
+            reply = describe_reply(self.index_schema, name=self.alias_of or command[1])
+            return deserialize_describe_response(reply) if self.parsed else reply
         if op == "SEARCH.DROP":
             dropped, self.index_schema = self.index_schema is not None, None
             return int(dropped)
         if op == "SEARCH.WAITINDEXING":
+            if self.wait_result is not None:
+                return self.wait_result
+            self.memories += self.pending
+            self.pending = []
             return 1 if self.index_schema else 0
         if op == "SEARCH.QUERY":
             if self.index_schema is None:
                 return []
             filter = json.loads(command[2])
-            if "$rrf" in filter and self.fail_hybrid:
-                raise UpstashError("ERR dot metric only accepts unit-length vectors")
-            return list(self.rows)
+            error = self.hybrid_error if "$rrf" in filter else self.keyword_error
+            if error:
+                raise error
+            limit = int(command[command.index("LIMIT") + 1]) if "LIMIT" in command else 10
+            return self.memories[:limit]
         if op == "SEARCH.COUNT":
             if self.index_schema is None:
                 return -1
-            if "$rrf" in json.loads(command[2]) or "$ann" in json.loads(command[2]):
+            filter = json.loads(command[2])
+            if {"$rrf", "$ann"} & set(filter):
                 raise UpstashError("ERR $ann cannot be used with SEARCH.COUNT")
-            return self.count if self.count is not None else len(self.rows)
+            if filter == {"kind": {"$eq": "chat"}}:
+                return self.chats
+            if filter == {}:
+                return len(self.memories) + self.chats
+            return len(self.memories)
+        if op == "GET":
+            return self.kv.get(command[1])
+        if op == "SET":
+            self.kv[command[1]] = command[2]
+            return "OK"
+        if op == "DEL":
+            return int(self.kv.pop(command[1], None) is not None)
         return 1
 
     def delete(self, key):
@@ -76,6 +123,9 @@ class FakeRedis:
 
     def expire(self, key, seconds):
         return True
+
+    def ops(self):
+        return [c[0] for c in self.commands]
 
     def queries(self):
         return [json.loads(c[2]) for c in self.commands if c[0] == "SEARCH.QUERY"]
@@ -92,12 +142,31 @@ def _schema_of(command):
     return out
 
 
-HYBRID = with_hybrid_text(SHARED_SCHEMA)
-USER = {"userId": {"$eq": "u1"}, "$mustNot": [{"kind": {"$eq": "chat"}}]}
+@pytest.fixture(autouse=True)
+def no_sleep(monkeypatch):
+    monkeypatch.setattr("upstash_hermes_memory.migrate.time.sleep", lambda s: None)
 
 
-def memory_row(id, text, score=1.0):
-    return Row(f"agentkit:memory:u1:{id}", score, {"text": text, "userId": "u1", "createdAt": 1})
+# -- describe ------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("parsed", [False, True])
+def test_describe_reads_raw_and_client_parsed_replies_alike(parsed):
+    redis = FakeRedis(HYBRID, parsed=parsed)
+    found = describe(redis, "agentkit")
+    assert matches(found, PREFIXES, HYBRID, "agentkit")
+    assert not matches(found, PREFIXES, SHARED_SCHEMA, "agentkit")
+
+
+def test_describe_sees_options_this_package_never_sets():
+    reply = describe_reply(SHARED_SCHEMA)
+    reply[-1][2] = ["text", "TEXT", "NOSTEM"]
+
+    class Raw(FakeRedis):
+        def execute(self, command):
+            return reply
+
+    assert not matches(describe(Raw(), "agentkit"), PREFIXES, SHARED_SCHEMA)
 
 
 # -- index creation ------------------------------------------------------------------------------
@@ -113,32 +182,49 @@ def test_semantic_creates_text_as_the_only_hybrid_field():
 
 def test_memory_and_chats_create_the_index_the_same_way():
     redis = FakeRedis()
-    memory = AgentMemory(redis, semantic=True)
-    chats = ChatHistory(redis, semantic=True)
-    assert memory.index.create_command() == chats.index.create_command()
+    assert (
+        AgentMemory(redis, semantic=True).index.create_command()
+        == ChatHistory(redis, semantic=True).index.create_command()
+    )
 
 
 @pytest.mark.parametrize("semantic, existing", [(True, SHARED_SCHEMA), (False, HYBRID)])
-def test_an_existing_index_of_the_other_kind_is_used_never_dropped(semantic, existing):
-    redis = FakeRedis(index_schema=list(existing))
+@pytest.mark.parametrize("parsed", [False, True])
+def test_an_existing_index_of_the_other_kind_is_used_never_dropped(semantic, existing, parsed):
+    redis = FakeRedis(existing, parsed=parsed)
     memory = AgentMemory(redis, semantic=semantic)
     memory.index.ensure()
     assert memory.index.actual_schema == list(existing)
-    assert not [c for c in redis.commands if c[0] == "SEARCH.DROP"]
+    assert "SEARCH.DROP" not in redis.ops()
 
 
 def test_an_unknown_index_definition_still_fails():
-    redis = FakeRedis(index_schema=SHARED_SCHEMA + [("extra", "TEXT", False)])
+    redis = FakeRedis(SHARED_SCHEMA + [("extra", "TEXT", False)])
     with pytest.raises(UpstashError):
         AgentMemory(redis, semantic=True).index.ensure()
-    assert not [c for c in redis.commands if c[0] == "SEARCH.DROP"]
+    assert "SEARCH.DROP" not in redis.ops()
+
+
+def test_an_alias_to_another_index_is_not_accepted():
+    redis = FakeRedis(SHARED_SCHEMA, alias_of="someone_else")
+    with pytest.raises(UpstashError):
+        AgentMemory(redis, semantic=True).index.ensure()
+
+
+def test_an_index_that_vanishes_during_create_is_not_marked_ready():
+    redis = FakeRedis()
+    redis.wait_result = 0
+    memory = AgentMemory(redis, semantic=True)
+    with pytest.raises(RuntimeError):
+        memory.index.ensure()
+    assert not memory.index._ready
 
 
 # -- recall --------------------------------------------------------------------------------------
 
 
 def test_hybrid_recall_fuses_keyword_and_meaning_for_this_user_only():
-    redis = FakeRedis(index_schema=list(HYBRID), rows=[memory_row("1", "Weeks start Monday", 0.03)])
+    redis = FakeRedis(HYBRID, [memory_row("1", "Weeks start Monday", 0.03)])
     memory = AgentMemory(redis, semantic=True, min_score=5)
     hits = memory.recall("what day does the week begin", user_id="u1", top_k=3)
     assert [(h.text, h.retrieval) for h in hits] == [("Weeks start Monday", "hybrid")]
@@ -150,20 +236,34 @@ def test_hybrid_recall_fuses_keyword_and_meaning_for_this_user_only():
     }
 
 
-def test_semantic_on_a_keyword_index_recalls_by_keyword_and_says_so(caplog):
-    redis = FakeRedis(index_schema=list(SHARED_SCHEMA), rows=[memory_row("1", "x")])
+def test_semantic_on_a_keyword_index_recalls_by_keyword_and_says_so_once(caplog):
+    redis = FakeRedis(SHARED_SCHEMA, [memory_row("1")])
     memory = AgentMemory(redis, semantic=True)
     with caplog.at_level(logging.WARNING):
         memory.recall("a", user_id="u1")
         memory.recall("b", user_id="u1")
     assert all("$rrf" not in q for q in redis.queries())
-    assert [r.message for r in caplog.records].count(caplog.records[0].message) == 1
-    assert "migrate" in caplog.records[0].message
+    assert len(caplog.records) == 1 and "migrate" in caplog.records[0].message
 
 
-def test_a_failed_hybrid_query_falls_back_to_keyword_once_with_min_score():
-    rows = [memory_row("1", "strong", 3.0), memory_row("2", "weak", 0.2)]
-    redis = FakeRedis(index_schema=list(HYBRID), rows=rows, fail_hybrid=True)
+def test_semantic_off_on_a_hybrid_index_says_embeddings_go_on(caplog):
+    redis = FakeRedis(HYBRID, [memory_row("1")])
+    with caplog.at_level(logging.WARNING):
+        AgentMemory(redis).recall("a", user_id="u1")
+    assert "still embedded" in caplog.records[0].message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        UpstashError("ERR dot metric only accepts unit-length vectors"),
+        httpx.ConnectError("connection reset"),
+        httpx.ReadTimeout("read timed out"),
+    ],
+)
+def test_a_failed_hybrid_query_falls_back_to_keyword_once_with_min_score(error):
+    redis = FakeRedis(HYBRID, [memory_row("1", "strong", 3.0), memory_row("2", "weak", 0.2)])
+    redis.hybrid_error = error
     memory = AgentMemory(redis, semantic=True, min_score=1)
     hits = memory.recall("billing for big accounts", user_id="u1")
     assert [(h.text, h.retrieval) for h in hits] == [("strong", "keyword")]
@@ -171,8 +271,23 @@ def test_a_failed_hybrid_query_falls_back_to_keyword_once_with_min_score():
     assert redis.queries()[1] == {**USER, "text": {"$smart": "billing for big accounts"}}
 
 
+def test_a_failed_fallback_raises_for_the_caller_to_handle():
+    redis = FakeRedis(HYBRID, [memory_row("1")])
+    redis.hybrid_error = redis.keyword_error = httpx.ConnectError("down")
+    with pytest.raises(httpx.ConnectError):
+        AgentMemory(redis, semantic=True).recall("x", user_id="u1")
+    assert len(redis.queries()) == 2  # one hybrid attempt, one keyword attempt
+
+
+def test_programming_errors_are_not_swallowed_by_the_fallback():
+    redis = FakeRedis(HYBRID, [memory_row("1")])
+    redis.hybrid_error = TypeError("bug")
+    with pytest.raises(TypeError):
+        AgentMemory(redis, semantic=True).recall("x", user_id="u1")
+
+
 def test_keyword_mode_never_uses_a_retriever():
-    redis = FakeRedis(index_schema=list(HYBRID), rows=[memory_row("1", "x")])
+    redis = FakeRedis(HYBRID, [memory_row("1")])
     AgentMemory(redis, semantic=True).recall("x", user_id="u1", mode="keyword")
     assert all("$rrf" not in q for q in redis.queries())
 
@@ -183,14 +298,13 @@ def test_an_unknown_mode_is_refused():
 
 
 def test_an_empty_hybrid_result_checks_the_index_without_counting_a_retriever():
-    redis = FakeRedis(index_schema=list(HYBRID), rows=[])
+    redis = FakeRedis(HYBRID)
     assert AgentMemory(redis, semantic=True).recall("nothing", user_id="u1") == []
-    counts = [c[2] for c in redis.commands if c[0] == "SEARCH.COUNT"]
-    assert counts == ["{}"]
+    assert [c[2] for c in redis.commands if c[0] == "SEARCH.COUNT"] == ["{}"]
 
 
 def test_semantic_off_keeps_the_0_2_commands():
-    redis = FakeRedis(index_schema=list(SHARED_SCHEMA), rows=[memory_row("1", "x", 2.0)])
+    redis = FakeRedis(SHARED_SCHEMA, [memory_row("1", "x", 2.0)])
     hits = AgentMemory(redis).recall("x", user_id="u1")
     assert redis.queries() == [{**USER, "text": {"$smart": "x"}}]
     assert hits[0].retrieval == "keyword"
@@ -203,9 +317,7 @@ def test_semantic_off_keeps_the_0_2_commands():
 def semantic_provider(monkeypatch):
     env = {"UPSTASH_HERMES_SEMANTIC": "1", "UPSTASH_HERMES_USER_ID": "u1"}
     monkeypatch.setattr(provider_module, "get_secret", lambda n, d=None: env.get(n, d))
-    redis = FakeRedis(
-        index_schema=list(HYBRID), rows=[memory_row(str(i), f"m{i}") for i in range(5)]
-    )
+    redis = FakeRedis(HYBRID, [memory_row(str(i), f"m{i}") for i in range(5)])
     provider = UpstashMemoryProvider(redis)
     provider.initialize("s1", platform="cli")
     return provider, redis
@@ -217,11 +329,18 @@ def test_the_env_flag_turns_semantic_on_for_both_stores(semantic_provider):
     assert provider._chats.index.schema == provider._memory.index.schema == HYBRID
 
 
-def test_prefetch_asks_for_three_memories_in_semantic_mode(semantic_provider):
+def test_prefetch_injects_three_memories_in_semantic_mode(semantic_provider):
     provider, redis = semantic_provider
-    provider.prefetch("what do I prefer")
+    block = provider.prefetch("what do I prefer")
+    assert block.count("\n- ") == 3
     (limit,) = [c[c.index("LIMIT") + 1] for c in redis.commands if c[0] == "SEARCH.QUERY"]
     assert limit == "3"
+
+
+def test_prefetch_survives_a_redis_outage(semantic_provider):
+    provider, redis = semantic_provider
+    redis.hybrid_error = redis.keyword_error = httpx.ConnectError("down")
+    assert provider.prefetch("anything") == ""
 
 
 def test_the_search_tool_says_how_results_were_found(semantic_provider):
@@ -239,54 +358,91 @@ def test_mirror_deletion_matches_by_keyword_only(semantic_provider):
 # -- migration -----------------------------------------------------------------------------------
 
 
-def test_migration_rebuilds_a_keyword_index_and_checks_the_counts():
-    redis = FakeRedis(index_schema=list(SHARED_SCHEMA), count=7)
-    assert migrate(redis, namespace="agentkit", to="hybrid", log=lambda m: None) == "migrated"
-    ops = [c[0] for c in redis.commands]
-    assert ops.index("SEARCH.DROP") < ops.index("SEARCH.CREATE") < ops.index("SEARCH.WAITINDEXING")
-    assert redis.index_schema == list(HYBRID)
+def migrated(redis, to="hybrid", **kwargs):
+    return migrate(redis, namespace="agentkit", to=to, log=quiet, **kwargs)
+
+
+def test_migration_rebuilds_a_keyword_index_and_checks_it():
+    redis = FakeRedis(SHARED_SCHEMA, [memory_row(i) for i in range(7)], chats=2)
+    assert migrated(redis) == "migrated"
+    ops = redis.ops()
+    assert ops.index("SET") < ops.index("SEARCH.DROP") < ops.index("SEARCH.CREATE")
+    assert redis.index_schema == HYBRID
+    assert redis.kv == {}  # baseline removed once checked
+
+
+def test_pending_updates_are_settled_before_the_baseline():
+    redis = FakeRedis(SHARED_SCHEMA, [memory_row(1)], chats=1)
+    redis.pending = [memory_row(2)]  # written just before the clients stopped
+    assert migrated(redis) == "migrated"
+    first_count = redis.ops().index("SEARCH.COUNT")
+    assert redis.ops().index("SEARCH.WAITINDEXING") < first_count
 
 
 def test_migration_back_to_keyword_restores_the_0_2_index():
-    redis = FakeRedis(index_schema=list(HYBRID), count=3)
-    migrate(redis, namespace="agentkit", to="keyword", log=lambda m: None)
+    redis = FakeRedis(HYBRID, [memory_row(1)], chats=3)
+    assert migrated(redis, to="keyword") == "migrated"
     assert redis.index_schema == list(SHARED_SCHEMA)
 
 
 def test_migration_to_the_current_kind_does_nothing():
-    redis = FakeRedis(index_schema=list(HYBRID))
-    assert migrate(redis, namespace="agentkit", to="hybrid", log=lambda m: None) == "unchanged"
-    assert "SEARCH.DROP" not in [c[0] for c in redis.commands]
+    redis = FakeRedis(HYBRID, [memory_row(1)])
+    assert migrated(redis) == "unchanged"
+    assert "SEARCH.DROP" not in redis.ops()
 
 
-def test_migration_refuses_an_index_it_did_not_create():
-    redis = FakeRedis(index_schema=SHARED_SCHEMA + [("extra", "TEXT", False)])
+@pytest.mark.parametrize(
+    "redis",
+    [
+        FakeRedis(SHARED_SCHEMA + [("extra", "TEXT", False)]),
+        FakeRedis(SHARED_SCHEMA, alias_of="agentkit_v2"),
+    ],
+)
+def test_migration_refuses_an_index_it_did_not_create_or_an_alias(redis):
     with pytest.raises(MigrationError, match="refusing"):
-        migrate(redis, namespace="agentkit", to="hybrid", log=lambda m: None)
-    assert "SEARCH.DROP" not in [c[0] for c in redis.commands]
+        migrated(redis)
+    assert "SEARCH.DROP" not in redis.ops()
 
 
 def test_a_declined_migration_drops_nothing():
-    redis = FakeRedis(index_schema=list(SHARED_SCHEMA))
+    redis = FakeRedis(SHARED_SCHEMA)
     with pytest.raises(MigrationError, match="cancelled"):
-        migrate(redis, namespace="agentkit", to="hybrid", confirm=lambda p: False, log=print)
-    assert "SEARCH.DROP" not in [c[0] for c in redis.commands]
+        migrated(redis, confirm=lambda plan: False)
+    assert "SEARCH.DROP" not in redis.ops() and redis.kv == {}
 
 
-def test_a_failed_rebuild_says_how_to_recover(monkeypatch):
-    monkeypatch.setattr("upstash_hermes_memory.migrate.time.sleep", lambda s: None)
-
-    class NoCreate(FakeRedis):
+def test_a_failed_drop_changes_nothing():
+    class NoDrop(FakeRedis):
         def execute(self, command):
-            if command[0] == "SEARCH.CREATE":
-                self.commands.append(command)
-                raise TimeoutError("read timed out")
+            if command[0] == "SEARCH.DROP":
+                raise httpx.ReadTimeout("timed out")
             return super().execute(command)
 
-    redis = NoCreate(index_schema=list(SHARED_SCHEMA))
-    with pytest.raises(MigrationError, match="--to keyword"):
-        migrate(redis, namespace="agentkit", to="hybrid", log=lambda m: None)
-    assert [c[0] for c in redis.commands].count("SEARCH.CREATE") == 3
+    redis = NoDrop(SHARED_SCHEMA, [memory_row(1)])
+    with pytest.raises(MigrationError, match="nothing changed"):
+        migrated(redis)
+    assert redis.index_schema == list(SHARED_SCHEMA) and redis.kv == {}
+
+
+def test_a_failed_rebuild_says_where_things_stand_and_resumes():
+    class NoCreate(FakeRedis):
+        broken = True
+
+        def execute(self, command):
+            if command[0] == "SEARCH.CREATE" and self.broken:
+                self.commands.append(command)
+                raise httpx.ReadTimeout("read timed out")
+            return super().execute(command)
+
+    redis = NoCreate(SHARED_SCHEMA, [memory_row(1), memory_row(2)], chats=1)
+    with pytest.raises(MigrationError, match="The index is absent.*--to keyword"):
+        migrated(redis)
+    assert redis.ops().count("SEARCH.CREATE") == 3
+    assert "agentkit:migrate:baseline" in redis.kv
+
+    redis.broken = False  # the server is back: the same command resumes and checks the baseline
+    assert migrated(redis) == "migrated"
+    assert redis.index_schema == HYBRID and redis.kv == {}
 
 
 def test_a_timed_out_create_that_succeeded_is_not_repeated():
@@ -294,21 +450,47 @@ def test_a_timed_out_create_that_succeeded_is_not_repeated():
         def execute(self, command):
             if command[0] == "SEARCH.CREATE":
                 super().execute(command)
-                raise TimeoutError("read timed out")
+                raise httpx.ReadTimeout("read timed out")
             return super().execute(command)
 
-    redis = SlowCreate(index_schema=list(SHARED_SCHEMA), count=2)
-    assert migrate(redis, namespace="agentkit", to="hybrid", log=lambda m: None) == "migrated"
-    assert [c[0] for c in redis.commands].count("SEARCH.CREATE") == 1
+    redis = SlowCreate(SHARED_SCHEMA, [memory_row(1)])
+    assert migrated(redis) == "migrated"
+    assert redis.ops().count("SEARCH.CREATE") == 1
 
 
-def test_a_count_change_during_the_rebuild_is_reported():
+def test_a_count_change_is_reported_and_rechecked_on_the_next_run():
     class Writer(FakeRedis):
         def execute(self, command):
             if command[0] == "SEARCH.DROP":
-                self.count = 8  # a client kept writing
+                self.memories.append(memory_row("late"))  # a client kept writing
             return super().execute(command)
 
-    redis = Writer(index_schema=list(SHARED_SCHEMA), count=7)
+    redis = Writer(SHARED_SCHEMA, [memory_row(i) for i in range(3)])
     with pytest.raises(MigrationError, match="still writing"):
-        migrate(redis, namespace="agentkit", to="hybrid", log=lambda m: None)
+        migrated(redis)
+    assert "agentkit:migrate:baseline" in redis.kv  # kept: a rerun checks again, not "unchanged"
+    with pytest.raises(MigrationError, match="still writing"):
+        migrated(redis)
+
+    redis.memories.pop()  # the stray write is dealt with
+    assert migrated(redis) == "resumed"
+    assert redis.kv == {}
+
+
+def test_lost_memories_are_caught_by_key_not_just_by_count():
+    class Swap(FakeRedis):
+        def execute(self, command):
+            if command[0] == "SEARCH.DROP":
+                self.memories = [memory_row("other")]  # same count, different documents
+            return super().execute(command)
+
+    redis = Swap(SHARED_SCHEMA, [memory_row("mine")])
+    with pytest.raises(MigrationError, match="lost 1 sampled"):
+        migrated(redis)
+
+
+def test_a_pending_migration_in_the_other_direction_blocks_a_new_one():
+    redis = FakeRedis(None)
+    redis.kv["agentkit:migrate:baseline"] = json.dumps({"to": "hybrid", "memories": 0, "chats": 0})
+    with pytest.raises(MigrationError, match="--to hybrid first"):
+        migrated(redis, to="keyword")

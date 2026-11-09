@@ -56,18 +56,21 @@ semantic `$ann` query using `$rrf`
   desktop app, cron jobs, other profiles on it), then:
 
   ```bash
-  python -m upstash_hermes_memory.migrate --to hybrid --env-file ~/.hermes/.env
+  # UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN set in the environment (the script reads no files)
+  python -m upstash_hermes_memory.migrate --to hybrid
   ```
 
-  For a directory (catalog) install, run it from the plugin's `src` directory with the Python
-  Hermes runs in. The index is dropped and created again over the same keys, which are not
-  touched, and the script checks that it holds as many memories and chats as before.
+  For a directory (catalog) install, run it from the plugin's `src` directory with a Python that
+  has `upstash-redis`. The script waits for pending indexing, saves a baseline (counts and a
+  sample of memory keys) at `<namespace>:migrate:baseline`, drops and recreates the index over
+  the same keys (which it never touches), and checks the result against the baseline. If it is
+  interrupted, running the same command again resumes and checks.
 - **Rollback:** `--to keyword` restores the 0.2.x index; do that before installing 0.2.x again,
   which fails on a hybrid index. Turning the variable off is not enough: an existing hybrid index
   keeps embedding new memories, it is only no longer queried by meaning.
 - Automatic recall injects up to **3** memories instead of 5: the semantic side has no relevance
-  threshold and always returns its limit, and its similarity scores did not separate related from
-  unrelated memories well enough in testing for a cutoff. `upstash_memory_search` keeps its limit.
+  threshold and returns up to its limit even for unrelated text, and in a small-store test its
+  similarity scores did not separate related from unrelated memories well enough for a cutoff. `upstash_memory_search` keeps its limit.
 - Results carry `retrieval: "hybrid"` or `"keyword"`. Hybrid scores are rank-fusion values that
   only order one search's results; `min_score` applies to keyword results only.
 - If a hybrid query fails, recall falls back to keyword search for that call (logged at most
@@ -75,8 +78,8 @@ semantic `$ann` query using `$rrf`
 - Chat history stays keyword-only: a `HYBRID` field gets one embedding for its whole value, and a
   chat document holds a whole session.
 - Every memory in the index is embedded, whichever user or profile wrote it, and each recall
-  sends the message to Upstash Redis Search to be embedded. A hybrid query adds about 150 to
-  300 ms to recall (keyword recall takes a few ms).
+  sends the message to Upstash Redis Search to be embedded. In a small-store test a hybrid query
+  took about 150 to 300 ms, against a few ms for keyword recall.
 
 ## Telemetry
 

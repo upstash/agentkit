@@ -1,7 +1,9 @@
 """Python port of `AgentMemory` from `@upstash/agentkit-sdk` (packages/sdk/src/memory.ts).
 
-Same keys, same documents, same index: a memory saved by the TS SDK is recalled here and the other
-way round, as long as both sides use the same namespace (default `agentkit`).
+Same keys and documents as the TS SDK: a memory saved by the TS SDK is recalled here and the other
+way round, as long as both sides use the same namespace (default `agentkit`). The search index is
+not shared: Python indexes memories and chats together in one index (`agentkit`), the TS SDK
+creates its own (`agentkit_memory`), and both index the same keys.
 
     key    <namespace>:memory:<userId>:<id>
     value  JSON {"text", "userId", "createdAt" (epoch ms), ...metadata}, exactly what the TS SDK writes
@@ -19,6 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import httpx
 from upstash_redis.errors import UpstashError
 
 from ._search import (
@@ -39,6 +42,10 @@ DEFAULT_PREFIX = f"{DEFAULT_NAMESPACE}:memory"
 _WARN_EVERY_S = 600.0
 
 RecallMode = Literal["auto", "keyword"]
+
+# What a failed hybrid query can raise: a server error (e.g. the intermittent "dot metric only
+# accepts unit-length vectors") or a transport failure. Anything else is a bug and propagates.
+_FALLBACK_ERRORS = (UpstashError, httpx.HTTPError)
 
 # The document's own fields. Metadata is spread next to them, so it must not replace them: a
 # `userId` in metadata would move the memory into another user's searches.
@@ -176,7 +183,7 @@ class AgentMemory:
             }
             try:
                 rows = self._memories(self.index.query(hybrid, limit=top_k), user_id)
-            except UpstashError as error:
+            except _FALLBACK_ERRORS as error:
                 self._warn(
                     "hybrid", "upstash memory hybrid recall failed, using keyword: %s", error
                 )
@@ -185,6 +192,13 @@ class AgentMemory:
         rows = self._memories(
             self.index.query({**base, "text": {"$smart": query}}, limit=top_k), user_id
         )
+        if not self.semantic and self.index.field_type("text") == "HYBRID":
+            self._warn(
+                "embeddings-unused",
+                "upstash memory: index %s has embeddings but semantic recall is off; new memories "
+                "are still embedded (migrate --to keyword to stop that)",
+                self.index.name,
+            )
         records = [self._record(row, user_id, "keyword") for row in rows]
         return [r for r in records if (r.score or 0) >= self.min_score]
 

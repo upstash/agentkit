@@ -6,14 +6,19 @@
 Stop every client of the namespace first (the Hermes gateway, the desktop app, cron jobs, other
 profiles on the same namespace): the index is dropped and created again, so searches fail in
 between, and a client that recreates the index during the gap would race this script. Documents
-are never touched; only the index is rebuilt over the same keys, then checked against the counts
-it had before. Running it again is safe: an index that is already the target is left alone.
+are never touched; only the index is rebuilt over the same keys.
 
-Credentials come from UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN in the environment, or
-from `--env-file` (e.g. ~/.hermes/.env), which is read for those keys and the namespace only.
+Before dropping anything the script waits for pending indexing, then saves what the index holds
+(memory and chat counts and a sample of memory keys) at `<namespace>:migrate:baseline`. After the
+rebuild it checks the new index against that baseline and deletes it. If a run is interrupted,
+running the same command again resumes: it finishes the rebuild and checks the saved baseline.
+
+Credentials come from UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN in the environment (and the
+namespace from UPSTASH_HERMES_NAMESPACE or --namespace); the script reads no files.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -30,27 +35,13 @@ from ._search import (
     with_hybrid_text,
 )
 
-_KEYS = ("UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "UPSTASH_HERMES_NAMESPACE")
 _CHATS = {"kind": {"$eq": "chat"}}
 _MEMORIES = {"$mustNot": [{"kind": {"$eq": "chat"}}]}
+_SAMPLE = 200  # memory keys checked one by one after the rebuild
 
 
 class MigrationError(Exception):
     pass
-
-
-def _read_env_file(path: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    with open(path) as file:
-        for line in file:
-            line = line.strip().removeprefix("export ").strip()
-            key, sep, value = line.partition("=")
-            if sep and key.strip() in _KEYS:
-                value = value.strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                    value = value[1:-1]
-                values[key.strip()] = value
-    return values
 
 
 def _counts(redis: Any, name: str) -> tuple[int, int]:
@@ -61,6 +52,28 @@ def _counts(redis: Any, name: str) -> tuple[int, int]:
         return int(getattr(result, "count", result))
 
     return count(_MEMORIES), count(_CHATS)
+
+
+def _memory_keys(redis: Any, name: str, limit: int) -> list[str]:
+    rows = redis.execute(["SEARCH.QUERY", name, dumps(_MEMORIES), "LIMIT", str(limit)]) or []
+    return sorted(getattr(row, "key", None) or row[0] for row in rows)
+
+
+def _state(redis: Any, name: str, prefixes: list[str], schemas: dict[str, list]) -> str:
+    """ "absent", the matching schema's name, "other", or "unknown" (DESCRIBE failed)."""
+    try:
+        found = describe(redis, name)
+    except Exception:  # noqa: BLE001 - reported, never acted on
+        return "unknown"
+    if found is None:
+        return "absent"
+    return next((k for k, s in schemas.items() if matches(found, prefixes, s, name)), "other")
+
+
+def _wait(redis: Any, name: str) -> None:
+    # 1 once every pending update is searchable; 0 means the index does not exist.
+    if redis.execute(["SEARCH.WAITINDEXING", name]) != 1:
+        raise MigrationError(f"index {name} was not found while waiting for indexing")
 
 
 def migrate(
@@ -74,68 +87,119 @@ def migrate(
 ) -> str:
     """Rebuild the shared index of `namespace` as `to` ("hybrid" or "keyword").
 
-    Returns "unchanged", "created" or "migrated". Raises MigrationError, without dropping anything,
-    when the live index is not one this package created, and after a failed rebuild with the
-    command that recovers it.
+    Returns "unchanged", "created", "migrated" or "resumed". Raises MigrationError, without
+    dropping anything, when the live index is not one this package created (or is an alias), and
+    after a failed step, saying what state the index is in.
     """
     if to not in ("hybrid", "keyword"):
         raise ValueError("to must be 'hybrid' or 'keyword'")
-    keyword, hybrid = list(SHARED_SCHEMA), with_hybrid_text(SHARED_SCHEMA)
-    target, other = (hybrid, keyword) if to == "hybrid" else (keyword, hybrid)
+    came_from = "keyword" if to == "hybrid" else "hybrid"
+    schemas = {"keyword": list(SHARED_SCHEMA), "hybrid": with_hybrid_text(SHARED_SCHEMA)}
     name = index_name_for(namespace)
     prefixes = [f"{namespace}:memory:", f"{namespace}:chat:"]
-    index = SearchIndex(redis, name=name, prefix=prefixes, schema=target)
+    index = SearchIndex(redis, name=name, prefix=prefixes, schema=schemas[to])
+    baseline_key = f"{namespace}:migrate:baseline"
+    raw = redis.execute(["GET", baseline_key])
+    baseline = json.loads(raw) if raw else None
+    if baseline and baseline.get("to") != to:
+        raise MigrationError(
+            f"an interrupted migration to {baseline.get('to')} is pending ({baseline_key}); "
+            f"finish it with --to {baseline.get('to')} first"
+        )
 
-    current = describe(redis, name)
-    if matches(current, prefixes, target):
-        log(f"Index {name} is already {to}; nothing to do.")
+    state = _state(redis, name, prefixes, schemas)
+    if state == "unknown":
+        raise MigrationError(f"index {name} could not be read; nothing changed")
+    if state == "other":
+        raise MigrationError(
+            f"index {name} is not one this package created (or is an alias); refusing to drop it"
+        )
+
+    if state == to:
+        _wait(redis, name)
+        if baseline:  # a previous run rebuilt the index but did not finish checking it
+            _verify(redis, name, baseline, to)
+            redis.execute(["DEL", baseline_key])
+            log(f"Index {name} is {to}; the interrupted migration is checked and complete.")
+            return "resumed"
+        memories, chats = _counts(redis, name)
+        log(f"Index {name} is already {to} ({memories} memories, {chats} chats); nothing to do.")
         return "unchanged"
-    if current is None:
+
+    if state == "absent" and not baseline:
         if not confirm(f"Index {name} does not exist. Create it as {to}?"):
             raise MigrationError("cancelled")
-        _create(redis, index, prefixes, target, attempts, log)
+        _create(redis, index, prefixes, schemas[to], attempts, log)
         log(f"Created index {name} ({to}).")
         return "created"
-    if not matches(current, prefixes, other):
-        raise MigrationError(
-            f"Index {name} has a definition this package did not create ({current}); "
-            "refusing to drop it."
+
+    if state == came_from:
+        _wait(redis, name)  # pending updates first, or the baseline undercounts
+        memories, chats = _counts(redis, name)
+        plan = (
+            f"Rebuild index {name} from {came_from} to {to}: {memories} memories and {chats} "
+            f"chats will be indexed again{' and embedded' if to == 'hybrid' else ''}. Documents "
+            "are not touched. Every client of this namespace must be stopped. Continue?"
         )
+        if not confirm(plan):
+            raise MigrationError("cancelled")
+        baseline = {
+            "to": to,
+            "memories": memories,
+            "chats": chats,
+            "sample": _memory_keys(redis, name, _SAMPLE),
+            "at": int(time.time()),
+        }
+        redis.execute(["SET", baseline_key, dumps(baseline)])
+        try:
+            redis.execute(["SEARCH.DROP", name])
+        except Exception as error:  # noqa: BLE001 - reconciled below
+            log(f"Drop failed: {error}")
+        state = _state(redis, name, prefixes, schemas)
+        if state == came_from:
+            redis.execute(["DEL", baseline_key])
+            raise MigrationError(f"index {name} could not be dropped; nothing changed")
+        if state != "absent":
+            raise MigrationError(f"index {name} is {state} after the drop; re-run to resume")
+    # Absent with a baseline: just dropped, or an interrupted run stopped between drop and create.
+    assert baseline is not None
 
-    memories, chats = _counts(redis, name)
-    came_from = "keyword" if to == "hybrid" else "hybrid"
-    plan = (
-        f"Rebuild index {name} from {came_from} to {to}: {memories} memories and {chats} chats "
-        f"will be indexed again{' and embedded' if to == 'hybrid' else ''}. Documents are not "
-        "touched. Every client of this namespace must be stopped. Continue?"
-    )
-    if not confirm(plan):
-        raise MigrationError("cancelled")
-
-    redis.execute(["SEARCH.DROP", name])
     try:
-        _create(redis, index, prefixes, target, attempts, log)
+        _create(redis, index, prefixes, schemas[to], attempts, log)
     except MigrationError as error:
+        now = _state(redis, name, prefixes, schemas)
         raise MigrationError(
-            f"{error}. The index is gone and searches fail until it exists again; documents are "
-            f"intact. Re-run this command (--to {to}), or restore the previous index with "
-            f"--to {came_from}."
+            f"{error}. The index is {now}; documents are intact. Re-run this command (--to {to}) "
+            f"to resume, or restore the previous index with --to {came_from}."
         ) from error
-
-    after = _counts(redis, name)
-    if after != (memories, chats):
-        raise MigrationError(
-            f"Index {name} is {to} now, but holds {after[0]} memories and {after[1]} chats "
-            f"(before: {memories} and {chats}). Was a client still writing? Check, then restart."
-        )
-    log(f"Index {name} is {to}: {memories} memories and {chats} chats indexed.")
+    _verify(redis, name, baseline, to)
+    redis.execute(["DEL", baseline_key])
+    log(f"Index {name} is {to}: {baseline['memories']} memories and {baseline['chats']} chats.")
     return "migrated"
+
+
+def _verify(redis: Any, name: str, baseline: dict[str, Any], to: str) -> None:
+    after = _counts(redis, name)
+    if after != (baseline["memories"], baseline["chats"]):
+        raise MigrationError(
+            f"index {name} is {to} now but holds {after[0]} memories and {after[1]} chats "
+            f"(before: {baseline['memories']} and {baseline['chats']}). Was a client still "
+            "writing? Check, then re-run to verify again."
+        )
+    sample = baseline.get("sample") or []
+    if sample:
+        found = set(_memory_keys(redis, name, max(after[0], len(sample))))
+        missing = [k for k in sample if k not in found]
+        if missing:
+            raise MigrationError(
+                f"index {name} lost {len(missing)} sampled memories, e.g. {missing[0]}"
+            )
 
 
 def _create(
     redis: Any, index: SearchIndex, prefixes: list[str], target: list, attempts: int, log: Any
 ) -> None:
-    """CREATE then WAITINDEXING, retried; reconciles with DESCRIBE after an ambiguous failure."""
+    """CREATE then WAITINDEXING, retried; reconciles with DESCRIBE after any failed step."""
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
@@ -143,14 +207,18 @@ def _create(
         except Exception as error:  # noqa: BLE001 - a timeout may still have created it
             last = error
             log(f"Create attempt {attempt} failed: {error}")
-        found = describe(redis, index.name)
-        if matches(found, prefixes, target):
-            # 1 once every document is searchable; 0 means the index is missing (dropped again).
-            if redis.execute(["SEARCH.WAITINDEXING", index.name]) == 1:
+        try:
+            found = describe(redis, index.name)
+            if matches(found, prefixes, target, index.name):
+                _wait(redis, index.name)
                 return
-            last = MigrationError(f"index {index.name} disappeared while indexing")
-        elif found is not None:
-            raise MigrationError(f"index {index.name} was created with another definition: {found}")
+            if found is not None:
+                raise MigrationError(f"index {index.name} exists with another definition: {found}")
+        except MigrationError:
+            raise
+        except Exception as error:  # noqa: BLE001 - state unknown: retry the whole step
+            last = error
+            log(f"Checking the index failed: {error}")
         time.sleep(min(2**attempt, 10))
     raise MigrationError(f"could not create index {index.name}: {last}")
 
@@ -162,25 +230,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--to", required=True, choices=["hybrid", "keyword"])
     parser.add_argument("--namespace", help=f"key namespace (default: {DEFAULT_NAMESPACE})")
-    parser.add_argument("--env-file", help="read the Upstash credentials from this .env file")
     parser.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     args = parser.parse_args(argv)
 
-    env = {k: os.environ[k] for k in _KEYS if os.environ.get(k)}
-    if args.env_file:
-        env.update(_read_env_file(args.env_file))
-    if not (env.get("UPSTASH_REDIS_REST_URL") and env.get("UPSTASH_REDIS_REST_TOKEN")):
+    url = os.environ.get("UPSTASH_REDIS_REST_URL")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+    if not (url and token):
         print("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required.", file=sys.stderr)
         return 2
-    namespace = args.namespace or env.get("UPSTASH_HERMES_NAMESPACE") or DEFAULT_NAMESPACE
+    namespace = args.namespace or os.environ.get("UPSTASH_HERMES_NAMESPACE") or DEFAULT_NAMESPACE
 
     from upstash_redis import Redis
 
-    redis = Redis(
-        url=env["UPSTASH_REDIS_REST_URL"],
-        token=env["UPSTASH_REDIS_REST_TOKEN"],
-        allow_telemetry=False,
-    )
+    redis = Redis(url=url, token=token, allow_telemetry=False)
 
     def confirm(plan: str) -> bool:
         print(plan)
@@ -195,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
         migrate(redis, namespace=namespace, to=args.to, confirm=confirm)
     except MigrationError as error:
         print(f"Migration stopped: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:  # noqa: BLE001 - a clean message instead of a traceback
+        print(f"Migration failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     return 0
 

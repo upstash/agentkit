@@ -33,9 +33,12 @@ FACTS = {
 
 
 def hybrid_recall(memory, query, user_id="u1", top_k=3, tries=4):
+    """Recall that was answered by hybrid search. Results that came back by keyword are the
+    fallback after a server error, so they are retried; no results at all is a failure."""
     for _ in range(tries):
         hits = memory.recall(query, user_id=user_id, top_k=top_k)
-        if hits and hits[0].retrieval == "hybrid":
+        assert hits, f"no memories recalled for {query!r}"
+        if hits[0].retrieval == "hybrid":
             return hits
     pytest.skip("hybrid search kept failing on the server; recall fell back to keyword")
 
@@ -99,8 +102,13 @@ def test_migration_round_trip_keeps_memories_and_chats(redis, prefix):
 
         assert migrate(redis, namespace=prefix, to="hybrid", log=quiet) == "migrated"
         semantic = AgentMemory(redis, namespace=prefix, semantic=True, enable_telemetry=False)
-        assert "coffee" in ids(hybrid_recall(semantic, "what hot drink does he enjoy"))
+        semantic.index.ensure()
+        assert semantic.index.field_type("text") == "HYBRID"
+        # Keyword search and chats keep working on the rebuilt index whatever the semantic side does.
+        keyword_hits = semantic.recall("flat white", user_id="u1", mode="keyword")
+        assert "coffee" in ids(keyword_hits)
         assert [h.session_id for h in chats.search_chats("flat white", user_id="u1")] == ["s1"]
+        assert redis.execute(["GET", f"{prefix}:migrate:baseline"]) is None
         assert migrate(redis, namespace=prefix, to="hybrid", log=quiet) == "unchanged"
 
         assert migrate(redis, namespace=prefix, to="keyword", log=quiet) == "migrated"

@@ -74,7 +74,9 @@ def _is_config_mismatch(error: Exception) -> bool:
 
 
 def describe(redis: Any, name: str) -> dict[str, Any] | None:
-    """SEARCH.DESCRIBE as {"type", "prefixes", "language", "schema": [Field...]}, or None if missing.
+    """SEARCH.DESCRIBE as {"name", "type", "prefixes", "language", "schema"}, or None if missing.
+
+    `name` is the index DESCRIBE resolved, which differs from the argument for an alias.
 
     Accepts the client's parsed `IndexDescription` as well as the raw reply, so it does not depend
     on the client knowing every field type (upstash-redis 1.8 has no HYBRID enum member).
@@ -88,6 +90,7 @@ def describe(redis: Any, name: str) -> dict[str, Any] | None:
             (f[0], str(f[1]).upper(), "NOTOKENIZE" in f[2:], "NOSTEM" in f[2:], "FROM" in f[2:])
             for f in pairs.get("schema") or []
         ]
+        found_name = pairs.get("name")
         data_type, prefixes, language = (
             pairs.get("type"),
             pairs.get("prefixes"),
@@ -104,8 +107,10 @@ def describe(redis: Any, name: str) -> dict[str, Any] | None:
             )
             for n, i in raw.schema.items()
         ]
+        found_name = raw.name
         data_type, prefixes, language = raw.data_type, raw.prefixes, raw.language
     return {
+        "name": found_name,
         "type": str(getattr(data_type, "value", data_type) or "").upper(),
         "prefixes": sorted(prefixes or []),
         "language": str(getattr(language, "value", language) or "").lower(),
@@ -115,13 +120,18 @@ def describe(redis: Any, name: str) -> dict[str, Any] | None:
 
 
 def matches(
-    description: dict[str, Any] | None, prefixes: Sequence[str], schema: Sequence[Field]
+    description: dict[str, Any] | None,
+    prefixes: Sequence[str],
+    schema: Sequence[Field],
+    name: str | None = None,
 ) -> bool:
-    """Whether a `describe()` result is exactly the index this package would create."""
+    """Whether a `describe()` result is exactly the index this package would create (and, with
+    `name`, that index itself rather than an alias pointing at another one)."""
     if description is None:
         return False
     return (
-        description["type"] == "JSON"
+        (name is None or description["name"] == name)
+        and description["type"] == "JSON"
         and description["prefixes"] == sorted(prefixes)
         and description["language"] in ("", "english")
         and description["schema"] == sorted((f, t, nt, False, False) for f, t, nt in schema)
@@ -180,10 +190,15 @@ class SearchIndex:
                 if not (self.accepted and _is_config_mismatch(error)):
                     raise
                 found = describe(self.redis, self.name)
-                actual = next((s for s in self.accepted if matches(found, self.prefixes, s)), None)
+                actual = next(
+                    (s for s in self.accepted if matches(found, self.prefixes, s, self.name)), None
+                )
                 if actual is None:
                     raise
-            self.redis.execute(["SEARCH.WAITINDEXING", self.name])
+            # 1 once pending updates are searchable; 0 means the index is gone (dropped right
+            # after the create): stay not-ready, so the next call creates it again.
+            if self.redis.execute(["SEARCH.WAITINDEXING", self.name]) != 1:
+                raise RuntimeError(f"search index {self.name} disappeared while it was created")
             self.actual_schema = list(actual)
             self._ready = True
 
