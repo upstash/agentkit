@@ -523,6 +523,30 @@ def test_a_rollback_after_a_rebuild_that_failed_its_check_keeps_the_original_bas
     assert redis.index_schema == list(SHARED_SCHEMA)
 
 
+def test_a_failed_drop_during_a_rollback_keeps_the_original_baseline():
+    class Flaky(FakeRedis):
+        swap = True
+        drop_fails = False
+
+        def execute(self, command):
+            if command[0] == "SEARCH.DROP":
+                if self.drop_fails:
+                    raise httpx.ReadTimeout("timed out")
+                if self.swap:
+                    self.memories = [memory_row("other")]  # the hybrid rebuild loses a memory
+            return super().execute(command)
+
+    redis = Flaky(SHARED_SCHEMA, [memory_row("mine")])
+    with pytest.raises(MigrationError, match="lost 1 sampled"):
+        migrated(redis)
+    redis.drop_fails = True
+    with pytest.raises(MigrationError, match="nothing changed"):
+        migrated(redis, to="keyword")
+    assert "agentkit:migrate:baseline" in redis.kv
+    with pytest.raises(MigrationError, match="lost 1 sampled"):  # not "unchanged"
+        migrated(redis)
+
+
 def test_migration_checks_stores_beyond_one_query_page():
     class Reorder(FakeRedis):
         def execute(self, command):

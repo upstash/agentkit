@@ -150,7 +150,8 @@ def migrate(
         )
         if not confirm(plan):
             raise MigrationError("cancelled")
-        if baseline is None:  # a rollback keeps the baseline of the original index
+        fresh = baseline is None  # a rollback keeps the baseline of the original index
+        if fresh:
             baseline = {
                 "from": came_from,
                 "to": to,
@@ -166,7 +167,10 @@ def migrate(
             log(f"Drop failed: {error}")
         state = _state(redis, name, prefixes, schemas)
         if state == came_from:
-            redis.execute(["DEL", baseline_key])
+            # Only a baseline taken by this run goes: one from an interrupted migration still
+            # describes the documents that rebuild has to account for.
+            if fresh:
+                redis.execute(["DEL", baseline_key])
             raise MigrationError(f"index {name} could not be dropped; nothing changed")
         if state != "absent":
             raise MigrationError(f"index {name} is {state} after the drop; re-run to resume")
