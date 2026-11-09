@@ -28,7 +28,7 @@ def test_index_names_follow_the_ts_default():
 
 SHARED_CREATE = (
     "SEARCH.CREATE agentkit EXISTSOK ON JSON PREFIX 2 agentkit:memory: agentkit:chat: SCHEMA "
-    "kind TEXT NOTOKENIZE userId TEXT NOTOKENIZE text TEXT sessionId TEXT NOTOKENIZE "
+    "kind TEXT NOTOKENIZE userId TEXT NOTOKENIZE text HYBRID sessionId TEXT NOTOKENIZE "
     "userMessages TEXT modelMessages TEXT"
 )
 
@@ -45,7 +45,7 @@ def test_a_prefix_gives_a_store_its_own_index_like_the_ts_sdk():
     memory = AgentMemory(Recorder(), prefix="agentkit:memory", enable_telemetry=False)
     assert " ".join(memory.index.create_command()) == (
         "SEARCH.CREATE agentkit_memory EXISTSOK ON JSON PREFIX 1 agentkit:memory: "
-        "SCHEMA text TEXT userId TEXT NOTOKENIZE"
+        "SCHEMA text HYBRID userId TEXT NOTOKENIZE"
     )
     chats = ChatHistory(Recorder(), prefix="agentkit:chat", enable_telemetry=False)
     assert " ".join(chats.index.create_command()) == (

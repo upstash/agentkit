@@ -1,7 +1,9 @@
 """A Redis Search index that is created on first use, shared by AgentMemory and ChatHistory.
 
-The commands are the ones `ReactiveSearchIndex` sends from the TS SDK, argument for argument, so
-an index created from either language is the same index.
+A store with its own `prefix` sends the commands `ReactiveSearchIndex` sends from the TS SDK,
+argument for argument, except that memory `text` is HYBRID here (the TS SDK still creates it as
+TEXT), so the two languages cannot share an index over the same name. The default shared index is
+Python-only.
 """
 
 import json
@@ -25,13 +27,18 @@ def dumps(value: Any) -> str:
 
 DEFAULT_NAMESPACE = "agentkit"
 
-# The one index AgentMemory and ChatHistory share by default (the TS `SharedIndexSchema`, field
-# for field and in the same order). Upstash's Free plan allows one search index per database.
-# `kind` ("memory" or "chat") keeps the two apart in every query.
+# Retrievers ($rrf, $ann) must be the only key of the query object and cannot be counted.
+RETRIEVERS = frozenset({"$rrf", "$ann"})
+
+# The one index AgentMemory and ChatHistory share by default (Python only: the TS SDK gives each
+# store its own index). Upstash's Free plan allows one search index per database.
+# `kind` ("memory" or "chat") keeps the two apart in every query. Only the memory `text` is HYBRID
+# (full-text plus an embedding for `$ann`): chat transcripts stay TEXT, since a HYBRID field gets
+# one embedding for its whole value and `userMessages` / `modelMessages` hold a whole session each.
 SHARED_SCHEMA: list[Field] = [
     ("kind", "TEXT", True),
     ("userId", "TEXT", True),
-    ("text", "TEXT", False),
+    ("text", "HYBRID", False),
     ("sessionId", "TEXT", True),
     ("userMessages", "TEXT", False),
     ("modelMessages", "TEXT", False),
@@ -42,7 +49,7 @@ def shared_index(redis: Any, namespace: str) -> "SearchIndex":
     """The shared index of a namespace, covering `<namespace>:memory:` and `<namespace>:chat:`.
 
     Both stores build this same definition, so whichever reads first creates it and the other's
-    EXISTSOK create is a no-op; the TS SDK builds it identically.
+    EXISTSOK create is a no-op.
     """
     return SearchIndex(
         redis,
@@ -50,6 +57,10 @@ def shared_index(redis: Any, namespace: str) -> "SearchIndex":
         prefix=[f"{namespace}:memory:", f"{namespace}:chat:"],
         schema=SHARED_SCHEMA,
     )
+
+
+def _is_config_mismatch(error: Exception) -> bool:
+    return "different configuration" in str(error)
 
 
 class SearchIndex:
@@ -72,20 +83,38 @@ class SearchIndex:
         return cmd
 
     def ensure(self) -> None:
-        """Create the index if it does not exist yet. A no-op after the first call."""
+        """Create the index if it does not exist yet. A no-op after the first call.
+
+        An index of this name with another definition (one from 0.2.x has `text` as TEXT) is never
+        dropped here, since other clients may be using it; the error says how to replace it.
+        """
         if self._ready:
             return
         with self._lock:
             if self._ready:
                 return
-            self.redis.execute(self.create_command())
-            self.redis.execute(["SEARCH.WAITINDEXING", self.name])
+            try:
+                self.redis.execute(self.create_command())
+            except Exception as error:
+                if not _is_config_mismatch(error):
+                    raise
+                raise RuntimeError(
+                    f"search index {self.name} exists with a different definition, for example "
+                    f"from upstash-hermes-memory 0.2.x. Stop every client, run `SEARCH.DROP "
+                    f"{self.name}` (documents are kept and indexed again) and start again."
+                ) from error
+            # 1 once pending updates are searchable; 0 means the index is gone (dropped right
+            # after the create): stay not-ready, so the next call creates it again.
+            if self.redis.execute(["SEARCH.WAITINDEXING", self.name]) != 1:
+                raise RuntimeError(f"search index {self.name} disappeared while it was created")
             self._ready = True
 
     def query(self, filter: dict[str, Any], limit: int | None = None) -> list[Any]:
         self.ensure()
         rows = self._query(filter, limit)
-        if not rows and self._raw_count(filter) < 0:
+        # COUNT cannot take a retriever, so a retriever query checks the index with `{}` instead.
+        probe = {} if RETRIEVERS & set(filter) else filter
+        if not rows and self._raw_count(probe) < 0:
             # The Python client turns a missing index into [], so an empty result is ambiguous.
             # COUNT says -1 when the index is gone (another client dropped it): recreate, retry once.
             self._ready = False
@@ -114,9 +143,15 @@ class SearchIndex:
         return int(getattr(result, "count", result))
 
     def wait_indexing(self) -> None:
-        """Block until every write so far is searchable (and every delete has left the index)."""
+        """Block until every write so far is searchable (and every delete has left the index).
+
+        WAITINDEXING answers 0 when the index is gone (another client dropped it): it is created
+        again (its documents are indexed by the create-time scan) and waited for once more.
+        """
         self.ensure()
-        self.redis.execute(["SEARCH.WAITINDEXING", self.name])
+        if self.redis.execute(["SEARCH.WAITINDEXING", self.name]) != 1:
+            self._ready = False
+            self.ensure()
 
     def drop(self) -> None:
         self.redis.execute(["SEARCH.DROP", self.name])

@@ -52,7 +52,10 @@ logger = logging.getLogger(__name__)
 
 # Hermes only lets the primary agent write; subagents, cron jobs and flushes read.
 _WRITING_CONTEXTS = {"", "primary"}
-_PREFETCH_TOP_K = 5
+# Hybrid search always returns its `LIMIT` (the $ann side has no relevance threshold, and its
+# similarity scores do not separate related from unrelated memories well enough for a cutoff), so
+# automatic recall injects only a few. The search tool has its own limit.
+_PREFETCH_TOP_K = 3
 _EXCERPT_CHARS = 300
 # Built-in memory tool actions Hermes forwards (a patch arrives as a replace).
 _MIRRORED_ACTIONS = {"add", "replace", "remove"}
@@ -79,7 +82,10 @@ SAVE_SCHEMA = {
 }
 SEARCH_SCHEMA = {
     "name": "upstash_memory_search",
-    "description": "Search long-term memory for facts related to a query. Returns ids and text.",
+    "description": (
+        "Search long-term memory for facts related to a query. Returns ids, text and a score; "
+        "scores rank results within one search only (`retrieval` says how they were found)."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -554,7 +560,8 @@ class UpstashMemoryProvider(MemoryProvider):
         )
         if total <= 0:
             return []
-        return self._memory.recall(query, user_id=self._user_id, top_k=total)
+        # Keyword mode: the COUNT above cannot take $ann, and both must describe the same set.
+        return self._memory.recall(query, user_id=self._user_id, top_k=total, mode="keyword")
 
     def _all_memories(self) -> list[MemoryRecord]:
         """Every memory of this user, for the substring match that search can't do."""
@@ -611,7 +618,12 @@ class UpstashMemoryProvider(MemoryProvider):
                 user_id=self._user_id,
                 top_k=int(args.get("limit") or 5),
             )
-            return {"results": [{"id": h.id, "text": h.text, "score": h.score} for h in hits]}
+            return {
+                "results": [
+                    {"id": h.id, "text": h.text, "score": h.score, "retrieval": h.retrieval}
+                    for h in hits
+                ]
+            }
         if tool_name == "upstash_memory_forget":
             if not self._write_enabled:
                 raise RuntimeError("memory is read-only in this agent context")
