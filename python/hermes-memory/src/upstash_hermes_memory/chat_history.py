@@ -104,15 +104,19 @@ class ChatHistory:
         index_name: str | None = None,
         ttl_seconds: int | None = None,
         min_score: float = 0,
+        semantic: bool = False,
         enable_telemetry: bool = False,
     ):
+        """`semantic` only matters on the shared index: it decides whether a new index gets the
+        memory `text` field as HYBRID, so memory and chats create it the same way. Chat search
+        itself stays keyword search ($smart)."""
         self.redis = redis
         self.ttl_seconds = ttl_seconds
         self.min_score = min_score
         if prefix is None and index_name is None:
             self.prefix = f"{namespace}:chat"
             self.kind: str | None = "chat"
-            self.index = shared_index(redis, namespace)
+            self.index = shared_index(redis, namespace, semantic=semantic)
         else:
             self.prefix = prefix or DEFAULT_PREFIX
             self.kind = None

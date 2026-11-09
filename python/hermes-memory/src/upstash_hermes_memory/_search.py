@@ -1,7 +1,8 @@
 """A Redis Search index that is created on first use, shared by AgentMemory and ChatHistory.
 
-The commands are the ones `ReactiveSearchIndex` sends from the TS SDK, argument for argument, so
-an index created from either language is the same index.
+A store with its own `prefix` sends the commands `ReactiveSearchIndex` sends from the TS SDK,
+argument for argument, so such an index is the same from either language (unless `semantic` makes
+`text` HYBRID, which the TS SDK does not do yet). The default shared index is Python-only.
 """
 
 import json
@@ -25,8 +26,11 @@ def dumps(value: Any) -> str:
 
 DEFAULT_NAMESPACE = "agentkit"
 
-# The one index AgentMemory and ChatHistory share by default (the TS `SharedIndexSchema`, field
-# for field and in the same order). Upstash's Free plan allows one search index per database.
+# Retrievers ($rrf, $ann) must be the only key of the query object and cannot be counted.
+RETRIEVERS = frozenset({"$rrf", "$ann"})
+
+# The one index AgentMemory and ChatHistory share by default (Python only: the TS SDK gives each
+# store its own index). Upstash's Free plan allows one search index per database.
 # `kind` ("memory" or "chat") keeps the two apart in every query.
 SHARED_SCHEMA: list[Field] = [
     ("kind", "TEXT", True),
@@ -38,30 +42,116 @@ SHARED_SCHEMA: list[Field] = [
 ]
 
 
-def shared_index(redis: Any, namespace: str) -> "SearchIndex":
+def with_hybrid_text(schema: Sequence[Field]) -> list[Field]:
+    """`schema` with the memory `text` field as HYBRID (full-text plus an embedding for `$ann`).
+
+    Only `text` changes: chat transcripts stay TEXT, since a HYBRID field gets one embedding for
+    its whole value and `userMessages` / `modelMessages` hold a whole session each.
+    """
+    return [(f, "HYBRID" if f == "text" else t, nt) for f, t, nt in schema]
+
+
+def shared_index(redis: Any, namespace: str, *, semantic: bool = False) -> "SearchIndex":
     """The shared index of a namespace, covering `<namespace>:memory:` and `<namespace>:chat:`.
 
     Both stores build this same definition, so whichever reads first creates it and the other's
-    EXISTSOK create is a no-op; the TS SDK builds it identically.
+    EXISTSOK create is a no-op. `semantic` only decides what a new index is created with: an
+    existing index with `text` as either TEXT or HYBRID is used as it is (see `SearchIndex.ensure`),
+    and changing it is a maintenance step (`python -m upstash_hermes_memory.migrate`).
     """
+    hybrid = with_hybrid_text(SHARED_SCHEMA)
     return SearchIndex(
         redis,
         name=index_name_for(namespace),
         prefix=[f"{namespace}:memory:", f"{namespace}:chat:"],
-        schema=SHARED_SCHEMA,
+        schema=hybrid if semantic else SHARED_SCHEMA,
+        accepted=[SHARED_SCHEMA, hybrid],
+    )
+
+
+def _is_config_mismatch(error: Exception) -> bool:
+    return "different configuration" in str(error)
+
+
+def describe(redis: Any, name: str) -> dict[str, Any] | None:
+    """SEARCH.DESCRIBE as {"type", "prefixes", "language", "schema": [Field...]}, or None if missing.
+
+    Accepts the client's parsed `IndexDescription` as well as the raw reply, so it does not depend
+    on the client knowing every field type (upstash-redis 1.8 has no HYBRID enum member).
+    """
+    raw = redis.execute(["SEARCH.DESCRIBE", name])
+    if raw is None or raw == []:
+        return None
+    if isinstance(raw, list):
+        pairs = dict(zip(raw[0::2], raw[1::2]))
+        fields = [
+            (f[0], str(f[1]).upper(), "NOTOKENIZE" in f[2:], "NOSTEM" in f[2:], "FROM" in f[2:])
+            for f in pairs.get("schema") or []
+        ]
+        data_type, prefixes, language = (
+            pairs.get("type"),
+            pairs.get("prefixes"),
+            pairs.get("language"),
+        )
+    else:
+        fields = [
+            (
+                n,
+                str(getattr(i.type, "value", i.type)).upper(),
+                i.no_tokenize,
+                i.no_stem,
+                bool(i.alias),
+            )
+            for n, i in raw.schema.items()
+        ]
+        data_type, prefixes, language = raw.data_type, raw.prefixes, raw.language
+    return {
+        "type": str(getattr(data_type, "value", data_type) or "").upper(),
+        "prefixes": sorted(prefixes or []),
+        "language": str(getattr(language, "value", language) or "").lower(),
+        # NOSTEM and FROM are never set by this package, so their presence is a mismatch.
+        "schema": sorted(fields),
+    }
+
+
+def matches(
+    description: dict[str, Any] | None, prefixes: Sequence[str], schema: Sequence[Field]
+) -> bool:
+    """Whether a `describe()` result is exactly the index this package would create."""
+    if description is None:
+        return False
+    return (
+        description["type"] == "JSON"
+        and description["prefixes"] == sorted(prefixes)
+        and description["language"] in ("", "english")
+        and description["schema"] == sorted((f, t, nt, False, False) for f, t, nt in schema)
     )
 
 
 class SearchIndex:
     def __init__(
-        self, redis: Any, *, name: str, prefix: str | Sequence[str], schema: Sequence[Field]
+        self,
+        redis: Any,
+        *,
+        name: str,
+        prefix: str | Sequence[str],
+        schema: Sequence[Field],
+        accepted: Sequence[Sequence[Field]] = (),
     ):
         self.redis = redis
         self.name = name
         self.prefixes = [prefix] if isinstance(prefix, str) else list(prefix)
         self.schema = list(schema)
+        # Other definitions an existing index may have and still be used as it is.
+        self.accepted = [list(s) for s in accepted if list(s) != self.schema]
+        # The definition the index actually has, known once `ensure()` has run.
+        self.actual_schema: list[Field] | None = None
         self._ready = False
         self._lock = threading.Lock()
+
+    def field_type(self, field: str) -> str | None:
+        """The type `field` has in the live index (after `ensure()`), e.g. "TEXT" or "HYBRID"."""
+        return next((t for f, t, _ in self.actual_schema or [] if f == field), None)
 
     def create_command(self) -> list[str]:
         cmd = ["SEARCH.CREATE", self.name, "EXISTSOK", "ON", "JSON", "PREFIX"]
@@ -72,20 +162,37 @@ class SearchIndex:
         return cmd
 
     def ensure(self) -> None:
-        """Create the index if it does not exist yet. A no-op after the first call."""
+        """Create the index if it does not exist yet. A no-op after the first call.
+
+        An existing index whose definition differs only in a way this package knows (an `accepted`
+        schema, such as `text` TEXT vs HYBRID) is used as it is, never dropped: rebuilding an index
+        under running clients is unsafe, so it is left to `python -m upstash_hermes_memory.migrate`.
+        """
         if self._ready:
             return
         with self._lock:
             if self._ready:
                 return
-            self.redis.execute(self.create_command())
+            try:
+                self.redis.execute(self.create_command())
+                actual = self.schema
+            except Exception as error:
+                if not (self.accepted and _is_config_mismatch(error)):
+                    raise
+                found = describe(self.redis, self.name)
+                actual = next((s for s in self.accepted if matches(found, self.prefixes, s)), None)
+                if actual is None:
+                    raise
             self.redis.execute(["SEARCH.WAITINDEXING", self.name])
+            self.actual_schema = list(actual)
             self._ready = True
 
     def query(self, filter: dict[str, Any], limit: int | None = None) -> list[Any]:
         self.ensure()
         rows = self._query(filter, limit)
-        if not rows and self._raw_count(filter) < 0:
+        # COUNT cannot take a retriever, so a retriever query checks the index with `{}` instead.
+        probe = {} if RETRIEVERS & set(filter) else filter
+        if not rows and self._raw_count(probe) < 0:
             # The Python client turns a missing index into [], so an empty result is ambiguous.
             # COUNT says -1 when the index is gone (another client dropped it): recreate, retry once.
             self._ready = False

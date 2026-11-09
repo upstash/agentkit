@@ -7,6 +7,7 @@ your AI SDK app saves is recalled by your Hermes agent, and the other way round.
 ## What it does in Hermes
 
 - **Recall:** before each turn, the memories closest to the user's message are added to the prompt.
+  By default by keyword; with [semantic recall](#semantic-recall) also by meaning.
 - **Chat history:** after each turn, the turn is appended in place to the session's searchable
   transcript document, so a write stays the size of one turn however long the session runs.
 - **Mirroring:** facts the built-in `memory` tool adds are also saved to Redis, and when Hermes
@@ -39,6 +40,43 @@ these):
 | `UPSTASH_HERMES_USER_ID` | Whose memories these are. Defaults to the gateway user, then the Hermes profile name, then `default`. |
 | `UPSTASH_HERMES_NAMESPACE` | Key namespace. Default `agentkit`, so memories sit at the TS SDK's default keys and are shared with AgentKit apps on the same database. |
 | `UPSTASH_HERMES_TELEMETRY` | Set to `1` to send telemetry. Off by default; see [Telemetry](#telemetry). |
+| `UPSTASH_HERMES_SEMANTIC` | Set to `1` to recall memories by meaning as well as by words. Off by default; see [Semantic recall](#semantic-recall). |
+
+## Semantic recall
+
+Keyword recall (`$smart`: phrase, term and fuzzy matching) only finds a memory that shares words
+with the message: "where is the assistant hosted" misses "Hermes runs on the ops Box". With
+`UPSTASH_HERMES_SEMANTIC=1`, the memory `text` field is a `HYBRID` field, which Upstash Redis
+Search embeds itself (no separate vector database), and recall merges a keyword query with a
+semantic `$ann` query using `$rrf`
+([Hybrid Search](https://upstash.com/docs/redis/search/hybrid-search)).
+
+- A **new** index is created that way. An **existing** index keeps working with keyword recall
+  (a warning says so) until you migrate it. Stop every client of the namespace (Hermes gateway,
+  desktop app, cron jobs, other profiles on it), then:
+
+  ```bash
+  python -m upstash_hermes_memory.migrate --to hybrid --env-file ~/.hermes/.env
+  ```
+
+  For a directory (catalog) install, run it from the plugin's `src` directory with the Python
+  Hermes runs in. The index is dropped and created again over the same keys, which are not
+  touched, and the script checks that it holds as many memories and chats as before.
+- **Rollback:** `--to keyword` restores the 0.2.x index; do that before installing 0.2.x again,
+  which fails on a hybrid index. Turning the variable off is not enough: an existing hybrid index
+  keeps embedding new memories, it is only no longer queried by meaning.
+- Automatic recall injects up to **3** memories instead of 5: the semantic side has no relevance
+  threshold and always returns its limit, and its similarity scores did not separate related from
+  unrelated memories well enough in testing for a cutoff. `upstash_memory_search` keeps its limit.
+- Results carry `retrieval: "hybrid"` or `"keyword"`. Hybrid scores are rank-fusion values that
+  only order one search's results; `min_score` applies to keyword results only.
+- If a hybrid query fails, recall falls back to keyword search for that call (logged at most
+  every 10 minutes).
+- Chat history stays keyword-only: a `HYBRID` field gets one embedding for its whole value, and a
+  chat document holds a whole session.
+- Every memory in the index is embedded, whichever user or profile wrote it, and each recall
+  sends the message to Upstash Redis Search to be embedded. A hybrid query adds about 150 to
+  300 ms to recall (keyword recall takes a few ms).
 
 ## Telemetry
 
@@ -78,4 +116,5 @@ there. One session saves two facts; a fresh session started right after must nam
 calling any tool (checked in Hermes's `state.db`), so they can only come from the automatic recall;
 and a control session as another user must not know them. The script then checks the keys and
 transcripts in Redis (and, if `packages/sdk` is built, that the TS `AgentMemory` recalls them too)
-before cleaning up.
+before cleaning up. Tests that rebuild indexes (`test_semantic_redis.py`) need a database of their
+own: never point `UPSTASH_REDIS_REST_*` at a database with data you care about when running them.

@@ -4,6 +4,24 @@ Written by hand: this package is not versioned by Changesets. To release, bump `
 `pyproject.toml`, run `node scripts/sync-version.mjs` and `uv lock`, and add a `## <version>`
 section here. The release workflow publishes any version PyPI does not have yet.
 
+## 0.3.0
+
+### Minor Changes
+
+- Semantic recall, opt in with `UPSTASH_HERMES_SEMANTIC=1` (or `AgentMemory(semantic=True)`): the
+  memory `text` field becomes a Redis Search `HYBRID` field, and recall merges keyword (`$smart`)
+  and semantic (`$ann`) results with `$rrf`. Off by default; nothing changes without the flag.
+- `python -m upstash_hermes_memory.migrate --to hybrid|keyword` rebuilds an existing shared index
+  either way, with clients stopped, and checks the counts afterwards. An existing index is never
+  dropped at runtime: with the flag on and an unmigrated index, recall stays keyword and warns.
+- `AgentMemory.recall` takes `mode="auto"|"keyword"`; records carry `retrieval`. A failed hybrid
+  query falls back to keyword once. `min_score` applies to keyword results only.
+- Automatic recall injects 3 memories in semantic mode (5 otherwise).
+- `upstash_memory_search` results include `retrieval`.
+- Fix: an empty result from a retriever query no longer sends `SEARCH.COUNT` with that query
+  (Search rejects `$ann` in COUNT); the missing-index check counts `{}` instead.
+- Docs: the shared `agentkit` index is Python-only; the TS SDK creates its own indexes.
+
 ## 0.2.2
 
 ### Patch Changes
