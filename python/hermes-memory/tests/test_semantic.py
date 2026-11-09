@@ -547,6 +547,23 @@ def test_a_failed_drop_during_a_rollback_keeps_the_original_baseline():
         migrated(redis)
 
 
+@pytest.mark.parametrize("size", [11_000, 11_001])
+def test_lost_samples_are_caught_at_the_paging_boundary(size):
+    class Swap(FakeRedis):
+        def execute(self, command):
+            if command[0] == "SEARCH.DROP":
+                self.memories.reverse()
+                self.memories[-1] = memory_row("other")  # one sampled memory replaced
+            return super().execute(command)
+
+    redis = Swap(SHARED_SCHEMA, [memory_row(i) for i in range(size)])
+    if size == 11_000:  # every memory can be listed: the loss must be reported
+        with pytest.raises(MigrationError, match="lost 1 sampled"):
+            migrated(redis)
+    else:  # one memory is past OFFSET's limit, so the sample check stops; counts still match
+        assert migrated(redis) == "migrated"
+
+
 def test_migration_checks_stores_beyond_one_query_page():
     class Reorder(FakeRedis):
         def execute(self, command):

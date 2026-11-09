@@ -200,14 +200,17 @@ def _verify(redis: Any, name: str, baseline: dict[str, Any], to: str) -> None:
             "writing? Check, then re-run to verify again."
         )
     missing = set(baseline.get("sample") or [])
-    offset = 0
+    offset, scanned = 0, 0
     while missing and offset <= _MAX_OFFSET:
         page = _memory_keys(redis, name, _PAGE, offset)
         missing -= set(page)
+        scanned += len(page)
         if len(page) < _PAGE:
             break
         offset += _PAGE
-    if missing and offset <= _MAX_OFFSET:
+    # Every memory was listed (the index holds after[0]) or the last page came back short.
+    complete = scanned >= after[0] or offset <= _MAX_OFFSET
+    if missing and complete:
         raise MigrationError(
             f"index {name} lost {len(missing)} sampled memories, e.g. {min(missing)}"
         )
