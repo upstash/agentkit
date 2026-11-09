@@ -96,7 +96,10 @@ class FakeRedis:
             if error:
                 raise error
             limit = int(command[command.index("LIMIT") + 1]) if "LIMIT" in command else 10
-            return self.memories[:limit]
+            offset = int(command[command.index("OFFSET") + 1]) if "OFFSET" in command else 0
+            if not 1 <= limit <= 1000 or not 0 <= offset <= 10_000:  # the documented bounds
+                raise UpstashError("ERR LIMIT must be between 1 and 1000")
+            return self.memories[offset : offset + limit]
         if op == "SEARCH.COUNT":
             if self.index_schema is None:
                 return -1
@@ -489,8 +492,63 @@ def test_lost_memories_are_caught_by_key_not_just_by_count():
         migrated(redis)
 
 
-def test_a_pending_migration_in_the_other_direction_blocks_a_new_one():
+def test_a_failed_rebuild_can_be_rolled_back_with_the_command_it_suggests():
+    class NoHybrid(FakeRedis):
+        def execute(self, command):
+            if command[0] == "SEARCH.CREATE" and "HYBRID" in command:
+                self.commands.append(command)
+                raise UpstashError("ERR embeddings unavailable")
+            return super().execute(command)
+
+    redis = NoHybrid(SHARED_SCHEMA, [memory_row(1), memory_row(2)], chats=1)
+    with pytest.raises(MigrationError, match="--to keyword"):
+        migrated(redis)
+    assert redis.index_schema is None
+    assert migrated(redis, to="keyword") == "migrated"  # checked against the original baseline
+    assert redis.index_schema == list(SHARED_SCHEMA) and redis.kv == {}
+
+
+def test_a_rollback_after_a_rebuild_that_failed_its_check_keeps_the_original_baseline():
+    class Writer(FakeRedis):
+        def execute(self, command):
+            if command[0] == "SEARCH.DROP" and self.index_schema == list(SHARED_SCHEMA):
+                self.memories.append(memory_row("late"))
+            return super().execute(command)
+
+    redis = Writer(SHARED_SCHEMA, [memory_row(1)])
+    with pytest.raises(MigrationError, match="still writing"):
+        migrated(redis)
+    redis.memories.pop()
+    assert migrated(redis, to="keyword") == "migrated"
+    assert redis.index_schema == list(SHARED_SCHEMA)
+
+
+def test_migration_checks_stores_beyond_one_query_page():
+    class Reorder(FakeRedis):
+        def execute(self, command):
+            if command[0] == "SEARCH.DROP":
+                self.memories.reverse()  # the rebuilt index ranks documents differently
+            return super().execute(command)
+
+    redis = Reorder(SHARED_SCHEMA, [memory_row(i) for i in range(2500)], chats=4)
+    assert migrated(redis) == "migrated"
+    offsets = [c[c.index("OFFSET") + 1] for c in redis.commands if "OFFSET" in c]
+    assert offsets == ["1000", "2000"]  # paged to the sampled keys, within LIMIT's bound
+
+
+def test_an_unrelated_pending_baseline_blocks_a_migration():
     redis = FakeRedis(None)
-    redis.kv["agentkit:migrate:baseline"] = json.dumps({"to": "hybrid", "memories": 0, "chats": 0})
-    with pytest.raises(MigrationError, match="--to hybrid first"):
-        migrated(redis, to="keyword")
+    redis.kv["agentkit:migrate:baseline"] = json.dumps(
+        {"from": "keyword", "to": "keyword", "memories": 0, "chats": 0}
+    )
+    with pytest.raises(MigrationError, match="pending"):
+        migrated(redis)
+
+
+def test_wait_indexing_recreates_an_index_that_was_dropped_under_it():
+    redis = FakeRedis(HYBRID, [memory_row(1)])
+    memory = AgentMemory(redis, semantic=True)
+    memory.index.ensure()
+    redis.index_schema = None  # another client dropped it
+    memory.index.wait_indexing()
+    assert redis.index_schema == HYBRID and memory.index._ready

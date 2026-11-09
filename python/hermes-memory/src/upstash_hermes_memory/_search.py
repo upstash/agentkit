@@ -236,9 +236,15 @@ class SearchIndex:
         return int(getattr(result, "count", result))
 
     def wait_indexing(self) -> None:
-        """Block until every write so far is searchable (and every delete has left the index)."""
+        """Block until every write so far is searchable (and every delete has left the index).
+
+        WAITINDEXING answers 0 when the index is gone (another client dropped it): it is created
+        again (its documents are indexed by the create-time scan) and waited for once more.
+        """
         self.ensure()
-        self.redis.execute(["SEARCH.WAITINDEXING", self.name])
+        if self.redis.execute(["SEARCH.WAITINDEXING", self.name]) != 1:
+            self._ready = False
+            self.ensure()
 
     def drop(self) -> None:
         self.redis.execute(["SEARCH.DROP", self.name])

@@ -38,6 +38,8 @@ from ._search import (
 _CHATS = {"kind": {"$eq": "chat"}}
 _MEMORIES = {"$mustNot": [{"kind": {"$eq": "chat"}}]}
 _SAMPLE = 200  # memory keys checked one by one after the rebuild
+_PAGE = 1000  # SEARCH.QUERY's largest LIMIT
+_MAX_OFFSET = 10_000  # and its largest OFFSET
 
 
 class MigrationError(Exception):
@@ -54,9 +56,12 @@ def _counts(redis: Any, name: str) -> tuple[int, int]:
     return count(_MEMORIES), count(_CHATS)
 
 
-def _memory_keys(redis: Any, name: str, limit: int) -> list[str]:
-    rows = redis.execute(["SEARCH.QUERY", name, dumps(_MEMORIES), "LIMIT", str(limit)]) or []
-    return sorted(getattr(row, "key", None) or row[0] for row in rows)
+def _memory_keys(redis: Any, name: str, limit: int, offset: int = 0) -> list[str]:
+    cmd = ["SEARCH.QUERY", name, dumps(_MEMORIES), "LIMIT", str(limit), "NOCONTENT"]
+    if offset:
+        cmd += ["OFFSET", str(offset)]
+    rows = redis.execute(cmd) or []
+    return [getattr(row, "key", None) or row[0] for row in rows]
 
 
 def _state(redis: Any, name: str, prefixes: list[str], schemas: dict[str, list]) -> str:
@@ -101,11 +106,13 @@ def migrate(
     baseline_key = f"{namespace}:migrate:baseline"
     raw = redis.execute(["GET", baseline_key])
     baseline = json.loads(raw) if raw else None
-    if baseline and baseline.get("to") != to:
-        raise MigrationError(
-            f"an interrupted migration to {baseline.get('to')} is pending ({baseline_key}); "
-            f"finish it with --to {baseline.get('to')} first"
-        )
+    if baseline and to not in (baseline.get("to"), baseline.get("from")):
+        raise MigrationError(f"a migration is pending ({baseline_key}): {raw}")
+    if baseline and baseline["to"] != to:
+        # Rolling an interrupted migration back: same baseline, the other target.
+        log(f"Rolling the interrupted migration to {baseline['to']} back to {to}.")
+        baseline = {**baseline, "from": baseline["to"], "to": to}
+        redis.execute(["SET", baseline_key, dumps(baseline)])
 
     state = _state(redis, name, prefixes, schemas)
     if state == "unknown":
@@ -143,14 +150,16 @@ def migrate(
         )
         if not confirm(plan):
             raise MigrationError("cancelled")
-        baseline = {
-            "to": to,
-            "memories": memories,
-            "chats": chats,
-            "sample": _memory_keys(redis, name, _SAMPLE),
-            "at": int(time.time()),
-        }
-        redis.execute(["SET", baseline_key, dumps(baseline)])
+        if baseline is None:  # a rollback keeps the baseline of the original index
+            baseline = {
+                "from": came_from,
+                "to": to,
+                "memories": memories,
+                "chats": chats,
+                "sample": sorted(_memory_keys(redis, name, _SAMPLE)),
+                "at": int(time.time()),
+            }
+            redis.execute(["SET", baseline_key, dumps(baseline)])
         try:
             redis.execute(["SEARCH.DROP", name])
         except Exception as error:  # noqa: BLE001 - reconciled below
@@ -186,14 +195,19 @@ def _verify(redis: Any, name: str, baseline: dict[str, Any], to: str) -> None:
             f"(before: {baseline['memories']} and {baseline['chats']}). Was a client still "
             "writing? Check, then re-run to verify again."
         )
-    sample = baseline.get("sample") or []
-    if sample:
-        found = set(_memory_keys(redis, name, max(after[0], len(sample))))
-        missing = [k for k in sample if k not in found]
-        if missing:
-            raise MigrationError(
-                f"index {name} lost {len(missing)} sampled memories, e.g. {missing[0]}"
-            )
+    missing = set(baseline.get("sample") or [])
+    offset = 0
+    while missing and offset <= _MAX_OFFSET:
+        page = _memory_keys(redis, name, _PAGE, offset)
+        missing -= set(page)
+        if len(page) < _PAGE:
+            break
+        offset += _PAGE
+    if missing and offset <= _MAX_OFFSET:
+        raise MigrationError(
+            f"index {name} lost {len(missing)} sampled memories, e.g. {min(missing)}"
+        )
+    # Past OFFSET's limit the remaining sample can't be listed; the counts above still matched.
 
 
 def _create(
