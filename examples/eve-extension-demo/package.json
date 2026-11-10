@@ -14,7 +14,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.111",
+    "@ai-sdk/openai": "^4.0.71",
     "@upstash/agentkit-eve-extension": "workspace:*",
     "@upstash/redis": "^1.38.4",
     "@vercel/connect": "2.5.6",

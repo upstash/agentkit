@@ -4,6 +4,22 @@ Written by hand: this package is not versioned by Changesets. To release, bump `
 `pyproject.toml`, run `node scripts/sync-version.mjs` and `uv lock`, and add a `## <version>`
 section here. The release workflow publishes any version PyPI does not have yet.
 
+## 0.3.0
+
+### Minor Changes
+
+- **Breaking:** recall is hybrid only. The memory `text` field is a Redis Search `HYBRID` field and
+  recall merges keyword (`$smart`) and semantic (`$ann`) results with `$rrf`. An index from 0.2.x
+  (`text` as `TEXT`) is refused with an error: stop every client and run `SEARCH.DROP <index>`.
+  Documents are kept and indexed again on the next start. Stores with their own `prefix` change too.
+- `AgentMemory.recall` takes `mode="auto"|"keyword"`; records carry `retrieval`. A failed hybrid
+  query falls back to keyword once. `min_score` applies to keyword results only.
+- Automatic recall injects 3 memories instead of 5.
+- `upstash_memory_search` results include `retrieval`.
+- Fix: an empty result from a retriever query no longer sends `SEARCH.COUNT` with that query
+  (Search rejects `$ann` in COUNT); the missing-index check counts `{}` instead.
+- Docs: the shared `agentkit` index is Python-only; the TS SDK creates its own indexes.
+
 ## 0.2.2
 
 ### Patch Changes

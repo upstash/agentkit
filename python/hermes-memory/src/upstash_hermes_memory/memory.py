@@ -1,7 +1,9 @@
 """Python port of `AgentMemory` from `@upstash/agentkit-sdk` (packages/sdk/src/memory.ts).
 
-Same keys, same documents, same index: a memory saved by the TS SDK is recalled here and the other
-way round, as long as both sides use the same namespace (default `agentkit`).
+Same keys and documents as the TS SDK: a memory saved by the TS SDK is recalled here and the other
+way round, as long as both sides use the same namespace (default `agentkit`). The search index is
+not shared: Python indexes memories and chats together in one index (`agentkit`), the TS SDK
+creates its own (`agentkit_memory`), and both index the same keys.
 
     key    <namespace>:memory:<userId>:<id>
     value  JSON {"text", "userId", "createdAt" (epoch ms), ...metadata}, exactly what the TS SDK writes
@@ -13,15 +15,30 @@ TS app is found here too. Every query excludes chat rows (`$mustNot`), so chats 
 Passing `prefix` (or `index_name`) gives the store its own index over `<prefix>:` instead.
 """
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+import httpx
+from upstash_redis.errors import UpstashError
 
 from ._search import DEFAULT_NAMESPACE, SearchIndex, dumps, index_name_for, shared_index
 from ._telemetry import add_telemetry
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_PREFIX = f"{DEFAULT_NAMESPACE}:memory"
+
+# How often a failing hybrid query is logged, per store.
+_WARN_EVERY_S = 600.0
+
+RecallMode = Literal["auto", "keyword"]
+
+# What a failed hybrid query can raise: a server error (e.g. the intermittent "dot metric only
+# accepts unit-length vectors") or a transport failure. Anything else is a bug and propagates.
+_FALLBACK_ERRORS = (UpstashError, httpx.HTTPError)
 
 # The document's own fields. Metadata is spread next to them, so it must not replace them: a
 # `userId` in metadata would move the memory into another user's searches.
@@ -47,6 +64,10 @@ class MemoryRecord:
     created_at: int
     score: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # How a recalled record was found: "keyword" ($smart, BM25 score) or "hybrid" ($rrf of $smart
+    # and $ann; the score is a rank-fusion value, only comparable within one query). None for
+    # records that were not searched for (get, list, an empty query).
+    retrieval: str | None = None
 
 
 class AgentMemory:
@@ -60,9 +81,11 @@ class AgentMemory:
         min_score: float = 0,
         enable_telemetry: bool = False,
     ):
+        """`min_score` applies to keyword results only; hybrid scores are not on the same scale."""
         self.redis = redis
         self.min_score = min_score
         self.shared = prefix is None and index_name is None
+        self._warned_at: dict[str, float] = {}
         if self.shared:
             self.prefix = f"{namespace}:memory"
             self.index = shared_index(redis, namespace)
@@ -72,7 +95,7 @@ class AgentMemory:
                 redis,
                 name=index_name or index_name_for(self.prefix),
                 prefix=f"{self.prefix}:",
-                schema=[("text", "TEXT", False), ("userId", "TEXT", True)],
+                schema=[("text", "HYBRID", False), ("userId", "TEXT", True)],
             )
         add_telemetry(redis, enabled=enable_telemetry)
 
@@ -110,18 +133,57 @@ class AgentMemory:
         self.redis.execute(["JSON.SET", self._key(user_id, id), "$", dumps(doc)])
         return MemoryRecord(id=id, text=text, created_at=created_at, metadata=metadata or {})
 
-    def recall(self, query: str, *, user_id: str, top_k: int = 5) -> list[MemoryRecord]:
-        """The `top_k` memories closest to `query` ($smart: full-text plus fuzzy matching)."""
+    def recall(
+        self, query: str, *, user_id: str, top_k: int = 5, mode: RecallMode = "auto"
+    ) -> list[MemoryRecord]:
+        """The `top_k` memories closest to `query`.
+
+        `mode="auto"` uses hybrid search ($rrf of $smart and $ann). A failed hybrid query falls
+        back to keyword search ($smart: full-text plus fuzzy matching) once. `mode="keyword"`
+        always uses keyword search, for callers that need COUNT and QUERY to describe the same
+        set.
+        """
+        if mode not in ("auto", "keyword"):
+            raise ValueError(f"mode must be 'auto' or 'keyword' (got {mode!r})")
         _check_id(user_id, "user_id")
-        filter = self._filter(user_id)
-        has_query = bool(query and query.strip())
-        if has_query:
-            filter["text"] = {"$smart": query}
-        rows = self._memories(self.index.query(filter, limit=top_k), user_id)
-        min_score = self.min_score if has_query else 0
-        return [
-            r for r in (self._record(row, user_id) for row in rows) if (r.score or 0) >= min_score
-        ]
+        base = self._filter(user_id)
+        if not (query and query.strip()):
+            rows = self._memories(self.index.query(base, limit=top_k), user_id)
+            return [self._record(row, user_id) for row in rows]
+        if mode == "auto":
+            hybrid = {
+                "$rrf": {
+                    "retrievers": [
+                        {**base, "text": {"$smart": query}},
+                        {
+                            "$ann": {
+                                "field": "text",
+                                "query": query,
+                                "filter": self._filter(user_id),
+                            }
+                        },
+                    ]
+                }
+            }
+            try:
+                rows = self._memories(self.index.query(hybrid, limit=top_k), user_id)
+            except _FALLBACK_ERRORS as error:
+                self._warn(
+                    "hybrid", "upstash memory hybrid recall failed, using keyword: %s", error
+                )
+            else:
+                return [self._record(row, user_id, "hybrid") for row in rows]
+        rows = self._memories(
+            self.index.query({**base, "text": {"$smart": query}}, limit=top_k), user_id
+        )
+        records = [self._record(row, user_id, "keyword") for row in rows]
+        return [r for r in records if (r.score or 0) >= self.min_score]
+
+    def _warn(self, what: str, message: str, *args: Any) -> None:
+        now = time.monotonic()
+        if now - self._warned_at.get(what, -_WARN_EVERY_S) >= _WARN_EVERY_S:
+            self._warned_at[what] = now
+            logger.warning(message, *args)
 
     def list(self, *, user_id: str, limit: int = 100) -> list[MemoryRecord]:
         _check_id(user_id, "user_id")
@@ -145,10 +207,11 @@ class AgentMemory:
         _check_memory_id(id)
         return bool(self.redis.delete(self._key(user_id, id)))
 
-    def _record(self, row: Any, user_id: str) -> MemoryRecord:
+    def _record(self, row: Any, user_id: str, retrieval: str | None = None) -> MemoryRecord:
         id = row.key[len(self._key(user_id, "")) :]
         record = self._from_doc(id, row.data if isinstance(row.data, dict) else {})
         record.score = row.score
+        record.retrieval = retrieval
         return record
 
     @staticmethod

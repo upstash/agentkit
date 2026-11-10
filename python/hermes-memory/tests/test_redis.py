@@ -41,7 +41,8 @@ def test_memory_lifecycle(memory):
     memory.add("Someone else likes coffee too", user_id="u2")
     memory.index.wait_indexing()
 
-    hits = memory.recall("coffee", user_id="u1")
+    # Keyword mode: hybrid search has no relevance threshold, so it would add the unrelated memory.
+    hits = memory.recall("coffee", user_id="u1", mode="keyword")
     assert [h.id for h in hits] == ["coffee"]
     assert hits[0].text == "Arda prefers dark roast coffee"
     assert hits[0].score > 0
@@ -55,7 +56,7 @@ def test_memory_lifecycle(memory):
     assert memory.get("coffee", user_id="u1") is None
     memory.index.wait_indexing()
     assert memory.count(user_id="u1") == 1
-    assert memory.recall("coffee", user_id="u1") == []
+    assert memory.recall("coffee", user_id="u1", mode="keyword") == []
 
 
 def test_memory_reads_documents_written_by_the_ts_sdk(redis, memory):

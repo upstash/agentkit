@@ -8,8 +8,8 @@
     "start": "next start"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.111",
-    "@ai-sdk/react": "^4.0.170",
+    "@ai-sdk/openai": "^4.0.71",
+    "@ai-sdk/react": "^4.0.167",
     "@upstash/agentkit-ai-sdk": "workspace:*",
     "@upstash/agentkit-sdk": "workspace:*",
     "@upstash/redis": "^1.38.4",
