@@ -4,7 +4,7 @@ export type { CacheUserId, DefineCachedToolConfig } from "./tools.js";
 
 // Long-term memory as Eve tools (drop into agent/tools/*.ts)
 export { defineMemoryRecallTool, defineMemorySaveTool } from "./memory-tools.js";
-export type { MemoryUserId, MemoryToolConfig } from "./memory-tools.js";
+export type { MemoryUserId, MemoryToolConfig, MemoryToolDefinitionConfig } from "./memory-tools.js";
 
 // Schema-driven Redis Search tools (search / aggregate / count) as eve tools
 export { defineSearchTools } from "./search-tools.js";
@@ -23,5 +23,5 @@ export type { RateLimitConfig, Duration } from "@upstash/agentkit-sdk";
 // Code-execution sandbox (Upstash Box backend) lives at "@upstash/agentkit-eve/sandbox".
 // Backends for eve's native memory slots (`agent/memory/*.ts`) live at
 // "@upstash/agentkit-eve/memory": `redisDocuments()` (storage for eve's `fileMemory()`) and
-// `redisMemory()` (a full MemoryProvider with ranked recall + automatic capture). That entry point
-// needs eve >= 0.45.2; the tools above have no such floor, which is why it is a separate subpath.
+// `redisMemory()` (a full MemoryProvider with ranked recall + automatic capture). It is a separate
+// subpath because it imports `eve/memory` / `eve/memory/file`, which the tools above do not need.

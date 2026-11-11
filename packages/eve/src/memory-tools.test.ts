@@ -16,6 +16,23 @@ async function pollUntil<T>(read: () => Promise<T>, ready: (value: T) => boolean
   return value;
 }
 
+describe("memory tools — activity label (offline)", () => {
+  // Enough surface for the AgentMemory constructor; no command is ever sent.
+  const redis = { search: { index: () => ({}) } } as never;
+
+  it("passes eve's tool label through, and sets none by default", () => {
+    const recall = defineMemoryRecallTool({
+      redis,
+      userId: "u",
+      label: { start: ({ query }) => `Recalling ${query ?? "everything"}` },
+    });
+    expect(recall.label && recall.label.start({ query: "tea" })).toBe("Recalling tea");
+    // `false` (eve >= 1.0.0-rc.7) keeps the call out of channel activity.
+    expect(defineMemorySaveTool({ redis, userId: "u", label: false }).label).toBe(false);
+    expect("label" in defineMemorySaveTool({ redis, userId: "u" })).toBe(false);
+  });
+});
+
 describe.skipIf(!hasRedisCreds)("memory tools (live Redis)", () => {
   const redis = testRedis();
   // The tools own their AgentMemory (default `agentkit:memory` index); isolate this run by userId.

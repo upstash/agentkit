@@ -11,6 +11,12 @@ import { addTelemetry } from "./telemetry.js";
 export interface DefineSearchToolsConfig extends Omit<SearchToolDefsConfig, "redis"> {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
+  /**
+   * eve tool `label` per tool — the activity text channels show for a call (`{ start(input) }`),
+   * or `false` (eve ≥ 1.0.0-rc.7) to keep the call out of activity. Omitted, eve shows the tool's
+   * name.
+   */
+  labels?: Partial<Record<keyof SearchToolSet, ToolDefinition["label"]>>;
 }
 
 /** The three eve search tools over one index, each already `defineTool`-branded. */
@@ -20,8 +26,9 @@ export interface SearchToolSet {
   count: ToolDefinition;
 }
 
-function wrap(def: SearchToolDef): ToolDefinition {
+function wrap(def: SearchToolDef, label: ToolDefinition["label"]): ToolDefinition {
   return defineTool({
+    ...(label !== undefined ? { label } : {}),
     description: def.description,
     inputSchema: def.inputSchema,
     execute: (input: Record<string, unknown>) => def.execute(input),
@@ -51,9 +58,13 @@ function wrap(def: SearchToolDef): ToolDefinition {
  * ```
  */
 export function defineSearchTools(config: DefineSearchToolsConfig): SearchToolSet {
-  const { redis, ...rest } = config;
+  const { redis, labels, ...rest } = config;
   const client = redis ?? Redis.fromEnv();
   addTelemetry(client, rest.enableTelemetry);
   const defs = createSearchToolDefs({ redis: client, ...rest });
-  return { search: wrap(defs.search), aggregate: wrap(defs.aggregate), count: wrap(defs.count) };
+  return {
+    search: wrap(defs.search, labels?.search),
+    aggregate: wrap(defs.aggregate, labels?.aggregate),
+    count: wrap(defs.count, labels?.count),
+  };
 }

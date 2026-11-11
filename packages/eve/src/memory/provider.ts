@@ -51,6 +51,7 @@ import type {
   MemoryTurnStartedContext,
 } from "eve/memory";
 import { defineTool } from "eve/tools";
+import type { ToolDefinition } from "eve/tools";
 import { z } from "zod";
 import { addTelemetry } from "../telemetry.js";
 
@@ -74,6 +75,42 @@ export type RedisMemoryCaptureContext =
  * `forget_memory` tool. See {@link RedisMemoryConfig.rememberMessages} for why.
  */
 export type RememberMessages = boolean | "fromUser" | "fromModel" | "all";
+
+/** The input each {@link redisMemory} tool is called with, by the key eve prefixes with `<slot>__`. */
+export interface RedisMemoryToolInputs {
+  save_memory: { text: string };
+  search_memory: { query: string; limit?: number };
+  forget_memory: { id: string };
+  read_session: { sessionId: string; limit?: number };
+}
+
+/** The tools a {@link redisMemory} slot contributes. */
+export type RedisMemoryToolName = keyof RedisMemoryToolInputs;
+
+/**
+ * Activity text for one memory tool: eve's `ToolDefinition["label"]`, i.e. `{ start(input) }` (plus
+ * optional `delta`/`complete`), or `false` to keep the call out of channel activity. `false` is only
+ * part of this type when the installed eve supports it (`label: false` landed in eve 1.0.0-rc.7);
+ * on older eve it does not typecheck.
+ */
+export type RedisMemoryToolLabel<K extends RedisMemoryToolName = RedisMemoryToolName> = NonNullable<
+  ToolDefinition<RedisMemoryToolInputs[K]>["label"]
+>;
+
+/** `false` when the installed eve supports hidden tool calls (eve ≥1.0.0-rc.7), else `never`. */
+type HiddenToolLabel = Extract<NonNullable<ToolDefinition["label"]>, false>;
+
+/**
+ * Default activity text: what a channel (Slack thread status, the eve web UI's tool row) shows
+ * while the call runs. Deliberately free of the tool input — a `search_memory` query or a saved
+ * fact is memory content, and a thread status is visible to everyone in the thread.
+ */
+const DEFAULT_TOOL_LABELS: Record<RedisMemoryToolName, string> = {
+  save_memory: "Saving to memory",
+  search_memory: "Searching memory",
+  forget_memory: "Forgetting a memory",
+  read_session: "Reading an earlier conversation",
+};
 
 /** Configuration for {@link redisMemory}. */
 export interface RedisMemoryConfig {
@@ -218,12 +255,44 @@ export interface RedisMemoryConfig {
   waitForIndexing?: boolean;
 
   /**
+   * Activity labels for the slot's tools, keyed by tool (`save_memory`, `search_memory`,
+   * `forget_memory`, `read_session`). Each value is an eve tool `label` (`{ start(input) }`) or
+   * `false`; an omitted key keeps its default.
+   *
+   * Pass `false` for the whole option (or per tool) to keep memory calls out of channel activity:
+   * channels show no status for them, and — the point — a call does not end a quiet turn's silence,
+   * so an agent that follows a Slack thread with `status: "deferred"` can save or search memory and
+   * still end with `no_reply`. Hidden calls stay in the session's events and history. `false` needs
+   * **eve ≥ 1.0.0-rc.7** and does not typecheck against an older eve.
+   *
+   * @default `{ start: () => "Saving to memory" }`, `"Searching memory"`, `"Forgetting a memory"`,
+   *   `"Reading an earlier conversation"` — the defaults never echo the tool input, since a
+   *   thread status is visible to everyone in the thread.
+   */
+  toolLabels?: HiddenToolLabel | { [K in RedisMemoryToolName]?: RedisMemoryToolLabel<K> };
+
+  /**
    * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
    * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
    *
    * @default true
    */
   enableTelemetry?: boolean;
+}
+
+/** The `label` a memory tool is defined with: the configured one, else its default. */
+function toolLabel<K extends RedisMemoryToolName>(
+  config: RedisMemoryConfig["toolLabels"],
+  tool: K,
+): RedisMemoryToolLabel<K> {
+  // Typed as a plain `false | Record` here so this compiles against an eve whose `label` has no
+  // `false` arm too (there `HiddenToolLabel` is `never` and callers cannot pass it anyway).
+  const labels = config as false | Partial<Record<RedisMemoryToolName, unknown>> | undefined;
+  if (labels === false) return false as unknown as RedisMemoryToolLabel<K>;
+  const configured = labels?.[tool];
+  if (configured !== undefined) return configured as RedisMemoryToolLabel<K>;
+  const text = DEFAULT_TOOL_LABELS[tool];
+  return { start: () => text } as RedisMemoryToolLabel<K>;
 }
 
 /**
@@ -649,6 +718,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
 
     {
       set.save_memory = defineTool({
+        label: toolLabel(config.toolLabels, "save_memory"),
         description:
           "Save one concise, durable fact or preference about the user to long-term memory so " +
           "it can be recalled in future conversations. Omit secrets and current-task details.",
@@ -691,6 +761,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
       } as Parameters<typeof defineTool>[0]);
 
       set.search_memory = defineTool({
+        label: toolLabel(config.toolLabels, "search_memory"),
         description:
           "Search this caller's long-term memory for something specific. Automatic recall already " +
           "puts the memories relevant to the current message in context — use this when you need " +
@@ -735,6 +806,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
 
       if (!capturesAgentMessages(config.rememberMessages)) {
         set.forget_memory = defineTool({
+          label: toolLabel(config.toolLabels, "forget_memory"),
           description:
             `Permanently redact one entry by id — from recalled memories, \`${slot}__search_memory\` ` +
             `or \`${slot}__read_session\`. Its text is erased and it stops being recalled or ` +
@@ -779,6 +851,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
 
     {
       set.read_session = defineTool({
+        label: toolLabel(config.toolLabels, "read_session"),
         description:
           "Read an earlier conversation in full, by the id shown as `session=<id>` next to a " +
           "recalled memory or a search result. Use it when something matched but you need the " +

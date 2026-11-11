@@ -697,6 +697,60 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
   });
 });
 
+describe("redisMemory() — tool activity labels (offline)", () => {
+  const context = {
+    ...operationContext({ scopeKey: "label-scope" }),
+    turn: { id: "t", input: [], sequence: 1 },
+  };
+  type Labelled = { label?: false | { start: (input: unknown) => string } };
+  const labelsOf = async (config: Omit<RedisMemoryConfig, "redis">) => {
+    const tools = (await redisMemory({ redis: offlineRedis, ...config }).tools!(
+      context as never,
+    ))! as Record<string, Labelled>;
+    return Object.fromEntries(
+      Object.entries(tools).map(([name, tool]) => [
+        name,
+        tool.label === false ? false : tool.label?.start({ text: "secret fact", query: "secret" }),
+      ]),
+    );
+  };
+
+  it("labels every tool by default, without echoing the tool input", async () => {
+    // A thread status is visible to everyone in the thread; a saved fact or a search query is
+    // memory content, so the defaults are fixed strings.
+    expect(await labelsOf({})).toEqual({
+      save_memory: "Saving to memory",
+      search_memory: "Searching memory",
+      forget_memory: "Forgetting a memory",
+      read_session: "Reading an earlier conversation",
+    });
+  });
+
+  it("takes a per-tool label and keeps the defaults for the rest", async () => {
+    const labels = await labelsOf({
+      toolLabels: {
+        save_memory: { start: ({ text }) => `Remembering: ${text}` },
+        search_memory: false,
+      },
+    });
+    expect(labels).toEqual({
+      save_memory: "Remembering: secret fact",
+      search_memory: false,
+      forget_memory: "Forgetting a memory",
+      read_session: "Reading an earlier conversation",
+    });
+  });
+
+  it("toolLabels: false hides every memory call from channel activity (eve 1.0 label: false)", async () => {
+    expect(await labelsOf({ toolLabels: false })).toEqual({
+      save_memory: false,
+      search_memory: false,
+      forget_memory: false,
+      read_session: false,
+    });
+  });
+});
+
 // -------------------------------------------------------------------------------------------
 // 1. MemoryDocumentBackend (live Redis)
 // -------------------------------------------------------------------------------------------
