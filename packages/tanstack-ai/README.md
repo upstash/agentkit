@@ -13,7 +13,7 @@ instances, reloads and devices.
 | `withLocks()` `LockStore`                                  | `upstashLocks()`                                                   | Distributed locks for TanStack AI middleware, e.g. so concurrent requests never create duplicate sandboxes                |
 | `memoryMiddleware()` adapter                               | `upstashMemory()`                                                  | Long-term memory ranked in Redis Search (BM25, typo-tolerant), no per-turn full scan                                      |
 | `createSandboxSnapshots()` / `withSandbox()` stores        | `upstashSandboxCheckpointStore()`, `upstashSandboxInstanceStore()` | Portable sandbox snapshots with history and forks, and any server can resume a thread's sandbox                           |
-| `createMCPServer({ taskStore })`, MCP Events `{ store }`   | `upstashMcpTaskStore()`, `upstashMcpEventStore()`                  | Long-running MCP tasks and webhook subscriptions that survive restarts and work across instances                          |
+| `createMCPServer({ taskStore })`, MCP Events `{ store }`, `createMcpAppCallHandler({ store })` | `upstashMcpTaskStore()`, `upstashMcpEventStore()`, `upstashMcpSessionStore()` | Long-running MCP tasks, webhook subscriptions and MCP Apps sessions that survive restarts and work across instances |
 | chat middleware                                            | `toolCache()`, `rateLimit()`                                       | Skip repeated deterministic tool calls; throttle users before the model runs                                              |
 | tools                                                      | `createSearchTools()`                                              | `search` / `aggregate` / `count` over your own documents for RAG                                                          |
 
@@ -295,8 +295,46 @@ const mcp = await createMCPClient({
   deadlines are shared, so a webhook can land on any server. `update` is a compare-and-set, so concurrent
   cursor updates never lose a field. The subscription's webhook `secret` is stored as is.
 
-Needs `@tanstack/ai-mcp` >= 1.0.0. Not provided: `McpSessionStore` (MCP Apps). Its server descriptors
-carry functions (`toolFilter`, `needsApproval`, ...) that cannot be stored in Redis.
+Needs `@tanstack/ai-mcp` >= 1.0.0.
+
+### MCP Apps sessions
+
+```ts
+import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
+import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+const store = upstashMcpSessionStore({
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers / stdio env at rest
+  // The parts of a descriptor that cannot live in Redis come from your code, per server:
+  resolve: ({ threadId, serverId }) => ({
+    needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
+    authProvider: oauthProviderFor(threadId, serverId),
+  }),
+});
+
+await store.set(threadId, servers); // in the chat route
+const handleCall = createMcpAppCallHandler({ clients, store }); // widget calls, on any instance
+```
+
+`upstashMcpSessionStore()` is the `McpSessionStore` for MCP Apps. It records which MCP servers a
+thread's widgets may call, so `createMcpAppCallHandler` can reconnect on any instance.
+
+A server descriptor carries a policy for widget calls (`toolFilter`, `needsApproval`, `toolName`) and
+often a transport `fetch` or OAuth `authProvider`. None of those survive JSON, so `set` splits each
+descriptor:
+
+- **The JSON part goes to Redis:** the transport (with `headers` / `env` encrypted when you pass
+  `encryptionKey`), `prefix`, `requestOptions`, and an array `toolFilter`. One hash per thread, one field
+  per server.
+- **Everything else is dropped and recorded by name.** `resolve` supplies it again on `get`, from your
+  code. It receives `{ threadId, serverId, descriptor, missing }`.
+- **It fails closed.** If `resolve` doesn't return a recorded field (say `needsApproval`), `get` returns
+  `null`. The handler then uses its own registry entry for that server, or refuses the call. A widget
+  never reaches a server whose approval gate was lost on the way through Redis.
+
+Servers you also pass to `createMcpAppCallHandler({ clients })` get `toolFilter` / `needsApproval` /
+`toolName` / `requestOptions` from that registry, so `resolve` matters most for servers that exist only
+per thread. The TTL slides like `inMemoryMcpSessionStore` (`ttlSeconds`, default 1800).
 
 Are you building an MCP _server_ with the official `@modelcontextprotocol/server` SDK instead of TanStack?
 [`@upstash/mcp-toolkit`](https://github.com/upstash/agentkit/tree/main/packages/mcp-toolkit) gives you

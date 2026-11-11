@@ -3,6 +3,7 @@ import { Redis as RedisClient } from "@upstash/redis";
 import type { Credential, CredentialScope, CredentialStore } from "@tanstack/ai/byok";
 import { addTelemetry } from "../telemetry.js";
 import { KEY_LOCKING, assertId } from "../persistence/records.js";
+import { b64, toKeyBytes } from "../secret-box.js";
 
 export interface UpstashCredentialsConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -63,43 +64,6 @@ interface Stored {
   /** Base64 AES-GCM IV and ciphertext of the credential JSON, when encrypted. */
   iv?: string;
   ct?: string;
-}
-
-const b64 = {
-  // Chunked: spreading a large array into String.fromCharCode overflows the call stack.
-  encode(bytes: Uint8Array): string {
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    }
-    return globalThis.btoa(binary);
-  },
-  decode: (text: string) => Uint8Array.from(globalThis.atob(text), (c) => c.charCodeAt(0)),
-};
-
-const KEY_HELP =
-  "@upstash/agentkit-tanstack-ai: `encryptionKey` must be 32 bytes: a Uint8Array, or a base64, base64url or hex string (e.g. `openssl rand -base64 32`).";
-
-function toKeyBytes(key: string | Uint8Array): Uint8Array {
-  let bytes: Uint8Array;
-  if (typeof key !== "string") bytes = key;
-  else {
-    const text = key.trim();
-    try {
-      bytes = /^[0-9a-f]{64}$/i.test(text)
-        ? Uint8Array.from(text.match(/../g)!, (h) => parseInt(h, 16))
-        : b64.decode(
-            text
-              .replace(/-/g, "+")
-              .replace(/_/g, "/")
-              .padEnd(Math.ceil(text.length / 4) * 4, "="),
-          );
-    } catch {
-      throw new Error(KEY_HELP);
-    }
-  }
-  if (bytes.length !== 32) throw new Error(KEY_HELP);
-  return bytes;
 }
 
 /** A segment no encoded id can equal: `encodeURIComponent` never emits a bare "%n". */

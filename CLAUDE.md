@@ -1711,9 +1711,18 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   need_tools/replay loop), QStash-backed background runs writing to `upstashStream`, a QStash schedule for
   `reapDetachedRuns`, `@tanstack/ai-code-mode`'s `AgentStore` and `@tanstack/ai-code-mode-snippets`'
   `SnippetStorage` (both small keyed stores; `ai-code-mode` peers the pre-1.0 `@tanstack/ai-harness`).
-  **Deliberately not built:** `@tanstack/ai-mcp`'s `McpSessionStore` (MCP Apps) — its
-  `McpServerDescriptor` carries functions (`toolFilter`, `needsApproval`, `toolName`) and transport
-  objects, so it cannot round-trip through Redis. 
+  **`McpSessionStore` (MCP Apps) is `upstashMcpSessionStore`:**
+  - **What can't be stored:** its `McpServerDescriptor` carries functions (`toolFilter`, `needsApproval`,
+    `toolName`) and transport objects (`fetch`, `authProvider`).
+  - **`set`:** stores only JSON-safe fields, checked by prototype and recursion in `isJsonSafe`, and
+    records the dropped paths in `m`. Transport `headers` / `env` are sealed with AES-GCM (`src/secret-box.ts`,
+    shared with BYOK; the AAD is prefix + thread + server).
+  - **`get`:** calls the user's `resolve({ threadId, serverId, descriptor, missing })`, then FAILS CLOSED,
+    returning `null` if any recorded path is still missing. Upstream's `createMcpAppCallHandler` then
+    falls back to its registry (`descriptor.x ?? fromRegistry?.x`, per field) or refuses.
+  - **Why fail closed:** a per-thread server that lost `needsApproval` would let a widget run a gated tool.
+  - **Test:** `src/mcp/session-store.test.ts` drives the real handler against a real `createMCPServer`
+    over node:http that requires the stored Authorization header. 
 - **ai 7.0.169 + @tanstack/ai 1.4.0 + @tanstack/ai-openai 1.1.1 (2026-11-11):** devDependency/example pins only (no published-content change, no changeset); `@ai-sdk/*` ranges moved with `pnpm -r update "@ai-sdk/*"` (one `ai@7.0.169` in the lockfile) and `pnpm dedupe` dropped a stale second `@tanstack/ai@1.1.0` that `@tanstack/ai-client@1.1.0` (`^1.1.0`) kept in the lockfile. eve stays on 0.91.0: no stable release since, npm `latest` is `1.0.0-rc.9` (not adopted); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on it, `eve build` clean and the mocked `eve eval` passes 4/4. A `skipLibCheck: false` consumer of `ai` errors inside `@ai-sdk/provider` (`TS7016 … module 'json-schema'`, no `@types/json-schema` dependency) on 7.0.163 and 7.0.169 alike: upstream, fixed by `npm i -D @types/json-schema`. The free throwaway Redis caps search indexes at 1: run index-using test files one at a time with `FLUSHDB` in between (`FLUSHDB` drops the indexes too; `SEARCH.DROPINDEX` is not available).
 - **ai 7.0.163 (2026-11-05):** pins bumped from 7.0.159 (no code change); `examples/ai-sdk-demo`'s `@ai-sdk/react` raised to `^4.0.167` because 4.0.160 depends on an *exact* `ai@7.0.156`, which split the `UIMessage` type from the demo's `ai@7.0.163` and failed `next build` (`SteeringMessageUIPart`). Re-checked 2026-11-05: published `@upstash/agentkit-eve-extension@0.19.0` / `@upstash/agentkit-eve@0.19.0` build clean on `eve@1.0.0-rc.5` (the 0.91.0 build stays); TanStack AI 1.x (ai 1.1.0, ai-persistence 1.0.1, ai-memory 1.1.0) still not adopted (same `threadId`/`blobKey` test-file errors).
 - **TanStack AI 1.x applied (2026-11-05):** `@tanstack/ai` 1.1.0, `ai-persistence` 1.0.1, `ai-memory` 1.1.0 (devDeps, exact) and the tanstack-ai-demo's `ai-client` 1.1.0 / `ai-react` 1.0.2 / `ai-openai` 1.1.0. `src` needed no change; only tests did: `chat()` calls pass `threadId` (`middleware.test.ts`, `search-tools.test.ts`) and `ArtifactRecord` fixtures carry `blobKey` (`persistence.test.ts`). The peer floors (`>=0.65.0` / `>=0.8.0` / `>=0.2.8`) are untouched: the source is unchanged and still works on 0.x, and published `@upstash/agentkit-tanstack-ai@0.2.0` imports on 1.x, so no changeset. Upstream `@tanstack/ai@1.1.0`'s `spawn.d.ts` still has the broken `import('../../..')` (TS2307 with `skipLibCheck: false`). The 1.0 contracts `SessionIndexStore` and `CredentialStore` are implemented in the follow-up below.
