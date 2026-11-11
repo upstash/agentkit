@@ -44,15 +44,34 @@ export interface CreateMemoryToolsConfig {
  * ```
  */
 export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
-  const { userId, topK, minScore, enableTelemetry } = config;
+  const { enableTelemetry } = config;
   const redis = config.redis ?? Redis.fromEnv();
   addTelemetry(redis, enableTelemetry);
   const memory = new AgentMemory({
     redis,
     ...(enableTelemetry !== undefined ? { enableTelemetry } : {}),
   });
-  const recallName = config.recallToolName ?? "recall_memory";
-  const saveName = config.saveToolName ?? "save_memory";
+  return buildMemoryTools(memory, config);
+}
+
+/** The default tool names, shared with `createAgentMemory`'s instructions. */
+export const DEFAULT_RECALL_TOOL_NAME = "recall_memory";
+export const DEFAULT_SAVE_TOOL_NAME = "save_memory";
+
+/**
+ * Build the recall/save tool pair over an existing {@link AgentMemory}. Internal: shared by
+ * {@link createMemoryTools} and `createAgentMemory().tools()` so both expose identical tools.
+ */
+export function buildMemoryTools(
+  memory: AgentMemory,
+  options: Pick<
+    CreateMemoryToolsConfig,
+    "userId" | "topK" | "minScore" | "recallToolName" | "saveToolName"
+  >,
+): ToolSet {
+  const { userId, topK, minScore } = options;
+  const recallName = options.recallToolName ?? DEFAULT_RECALL_TOOL_NAME;
+  const saveName = options.saveToolName ?? DEFAULT_SAVE_TOOL_NAME;
 
   const resolveUserId = (input: unknown, options: ToolExecutionOptions<never>): string =>
     typeof userId === "function" ? userId(input, options) : userId;
@@ -73,8 +92,8 @@ export function createMemoryTools(config: CreateMemoryToolsConfig): ToolSet {
           ),
       }),
       execute: async (input, options) => {
-        // recall() falls back to "everything for the user" when a query matches nothing, so a
-        // model that passes a placeholder like "everything" still gets results.
+        // A query that matches nothing returns nothing (no fallback); the tool description tells
+        // the model to omit `query` to list everything.
         const hits = await memory.recall({
           query: input.query,
           userId: resolveUserId(input, options as ToolExecutionOptions<never>),

@@ -62,6 +62,18 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   wrapper**), `cachedTools`, `createMemoryTools`, `createSearchTools`,
   `createChatHistory` (→ `ChatHistory<UIMessage>`; also re-exports `ChatHistory`/`ChatRecord`/etc.).
   (**No model cache** — removed.)
+- **`createAgentMemory`** (`src/agent-memory.ts`) — the AI SDK *memory provider* shape (cf.
+  `vercel/ai` `content/docs/03-agents/06-memory.mdx`: Mem0/Letta/Supermemory/Hindsight/`@redis/vercel-ai-sdk`).
+  One factory over a core `AgentMemory` (`prefix`/`indexName`/`topK`/`minScore`/tool names), then per
+  request: `.tools({ userId })` (the same tools as `createMemoryTools`, via the shared internal
+  `buildMemoryTools`), `.prepareStep({ userId, query?, onError? })` (automatic recall: on step 0 it
+  appends a `<memories>` "treat as data" block to the instructions — string, message or array — and
+  the override carries forward), `.recallContext()`, `.instructions` (names the configured tools),
+  `.store`. **Deliberately NOT a model wrapper:** the other providers' "automatic memory" is a
+  `wrapLanguageModel` middleware (`memory.model()`, `withSupermemory(model)`, `mem0(modelId)`), which
+  this repo forbids; `prepareStep` is the allowed seam and works for `generateText`/`streamText`/
+  `ToolLoopAgent` (userId may come from `runtimeContext`). Recall failures are swallowed (`onError`).
+  No automatic extraction/recording — saving stays explicit; transcripts go through `createChatHistory`.
 - **Only `cachedTools`** (no singular `cachedTool` — removed): `cachedTools(map, { userId, redis?, ttlSeconds? })`
   takes a map of `tool()`-built tools (so each keeps inference) and caches each under its **map key as
   the toolName**, scoped to `userId` — so the user never passes a tool name.
