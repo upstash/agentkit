@@ -12,7 +12,7 @@ import { z } from "zod";
 import {
   Ratelimit,
   cachedTools,
-  createMemoryTools,
+  createAgentMemory,
   createRateLimit,
   createSearchTools,
 } from "@upstash/agentkit-ai-sdk";
@@ -46,8 +46,10 @@ export async function POST(req: Request) {
     return new Response("Rate limited", { status: 429 });
   }
 
-  // Agent memory tools — recall_memory / save_memory, scoped to this user.
-  const memoryTools = createMemoryTools({ redis, userId });
+  // Agent memory — recall_memory / save_memory tools scoped to this user, plus automatic recall: the
+  // memories relevant to the latest message are appended to the instructions via `prepareStep`.
+  const memory = createAgentMemory({ redis });
+  const memoryTools = memory.tools({ userId });
 
   // Schema-driven search tools — search / aggregate / count over the books index (created reactively).
   // The books index is intentionally SHARED across users, so no per-user scoping here.
@@ -71,9 +73,11 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model,
+    instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
     messages: await convertToModelMessages(messages),
     tools,
     stopWhen: stepCountIs(5),
+    prepareStep: memory.prepareStep({ userId }),
   });
 
   const history = getHistory();
