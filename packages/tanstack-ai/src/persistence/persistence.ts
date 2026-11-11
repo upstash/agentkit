@@ -136,6 +136,12 @@ return 1`;
  * ```
  */
 export function upstashPersistence(
+  config: UpstashPersistenceConfig & { bucket: BlobBucketLike },
+): AIPersistence<UpstashPersistenceStores & { blobs: BlobStore }>;
+export function upstashPersistence(
+  config?: UpstashPersistenceConfig,
+): AIPersistence<UpstashPersistenceStores>;
+export function upstashPersistence(
   config: UpstashPersistenceConfig = {},
 ): AIPersistence<UpstashPersistenceStores> {
   const redis = config.redis ?? RedisClient.fromEnv();

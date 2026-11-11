@@ -6,28 +6,33 @@ resumable streaming, distributed locks and memory, and ships in-memory implement
 work inside one process. This package implements them on Redis, so they hold across serverless
 instances, reloads and devices.
 
-| TanStack AI seam | This package | What you get |
-| --- | --- | --- |
-| `withPersistence()` / `withGenerationPersistence()` stores | `upstashPersistence()` | Transcripts, runs, human-in-the-loop interrupts, metadata, generation jobs, artifacts and (with Upstash Blob) their bytes |
-| `StreamDurability` | `upstashStream()` | Reload mid-answer or open the thread on another device and pick up where the stream is |
-| `withLocks()` `LockStore` | `upstashLocks()` | Distributed locks for TanStack AI middleware, e.g. so concurrent requests never create duplicate sandboxes |
-| `memoryMiddleware()` adapter | `upstashMemory()` | Long-term memory ranked in Redis Search (BM25, typo-tolerant), no per-turn full scan |
-| chat middleware | `toolCache()`, `rateLimit()` | Skip repeated deterministic tool calls; throttle users before the model runs |
-| tools | `createSearchTools()` | `search` / `aggregate` / `count` over your own documents for RAG |
+| TanStack AI seam                                           | This package                                                       | What you get                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `withPersistence()` / `withGenerationPersistence()` stores | `upstashPersistence()`                                             | Transcripts, runs, human-in-the-loop interrupts, metadata, generation jobs, artifacts and (with Upstash Blob) their bytes |
+| `StreamDurability`                                         | `upstashStream()`                                                  | Reload mid-answer or open the thread on another device and pick up where the stream is                                    |
+| `withLocks()` `LockStore`                                  | `upstashLocks()`                                                   | Distributed locks for TanStack AI middleware, e.g. so concurrent requests never create duplicate sandboxes                |
+| `memoryMiddleware()` adapter                               | `upstashMemory()`                                                  | Long-term memory ranked in Redis Search (BM25, typo-tolerant), no per-turn full scan                                      |
+| `createSandboxSnapshots()` / `withSandbox()` stores        | `upstashSandboxCheckpointStore()`, `upstashSandboxInstanceStore()` | Portable sandbox snapshots with history and forks, and any server can resume a thread's sandbox                           |
+| `createMCPServer({ taskStore })`, MCP Events `{ store }`   | `upstashMcpTaskStore()`, `upstashMcpEventStore()`                  | Long-running MCP tasks and webhook subscriptions that survive restarts and work across instances                          |
+| chat middleware                                            | `toolCache()`, `rateLimit()`                                       | Skip repeated deterministic tool calls; throttle users before the model runs                                              |
+| tools                                                      | `createSearchTools()`                                              | `search` / `aggregate` / `count` over your own documents for RAG                                                          |
 
-`upstashPersistence()` and `upstashMemory()` are checked against TanStack AI's own conformance
-suites (`runPersistenceConformance`, `runMemoryAdapterContract`).
+`upstashPersistence()`, `upstashMemory()` and the sandbox stores are checked against TanStack AI's
+own conformance suites (`runPersistenceConformance`, `runMemoryAdapterContract`,
+`runSandboxCheckpointStoreConformance`, `runSandboxCheckpointForkConformance`,
+`runSandboxInstanceStoreConformance`, `runDurableRunFieldsConformance`).
 
 ## Install
 
 ```bash
 npm install @upstash/agentkit-tanstack-ai @tanstack/ai
 # plus, for the features you use:
-npm install @tanstack/ai-persistence @tanstack/ai-memory
+npm install @tanstack/ai-persistence @tanstack/ai-memory @tanstack/ai-sandbox @tanstack/ai-mcp
 ```
 
-Persistence and memory have their own entry points, `@upstash/agentkit-tanstack-ai/persistence` and
-`@upstash/agentkit-tanstack-ai/memory`, so the root entry never needs those optional packages.
+Persistence, memory, sandbox and MCP stores have their own entry points
+(`@upstash/agentkit-tanstack-ai/persistence`, `/memory`, `/sandbox`, `/mcp`, plus `/byok`), so the root
+entry never needs those optional packages.
 
 Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`; every factory defaults to
 `Redis.fromEnv()` and accepts `redis` to pass a client explicitly.
@@ -75,7 +80,14 @@ messages, and `delete` removes only the entry. Use it on its own with `upstashSe
 
 ```ts
 const { sessions } = upstashPersistence().stores;
-await sessions.upsert({ tenantId, threadId, members: [{ userId, role: "owner" }], title, createdAt: now, updatedAt: now });
+await sessions.upsert({
+  tenantId,
+  threadId,
+  members: [{ userId, role: "owner" }],
+  title,
+  createdAt: now,
+  updatedAt: now,
+});
 const { entries, cursor } = await sessions.list({ tenantId, memberId: userId, limit: 20 });
 ```
 
@@ -112,11 +124,11 @@ Each chunk is appended to a Redis Stream before it is delivered. A client that r
 `Last-Event-ID` (or `?offset`) replays everything after it and keeps tailing the live run, on any
 instance. Without a `Request`, use `upstashStream({ runId, offset })`.
 
-| Option | Default | |
-| --- | --- | --- |
-| `ttlSeconds` | `86400` | How long a run stays resumable after its last chunk |
-| `pollIntervalMs` | `150` | Tail poll interval (the REST API keeps no blocking reads) |
-| `firstChunkDeadlineMs` | `2000` | How long a from-start join waits for a run that has not produced yet |
+| Option                 | Default |                                                                      |
+| ---------------------- | ------- | -------------------------------------------------------------------- |
+| `ttlSeconds`           | `86400` | How long a run stays resumable after its last chunk                  |
+| `pollIntervalMs`       | `150`   | Tail poll interval (the REST API keeps no blocking reads)            |
+| `firstChunkDeadlineMs` | `2000`  | How long a from-start join waits for a run that has not produced yet |
 
 ## Distributed locks
 
@@ -172,7 +184,11 @@ import { storedProviderKeys } from "@tanstack/ai/byok/server";
 import { upstashCredentials } from "@upstash/agentkit-tanstack-ai/byok";
 
 const credentials = upstashCredentials({ encryptionKey: process.env.CREDENTIALS_KEY });
-await credentials.set({ scope: { tenantId, userId }, id: "openai", credential: { type: "api_key", value } });
+await credentials.set({
+  scope: { tenantId, userId },
+  id: "openai",
+  credential: { type: "api_key", value },
+});
 const keys = storedProviderKeys(credentials, { tenantId, userId }); // the user's key, else the tenant's
 ```
 
@@ -188,13 +204,103 @@ JSON. Things to know:
 - The ciphertext is bound to the key `prefix`, the owner, the id, and the clear-text type and expiry shown by
   `list`. **Changing `prefix`, or copying rows to another prefix, makes every encrypted row undecryptable**;
   editing the type or expiry in Redis makes that row fail to decrypt.
-- Credentials saved before you added a key are still read as plaintext. Anyone who can *write* to your Redis
+- Credentials saved before you added a key are still read as plaintext. Anyone who can _write_ to your Redis
   could therefore swap an encrypted credential for a plaintext one. After re-saving your credentials with the
   key, set `requireEncryption: true` to refuse plaintext rows.
 - The revision is not part of the ciphertext, so someone with write access to your Redis can replay an older
   ciphertext of the same credential. Encryption protects against reading the data, not against a writer.
 - Expired `secret_answer` credentials are not removed by the store; delete them after reading, as the
   harness does.
+
+## Sandbox snapshots and instances
+
+```ts
+import { createSandboxSnapshots, withSandbox } from "@tanstack/ai-sandbox";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { Bucket } from "@upstash/blob";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
+import {
+  upstashSandboxCheckpointStore,
+  upstashSandboxInstanceStore,
+} from "@upstash/agentkit-tanstack-ai/sandbox";
+
+const persistence = upstashPersistence({ bucket: Bucket.fromEnv() }); // file bytes go to Upstash Blob
+const instances = upstashSandboxInstanceStore();
+const snapshots = createSandboxSnapshots({
+  persistence,
+  checkpoints: upstashSandboxCheckpointStore(), // same Redis + prefix as `persistence`
+  instances,
+  locks: upstashLocks(),
+});
+
+chat({
+  adapter,
+  messages,
+  threadId,
+  middleware: [
+    withPersistence(snapshots.persistence),
+    withSandbox(sandbox, { instances, snapshots }),
+  ],
+});
+
+// Branch a conversation, files included, from any earlier checkpoint:
+await snapshots.fork({ threadId, checkpointId, destinationThreadId: "thread-2" });
+```
+
+Portable snapshots let a later run rebuild a sandbox's files after the provider sandbox is gone.
+Together with `upstashPersistence({ bucket })` and `upstashLocks()`, every store they need is on Upstash.
+Pair them with TanStack's own Upstash Box provider, `@tanstack/ai-sandbox-upstash-box`, for the sandbox
+itself.
+
+- **`upstashSandboxCheckpointStore()`**: the `SandboxCheckpointStore`. Each checkpoint is one immutable
+  document; each thread has a head pointer and an index. Appends are compare-and-set on the head, and every
+  write first checks the writer lease (owner token, fence and expiry), so a writer that lost its lease
+  changes nothing. Blob keys are reference-counted for cleanup (`listBlobReferences`). It supports
+  `forkFromCheckpoint`: in one script, it copies a checkpoint into an empty thread and writes that thread's
+  transcript. That's why it must use the same `redis` and `prefix` as `upstashPersistence()`. Pass the same
+  `messagesTtlSeconds` too, if you set one.
+- **`upstashSandboxInstanceStore()`**: the `SandboxInstanceStore` that maps a sandbox key to the
+  provider's sandbox id and latest snapshot, so any server can resume the sandbox. Optional `ttlSeconds`.
+
+Needs `@tanstack/ai-sandbox` >= 1.0.0.
+
+## MCP task and event stores
+
+```ts
+import { createMCPClient } from "@tanstack/ai-mcp";
+import { createMCPServer } from "@tanstack/ai-mcp/server";
+import { upstashMcpEventStore, upstashMcpTaskStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+// Server: long-running tools as MCP tasks, readable from any instance.
+const server = createMCPServer({
+  name: "tools",
+  version: "1.0.0",
+  tools,
+  taskStore: upstashMcpTaskStore(),
+});
+
+// Client: MCP Events webhook subscriptions (direct mode), shared by every instance.
+const mcp = await createMCPClient({
+  transport: { type: "http", url: "https://mcp.example.com/mcp" },
+  experimental_events: { store: upstashMcpEventStore() },
+});
+```
+
+- **`upstashMcpTaskStore()`**: the `TaskStore` for `createMCPServer`. Task records survive restarts, and
+  `tasks/get` / `tasks/result` work on any instance. The optional `ttlSeconds` expires finished records.
+  Cancelling a task still stops its work only on the instance that is running it, because TanStack keeps
+  the abort controller in memory.
+- **`upstashMcpEventStore()`**: the `MCPEventStore` for MCP Events. Subscriptions, cursors and refresh
+  deadlines are shared, so a webhook can land on any server. `update` is a compare-and-set, so concurrent
+  cursor updates never lose a field. The subscription's webhook `secret` is stored as is.
+
+Needs `@tanstack/ai-mcp` >= 1.0.0. Not provided: `McpSessionStore` (MCP Apps). Its server descriptors
+carry functions (`toolFilter`, `needsApproval`, ...) that cannot be stored in Redis.
+
+Are you building an MCP _server_ with the official `@modelcontextprotocol/server` SDK instead of TanStack?
+[`@upstash/mcp-toolkit`](https://github.com/upstash/agentkit/tree/main/packages/mcp-toolkit) gives you
+durable tasks and events there, with QStash for background execution and webhook delivery.
 
 ## Tool caching and rate limiting
 
