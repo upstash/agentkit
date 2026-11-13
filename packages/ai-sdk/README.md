@@ -7,6 +7,7 @@ from this package.
 | Import | Feature |
 | --- | --- |
 | `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createAgentMemory` | Memory provider: memory tools **and** automatic recall into the instructions via `prepareStep`. |
 | `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
 | `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
@@ -111,6 +112,42 @@ await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do yo
 `userId` is the only tenant boundary (required, non-empty, no `:`). **Derive it from a verified
 server-side auth source** (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — never a client-supplied
 value. Memories are stored at `agentkit:memory:<userId>:<id>`.
+
+</details>
+
+### Memory provider
+
+`createAgentMemory` is the AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers)
+shape: create it once, then per request give the model the memory tools, inject the memories
+relevant to the latest user message automatically, or both. The model is **not** wrapped — recall
+runs in `prepareStep` and appends a `<memories>` block to your instructions on the first step (the
+override carries forward to later steps). Works with `generateText`, `streamText` and `ToolLoopAgent`.
+
+```ts
+import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
+import { ToolLoopAgent } from "ai";
+
+const memory = createAgentMemory();
+
+// per request, with `userId` from your auth
+const agent = new ToolLoopAgent({
+  model,
+  instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
+  tools: memory.tools({ userId }), // recall_memory + save_memory
+  prepareStep: memory.prepareStep({ userId }), // relevant memories injected up front
+});
+
+await agent.generate({ prompt: "What editor do I use?" });
+```
+
+<details>
+<summary>Options</summary>
+
+- `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
+- `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step, e.g.
+  `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the last user
+  message. A failed recall never fails the call; it goes to `onError` (default `console.warn`).
+- `memory.store`: the underlying `AgentMemory` for `add` / `list` / `get` / `forget`.
 
 </details>
 
