@@ -61,14 +61,14 @@ export interface UpstashMcpSessionStoreConfig {
   enableTelemetry?: boolean;
 }
 
-interface StoredServer {
-  /** The JSON-safe part of the descriptor (headers/env removed when encrypted). */
+/** The JSON-safe part of a descriptor plus the paths of the code-only fields `resolve` must supply. */
+interface PlainServer {
   d: McpServerDescriptor;
-  /** Sealed `{ headers?, env? }` of the transport, when an `encryptionKey` is set. */
-  s?: Sealed;
-  /** Paths of the code-only fields the descriptor had, which `resolve` must supply again. */
   m: string[];
 }
+
+/** Stored as is, or the whole entry sealed when an `encryptionKey` is set (so nothing can be altered). */
+type StoredServer = PlainServer | { s: Sealed };
 
 const DESCRIPTOR_FIELDS = [
   "prefix",
@@ -100,7 +100,7 @@ function isJsonSafe(value: unknown): boolean {
  * server), and anything that is not JSON (`needsApproval`, a function `toolFilter`, `toolName`, a
  * transport's `fetch` / `authProvider`) is dropped and recorded by name. `resolve` puts those back
  * on `get`, from your code, per server. If it does not, `get` returns `null` rather than a descriptor
- * missing its approval gate or tool filter. Transport headers and stdio env can be encrypted at rest.
+ * missing its approval gate or tool filter. With `encryptionKey`, each stored entry is encrypted whole.
  *
  * For servers you configure in code and pass to `createMcpAppCallHandler({ clients })`, the handler
  * already takes `toolFilter` / `needsApproval` / `toolName` / `requestOptions` from that registry when
@@ -128,7 +128,7 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
   const box = config.encryptionKey === undefined ? undefined : secretBox(config.encryptionKey);
   const key = (threadId: string) => `${p}:mcp:session:${encodeURIComponent(threadId)}`;
   const aad = (threadId: string, serverId: string) =>
-    `${p}\u0000mcp-session\u0000${threadId}\u0000${serverId}`;
+    `${p}\u0000mcp-session\u0000${encodeURIComponent(threadId)}\u0000${serverId}`;
 
   const pack = async (
     threadId: string,
@@ -143,7 +143,6 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
       if (isJsonSafe(value)) d[field] = value;
       else m.push(field);
     }
-    let sealed: Sealed | undefined;
     if (descriptor.transport !== undefined) {
       const transport: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(descriptor.transport)) {
@@ -151,20 +150,10 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
         if (isJsonSafe(v)) transport[k] = v;
         else m.push(`transport.${k}`);
       }
-      if (box) {
-        const secret: Record<string, unknown> = {};
-        for (const k of ["headers", "env"]) {
-          if (transport[k] !== undefined) {
-            secret[k] = transport[k];
-            delete transport[k];
-          }
-        }
-        if (Object.keys(secret).length > 0)
-          sealed = await box.seal(secret, aad(threadId, serverId));
-      }
       d.transport = transport;
     }
-    return { d: d as unknown as McpServerDescriptor, m, ...(sealed ? { s: sealed } : {}) };
+    const plain: PlainServer = { d: d as unknown as McpServerDescriptor, m };
+    return box ? { s: await box.seal(plain, aad(threadId, serverId)) } : plain;
   };
 
   const unpack = async (
@@ -172,21 +161,20 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
     serverId: string,
     stored: StoredServer,
   ): Promise<McpServerDescriptor | null> => {
-    const descriptor = { ...stored.d } as McpServerDescriptor & Record<string, unknown>;
-    if (stored.s) {
+    let plain: PlainServer;
+    if ("s" in stored) {
       if (!box) {
         throw new Error(
-          `@upstash/agentkit-tanstack-ai: MCP session server ${JSON.stringify(serverId)} has encrypted headers; pass \`encryptionKey\`.`,
+          `@upstash/agentkit-tanstack-ai: MCP session server ${JSON.stringify(serverId)} is encrypted; pass \`encryptionKey\`.`,
         );
       }
-      const secret = await box.open<Record<string, unknown>>(stored.s, aad(threadId, serverId));
-      descriptor.transport = {
-        ...descriptor.transport,
-        ...secret,
-      } as McpServerDescriptor["transport"];
+      plain = await box.open<PlainServer>(stored.s, aad(threadId, serverId));
+    } else {
+      plain = stored;
     }
+    const descriptor = { ...plain.d } as McpServerDescriptor & Record<string, unknown>;
     const overrides = config.resolve
-      ? await config.resolve({ threadId, serverId, descriptor, missing: stored.m })
+      ? await config.resolve({ threadId, serverId, descriptor, missing: plain.m })
       : undefined;
     const { fetch: fetchOverride, authProvider, ...fields } = overrides ?? {};
     Object.assign(descriptor, fields);
@@ -198,7 +186,7 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
       } as McpServerDescriptor["transport"];
     }
     // Fail closed: every code-only field the descriptor was saved with must be back.
-    for (const path of stored.m) {
+    for (const path of plain.m) {
       const [head, sub] = path.split(".") as [string, string | undefined];
       const holder = sub === undefined ? descriptor : (descriptor[head] as Record<string, unknown>);
       if (holder?.[sub ?? head] === undefined) return null;
