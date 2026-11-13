@@ -28,15 +28,6 @@ export interface MemoryToolConfig {
   enableTelemetry?: boolean;
 }
 
-/**
- * A memory tool's config: {@link MemoryToolConfig} plus eve's tool `label` — the activity text
- * channels show for a call (`{ start(input) }`), or `false` (eve ≥ 1.0.0-rc.7) to keep the call out
- * of activity so it does not end a quiet turn's silence. Omitted, eve shows the tool's name.
- */
-export type MemoryToolDefinitionConfig<TInput, TOutput> = MemoryToolConfig & {
-  label?: ToolDefinition<TInput, TOutput>["label"];
-};
-
 function resolveMemory(config: MemoryToolConfig): AgentMemory {
   const redis = config.redis ?? Redis.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
@@ -62,11 +53,10 @@ function resolveUserId(config: MemoryToolConfig, input: Record<string, unknown>,
  * ```
  */
 export function defineMemoryRecallTool(
-  config: MemoryToolDefinitionConfig<{ query?: string }, { text: string; score: number }[]>,
+  config: MemoryToolConfig,
 ): ToolDefinition<{ query?: string }, { text: string; score: number }[]> {
   const memory = resolveMemory(config);
   return defineTool({
-    ...(config.label !== undefined ? { label: config.label } : {}),
     description:
       "Recall the user's long-term memories. Pass `query` to find memories about a specific topic. " +
       "To list ALL of the user's memories, call this with NO `query` at all — do not pass a " +
@@ -107,11 +97,10 @@ export function defineMemoryRecallTool(
  * ```
  */
 export function defineMemorySaveTool(
-  config: MemoryToolDefinitionConfig<{ text: string }, { id: string; saved: boolean }>,
+  config: MemoryToolConfig,
 ): ToolDefinition<{ text: string }, { id: string; saved: boolean }> {
   const memory = resolveMemory(config);
   return defineTool({
-    ...(config.label !== undefined ? { label: config.label } : {}),
     description:
       "Save a durable fact about the user to long-term memory so it can be recalled in future " +
       "conversations (preferences, identity, goals, …).",

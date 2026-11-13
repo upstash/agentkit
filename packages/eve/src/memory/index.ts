@@ -46,14 +46,7 @@
  * sandbox signatures this package implements; the second arm exists because semver never matches a
  * prerelease such as `1.0.0-rc.9` against `>=0.87.0`). This entry point would load on eve 0.45.2+
  * (`eve/memory` landed in 0.45.1, `eve/memory/file` in 0.45.2), but a single range covers the whole
- * public surface. `toolLabels: false` on {@link redisMemory} needs eve 1.0.0-rc.7+ and is typed so it
- * only compiles there.
- *
- * eve 1.0.0-rc.8 names the memory store on provider tool calls as well as on recall and capture:
- * the trace attribute `gen_ai.memory.store.id` is eve's `memory.scope.key`, which is exactly the
- * partition {@link redisMemory} stores under (`agentkit:memorySlot:<scope.key with : → _>:<id>`), so a
- * trace query by store id finds a scope's `save_memory`/`search_memory`/`forget_memory`/
- * `read_session` calls with no provider-side change.
+ * public surface.
  */
 export { RedisMemoryDocumentBackend, redisDocuments } from "./documents.js";
 export type { RedisDocumentsConfig } from "./documents.js";
@@ -65,7 +58,4 @@ export type {
   RedisMemoryCaptureContext,
   RedisMemoryConfig,
   RedisMemoryRecallContext,
-  RedisMemoryToolInputs,
-  RedisMemoryToolLabel,
-  RedisMemoryToolName,
 } from "./provider.js";

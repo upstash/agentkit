@@ -29,21 +29,6 @@ const schema = s.object({
   city: s.string().noTokenize(),
 });
 
-describe("defineSearchTools — activity labels (offline)", () => {
-  it("applies a label per tool and leaves the others unlabelled", () => {
-    const redis = { search: { index: () => ({}) } } as never;
-    const tools = defineSearchTools({
-      schema,
-      redis,
-      indexName: "labels",
-      labels: { search: { start: () => "Searching the catalog" }, count: false },
-    });
-    expect(tools.search.label && tools.search.label.start({})).toBe("Searching the catalog");
-    expect(tools.count.label).toBe(false);
-    expect("label" in tools.aggregate).toBe(false);
-  });
-});
-
 describe.skipIf(!hasRedisCreds)("defineSearchTools (live Redis)", () => {
   const redis = testRedis();
   const name = uniquePrefix("eve-search").replace(/[^a-zA-Z0-9_]/g, "_");

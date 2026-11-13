@@ -64,8 +64,6 @@ export default defineMemorySaveTool({
 - `topK` — max memories `recall` returns.
 - `minScore` — BM25 relevance floor.
 - `redis` — defaults to `Redis.fromEnv()`.
-- `label` — eve's tool activity label: `{ start: (input) => "Checking what I know" }`, or `false`
-  (eve ≥ 1.0.0-rc.7) to keep the call out of channel activity. Omitted, eve shows the tool name.
 
 `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from eve's **verified
 session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
@@ -204,27 +202,10 @@ conditional write eve requires is a Lua `EVAL` compare-and-set.
 `minScore`, `maxRecallCharacters` (4,000 — the recalled block's budget), `maxMemoryCharacters`
 (2,048), `rememberMessages` (`true` by default, meaning `"fromUser"` — the caller's own text; `"all"` adds
 the assistant's reply, `"fromModel"` captures only that, `false` turns capture off),
-`waitForIndexing`, `replayCacheTtlSeconds`, `toolLabels`, `enableTelemetry`.
+`waitForIndexing`, `replayCacheTtlSeconds`, `enableTelemetry`.
 
-**Tool activity labels (`toolLabels`).** Each slot tool carries an eve `label`, so channels show
-"Saving to memory" / "Searching memory" / "Forgetting a memory" / "Reading an earlier conversation"
-instead of the slot-prefixed tool name. The defaults never echo the tool input — a thread status is
-visible to everyone in the thread, and a saved fact or a search query is memory content. Override
-per tool (`toolLabels: { save_memory: { start: ({ text }) => … } }`), or hide the calls:
-
-```ts
-// eve ≥ 1.0.0-rc.7: memory calls show no status and don't end a quiet turn's silence, so an agent
-// that follows a Slack thread with `status: "deferred"` can still save a fact and reply `no_reply`.
-provider: redisMemory({ toolLabels: false }), // or per tool: { search_memory: false }
-```
-
-`false` is only part of the type when the installed eve supports it, so on an older eve it fails to
-typecheck rather than misbehaving at run time.
-
-**Tracing.** eve 1.0.0-rc.8+ records `gen_ai.memory.store.id` on recall, capture *and* memory tool
-calls. That id is eve's `memory.scope.key` — the partition this provider stores under
-(`agentkit:memorySlot:<scope.key, with : → _>:<id>`) — so one trace query by store id finds every
-read and write of a scope's Redis records. Nothing to configure.
+The slot's tools show fixed activity labels in channels ("Saving to memory", "Searching memory",
+"Forgetting a memory", "Reading an earlier conversation"), never the tool input.
 
 **`"all"` and `"fromModel"` remove `<slot>__forget_memory`.** Those modes store the assistant's
 replies, and confirming an erasure records the erased text — so deletion cannot be honoured and a
@@ -250,12 +231,9 @@ conversation changes topic.
 `scope.key` that is used as the storage partition. Derive it from verified session auth, never from
 model input — `byPrincipal` from `eve/memory/scope` is the built-in shorthand.
 
-**Requires eve ≥ 0.87.0, including eve 1.0** (the package's `eve` peer range is
-`>=0.87.0 || >=1.0.0-0`; the second arm is there because semver never matches a prerelease such as
-`1.0.0-rc.9` against `>=0.87.0`): the memory providers and the `./sandbox` provider target eve 0.87's
-APIs (`ctx.populate`, `onSessionEnd`, `signal` on sandbox and memory inputs), and the typings only
-match from that release. Verified against eve 0.87.0, 0.91.0, 1.0.0-rc.0 and 1.0.0-rc.9. Hidden
-tool labels (`label: false`, `toolLabels: false`) need eve ≥ 1.0.0-rc.7.
+**Requires eve ≥ 0.87.0, including eve 1.0** (peer range `>=0.87.0 || >=1.0.0-0`): the memory
+providers and the `./sandbox` provider target eve 0.87's APIs (`ctx.populate`, `onSessionEnd`,
+`signal` on sandbox and memory inputs).
 
 </details>
 
@@ -283,8 +261,6 @@ export default defineSearchTools({
 - `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
 - `defaultLimit` — default page size for `search` (10).
 - `redis` — defaults to `Redis.fromEnv()`.
-- `labels` — eve tool activity label per tool, e.g. `{ search: { start: () => "Searching books" } }`;
-  `false` (eve ≥ 1.0.0-rc.7) hides that tool's calls from channel activity.
 
 Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
 you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /

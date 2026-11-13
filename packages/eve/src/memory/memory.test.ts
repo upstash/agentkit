@@ -710,7 +710,7 @@ describe("redisMemory() — tool activity labels (offline)", () => {
     return Object.fromEntries(
       Object.entries(tools).map(([name, tool]) => [
         name,
-        tool.label === false ? false : tool.label?.start({ text: "secret fact", query: "secret" }),
+        tool.label === false ? false : tool.label?.start({}),
       ]),
     );
   };
@@ -723,30 +723,6 @@ describe("redisMemory() — tool activity labels (offline)", () => {
       search_memory: "Searching memory",
       forget_memory: "Forgetting a memory",
       read_session: "Reading an earlier conversation",
-    });
-  });
-
-  it("takes a per-tool label and keeps the defaults for the rest", async () => {
-    const labels = await labelsOf({
-      toolLabels: {
-        save_memory: { start: ({ text }) => `Remembering: ${text}` },
-        search_memory: false,
-      },
-    });
-    expect(labels).toEqual({
-      save_memory: "Remembering: secret fact",
-      search_memory: false,
-      forget_memory: "Forgetting a memory",
-      read_session: "Reading an earlier conversation",
-    });
-  });
-
-  it("toolLabels: false hides every memory call from channel activity (eve 1.0 label: false)", async () => {
-    expect(await labelsOf({ toolLabels: false })).toEqual({
-      save_memory: false,
-      search_memory: false,
-      forget_memory: false,
-      read_session: false,
     });
   });
 });

@@ -4,7 +4,7 @@ export type { CacheUserId, DefineCachedToolConfig } from "./tools.js";
 
 // Long-term memory as Eve tools (drop into agent/tools/*.ts)
 export { defineMemoryRecallTool, defineMemorySaveTool } from "./memory-tools.js";
-export type { MemoryUserId, MemoryToolConfig, MemoryToolDefinitionConfig } from "./memory-tools.js";
+export type { MemoryUserId, MemoryToolConfig } from "./memory-tools.js";
 
 // Schema-driven Redis Search tools (search / aggregate / count) as eve tools
 export { defineSearchTools } from "./search-tools.js";

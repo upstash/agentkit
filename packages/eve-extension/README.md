@@ -15,12 +15,8 @@ no repeated schemas; upgrades come through the package manager.
 
 `<ns>` is the mount file's basename — the examples below use `agentkit`.
 
-Start from an eve project on **eve 1.0 (≥ 1.0.0-rc.9)**. The prebuilt extension is built with eve
-1.0.0-rc.9, and eve refuses an extension built with a newer eve than its own (`Extension
-"@upstash/agentkit-eve-extension" was built with eve 1.0.0-rc.9. Upgrade eve to 1.0.0-rc.9 or
-later`), so every eve 0.x release and 1.0.0-rc.0 … rc.8 refuse it; the package declares this as
-its `eve` peer range (`>=1.0.0-rc.9`). On eve 0.91.x, stay on `@upstash/agentkit-eve-extension@0.19`.
-Then:
+Start from an eve project on **eve ≥ 1.0.0-rc.9** (the extension is built with it, and eve refuses an
+extension built with a newer eve). On eve 0.91, stay on `@upstash/agentkit-eve-extension@0.19`. Then:
 
 ```bash
 pnpm add @upstash/agentkit-eve-extension
@@ -124,11 +120,6 @@ The search tools' descriptions and input schemas are generated from your `search
 depends on `chatHistory` — neither is known until the mount config binds at runtime. So both sets are
 contributed as [dynamic tools](https://eve.dev/docs/guides/dynamic-capabilities) resolved by `defineDynamic` before each model call: unconfigured, they resolve to nothing rather than erroring when the model calls
 them. Only the memory tools are static.
-
-Since eve 1.0 a dynamic tool no longer replaces a static tool of the same name: the static one
-keeps the name and eve logs an error. None of the extension's dynamic tools share a name with a
-static one, but if you shadowed `<ns>__search` (or a history tool) with your own static
-`agent/tools/<ns>__search.ts`, that file now wins and the extension's version is dropped.
 
 ## Overriding or disabling contributions
 
