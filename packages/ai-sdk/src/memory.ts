@@ -92,8 +92,6 @@ export function buildMemoryTools(
           ),
       }),
       execute: async (input, options) => {
-        // A query that matches nothing returns nothing (no fallback); the tool description tells
-        // the model to omit `query` to list everything.
         const hits = await memory.recall({
           query: input.query,
           userId: resolveUserId(input, options as ToolExecutionOptions<never>),
