@@ -144,20 +144,11 @@ await agent.generate({ prompt: "What editor do I use?" });
 <summary>Options</summary>
 
 - `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
-- `memory.tools({ userId, topK?, minScore? })` — the same tools as `createMemoryTools`.
-- `memory.prepareStep({ userId, query?, topK?, minScore?, onError? })` — `userId` may be a function of
-  the `prepareStep` options (e.g. `({ runtimeContext }) => runtimeContext.userId` on a shared agent);
-  `query` defaults to the last user message's text. A failed recall never fails the call: the step
-  runs with its original instructions and `onError` gets the error. Already have a `prepareStep`?
-  Call `memory.prepareStep(...)(step)` inside yours and merge its `instructions`.
-- `memory.recallContext({ userId, query?, topK?, minScore? })` — the formatted block (or `undefined`),
-  for building instructions yourself.
-- `memory.instructions` — tool-usage guidance naming your configured tool names.
-- `memory.store` — the underlying `AgentMemory` for direct `add` / `list` / `get` / `forget`.
-
-Recall is Upstash Redis Search `$smart` (fuzzy, BM25) — no embeddings, no vector database. Saving is
-explicit (the `save_memory` tool or `memory.store.add`); nothing is extracted from transcripts
-behind your back. Persist the transcript itself with `createChatHistory`.
+- `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step, e.g.
+  `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the last user
+  message; when it matches no memory, the user's memories are recalled without a query (up to `topK`).
+  A failed recall never fails the call; it goes to `onError` (default `console.warn`).
+- `memory.store`: the underlying `AgentMemory` for `add` / `list` / `get` / `forget`.
 
 </details>
 

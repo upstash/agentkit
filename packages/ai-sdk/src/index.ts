@@ -16,7 +16,6 @@ export type { CreateMemoryToolsConfig, MemoryUserId } from "./memory.js";
 // Memory provider: one factory for tools + automatic recall via `prepareStep` (no model wrapper)
 export { createAgentMemory } from "./agent-memory.js";
 export type {
-  AgentMemoryContextOptions,
   AgentMemoryRecallOptions,
   AgentMemoryToolsOptions,
   CreateAgentMemoryConfig,
