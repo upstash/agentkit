@@ -46,10 +46,7 @@ export interface RecallStepOptions<RUNTIME_CONTEXT = unknown> {
 export interface AgentMemoryRecallOptions<RUNTIME_CONTEXT = unknown> {
   /** The user whose memories are recalled, or a function of the step (e.g. its `runtimeContext`). */
   userId: string | ((step: RecallStepOptions<RUNTIME_CONTEXT>) => string);
-  /**
-   * The recall query. Defaults to the text of the last user message. When it matches nothing, or
-   * returns `undefined`, the user's memories are recalled without a query (up to `topK`).
-   */
+  /** The recall query. Defaults to the text of the last user message; `undefined` recalls without one. */
   query?: (messages: ModelMessage[]) => string | undefined;
   /** Called when recall fails; the step then runs with its original instructions. Defaults to `console.warn`. */
   onError?: (error: unknown) => void;
@@ -138,10 +135,7 @@ export function createAgentMemory(config: CreateAgentMemoryConfig = {}): Upstash
           const userId =
             typeof options.userId === "function" ? options.userId(step) : options.userId;
           const query = (options.query ?? lastUserText)(step.messages);
-          // Keyword recall misses facts that share no words with the message ("Suggest a dinner
-          // place" vs "The user is vegetarian"), so a query with no hits falls back to no query.
-          let hits = query ? await store.recall({ userId, query, ...limits }) : [];
-          if (hits.length === 0) hits = await store.recall({ userId, ...limits });
+          const hits = await store.recall({ userId, ...(query ? { query } : {}), ...limits });
           if (hits.length === 0) return undefined;
           const block = formatMemories(hits.map((hit) => hit.text));
           return { instructions: appendInstructions(step.instructions, block) };
