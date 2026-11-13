@@ -37,3 +37,12 @@ export async function cleanupKeys(redis: Redis, prefix: string): Promise<void> {
     if (keys.length) await redis.del(...keys);
   } while (cursor !== "0");
 }
+
+/**
+ * Drop a search index if it exists, so a suite never starts on an index an earlier run (or an older
+ * version) created with another definition. Documents are kept; the SDK recreates the index on the
+ * first read.
+ */
+export async function dropIndex(redis: Redis, name: string): Promise<void> {
+  if (await redis.search.index({ name }).describe()) await redis.search.index({ name }).drop();
+}

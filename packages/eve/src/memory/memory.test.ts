@@ -5,7 +5,7 @@ import type { MemoryProvider } from "eve/memory";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { RedisMemoryDocumentBackend, redisDocuments, redisMemory } from "./index.js";
 import type { RedisMemoryConfig } from "./index.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "../test-support.js";
+import { cleanupKeys, dropIndex, hasRedisCreds, testRedis, uniqueUserId } from "../test-support.js";
 
 const signal = new AbortController().signal;
 
@@ -941,6 +941,9 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
   }).searchIndex;
 
   beforeAll(async () => {
+    // Start from a fresh index: an earlier run (or an older version) may have left one with another
+    // definition under the default name.
+    await dropIndex(redis, "agentkit_memorySlot");
     // Provision BEFORE any write: a doc written while the index is still missing can be dropped by
     // the create-time backfill permanently, not just late.
     await index.query({ filter: { userId: { $eq: "nobody" } }, limit: 1 } as never);

@@ -7,7 +7,13 @@ import { s } from "@upstash/redis";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { memoryScopeKey, upstashMemory } from "./memory.js";
 import { scriptedAdapter } from "../testing/test-adapter.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "../testing/test-support.js";
+import {
+  cleanupKeys,
+  dropIndex,
+  hasRedisCreds,
+  testRedis,
+  uniqueUserId,
+} from "../testing/test-support.js";
 
 async function drain(stream: unknown): Promise<StreamChunk[]> {
   const out: StreamChunk[] = [];
@@ -43,6 +49,11 @@ describe("memoryScopeKey", () => {
     );
     expect(memoryScopeKey({ threadId: "x:y", userId: "a:b" })).not.toContain(":");
   });
+});
+
+// Both live suites below use the adapter's default index: start each run from a fresh one.
+beforeAll(async () => {
+  if (hasRedisCreds) await dropIndex(testRedis(), "agentkit_tanstackMemory");
 });
 
 describe.skipIf(!hasRedisCreds)("upstashMemory (live Redis, real chat loop)", () => {
