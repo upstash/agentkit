@@ -237,9 +237,8 @@ interface Watch {
   listeners: Set<() => void>;
   /** The highest change counter the listeners were told about: each counter value is reported once. */
   reported: number;
-  /** The highest counter a poll has read. The first read is the baseline, not a change. */
+  /** The highest counter a poll has read. */
   observed: number;
-  baselined: boolean;
   /** A poll is in flight: the next tick skips, so slow requests never pile up. */
   busy: boolean;
   timer?: ReturnType<typeof setInterval>;
@@ -290,8 +289,18 @@ export function redisLogStore(
       }
     }
   };
+  /**
+   * The latest change counter of each log this store wrote, so a later subscribe knows which writes
+   * it already saw. Bounded: the oldest entries go first, and a forgotten log only costs one extra
+   * listener call on its next subscribe.
+   */
+  const written = new Map<string, number>();
+  const MAX_WRITTEN = 10_000;
   /** A write through this store: remember its counter so the poll does not report it twice, then call listeners. */
   const changed = (logId: string, tick: unknown) => {
+    written.delete(logId);
+    written.set(logId, Number(tick));
+    if (written.size > MAX_WRITTEN) written.delete(written.keys().next().value!);
     const watch = watches.get(logId);
     if (!watch) return;
     // A poll may have seen this write's counter before the write's own reply arrived, and already
@@ -369,28 +378,26 @@ export function redisLogStore(
       if (!watch) {
         const created: Watch = {
           listeners: new Set(),
-          reported: 0,
-          observed: 0,
-          baselined: false,
+          reported: written.get(logId) ?? 0,
+          observed: written.get(logId) ?? 0,
           busy: false,
         };
         watch = created;
         watches.set(logId, created);
         const tickKey = keys(logId)[6]!;
-        // The first successful read of the counter is the baseline; later reads above it are writes
-        // from other machines. A failed read (a REST blip) just tries again on the next tick.
+        // A counter above the last one known means a write this store has not reported. The watch
+        // starts from this store's own last write to the log, not from its first read: subscribe()
+        // returns before that read, so a write from another machine can land in between and must
+        // still be reported. A log written only by other machines before the subscribe gets one
+        // extra call; listeners re-read the log, so that is harmless, while a missed call would
+        // leave a reader waiting. A failed read (a REST blip) retries on the next tick.
         const check = async () => {
           if (created.busy) return;
           created.busy = true;
           try {
             const tick = Number((await redis.get<number>(tickKey)) ?? 0);
             if (watches.get(logId) !== created) return;
-            if (!created.baselined) {
-              // Not marked as reported: if this read already includes a write made through this store,
-              // that write's own reply still has to call the listeners.
-              created.baselined = true;
-              created.observed = Math.max(created.observed, tick);
-            } else if (tick > created.observed) {
+            if (tick > created.observed) {
               created.observed = tick;
               if (tick > created.reported) {
                 created.reported = tick;
