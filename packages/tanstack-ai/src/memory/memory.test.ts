@@ -178,14 +178,19 @@ describe.skipIf(!hasRedisCreds)("upstashMemory (live Redis, real chat loop)", ()
 // by thread / user / tenant, listFacts), run against a real Upstash Redis.
 describe.skipIf(!hasRedisCreds)("upstashMemory contract (live Redis)", () => {
   const redis = testRedis();
-  // Share the default index; each contract case uses its own scopes, isolated by a unique tenant.
-  const tenant = uniqueUserId("tscontract");
+  // Share the default index, but give every contract case a fresh tenant: the contract expects a
+  // fresh adapter per case, and semantic recall would find an earlier case's memories in a shared one.
+  const tenants: string[] = [];
   afterAll(async () => {
-    await cleanupKeys(redis, `agentkit:tanstackMemory:${encodeURIComponent(tenant)}`);
+    for (const tenant of tenants) {
+      await cleanupKeys(redis, `agentkit:tanstackMemory:${encodeURIComponent(tenant)}`);
+    }
   });
   runMemoryAdapterContract("upstashMemory", () => {
     const adapter = upstashMemory({ redis });
-    // Pin every scope under this run's tenant so the suite cannot see earlier runs' data.
+    const tenant = uniqueUserId("tscontract");
+    tenants.push(tenant);
+    // Pin every scope under this case's tenant so it cannot see other cases' or runs' data.
     const pin = <T extends { tenantId?: string }>(scope: T): T => ({
       ...scope,
       tenantId: `${tenant}:${scope.tenantId ?? ""}`,
