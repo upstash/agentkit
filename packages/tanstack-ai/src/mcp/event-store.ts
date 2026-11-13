@@ -48,7 +48,7 @@ interface Stored {
   r: number;
 }
 
-/** Subscriptions per Redis round trip while `list` walks the store. */
+/** `SSCAN` page size while `list` walks the store. */
 const LIST_BATCH = 100;
 
 /**

@@ -323,7 +323,7 @@ A server descriptor carries a policy for widget calls (`toolFilter`, `needsAppro
 often a transport `fetch` or OAuth `authProvider`. None of those survive JSON, so `set` splits each
 descriptor:
 
-- **The JSON part goes to Redis:** the transport, `prefix`, `requestOptions`, and an array `toolFilter`.
+- **The JSON part goes to Redis:** the transport, `prefix`, `requestOptions`, `clientOptions`, and an array `toolFilter`.
   One hash per thread, one field per server, encrypted whole when you pass `encryptionKey`.
 - **Everything else is dropped and recorded by name.** `resolve` supplies it again on `get`, from your
   code. It receives `{ threadId, serverId, descriptor, missing }`.

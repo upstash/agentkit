@@ -21,7 +21,7 @@ export interface McpSessionResolveContext {
   threadId: string;
   /** The server's key in the map passed to `set` (its `prefix` for `createMcpAppCallHandler`). */
   serverId: string;
-  /** The stored descriptor: JSON fields and decrypted headers/env, without the code-only fields. */
+  /** The stored descriptor (decrypted), without the code-only fields. */
   descriptor: McpServerDescriptor;
   /** Code-only fields the descriptor had when it was saved, e.g. `["needsApproval", "transport.fetch"]`. */
   missing: readonly string[];
@@ -46,10 +46,9 @@ export interface UpstashMcpSessionStoreConfig {
     context: McpSessionResolveContext,
   ) => McpSessionOverrides | undefined | Promise<McpSessionOverrides | undefined>;
   /**
-   * Encrypt the transport's `headers` (often `Authorization`) and a stdio transport's `env` at rest
-   * with AES-256-GCM, bound to the prefix, thread and server. A 32-byte key as a `Uint8Array`, or a
-   * base64 / base64url / hex string (`openssl rand -base64 32`). Strongly recommended when headers
-   * carry credentials: without it they are stored as plain JSON.
+   * Encrypt each stored entry at rest with AES-256-GCM, bound to the prefix, thread and server. A
+   * 32-byte key as a `Uint8Array`, or a base64 / base64url / hex string (`openssl rand -base64 32`).
+   * Strongly recommended when headers carry credentials: without it entries are stored as plain JSON.
    */
   encryptionKey?: string | Uint8Array;
   /**
