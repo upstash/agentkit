@@ -42,13 +42,11 @@
  *
  * ## eve version
  *
- * This entry point imports `eve/memory` and `eve/memory/file`, which eve added in **0.45.1** and
- * **0.45.2** respectively, so it is this subpath that sets the package's `eve` peer floor of
- * **`>=0.45.2`**. Importing `@upstash/agentkit-eve/memory` on an older eve fails at module load with
- * an unresolved-subpath error (`ERR_PACKAGE_PATH_NOT_EXPORTED`), which npm cannot warn about if the
- * declared range admits that eve — which is why the floor covers the whole public surface rather
- * than only the oldest entry point. The root and `./sandbox` entry points do still work back to eve
- * 0.32; that is a fact about those entry points, not a range the package can honestly declare.
+ * The package's `eve` peer is `>=0.87.0 || >=1.0.0-0` (eve 0.87 changed the memory-document and
+ * sandbox signatures this package implements; the second arm exists because semver never matches a
+ * prerelease such as `1.0.0-rc.9` against `>=0.87.0`). This entry point would load on eve 0.45.2+
+ * (`eve/memory` landed in 0.45.1, `eve/memory/file` in 0.45.2), but a single range covers the whole
+ * public surface.
  */
 export { RedisMemoryDocumentBackend, redisDocuments } from "./documents.js";
 export type { RedisDocumentsConfig } from "./documents.js";

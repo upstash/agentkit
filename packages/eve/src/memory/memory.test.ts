@@ -697,6 +697,29 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
   });
 });
 
+describe("redisMemory() — tool activity labels (offline)", () => {
+  const context = {
+    ...operationContext({ scopeKey: "label-scope" }),
+    turn: { id: "t", input: [], sequence: 1 },
+  };
+  it("labels every tool without echoing the tool input", async () => {
+    // A thread status is visible to everyone in the thread, so the labels are fixed strings.
+    const tools = (await redisMemory({ redis: offlineRedis }).tools!(context as never)) as Record<
+      string,
+      { label: { start: (input: unknown) => string } }
+    >;
+    const labels = Object.fromEntries(
+      Object.entries(tools).map(([name, tool]) => [name, tool.label.start({})]),
+    );
+    expect(labels).toEqual({
+      save_memory: "Saving to memory",
+      search_memory: "Searching memory",
+      forget_memory: "Forgetting a memory",
+      read_session: "Reading an earlier conversation",
+    });
+  });
+});
+
 // -------------------------------------------------------------------------------------------
 // 1. MemoryDocumentBackend (live Redis)
 // -------------------------------------------------------------------------------------------

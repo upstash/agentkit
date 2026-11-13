@@ -135,9 +135,10 @@ eve 0.84+ drives a memory provider at two points. Both integrations recall at `t
 
 One consequence worth knowing: capture runs **after** the response is delivered, which is why
 blocking on Redis Search's `waitIndexing()` there costs the caller nothing and makes what you just
-said recallable on the very next turn. (Older eve versions also had `compaction.requested` /
-`compaction.completed` hooks; eve 0.84 removed them, and with every turn's messages stored as they
-happen there is nothing to rescue before the summarizer runs.)
+said recallable on the very next turn. (eve 0.84 removed the `compaction.completed` recall hook.
+eve still offers a `capture["compaction.requested"]` hook, through eve 1.0, and `redisMemory()`
+deliberately does not register it: every turn's messages are stored as they happen, so there is
+nothing to rescue before the summarizer runs.)
 
 Recall is also cached per eve `operationId` (1h). eve requires providers to treat that id as an
 idempotency key — *"replaying a recall with a different result is an error"* — and a live ranked
@@ -203,6 +204,9 @@ conditional write eve requires is a Lua `EVAL` compare-and-set.
 the assistant's reply, `"fromModel"` captures only that, `false` turns capture off),
 `waitForIndexing`, `replayCacheTtlSeconds`, `enableTelemetry`.
 
+The slot's tools show fixed activity labels in channels ("Saving to memory", "Searching memory",
+"Forgetting a memory", "Reading an earlier conversation"), never the tool input.
+
 **`"all"` and `"fromModel"` remove `<slot>__forget_memory`.** Those modes store the assistant's
 replies, and confirming an erasure records the erased text — so deletion cannot be honoured and a
 tool reporting success would be lying. Measured over 18 black-box conversations: after one forget,
@@ -227,9 +231,9 @@ conversation changes topic.
 `scope.key` that is used as the storage partition. Derive it from verified session auth, never from
 model input — `byPrincipal` from `eve/memory/scope` is the built-in shorthand.
 
-**Requires eve ≥ 0.87.0** (the package's `eve` peer range): the memory providers and the `./sandbox`
-provider target eve 0.87's APIs (`ctx.populate`, `onSessionEnd`, `signal` on sandbox and memory
-inputs), and the typings only match from that release.
+**Requires eve ≥ 0.87.0, including eve 1.0** (peer range `>=0.87.0 || >=1.0.0-0`): the memory
+providers and the `./sandbox` provider target eve 0.87's APIs (`ctx.populate`, `onSessionEnd`,
+`signal` on sandbox and memory inputs).
 
 </details>
 
