@@ -62,18 +62,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   wrapper**), `cachedTools`, `createMemoryTools`, `createSearchTools`,
   `createChatHistory` (→ `ChatHistory<UIMessage>`; also re-exports `ChatHistory`/`ChatRecord`/etc.).
   (**No model cache** — removed.)
-- **`createAgentMemory`** (`src/agent-memory.ts`) — the AI SDK *memory provider* shape (cf.
-  `vercel/ai` `content/docs/03-agents/06-memory.mdx`: Mem0/Letta/Supermemory/Hindsight/`@redis/vercel-ai-sdk`).
-  One factory over a core `AgentMemory` (`prefix`/`indexName`/`topK`/`minScore`/tool names), then per
-  request: `.tools({ userId })` (the same tools as `createMemoryTools`, via the shared internal
-  `buildMemoryTools`), `.prepareStep({ userId, query?, onError? })` (automatic recall: on step 0 it
-  appends a `<memories>` "treat as data" block to the instructions — string, message or array — and
-  the override carries forward), `.recallContext()`, `.instructions` (names the configured tools),
-  `.store`. **Deliberately NOT a model wrapper:** the other providers' "automatic memory" is a
-  `wrapLanguageModel` middleware (`memory.model()`, `withSupermemory(model)`, `mem0(modelId)`), which
-  this repo forbids; `prepareStep` is the allowed seam and works for `generateText`/`streamText`/
-  `ToolLoopAgent` (userId may come from `runtimeContext`). Recall failures are swallowed (`onError`).
-  No automatic extraction/recording — saving stays explicit; transcripts go through `createChatHistory`.
+- **`createAgentMemory`** (`src/agent-memory.ts`) — the AI SDK memory-provider shape. **Not a model
+  wrapper** (other providers use `wrapLanguageModel`, which this repo forbids): automatic recall runs
+  in `prepareStep` on step 0 and the override carries forward.
 - **Only `cachedTools`** (no singular `cachedTool` — removed): `cachedTools(map, { userId, redis?, ttlSeconds? })`
   takes a map of `tool()`-built tools (so each keeps inference) and caches each under its **map key as
   the toolName**, scoped to `userId` — so the user never passes a tool name.
@@ -515,7 +506,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `new Ratelimit()`.
 
 ## AI SDK version strategy — IMPORTANT
-- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.130`**. `eve` (0.63.0 through 0.69.0 alike)
+- **AI SDK v7 stable everywhere.** Every package + demo pins `ai` to exactly **`7.0.172`**. `eve` (0.63.0 through 0.69.0 alike)
   declares `ai` as a **peer** (`^7.0.105` — it sat at `^7.0.82` from 0.47.6 through 0.52.3, moved to
   `^7.0.93` somewhere in 0.53.0 → 0.55.0 and to `^7.0.105` by 0.61.0, so the 0.52.3 → 0.55.0 bump forced
   the repo-wide pin `7.0.87` → `7.0.101` and the 0.55.0 → 0.63.0 bump `7.0.101` → `7.0.107`), so the
@@ -1739,7 +1730,8 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   refuses a dist built with a newer eve, so its peer is `>=1.0.0-rc.9` (0.x users stay on extension
   0.19). `packages/eve` keeps `>=0.87.0 || >=1.0.0-0`. `redisMemory()` gives its tools fixed eve
   `label`s ("Saving to memory", ...), never the tool input.
-- **ai 7.0.169 + @tanstack/ai 1.4.0 + @tanstack/ai-openai 1.1.1 (2026-11-11):** devDependency/example pins only (no published-content change, no changeset); `@ai-sdk/*` ranges moved with `pnpm -r update "@ai-sdk/*"` (one `ai@7.0.169` in the lockfile) and `pnpm dedupe` dropped a stale second `@tanstack/ai@1.1.0` that `@tanstack/ai-client@1.1.0` (`^1.1.0`) kept in the lockfile. eve stays on 0.91.0: no stable release since, npm `latest` is `1.0.0-rc.9` (not adopted); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on it, `eve build` clean and the mocked `eve eval` passes 4/4. A `skipLibCheck: false` consumer of `ai` errors inside `@ai-sdk/provider` (`TS7016 … module 'json-schema'`, no `@types/json-schema` dependency) on 7.0.163 and 7.0.169 alike: upstream, fixed by `npm i -D @types/json-schema`. The free throwaway Redis caps search indexes at 1: run index-using test files one at a time with `FLUSHDB` in between (`FLUSHDB` drops the indexes too; `SEARCH.DROPINDEX` is not available).
+- **ai 7.0.172 (2026-11-13):** pins moved 7.0.170 → 7.0.172 with `@ai-sdk/*` refreshed (`openai ^4.0.117`, `provider ^4.0.38`, `react ^4.0.176`; one `ai@7.0.172` in the lockfile); no code change. Behaviour note from 7.0.171: `toUIMessageStream` now sends a failed tool call's real error text to the client (was "An error occurred."; opt back in with `redactToolErrors: true`), so any message an agentkit tool throws is user-visible. eve still on 0.91.0 (npm `latest` is `1.0.0-rc.13`, not adopted); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on rc.13 with one eve/ai/zod, `eve build` clean, mocked `eve eval` 4/4.
+- **ai 7.0.170 + @tanstack/ai 1.4.0 + @tanstack/ai-openai 1.1.1 (2026-11-12):** devDependency/example pins only (no published-content change, no changeset); `@ai-sdk/*` ranges moved with `pnpm -r update "@ai-sdk/*"` (one `ai@7.0.170` in the lockfile) and `pnpm dedupe` dropped a stale second `@tanstack/ai@1.1.0` that `@tanstack/ai-client@1.1.0` (`^1.1.0`) kept in the lockfile. eve stays on 0.91.0: no stable release since, npm `latest` is `1.0.0-rc.10` (not adopted; eve 1.0 adoption is PR #104); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on it, `eve build` clean and the mocked `eve eval` passes 4/4. A `skipLibCheck: false` consumer of `ai` errors inside `@ai-sdk/provider` (`TS7016 … module 'json-schema'`, no `@types/json-schema` dependency) on 7.0.163 through 7.0.170 alike: upstream, fixed by `npm i -D @types/json-schema`. The free throwaway Redis caps search indexes at 1: run index-using test files one at a time with `FLUSHDB` in between (`FLUSHDB` drops the indexes too; `SEARCH.DROPINDEX` is not available).
 - **ai 7.0.163 (2026-11-05):** pins bumped from 7.0.159 (no code change); `examples/ai-sdk-demo`'s `@ai-sdk/react` raised to `^4.0.167` because 4.0.160 depends on an *exact* `ai@7.0.156`, which split the `UIMessage` type from the demo's `ai@7.0.163` and failed `next build` (`SteeringMessageUIPart`). Re-checked 2026-11-05: published `@upstash/agentkit-eve-extension@0.19.0` / `@upstash/agentkit-eve@0.19.0` build clean on `eve@1.0.0-rc.5` (the 0.91.0 build stays); TanStack AI 1.x (ai 1.1.0, ai-persistence 1.0.1, ai-memory 1.1.0) still not adopted (same `threadId`/`blobKey` test-file errors).
 - **TanStack AI 1.x applied (2026-11-05):** `@tanstack/ai` 1.1.0, `ai-persistence` 1.0.1, `ai-memory` 1.1.0 (devDeps, exact) and the tanstack-ai-demo's `ai-client` 1.1.0 / `ai-react` 1.0.2 / `ai-openai` 1.1.0. `src` needed no change; only tests did: `chat()` calls pass `threadId` (`middleware.test.ts`, `search-tools.test.ts`) and `ArtifactRecord` fixtures carry `blobKey` (`persistence.test.ts`). The peer floors (`>=0.65.0` / `>=0.8.0` / `>=0.2.8`) are untouched: the source is unchanged and still works on 0.x, and published `@upstash/agentkit-tanstack-ai@0.2.0` imports on 1.x, so no changeset. Upstream `@tanstack/ai@1.1.0`'s `spawn.d.ts` still has the broken `import('../../..')` (TS2307 with `skipLibCheck: false`). The 1.0 contracts `SessionIndexStore` and `CredentialStore` are implemented in the follow-up below.
 - **Sandbox + MCP stores (2026-11-11, `@upstash/agentkit-tanstack-ai` minor):** `./sandbox` =

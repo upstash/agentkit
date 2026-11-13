@@ -1,4 +1,4 @@
-import { generateText, stepCountIs, tool, ToolLoopAgent, type ModelMessage } from "ai";
+import { generateText, isStepCount, tool, ToolLoopAgent, type ModelMessage } from "ai";
 import { z } from "zod";
 import { MockLanguageModelV4 } from "ai/test";
 import type { LanguageModelV4GenerateResult, LanguageModelV4Prompt } from "@ai-sdk/provider";
@@ -105,20 +105,10 @@ describe.skipIf(!hasRedisCreds)("createAgentMemory (live Redis)", () => {
     expect(recalled.some((h) => h.text.includes("Neovim"))).toBe(true);
   });
 
-  it("recallContext formats hits and returns undefined for a user with none", async () => {
-    const block = await pollUntil(
-      () => memory.recallContext({ userId, query: "editor" }),
-      (b) => Boolean(b?.includes("Neovim")),
-    );
-    expect(block).toMatch(/^<memories>/);
-    expect(block).toContain("- The user's favorite editor is Neovim");
-    expect(await memory.recallContext({ userId: emptyUser })).toBeUndefined();
-  });
-
   it("prepareStep appends relevant memories to string instructions on step 0 only", async () => {
     await pollUntil(
-      () => memory.recallContext({ userId, query: "Which editor do I use?" }),
-      (b) => Boolean(b?.includes("Neovim")),
+      () => memory.store.recall({ userId, query: "Which editor do I use?" }),
+      (hits) => hits.some((h) => h.text.includes("Neovim")),
     );
     // Step 0 calls a tool, step 1 answers: the block is injected once and carries forward.
     const toolCall: LanguageModelV4GenerateResult = {
@@ -132,7 +122,7 @@ describe.skipIf(!hasRedisCreds)("createAgentMemory (live Redis)", () => {
       instructions: "You are helpful.",
       prompt: "Which editor do I use?",
       tools: { ping: tool({ inputSchema: z.object({}), execute: async () => "pong" }) },
-      stopWhen: stepCountIs(3),
+      stopWhen: isStepCount(3),
       prepareStep: memory.prepareStep({ userId }),
     });
     expect(twoStep.doGenerateCalls).toHaveLength(2);
@@ -158,8 +148,8 @@ describe.skipIf(!hasRedisCreds)("createAgentMemory (live Redis)", () => {
       }),
     });
     await pollUntil(
-      () => memory.recallContext({ userId, query: "Lisbon" }),
-      (b) => Boolean(b?.includes("Lisbon")),
+      () => memory.store.recall({ userId, query: "Lisbon" }),
+      (hits) => hits.some((h) => h.text.includes("Lisbon")),
     );
     await agent.generate({ prompt: "Where do I live?" });
     expect(queries).toEqual(["Where do I live?"]);

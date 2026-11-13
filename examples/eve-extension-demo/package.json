@@ -14,11 +14,11 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.114",
+    "@ai-sdk/openai": "^4.0.117",
     "@upstash/agentkit-eve-extension": "workspace:*",
     "@upstash/redis": "^1.38.4",
     "@vercel/connect": "2.9.1",
-    "ai": "7.0.169",
+    "ai": "7.0.172",
     "eve": "1.0.0-rc.9",
     "zod": "4.4.3"
   },
