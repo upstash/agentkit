@@ -127,7 +127,7 @@ override carries forward to later steps). Works with `generateText`, `streamText
 import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
 import { ToolLoopAgent } from "ai";
 
-const memory = createAgentMemory(); // once, at module level
+const memory = createAgentMemory();
 
 // per request, with `userId` from your auth
 const agent = new ToolLoopAgent({

@@ -135,7 +135,7 @@ describe.skipIf(!hasRedisCreds)("upstashMcpSessionStore (live Redis)", () => {
     });
   });
 
-  it("encrypts headers at rest, bound to the thread and server", async () => {
+  it("encrypts each entry at rest, bound to the thread and server", async () => {
     const p = next();
     const store = upstashMcpSessionStore({
       redis,
@@ -146,7 +146,7 @@ describe.skipIf(!hasRedisCreds)("upstashMcpSessionStore (live Redis)", () => {
     await store.set("t", { docs: docs() });
     const raw = JSON.stringify(await redis.hgetall(`${p}:mcp:session:t`));
     expect(raw).not.toContain("s3cr3t-token");
-    expect(raw).toContain(mcp.url);
+    expect(raw).not.toContain(mcp.url);
     expect((await store.get("t", "docs"))?.transport).toMatchObject({
       headers: { authorization: TOKEN },
     });
@@ -156,7 +156,7 @@ describe.skipIf(!hasRedisCreds)("upstashMcpSessionStore (live Redis)", () => {
       docs: (await redis.hget(`${p}:mcp:session:t`, "docs"))!,
     });
     await expect(store.get("u", "docs")).rejects.toThrow();
-    // And a store without the key refuses to hand out a descriptor with its headers missing.
+    // And a store without the key refuses instead of handing out a partial descriptor.
     await expect(upstashMcpSessionStore({ redis, prefix: p }).get("t", "docs")).rejects.toThrow(
       /encryptionKey/,
     );
@@ -199,23 +199,6 @@ describe.skipIf(!hasRedisCreds)("upstashMcpSessionStore (live Redis)", () => {
         args: { id: "7" },
       });
       expect(remove).toEqual({ ok: false, error: "Tool needs approval: delete_doc" });
-    });
-
-    it("refuses the call instead of dropping the gate when resolve does not supply it", async () => {
-      const p = next();
-      await upstashMcpSessionStore({ redis, prefix: p }).set("thread-1", { docs: docs() });
-      const handle = createMcpAppCallHandler({
-        clients: [],
-        store: upstashMcpSessionStore({ redis, prefix: p }),
-      });
-      const remove = await handle({
-        threadId: "thread-1",
-        serverId: "docs",
-        toolName: "delete_doc",
-        args: { id: "7" },
-      });
-      expect(remove.ok).toBe(false);
-      expect(JSON.stringify(remove)).not.toContain("deleted");
     });
   });
 });

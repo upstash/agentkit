@@ -4,9 +4,6 @@ import {
   type SandboxCheckpoint,
 } from "@tanstack/ai-sandbox";
 
-// Input checks shared by the checkpoint store. They mirror `@tanstack/ai-sandbox`'s own in-memory
-// store (which does not export them) so both stores refuse the same inputs with the same codes.
-
 const utf8 = new TextEncoder();
 
 /** Order by UTF-8 bytes, the order the contract specifies for checkpoint ids and blob keys. */
@@ -38,126 +35,47 @@ export function assertValidIdentifier(value: unknown, label: string): asserts va
   }
 }
 
-const hasOwn = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
 const FILE_KEY = /^sandbox-files\/sha256\/[0-9a-f]{64}$/;
 const ARTIFACT_KEY = /^sandbox-artifacts\/sha256\/[0-9a-f]{64}$/;
 
+const invalid = (message: string) => new SandboxCheckpointInvalidEntryError(message);
+
+// Only what this store relies on: blob keys become Redis hash fields, so they must be well formed.
+// TanStack re-checks paths, sizes and file hashes when it restores a snapshot.
 function validateEntries(checkpoint: SandboxCheckpoint): void {
-  if (!Array.isArray(checkpoint.files)) {
-    throw new SandboxCheckpointInvalidEntryError("Checkpoint files must be an array");
-  }
-  const paths = new Set<string>();
-  const kinds = new Map<string, string>();
+  if (!Array.isArray(checkpoint.files)) throw invalid("Checkpoint files must be an array");
   for (const entry of checkpoint.files as unknown[]) {
-    if (entry === null || typeof entry !== "object") {
-      throw new SandboxCheckpointInvalidEntryError("Checkpoint entry must be an object");
-    }
-    const c = entry as Record<string, unknown>;
-    const path = c.path;
-    if (
-      typeof path !== "string" ||
-      path.length === 0 ||
-      path.includes("\0") ||
-      path.startsWith("/") ||
-      path.startsWith("\\") ||
-      /^[A-Za-z]:([\\/]|$)/.test(path) ||
-      path.includes("\\") ||
-      path.split("/").some((part) => part.length === 0 || part === "." || part === "..")
-    ) {
-      throw new SandboxCheckpointInvalidEntryError(
-        "Checkpoint entry path must be a normalized workspace-relative path",
-      );
-    }
-    if (paths.has(path)) {
-      throw new SandboxCheckpointInvalidEntryError(
-        `Checkpoint contains duplicate entry path '${path}'`,
-      );
-    }
-    for (let s = path.indexOf("/"); s !== -1; s = path.indexOf("/", s + 1)) {
-      const ancestor = path.slice(0, s);
-      if (kinds.get(ancestor) === "file") {
-        throw new SandboxCheckpointInvalidEntryError(
-          `Checkpoint entry '${path}' is beneath file '${ancestor}'`,
-        );
+    const e = entry as Record<string, unknown> | null;
+    if (e === null || typeof e !== "object") throw invalid("Checkpoint entry must be an object");
+    if (e.kind === "file") {
+      if (typeof e.blobKey !== "string" || !FILE_KEY.test(e.blobKey)) {
+        throw invalid("File entries require a valid content-addressed blobKey");
       }
+    } else if (e.kind !== "dir") {
+      throw invalid("Checkpoint entry kind must be file or dir");
     }
-    if (c.kind === "file" && [...kinds.keys()].some((other) => other.startsWith(`${path}/`))) {
-      throw new SandboxCheckpointInvalidEntryError(
-        `Checkpoint file '${path}' is an ancestor of another entry`,
-      );
-    }
-    paths.add(path);
-    if (c.kind === "file") {
-      if (
-        typeof c.blobKey !== "string" ||
-        hasUnpairedSurrogate(c.blobKey) ||
-        !FILE_KEY.test(c.blobKey)
-      ) {
-        throw new SandboxCheckpointInvalidEntryError(
-          "File entries require a valid content-addressed blobKey",
-        );
-      }
-      if (
-        !hasOwn(c, "size") ||
-        typeof c.size !== "number" ||
-        !Number.isSafeInteger(c.size) ||
-        c.size < 0
-      ) {
-        throw new SandboxCheckpointInvalidEntryError(
-          "File entry size must be a non-negative safe integer",
-        );
-      }
-    } else if (c.kind === "dir") {
-      if (hasOwn(c, "blobKey") || hasOwn(c, "size")) {
-        throw new SandboxCheckpointInvalidEntryError(
-          "Directory entries cannot contain file fields",
-        );
-      }
-    } else {
-      throw new SandboxCheckpointInvalidEntryError("Checkpoint entry kind must be file or dir");
-    }
-    kinds.set(path, c.kind);
   }
 }
 
 function validateArtifacts(checkpoint: SandboxCheckpoint): void {
-  if (!Array.isArray(checkpoint.artifacts)) {
-    throw new SandboxCheckpointInvalidEntryError("Checkpoint artifacts must be an array");
-  }
+  if (!Array.isArray(checkpoint.artifacts)) throw invalid("Checkpoint artifacts must be an array");
   for (const artifact of checkpoint.artifacts as unknown[]) {
-    if (artifact === null || typeof artifact !== "object") {
-      throw new SandboxCheckpointInvalidEntryError("Checkpoint artifact must be an object");
+    const a = artifact as Record<string, unknown> | null;
+    if (
+      a === null ||
+      typeof a !== "object" ||
+      typeof a.blobKey !== "string" ||
+      !ARTIFACT_KEY.test(a.blobKey)
+    ) {
+      throw invalid("Checkpoint artifact has invalid fields");
     }
-    const a = artifact as Record<string, unknown>;
-    const ok =
-      typeof a.artifactId === "string" &&
-      a.artifactId.length > 0 &&
-      !hasUnpairedSurrogate(a.artifactId) &&
-      typeof a.name === "string" &&
-      a.name.length > 0 &&
-      typeof a.mimeType === "string" &&
-      a.mimeType.length > 0 &&
-      typeof a.blobKey === "string" &&
-      !hasUnpairedSurrogate(a.blobKey) &&
-      ARTIFACT_KEY.test(a.blobKey) &&
-      typeof a.size === "number" &&
-      Number.isSafeInteger(a.size) &&
-      a.size >= 0 &&
-      typeof a.createdAt === "number" &&
-      Number.isFinite(a.createdAt);
-    if (!ok) throw new SandboxCheckpointInvalidEntryError("Checkpoint artifact has invalid fields");
   }
 }
 
-/** Every field check the contract makes on a checkpoint, ids included. */
+/** Field checks on a checkpoint; callers check its ids first. */
 export function validateCheckpoint(checkpoint: SandboxCheckpoint): void {
-  assertValidIdentifier(checkpoint.id, "Checkpoint id");
-  assertValidIdentifier(checkpoint.threadId, "Checkpoint thread id");
-  if (checkpoint.parentCheckpointId != null) {
-    assertValidIdentifier(checkpoint.parentCheckpointId, "Parent checkpoint id");
-  }
   if (typeof checkpoint.createdAt !== "number" || !Number.isFinite(checkpoint.createdAt)) {
-    throw new SandboxCheckpointInvalidEntryError("Checkpoint createdAt must be a finite number");
+    throw invalid("Checkpoint createdAt must be a finite number");
   }
   validateEntries(checkpoint);
   validateArtifacts(checkpoint);

@@ -304,7 +304,7 @@ import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
 import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
 
 const store = upstashMcpSessionStore({
-  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers / stdio env at rest
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts each stored entry at rest
   // The parts of a descriptor that cannot live in Redis come from your code, per server:
   resolve: ({ threadId, serverId }) => ({
     needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
@@ -323,9 +323,8 @@ A server descriptor carries a policy for widget calls (`toolFilter`, `needsAppro
 often a transport `fetch` or OAuth `authProvider`. None of those survive JSON, so `set` splits each
 descriptor:
 
-- **The JSON part goes to Redis:** the transport (with `headers` / `env` encrypted when you pass
-  `encryptionKey`), `prefix`, `requestOptions`, and an array `toolFilter`. One hash per thread, one field
-  per server.
+- **The JSON part goes to Redis:** the transport, `prefix`, `requestOptions`, `clientOptions`, and an array `toolFilter`.
+  One hash per thread, one field per server, encrypted whole when you pass `encryptionKey`.
 - **Everything else is dropped and recorded by name.** `resolve` supplies it again on `get`, from your
   code. It receives `{ threadId, serverId, descriptor, missing }`.
 - **It fails closed.** If `resolve` doesn't return a recorded field (say `needsApproval`), `get` returns

@@ -17,30 +17,30 @@ export interface UpstashMcpEventStoreConfig {
 
 /**
  * Write a subscription and keep the id index in step.
- * KEYS: document, id→key hash, key→id hash, key set.
+ * KEYS: document hash (fields d, r, i), id→key hash, key set, revision counter.
  * ARGV: key, document JSON, expected revision ("" = unconditional), id ("" = none).
- * Returns the new revision, or -1 if the revision moved (a concurrent `update`).
+ * Returns the new revision, or -1 if the revision moved. Revisions come from one counter, so a
+ * delete and re-create never brings an old revision back.
  */
 const WRITE = `${KEY_LOCKING}if ARGV[3] ~= "" and tostring(redis.call("HGET", KEYS[1], "r")) ~= ARGV[3] then return -1 end
-local prev = redis.call("HGET", KEYS[3], ARGV[1])
+local prev = redis.call("HGET", KEYS[1], "i")
 if prev and prev ~= ARGV[4] then redis.call("HDEL", KEYS[2], prev) end
-local rev = redis.call("HINCRBY", KEYS[1], "r", 1)
-redis.call("HSET", KEYS[1], "d", ARGV[2])
+local rev = redis.call("INCR", KEYS[4])
+redis.call("HSET", KEYS[1], "d", ARGV[2], "r", rev)
 if ARGV[4] ~= "" then
+  redis.call("HSET", KEYS[1], "i", ARGV[4])
   redis.call("HSET", KEYS[2], ARGV[4], "~" .. ARGV[1])
-  redis.call("HSET", KEYS[3], ARGV[1], ARGV[4])
 else
-  redis.call("HDEL", KEYS[3], ARGV[1])
+  redis.call("HDEL", KEYS[1], "i")
 end
-redis.call("SADD", KEYS[4], "~" .. ARGV[1])
+redis.call("SADD", KEYS[3], "~" .. ARGV[1])
 return rev`;
 
-/** KEYS: document, id→key hash, key→id hash, key set. ARGV: key. */
-const DELETE = `${KEY_LOCKING}local prev = redis.call("HGET", KEYS[3], ARGV[1])
+/** KEYS: document hash, id→key hash, key set. ARGV: key. */
+const DELETE = `${KEY_LOCKING}local prev = redis.call("HGET", KEYS[1], "i")
 if prev then redis.call("HDEL", KEYS[2], prev) end
-redis.call("HDEL", KEYS[3], ARGV[1])
 redis.call("DEL", KEYS[1])
-redis.call("SREM", KEYS[4], "~" .. ARGV[1])
+redis.call("SREM", KEYS[3], "~" .. ARGV[1])
 return 1`;
 
 interface Stored {
@@ -48,7 +48,7 @@ interface Stored {
   r: number;
 }
 
-/** Subscriptions per Redis round trip while `list` walks the store. */
+/** `SSCAN` page size while `list` walks the store. */
 const LIST_BATCH = 100;
 
 /**
@@ -79,10 +79,10 @@ export function upstashMcpEventStore(config: UpstashMcpEventStoreConfig = {}): M
   const k = {
     doc: (key: string) => `${p}:mcp:eventSub:${encodeURIComponent(key)}`,
     ids: `${p}:mcp:eventSubIds`,
-    keyIds: `${p}:mcp:eventSubKeyIds`,
     all: `${p}:mcp:eventSubs`,
+    rev: `${p}:mcp:eventSubRev`,
   };
-  const keys = (key: string) => [k.doc(key), k.ids, k.keyIds, k.all];
+  const keys = (key: string) => [k.doc(key), k.ids, k.all, k.rev];
 
   const load = async (key: string): Promise<Stored | undefined> => {
     const hash = await redis.hgetall<{ d: MCPEventSubscription; r: number }>(k.doc(key));
@@ -128,7 +128,7 @@ export function upstashMcpEventStore(config: UpstashMcpEventStoreConfig = {}): M
     },
 
     async delete(key) {
-      await redis.eval(DELETE, keys(key), [key]);
+      await redis.eval(DELETE, [k.doc(key), k.ids, k.all], [key]);
     },
 
     async *list() {

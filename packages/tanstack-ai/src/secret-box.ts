@@ -1,7 +1,7 @@
 // AES-256-GCM helpers shared by the stores that keep secrets at rest (BYOK credentials, MCP session
 // headers). Web Crypto only, so they run on Node, edge and serverless runtimes alike.
 
-export const b64 = {
+const b64 = {
   // Chunked: spreading a large array into String.fromCharCode overflows the call stack.
   encode(bytes: Uint8Array): string {
     let binary = "";
@@ -17,7 +17,7 @@ const KEY_HELP =
   "@upstash/agentkit-tanstack-ai: `encryptionKey` must be 32 bytes: a Uint8Array, or a base64, base64url or hex string (e.g. `openssl rand -base64 32`).";
 
 /** A 32-byte key from a `Uint8Array`, or a base64 / base64url / hex string. */
-export function toKeyBytes(key: string | Uint8Array): Uint8Array {
+function toKeyBytes(key: string | Uint8Array): Uint8Array {
   let bytes: Uint8Array;
   if (typeof key !== "string") bytes = key;
   else {
