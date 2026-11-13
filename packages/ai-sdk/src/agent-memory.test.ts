@@ -158,18 +158,6 @@ describe.skipIf(!hasRedisCreds)("createAgentMemory (live Redis)", () => {
     expect(system).toContain("Lisbon");
   });
 
-  it("falls back to all memories when the query matches none", async () => {
-    const model = new MockLanguageModelV4({ doGenerate: RESULT });
-    await generateText({
-      model,
-      prompt: "Recommend dinner tonight",
-      prepareStep: memory.prepareStep({ userId }),
-    });
-    const system = systemText(model.doGenerateCalls[0]!.prompt);
-    expect(system).toContain("Neovim");
-    expect(system).toContain("Lisbon");
-  });
-
   it("leaves instructions untouched when nothing is recalled", async () => {
     const model = new MockLanguageModelV4({ doGenerate: RESULT });
     await generateText({

@@ -146,8 +146,7 @@ await agent.generate({ prompt: "What editor do I use?" });
 - `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
 - `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step, e.g.
   `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the last user
-  message; when it matches no memory, the user's memories are recalled without a query (up to `topK`).
-  A failed recall never fails the call; it goes to `onError` (default `console.warn`).
+  message. A failed recall never fails the call; it goes to `onError` (default `console.warn`).
 - `memory.store`: the underlying `AgentMemory` for `add` / `list` / `get` / `forget`.
 
 </details>
