@@ -1714,6 +1714,16 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   need_tools/replay loop), QStash-backed background runs writing to `upstashStream`, a QStash schedule for
   `reapDetachedRuns`, `@tanstack/ai-code-mode`'s `AgentStore` and `@tanstack/ai-code-mode-snippets`'
   `SnippetStorage` (both small keyed stores; `ai-code-mode` peers the pre-1.0 `@tanstack/ai-harness`).
+- **Hybrid recall + one shared index (2026-11-13, minor for sdk/ai-sdk/eve/eve-extension/tanstack-ai):**
+  `@upstash/redis >=1.41.0` (`s.hybrid()`). `AgentMemory`/`ChatHistory` with default config share one
+  index, `agentkit`, over `agentkit:memory:` + `agentkit:chat:` (`src/shared-index.ts`, same schema as
+  the Python package): chats carry `kind: "chat"`, memory queries add `$mustNot kind=chat`, chat queries
+  add `kind $eq chat`. A store with its own `prefix`/`indexName`/`metadataSchema` (eve memory slot,
+  TanStack `upstashMemory`) keeps its own index. Memory `text` is `HYBRID`; recall with a query is
+  `$rrf` of `$smart` + `$ann`, falling back to keyword once on error; `minScore` is keyword-only.
+  `ReactiveSearchIndex` now sends its `existsOk` create once per instance before the first read, so an
+  index with an older definition fails with a `SEARCH.DROP` hint instead of every hybrid query failing
+  (and silently falling back). The repo test database is NOT capped at one index (it held four).
 - **eve 1.0.0-rc.9 (2026-11-13):** all eve pins are `1.0.0-rc.9` (this supersedes the "eve still on 0.91.0" notes below). The extension is built with it, and eve
   refuses a dist built with a newer eve, so its peer is `>=1.0.0-rc.9` (0.x users stay on extension
   0.19). `packages/eve` keeps `>=0.87.0 || >=1.0.0-0`. `redisMemory()` gives its tools fixed eve

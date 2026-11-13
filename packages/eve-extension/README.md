@@ -68,7 +68,7 @@ short memory instruction is added to your system prompt.
 
 ## What lands in Redis
 
-- `agentkit:memory:<userId>:<id>` — memories (searchable via the `agentkit:memory` index).
+- `agentkit:memory:<userId>:<id>` — memories, recalled by keyword and by meaning (hybrid search).
 - `agentkit:chat:<userId>:<sessionId>` — one JSON doc per session (only when `chatHistory` is
   enabled): the raw transcript plus `$smart`-indexed user/model text. Read it back with `ChatHistory`
   from `@upstash/agentkit-sdk` (`listChats` / `searchChats` / `getChat`).
@@ -78,7 +78,8 @@ short memory instruction is added to your system prompt.
 
 Memory, `search`, and `chatHistory` are three independent features: memory is what the model chooses
 to remember, `search` is RAG over documents **you** seed, and `chatHistory` is the transcript of what
-was actually said. They live in separate keyspaces and separate indexes.
+was actually said. Memory and chat history share one search index (`agentkit`), so they work on a
+database that allows only one (Upstash's Free plan). `search` needs an index of its own.
 
 ## Past conversations
 

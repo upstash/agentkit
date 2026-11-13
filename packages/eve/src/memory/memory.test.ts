@@ -5,7 +5,7 @@ import type { MemoryProvider } from "eve/memory";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { RedisMemoryDocumentBackend, redisDocuments, redisMemory } from "./index.js";
 import type { RedisMemoryConfig } from "./index.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "../test-support.js";
+import { cleanupKeys, dropIndex, hasRedisCreds, testRedis, uniqueUserId } from "../test-support.js";
 
 const signal = new AbortController().signal;
 
@@ -356,7 +356,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     );
   });
 
-  it("recall reaches Redis as a userId-scoped $smart query on the shared agentkit:memory index", async () => {
+  it("recall reaches Redis as a userId-scoped hybrid query on the memory slot's index", async () => {
     // No spy this time — the real AgentMemory runs, so this asserts the query that would actually
     // hit Upstash Redis Search.
     const script = scriptedRedis([
@@ -376,12 +376,15 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     expect(script.queries).toHaveLength(1);
     // Narrowed to curated facts and to live records: captured turns share this index but must not
     // compete for the same `topK`, and a redacted entry must never come back.
+    const scope = { userId: { $eq: USER_ID }, source: { $eq: "agent" }, deleted: { $eq: false } };
     expect(script.queries[0]).toEqual({
       filter: {
-        userId: { $eq: USER_ID },
-        text: { $smart: "what theme do I like?" },
-        source: { $eq: "agent" },
-        deleted: { $eq: false },
+        $rrf: {
+          retrievers: [
+            { ...scope, text: { $smart: "what theme do I like?" } },
+            { $ann: { field: "text", query: "what theme do I like?", filter: scope } },
+          ],
+        },
       },
       limit: 4,
     });
@@ -454,7 +457,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
   });
 
   it("recall queries once and reports a miss when the text matches nothing", async () => {
-    const script = scriptedRedis([]); // the $smart query matches nothing
+    const script = scriptedRedis([]); // the hybrid query matches nothing
     const provider = redisMemory({ redis: script.redis, replayCacheTtlSeconds: 0 });
 
     const content = await recallAt(
@@ -466,7 +469,7 @@ describe("redisMemory() — recall and capture invocation (offline)", () => {
     // One query, and no unfiltered second one: `AgentMemory` has no "everything for the user"
     // fallback, so a miss stays a miss instead of surfacing unrelated memories as if they matched.
     expect(script.queries).toHaveLength(1);
-    expect(script.queries[0]?.filter).toHaveProperty("text");
+    expect(script.queries[0]?.filter).toHaveProperty("$rrf");
     // The block has to say "nothing matched", not "nothing is stored" — the store may be full.
     expect(content).toContain("Nothing you have saved matched this turn");
     expect(content).toContain("search_memory");
@@ -938,6 +941,9 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
   }).searchIndex;
 
   beforeAll(async () => {
+    // Start from a fresh index: an earlier run (or an older version) may have left one with another
+    // definition under the default name.
+    await dropIndex(redis, "agentkit_memorySlot");
     // Provision BEFORE any write: a doc written while the index is still missing can be dropped by
     // the create-time backfill permanently, not just late.
     await index.query({ filter: { userId: { $eq: "nobody" } }, limit: 1 } as never);

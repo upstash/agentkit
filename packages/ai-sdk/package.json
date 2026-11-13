@@ -46,13 +46,13 @@
   ],
   "dependencies": {
     "@upstash/agentkit-sdk": "workspace:*",
-    "@upstash/redis": "^1.38.4",
+    "@upstash/redis": "^1.41.0",
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
     "@ai-sdk/openai": "^4.0.117",
     "@ai-sdk/provider": "^4.0.38",
-    "@upstash/redis": "^1.38.4",
+    "@upstash/redis": "^1.41.0",
     "ai": "7.0.172",
     "dotenv": "^16.4.5"
   },

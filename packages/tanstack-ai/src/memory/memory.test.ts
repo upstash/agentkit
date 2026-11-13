@@ -7,7 +7,13 @@ import { s } from "@upstash/redis";
 import { AgentMemory } from "@upstash/agentkit-sdk";
 import { memoryScopeKey, upstashMemory } from "./memory.js";
 import { scriptedAdapter } from "../testing/test-adapter.js";
-import { cleanupKeys, hasRedisCreds, testRedis, uniqueUserId } from "../testing/test-support.js";
+import {
+  cleanupKeys,
+  dropIndex,
+  hasRedisCreds,
+  testRedis,
+  uniqueUserId,
+} from "../testing/test-support.js";
 
 async function drain(stream: unknown): Promise<StreamChunk[]> {
   const out: StreamChunk[] = [];
@@ -43,6 +49,11 @@ describe("memoryScopeKey", () => {
     );
     expect(memoryScopeKey({ threadId: "x:y", userId: "a:b" })).not.toContain(":");
   });
+});
+
+// Both live suites below use the adapter's default index: start each run from a fresh one.
+beforeAll(async () => {
+  if (hasRedisCreds) await dropIndex(testRedis(), "agentkit_tanstackMemory");
 });
 
 describe.skipIf(!hasRedisCreds)("upstashMemory (live Redis, real chat loop)", () => {
@@ -167,14 +178,19 @@ describe.skipIf(!hasRedisCreds)("upstashMemory (live Redis, real chat loop)", ()
 // by thread / user / tenant, listFacts), run against a real Upstash Redis.
 describe.skipIf(!hasRedisCreds)("upstashMemory contract (live Redis)", () => {
   const redis = testRedis();
-  // Share the default index; each contract case uses its own scopes, isolated by a unique tenant.
-  const tenant = uniqueUserId("tscontract");
+  // Share the default index, but give every contract case a fresh tenant: the contract expects a
+  // fresh adapter per case, and semantic recall would find an earlier case's memories in a shared one.
+  const tenants: string[] = [];
   afterAll(async () => {
-    await cleanupKeys(redis, `agentkit:tanstackMemory:${encodeURIComponent(tenant)}`);
+    for (const tenant of tenants) {
+      await cleanupKeys(redis, `agentkit:tanstackMemory:${encodeURIComponent(tenant)}`);
+    }
   });
   runMemoryAdapterContract("upstashMemory", () => {
     const adapter = upstashMemory({ redis });
-    // Pin every scope under this run's tenant so the suite cannot see earlier runs' data.
+    const tenant = uniqueUserId("tscontract");
+    tenants.push(tenant);
+    // Pin every scope under this case's tenant so it cannot see other cases' or runs' data.
     const pin = <T extends { tenantId?: string }>(scope: T): T => ({
       ...scope,
       tenantId: `${tenant}:${scope.tenantId ?? ""}`,
