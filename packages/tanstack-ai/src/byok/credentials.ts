@@ -3,6 +3,7 @@ import { Redis as RedisClient } from "@upstash/redis";
 import type { Credential, CredentialScope, CredentialStore } from "@tanstack/ai/byok";
 import { addTelemetry } from "../telemetry.js";
 import { KEY_LOCKING, assertId } from "../persistence/records.js";
+import { secretBox } from "../secret-box.js";
 
 export interface UpstashCredentialsConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -65,43 +66,6 @@ interface Stored {
   ct?: string;
 }
 
-const b64 = {
-  // Chunked: spreading a large array into String.fromCharCode overflows the call stack.
-  encode(bytes: Uint8Array): string {
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    }
-    return globalThis.btoa(binary);
-  },
-  decode: (text: string) => Uint8Array.from(globalThis.atob(text), (c) => c.charCodeAt(0)),
-};
-
-const KEY_HELP =
-  "@upstash/agentkit-tanstack-ai: `encryptionKey` must be 32 bytes: a Uint8Array, or a base64, base64url or hex string (e.g. `openssl rand -base64 32`).";
-
-function toKeyBytes(key: string | Uint8Array): Uint8Array {
-  let bytes: Uint8Array;
-  if (typeof key !== "string") bytes = key;
-  else {
-    const text = key.trim();
-    try {
-      bytes = /^[0-9a-f]{64}$/i.test(text)
-        ? Uint8Array.from(text.match(/../g)!, (h) => parseInt(h, 16))
-        : b64.decode(
-            text
-              .replace(/-/g, "+")
-              .replace(/_/g, "/")
-              .padEnd(Math.ceil(text.length / 4) * 4, "="),
-          );
-    } catch {
-      throw new Error(KEY_HELP);
-    }
-  }
-  if (bytes.length !== 32) throw new Error(KEY_HELP);
-  return bytes;
-}
-
 /** A segment no encoded id can equal: `encodeURIComponent` never emits a bare "%n". */
 const NONE = "%none";
 const seg = (v: string | undefined) => (v === undefined ? NONE : encodeURIComponent(v));
@@ -134,17 +98,10 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
   if (config.requireEncryption && config.encryptionKey === undefined) {
     throw new Error("@upstash/agentkit-tanstack-ai: `requireEncryption` needs an `encryptionKey`.");
   }
-  const keyBytes =
-    config.encryptionKey === undefined ? undefined : toKeyBytes(config.encryptionKey);
-  let cryptoKey: ReturnType<typeof crypto.subtle.importKey> | undefined;
-  const aesKey = () =>
-    (cryptoKey ??= crypto.subtle.importKey("raw", keyBytes! as never, "AES-GCM", false, [
-      "encrypt",
-      "decrypt",
-    ]));
+  const box = config.encryptionKey === undefined ? undefined : secretBox(config.encryptionKey);
   // Bind the ciphertext to its owner, id and the clear-text type/expiry that `list` shows.
   const aad = (scope: CredentialScope, id: string, type: string, expiresAt: number | undefined) =>
-    new TextEncoder().encode(JSON.stringify([owner(scope), id, type, expiresAt ?? null]));
+    JSON.stringify([owner(scope), id, type, expiresAt ?? null]);
 
   /** The JSON text after `{"r":N,` for a credential. */
   async function pack(scope: CredentialScope, id: string, credential: Credential): Promise<string> {
@@ -154,15 +111,8 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
         ? { x: credential.expiresAt }
         : {}),
     };
-    if (keyBytes) {
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ct = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv, additionalData: aad(scope, id, stored.t, stored.x) },
-        await aesKey(),
-        new TextEncoder().encode(JSON.stringify(credential)),
-      );
-      stored.iv = b64.encode(iv);
-      stored.ct = b64.encode(new Uint8Array(ct));
+    if (box) {
+      Object.assign(stored, await box.seal(credential, aad(scope, id, stored.t, stored.x)));
     } else {
       stored.c = credential;
     }
@@ -183,21 +133,15 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
         `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} is corrupt.`,
       );
     }
-    if (!keyBytes) {
+    if (!box) {
       throw new Error(
         `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} is encrypted; pass \`encryptionKey\`.`,
       );
     }
-    const plain = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: b64.decode(stored.iv) as never,
-        additionalData: aad(scope, id, stored.t, stored.x),
-      },
-      await aesKey(),
-      b64.decode(stored.ct) as never,
+    return box.open<Credential>(
+      { iv: stored.iv, ct: stored.ct },
+      aad(scope, id, stored.t, stored.x),
     );
-    return JSON.parse(new TextDecoder().decode(plain)) as Credential;
   }
 
   const checkId = (id: string) => {
