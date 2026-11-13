@@ -3,7 +3,7 @@ import { Redis as RedisClient } from "@upstash/redis";
 import type { Credential, CredentialScope, CredentialStore } from "@tanstack/ai/byok";
 import { addTelemetry } from "../telemetry.js";
 import { KEY_LOCKING, assertId } from "../persistence/records.js";
-import { b64, toKeyBytes } from "../secret-box.js";
+import { secretBox } from "../secret-box.js";
 
 export interface UpstashCredentialsConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
@@ -98,17 +98,10 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
   if (config.requireEncryption && config.encryptionKey === undefined) {
     throw new Error("@upstash/agentkit-tanstack-ai: `requireEncryption` needs an `encryptionKey`.");
   }
-  const keyBytes =
-    config.encryptionKey === undefined ? undefined : toKeyBytes(config.encryptionKey);
-  let cryptoKey: ReturnType<typeof crypto.subtle.importKey> | undefined;
-  const aesKey = () =>
-    (cryptoKey ??= crypto.subtle.importKey("raw", keyBytes! as never, "AES-GCM", false, [
-      "encrypt",
-      "decrypt",
-    ]));
+  const box = config.encryptionKey === undefined ? undefined : secretBox(config.encryptionKey);
   // Bind the ciphertext to its owner, id and the clear-text type/expiry that `list` shows.
   const aad = (scope: CredentialScope, id: string, type: string, expiresAt: number | undefined) =>
-    new TextEncoder().encode(JSON.stringify([owner(scope), id, type, expiresAt ?? null]));
+    JSON.stringify([owner(scope), id, type, expiresAt ?? null]);
 
   /** The JSON text after `{"r":N,` for a credential. */
   async function pack(scope: CredentialScope, id: string, credential: Credential): Promise<string> {
@@ -118,15 +111,8 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
         ? { x: credential.expiresAt }
         : {}),
     };
-    if (keyBytes) {
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ct = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv, additionalData: aad(scope, id, stored.t, stored.x) },
-        await aesKey(),
-        new TextEncoder().encode(JSON.stringify(credential)),
-      );
-      stored.iv = b64.encode(iv);
-      stored.ct = b64.encode(new Uint8Array(ct));
+    if (box) {
+      Object.assign(stored, await box.seal(credential, aad(scope, id, stored.t, stored.x)));
     } else {
       stored.c = credential;
     }
@@ -147,21 +133,15 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
         `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} is corrupt.`,
       );
     }
-    if (!keyBytes) {
+    if (!box) {
       throw new Error(
         `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} is encrypted; pass \`encryptionKey\`.`,
       );
     }
-    const plain = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: b64.decode(stored.iv) as never,
-        additionalData: aad(scope, id, stored.t, stored.x),
-      },
-      await aesKey(),
-      b64.decode(stored.ct) as never,
+    return box.open<Credential>(
+      { iv: stored.iv, ct: stored.ct },
+      aad(scope, id, stored.t, stored.x),
     );
-    return JSON.parse(new TextDecoder().decode(plain)) as Credential;
   }
 
   const checkId = (id: string) => {

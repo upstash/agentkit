@@ -12,7 +12,7 @@ Add stores for TanStack AI's sandbox and MCP packages, all on Upstash Redis.
   - `upstashMcpTaskStore()` is the `taskStore` for `createMCPServer`.
   - `upstashMcpEventStore()` stores MCP Events webhook subscriptions, shared across instances.
   - `upstashMcpSessionStore()` is the `McpSessionStore` for MCP Apps.
-    - The JSON part of each server descriptor is stored in Redis. Transport headers and env can be encrypted.
+    - The JSON part of each server descriptor is stored in Redis. With `encryptionKey`, each stored entry is encrypted.
     - Functions such as `needsApproval` come back through your `resolve` callback.
     - It fails closed: it returns `null` rather than a descriptor that lost its approval gate.
 - `upstashPersistence({ bucket })` is now typed with a required `blobs` store, so you can pass it straight to `createSandboxSnapshots()`.

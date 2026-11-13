@@ -378,16 +378,16 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
     }).stores;
     let calls = 0;
     const stop = log.subscribe({ logId: "once", listener: () => void (calls += 1) });
-    await new Promise((r) => setTimeout(r, 60)); // the baseline read is done
+    await new Promise((r) => setTimeout(r, 60)); // the first poll is done
     await log.append({ logId: "once", seq: 1, epoch: 0, records: [{ type: "one" }] });
     await new Promise((r) => setTimeout(r, 100));
     stop();
     expect(calls).toBe(1);
   });
 
-  it("log: a baseline read that already includes a local write does not swallow its notification", async () => {
-    // The baseline read is issued 100 ms late, after the append ran, and the append's reply is held
-    // back, so the baseline sees the new counter before the append returns.
+  it("log: a first poll that already includes a local write does not swallow its notification", async () => {
+    // The first poll is issued 100 ms late, after the append ran, and the append's reply is held
+    // back, so the poll sees the new counter before the append returns.
     const { log } = upstashPersistence({
       redis: slowed({ get: { before: 100 }, eval: { after: 300 } }),
       prefix: `${prefix}:absorb`,
@@ -399,6 +399,22 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
     await new Promise((r) => setTimeout(r, 100));
     stop();
     expect(calls).toBe(1);
+  });
+
+  it("log: reports another machine's write that lands before the first poll", async () => {
+    // The subscriber's first poll is held back 200 ms, so the other store's append lands first.
+    const logPrefix = `${prefix}:early`;
+    const subscriber = upstashPersistence({
+      redis: slowed({ get: { before: 200 } }),
+      prefix: logPrefix,
+      logPollIntervalMs: 50,
+    }).stores.log;
+    const writer = upstashPersistence({ redis, prefix: logPrefix }).stores.log;
+    let calls = 0;
+    const stop = subscriber.subscribe({ logId: "early", listener: () => void (calls += 1) });
+    await writer.append({ logId: "early", seq: 1, epoch: 0, records: [{ type: "x" }] });
+    await expect.poll(() => calls, { timeout: 2000 }).toBe(1);
+    stop();
   });
 
   it("log: a failed first poll does not silence a subscription", async () => {
@@ -423,7 +439,7 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
     const b = upstashPersistence({ redis, prefix: logPrefix }).stores.log;
     let calls = 0;
     const stop = a.subscribe({ logId: "blip", listener: () => void (calls += 1) });
-    await new Promise((r) => setTimeout(r, 120)); // the retry baselines
+    await new Promise((r) => setTimeout(r, 120)); // the retry has run
     await b.append({ logId: "blip", seq: 1, epoch: 0, records: [{ type: "x" }] });
     await expect.poll(() => calls, { timeout: 2000 }).toBe(1);
     stop();

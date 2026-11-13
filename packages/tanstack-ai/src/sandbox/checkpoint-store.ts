@@ -144,12 +144,13 @@ end
 for i = 8, 11 do
   if redis.call("ZCARD", KEYS[i]) > 0 then return "NOT_EMPTY" end
 end
-redis.call("SET", KEYS[3], ARGV[4])
-redis.call("SET", KEYS[4], ARGV[6])
-redis.call("ZADD", KEYS[5], ARGV[7], ARGV[6])
+-- The transcript first: a script is not rolled back on error, so a failing JSON.SET must leave nothing.
 redis.call("JSON.SET", KEYS[7], "$", ARGV[5])
 if ARGV[8] ~= "0" then redis.call("EXPIRE", KEYS[7], ARGV[8]) end
 for i = 9, #ARGV do redis.call("HINCRBY", KEYS[6], ARGV[i], 1) end
+redis.call("SET", KEYS[3], ARGV[4])
+redis.call("SET", KEYS[4], ARGV[6])
+redis.call("ZADD", KEYS[5], ARGV[7], ARGV[6])
 return "OK"`;
 
 /** A checkpoint is JSON by contract; copying through JSON also detaches it from the caller's object. */
@@ -198,6 +199,12 @@ export function upstashSandboxCheckpointStore(
   // The lease key outlives its lease by a day: expiry is decided by `expiresAt`, the PX only
   // garbage-collects leases nobody released.
   const px = String(Math.ceil(leaseDurationMs) + 86_400_000);
+  if (
+    config.messagesTtlSeconds !== undefined &&
+    !(Number.isSafeInteger(config.messagesTtlSeconds) && config.messagesTtlSeconds > 0)
+  ) {
+    throw new RangeError("messagesTtlSeconds must be a positive integer");
+  }
   const ttl = String(config.messagesTtlSeconds ?? 0);
 
   const enc = encodeURIComponent;
