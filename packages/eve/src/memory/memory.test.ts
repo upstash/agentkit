@@ -702,23 +702,16 @@ describe("redisMemory() — tool activity labels (offline)", () => {
     ...operationContext({ scopeKey: "label-scope" }),
     turn: { id: "t", input: [], sequence: 1 },
   };
-  type Labelled = { label?: false | { start: (input: unknown) => string } };
-  const labelsOf = async (config: Omit<RedisMemoryConfig, "redis">) => {
-    const tools = (await redisMemory({ redis: offlineRedis, ...config }).tools!(
-      context as never,
-    ))! as Record<string, Labelled>;
-    return Object.fromEntries(
-      Object.entries(tools).map(([name, tool]) => [
-        name,
-        tool.label === false ? false : tool.label?.start({}),
-      ]),
+  it("labels every tool without echoing the tool input", async () => {
+    // A thread status is visible to everyone in the thread, so the labels are fixed strings.
+    const tools = (await redisMemory({ redis: offlineRedis }).tools!(context as never)) as Record<
+      string,
+      { label: { start: (input: unknown) => string } }
+    >;
+    const labels = Object.fromEntries(
+      Object.entries(tools).map(([name, tool]) => [name, tool.label.start({})]),
     );
-  };
-
-  it("labels every tool by default, without echoing the tool input", async () => {
-    // A thread status is visible to everyone in the thread; a saved fact or a search query is
-    // memory content, so the defaults are fixed strings.
-    expect(await labelsOf({})).toEqual({
+    expect(labels).toEqual({
       save_memory: "Saving to memory",
       search_memory: "Searching memory",
       forget_memory: "Forgetting a memory",

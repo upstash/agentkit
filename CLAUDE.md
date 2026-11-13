@@ -1726,7 +1726,7 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
   - **Why fail closed:** a per-thread server that lost `needsApproval` would let a widget run a gated tool.
   - **Test:** `src/mcp/session-store.test.ts` drives the real handler against a real `createMCPServer`
     over node:http that requires the stored Authorization header. 
-- **eve 1.0.0-rc.9 (2026-11-11):** all eve pins are `1.0.0-rc.9`. The extension is built with it, and eve
+- **eve 1.0.0-rc.9 (2026-11-13):** all eve pins are `1.0.0-rc.9` (this supersedes the "eve still on 0.91.0" notes below). The extension is built with it, and eve
   refuses a dist built with a newer eve, so its peer is `>=1.0.0-rc.9` (0.x users stay on extension
   0.19). `packages/eve` keeps `>=0.87.0 || >=1.0.0-0`. `redisMemory()` gives its tools fixed eve
   `label`s ("Saving to memory", ...), never the tool input.
