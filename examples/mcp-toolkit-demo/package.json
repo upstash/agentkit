@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "qstash": "npx @upstash/qstash-cli@2.44.2 dev",
+    "qstash": "npx @upstash/qstash-cli dev",
     "smoke": "node scripts/smoke.mjs",
     "e2e": "node scripts/e2e.mjs"
   },
