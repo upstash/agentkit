@@ -62,7 +62,7 @@ export default defineMemorySaveTool({
 
 - **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
 - `topK` — max memories `recall` returns.
-- `minScore` — BM25 relevance floor.
+- `minScore` — BM25 relevance floor, for keyword results only.
 - `redis` — defaults to `Redis.fromEnv()`.
 
 `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from eve's **verified
@@ -107,7 +107,7 @@ export default defineMemory({
 |  | `fileMemory({ backend: redisDocuments() })` | `redisMemory()` |
 | --- | --- | --- |
 | eve seam | `MemoryDocumentBackend` — storage only | `MemoryProvider` — recall + capture + tools |
-| Recall | eve's: the **whole** document, every turn | **top-K BM25** for what the caller just said |
+| Recall | eve's: the **whole** document, every turn | **top-K hybrid** (keyword + meaning) for what the caller just said |
 | Capture | none — the model calls `save_memory` | **automatic**, every turn |
 | Deletion | `<slot>__remove_memory` (by index) | `<slot>__forget_memory` (by id) |
 | Size | bounded (4,000 recalled chars / 64 KiB stored) | unbounded store, bounded recall |
@@ -130,7 +130,7 @@ eve 0.84+ drives a memory provider at two points. Both integrations recall at `t
 
 | eve phase | `fileMemory({ backend: redisDocuments() })` | `redisMemory()` |
 | --- | --- | --- |
-| `turn.started` | read the document, inject it whole | BM25 `$smart` recall for the turn's user text → one keyed message, injected **before** the model runs |
+| `turn.started` | read the document, inject it whole | hybrid recall for the turn's user text → one keyed message, injected **before** the model runs |
 | `turn.completed` | — | write this turn's messages (`rememberMessages`), then wait for indexing |
 
 One consequence worth knowing: capture runs **after** the response is delivered, which is why
@@ -224,7 +224,7 @@ store where every record has the same shape.
 The model gets `<slot>__save_memory`, `<slot>__search_memory` and `<slot>__read_session`, plus
 `<slot>__forget_memory` unless `rememberMessages` stores the assistant's replies (see above). `search_memory`
 is the manual counterpart to automatic recall: recall only ever surfaces what is relevant to the
-*current* message, so a fuzzy search lets the model go looking for an older fact when the
+*current* message, so a search lets the model go looking for an older fact when the
 conversation changes topic.
 
 **Scope is the tenant boundary.** eve locks it before calling the provider and hands over an opaque

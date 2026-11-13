@@ -15,7 +15,7 @@
  * });
  * ```
  *
- * BM25 (`$smart`) recall at `turn.started`, plus `save_memory` /
+ * Hybrid recall (keyword + semantic) at `turn.started`, plus `save_memory` /
  * `search_memory` / `read_session` / `forget_memory` tools bound to the slot's locked scope.
  * Automatic capture of the caller's messages is on by default (`rememberMessages`).
  *
@@ -154,7 +154,8 @@ export interface RedisMemoryConfig {
   topK?: number;
 
   /**
-   * Minimum BM25 relevance for a recalled memory. Scores are unbounded, not `[0,1]`.
+   * Minimum BM25 relevance, for keyword results only (recall falls back to keyword if a hybrid
+   * query fails). Hybrid scores are rank-fusion values and are not filtered.
    *
    * @default 0 — `AgentMemory`'s own default
    */
@@ -173,7 +174,7 @@ export interface RedisMemoryConfig {
   /**
    * Longest single **stored memory**, in characters. Defaults to 2,048 — matching eve's per-entry
    * cap. Longer texts (pasted logs, a whole file) are skipped, not truncated: a truncated paste is
-   * noise in a BM25 index, and dropping it keeps recall useful.
+   * noise in a search index, and dropping it keeps recall useful.
    *
    * @default 2048
    */
@@ -499,7 +500,7 @@ function formatRecall(
 
 /**
  * A full eve {@link MemoryProvider} backed by AgentKit's {@link AgentMemory} on Upstash Redis:
- * ranked (BM25 `$smart`) recall at `turn.started`, plus
+ * hybrid (keyword + semantic) recall at `turn.started`, plus
  * `save_memory`/`search_memory`/`forget_memory` tools bound to the slot's locked scope. Automatic capture and
  * conversation capture are both opt-in.
  *
@@ -706,7 +707,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
           "puts the memories relevant to the current message in context — use this when you need " +
           "something it did not surface. Automatic recall only injects facts you deliberately " +
           "saved, so this is also how you reach what the caller said in earlier conversations. " +
-          "Matching is fuzzy over the text; deleted entries are never returned.",
+          "Matching is by keyword and by meaning; deleted entries are never returned.",
         inputSchema: z.object({
           query: z
             .string()

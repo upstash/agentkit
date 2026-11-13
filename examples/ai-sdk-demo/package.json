@@ -12,7 +12,7 @@
     "@ai-sdk/react": "^4.0.176",
     "@upstash/agentkit-ai-sdk": "workspace:*",
     "@upstash/agentkit-sdk": "workspace:*",
-    "@upstash/redis": "^1.38.4",
+    "@upstash/redis": "^1.41.0",
     "ai": "7.0.172",
     "dotenv": "^16.4.5",
     "next": "16.2.9",

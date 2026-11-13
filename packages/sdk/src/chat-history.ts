@@ -1,6 +1,12 @@
 import { s } from "@upstash/redis";
 import type { InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex } from "./reactive-index.js";
+import {
+  SHARED_CHAT_PREFIX,
+  SHARED_INDEX_NAME,
+  SHARED_PREFIXES,
+  SharedSchema,
+} from "./shared-index.js";
 import { addTelemetry } from "./telemetry.js";
 import { now } from "./utils.js";
 
@@ -55,9 +61,12 @@ export interface ExtractedText {
 export interface ChatHistoryConfig<TMessage = unknown> {
   /** The Upstash Redis client. The search index is created and managed internally. */
   redis: Redis;
-  /** Base key prefix for stored chats; defaults to `agentkit:chat`. */
+  /**
+   * Base key prefix for stored chats. Defaults to `agentkit:chat`, in the `agentkit` index it shares
+   * with `AgentMemory`. Set it (or `indexName`) to give the store its own index over `<prefix>:`.
+   */
   prefix?: string;
-  /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
+  /** Redis Search index name for a store with its own index. Defaults to the (identifier-safe) `prefix`. */
   indexName?: string;
   /** Optional TTL (seconds) per chat. The search index self-syncs when a chat key expires. Omit for no expiry. */
   ttlSeconds?: number;
@@ -74,6 +83,8 @@ export interface ChatHistoryConfig<TMessage = unknown> {
 }
 
 interface ChatDoc<TMessage> {
+  /** `"chat"` in the shared index, so memory queries can leave chats out. */
+  kind?: "chat";
   userId: string;
   sessionId: string;
   /** Indexed: all user-message text, merged. */
@@ -127,8 +138,9 @@ const ChatHistorySchema = s.object({
  * specializes it to `UIMessage`, eve to `EveMessage`).
  *
  * Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` — keyed per user, so two users
- * can never collide on a `sessionId`. The index covers four fields: `userId` + `sessionId` (exact-match
- * filters) and `userMessages` + `modelMessages` (fuzzy `$smart` text). The raw `messages` array rides
+ * can never collide on a `sessionId`. By default it lives in the `agentkit` index shared with
+ * `AgentMemory`. The indexed fields are `userId` + `sessionId` (exact-match filters) and
+ * `userMessages` + `modelMessages` (fuzzy `$smart` text). The raw `messages` array rides
  * along in the same doc but is **not** indexed. So you can filter by `userId` to list a user's chats,
  * and `$smart`-search within what the user or the model said.
  */
@@ -138,19 +150,25 @@ export class ChatHistory<TMessage = unknown> {
   private index: ReactiveSearchIndex<typeof ChatHistorySchema>;
   private ttlSeconds?: number;
   private extract: (messages: TMessage[]) => ExtractedText;
+  /** In the shared index, chats are told apart from memories by `kind`. */
+  private shared: boolean;
 
   constructor(config: ChatHistoryConfig<TMessage>) {
     this.redis = config.redis;
     addTelemetry(config.redis, { enabled: config.enableTelemetry });
-    const prefix = config.prefix ?? "agentkit:chat";
-    // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
-    const indexName = config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_");
+    this.shared = config.prefix === undefined && config.indexName === undefined;
+    const prefix = config.prefix ?? SHARED_CHAT_PREFIX;
     this.keyPrefix = `${prefix}:`;
     this.index = new ReactiveSearchIndex({
       redis: this.redis,
-      indexName,
-      prefix: this.keyPrefix,
-      schema: ChatHistorySchema,
+      // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
+      indexName: this.shared
+        ? SHARED_INDEX_NAME
+        : (config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_")),
+      prefix: this.shared ? SHARED_PREFIXES : this.keyPrefix,
+      schema: this.shared
+        ? (SharedSchema as unknown as typeof ChatHistorySchema)
+        : ChatHistorySchema,
       ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
     });
     this.ttlSeconds = config.ttlSeconds;
@@ -215,6 +233,7 @@ export class ChatHistory<TMessage = unknown> {
     const ts = now();
     const { userMessages, modelMessages } = this.extract(messages);
     const doc: ChatDoc<TMessage> = {
+      ...(this.shared ? { kind: "chat" as const } : {}),
       userId,
       sessionId,
       userMessages,
@@ -257,8 +276,12 @@ export class ChatHistory<TMessage = unknown> {
     filter: InferFilterFromSchema<typeof ChatHistorySchema>,
     limit?: number,
   ): Promise<{ score: number; data: ChatDoc<TMessage> }[]> {
+    // In the shared index, a user's memories match a `userId` filter too.
+    const scoped = this.shared
+      ? ({ $and: [{ kind: { $eq: "chat" } }, filter] } as typeof filter)
+      : filter;
     return this.index.query({
-      filter,
+      filter: scoped,
       ...(limit !== undefined ? { limit } : {}),
     }) as unknown as Promise<{ score: number; data: ChatDoc<TMessage> }[]>;
   }

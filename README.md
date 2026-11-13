@@ -2,9 +2,10 @@
 
 A toolkit for building production AI agents entirely on [Upstash Redis](https://upstash.com/). It
 gives you the stateful primitives agents need — memory, conversation history, search, and caching —
-plus thin adapters for the popular agent frameworks. The "semantic" features
-are powered by [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction) and its
-`$smart` fuzzy operator, so no separate vector database is required.
+plus thin adapters for the popular agent frameworks. Memory recall is
+[hybrid search](https://upstash.com/docs/redis/search/hybrid-search) in Upstash Redis Search (keyword
+plus semantic; Redis embeds the text itself), so no separate vector database is required. Memory and
+chat history share one search index, so they work on a database that allows only one.
 
 ## Packages
 

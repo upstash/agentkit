@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 import { s } from "@upstash/redis";
 import type { FlatIndexSchema, InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex } from "./reactive-index.js";
+import {
+  SHARED_INDEX_NAME,
+  SHARED_MEMORY_PREFIX,
+  SHARED_PREFIXES,
+  SharedSchema,
+} from "./shared-index.js";
 import { addTelemetry } from "./telemetry.js";
 import { now } from "./utils.js";
 
@@ -99,15 +105,20 @@ export interface MemoryRecord<TMetadata = Record<string, unknown>> {
 export interface RecalledMemory<
   TMetadata = Record<string, unknown>,
 > extends MemoryRecord<TMetadata> {
+  /** BM25 for a keyword match; a rank-fusion value (comparable within one query only) for hybrid. */
   score: number;
 }
 
 export interface AgentMemoryConfig<TSchema = EmptySchema> {
   /** The Upstash Redis client. The search index is created and managed internally. */
   redis: Redis;
-  /** Base key prefix for stored memories. Defaults to `agentkit:memory`. */
+  /**
+   * Base key prefix for stored memories. Defaults to `agentkit:memory`, in the `agentkit` index it
+   * shares with `ChatHistory` (one index, so both work on a database that allows only one). Set it
+   * (or `indexName` or `metadataSchema`) to give the store its own index over `<prefix>:`.
+   */
   prefix?: string;
-  /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
+  /** Redis Search index name for a store with its own index. Defaults to the (identifier-safe) `prefix`. */
   indexName?: string;
   /**
    * Extra indexed fields to carry on every record, as Upstash Search schema builders — e.g.
@@ -126,7 +137,7 @@ export interface AgentMemoryConfig<TSchema = EmptySchema> {
    * re-index, existing records untouched.
    */
   metadataSchema?: TSchema & MetadataSchemaShape<TSchema>;
-  /** Default relevance floor for {@link AgentMemory.recall} (BM25 score). */
+  /** Default relevance floor for {@link AgentMemory.recall}: BM25, so keyword results only. */
   minScore?: number;
   /**
    * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
@@ -135,18 +146,17 @@ export interface AgentMemoryConfig<TSchema = EmptySchema> {
   enableTelemetry?: boolean;
 }
 
-/** One JSON doc per memory: `text` is fuzzy-searchable, `userId` is an exact-match tenant filter. */
-/** The two fields every store indexes: the ranked text and the tenant filter. */
-const BASE_FIELDS = { text: s.string(), userId: s.string().noTokenize() };
+/** The two fields every store indexes: the text (keyword + semantic) and the tenant filter. */
+const BASE_FIELDS = { text: s.hybrid(), userId: s.string().noTokenize() };
 const MemorySchema = s.object(BASE_FIELDS);
 
 /**
- * Long-term agent memory with fuzzy recall, backed entirely by Upstash Redis Search. You pass only
- * the `redis` client; the memory creates and owns its search index internally (reactively, on the
- * first recall) and exposes the handle via {@link AgentMemory.searchIndex} for advanced use.
+ * Long-term agent memory backed entirely by Upstash Redis Search. You pass only the `redis` client;
+ * the index is created on the first read and exposed via {@link AgentMemory.searchIndex}.
  *
- * Each memory is one JSON doc at `<prefix>:<userId>:<id>`. Memories are scoped per user via the
- * exact-match `userId` filter, and recalled with the `$smart` operator (phrase/term/fuzzy/prefix).
+ * Each memory is one JSON doc at `<prefix>:<userId>:<id>`, scoped per user by an exact-match
+ * `userId` filter. Recall with a query is hybrid: keyword (`$smart`) and semantic (`$ann`) results
+ * merged with `$rrf`; Upstash Redis Search embeds the text itself.
  */
 export class AgentMemory<
   TSchema = EmptySchema,
@@ -157,19 +167,24 @@ export class AgentMemory<
   private index: ReactiveSearchIndex<typeof MemorySchema>;
   private minScore: number;
   private metadataFields: string[];
+  /** In the shared index, the filter that keeps chat rows out of every memory query. */
+  private notChat: Record<string, unknown>;
 
   constructor(config: AgentMemoryConfig<TSchema>) {
     this.redis = config.redis;
     addTelemetry(config.redis, { enabled: config.enableTelemetry });
-    const prefix = config.prefix ?? "agentkit:memory";
-    // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
-    const indexName = config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_");
+    const shared =
+      config.prefix === undefined &&
+      config.indexName === undefined &&
+      config.metadataSchema === undefined;
+    const prefix = config.prefix ?? SHARED_MEMORY_PREFIX;
     this.keyPrefix = `${prefix}:`;
-    // A store with no `metadataSchema` builds exactly the schema it always did, so its index and
-    // every record already in it are unaffected.
     this.metadataFields = Object.keys(config.metadataSchema ?? {});
-    const schema =
-      config.metadataSchema === undefined
+    // Search has no `$ne`, and memories carry no `kind`, hence `$mustNot`.
+    this.notChat = shared ? { $mustNot: [{ kind: { $eq: "chat" } }] } : {};
+    const schema = shared
+      ? (SharedSchema as unknown as typeof MemorySchema)
+      : config.metadataSchema === undefined
         ? MemorySchema
         : // `s.object` cannot check a generic `TSchema` against its own self-referential parameter
           // constraint; `metadataSchema`'s type has already enforced that every value is a builder.
@@ -179,8 +194,11 @@ export class AgentMemory<
           }) as typeof MemorySchema);
     this.index = new ReactiveSearchIndex({
       redis: this.redis,
-      indexName,
-      prefix: this.keyPrefix,
+      // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
+      indexName: shared
+        ? SHARED_INDEX_NAME
+        : (config.indexName ?? prefix.replace(/[^a-zA-Z0-9_]/g, "_")),
+      prefix: shared ? SHARED_PREFIXES : this.keyPrefix,
       schema,
       ...(config.enableTelemetry !== undefined ? { enableTelemetry: config.enableTelemetry } : {}),
     });
@@ -226,12 +244,11 @@ export class AgentMemory<
   }
 
   /**
-   * Fuzzily recall the memories most relevant to `query` for `userId`. Omit `query` (or pass an empty
-   * string) to return everything for the user, unfiltered by relevance.
+   * Recall the memories most relevant to `query` for `userId`: keyword (`$smart`) and semantic
+   * (`$ann`) results merged with `$rrf`. If the hybrid query fails, recall falls back to keyword once.
+   * Omit `query` (or pass an empty string) to return the user's memories, unranked.
    *
-   * A `query` that matches nothing returns **nothing**. There is no fallback to "everything for the
-   * user": a search that answers a miss with unrelated memories cannot be told apart from a hit, and
-   * a model will report whatever came back as a result. Pass no query when you want the whole set.
+   * `minScore` applies to keyword results only (hybrid scores are on another scale).
    */
   async recall(params: {
     userId: string;
@@ -244,17 +261,26 @@ export class AgentMemory<
     const { userId, query } = params;
     assertUserId(userId);
     const topK = params.topK ?? 5;
-    const hasQuery = Boolean(query && query.trim());
-    // BM25 relevance only exists when there's a text query; a filter-only fetch scores 0 for all.
-    const minScore = hasQuery ? (params.minScore ?? this.minScore) : 0;
-
-    const matched = await this.query({
-      userId,
-      topK,
-      ...(hasQuery ? { query } : {}),
-      ...(params.filter !== undefined ? { filter: params.filter } : {}),
-    });
-    return matched.filter((h) => h.score >= minScore);
+    const filter = this.filterFor(userId, params.filter);
+    if (!query || !query.trim()) return this.run(filter, topK, userId);
+    try {
+      return await this.run(
+        {
+          $rrf: {
+            retrievers: [
+              { ...filter, text: { $smart: query } },
+              { $ann: { field: "text", query, filter } },
+            ],
+          },
+        },
+        topK,
+        userId,
+      );
+    } catch {
+      const minScore = params.minScore ?? this.minScore;
+      const hits = await this.run({ ...filter, text: { $smart: query } }, topK, userId);
+      return hits.filter((h) => h.score >= minScore);
+    }
   }
 
   /**
@@ -268,62 +294,55 @@ export class AgentMemory<
     limit?: number;
   }): Promise<RecalledMemory<TMetadata>[]> {
     assertUserId(params.userId);
-    return this.query({
-      userId: params.userId,
-      topK: params.limit ?? 100,
-      ...(params.filter !== undefined ? { filter: params.filter } : {}),
-    });
+    return this.run(
+      this.filterFor(params.userId, params.filter),
+      params.limit ?? 100,
+      params.userId,
+    );
   }
 
   /** How many records match, without fetching them. */
   async count(params: { userId: string; filter?: MetadataFilter<TSchema> }): Promise<number> {
     assertUserId(params.userId);
-    // The handle is typed with the base schema, while the index also covers whatever
-    // `metadataSchema` declared, so the composed filter needs an assertion here. Typing the handle
-    // with the full schema instead does not remove it — a value cannot be checked against a filter
-    // type built on an unresolved generic, so the cast only moves. What it guards is safe by
-    // construction: one literal `userId` clause plus a `filter` the caller already typed as
-    // `MetadataFilter<TSchema>`.
+    // Asserted like the query in `run` below: the index may cover more fields than its typed schema.
     const result = await this.index.count({
-      filter: {
-        userId: { $eq: params.userId },
-        ...(params.filter ?? {}),
-      } as InferFilterFromSchema<typeof MemorySchema>,
+      filter: this.filterFor(params.userId, params.filter) as never,
     });
     // A missing index answers `{count: -1}`; the reactive wrapper creates it and retries, so a
     // negative here means "genuinely nothing", not "not provisioned".
     return typeof result?.count === "number" && result.count > 0 ? result.count : 0;
   }
 
-  /** Run a `userId`-scoped query and normalize the rows back into records. */
-  private async query(params: {
-    userId: string;
-    topK: number;
-    query?: string;
-    filter?: MetadataFilter<TSchema>;
-  }): Promise<RecalledMemory<TMetadata>[]> {
-    const filter: Record<string, unknown> = {
-      userId: { $eq: params.userId },
-      ...(params.filter ?? {}),
-    };
-    if (params.query && params.query.trim()) filter.text = { $smart: params.query };
-    // Asserted for the same reason as in `count` above.
+  /** The `userId` scope, the caller's metadata clauses, and (in the shared index) "not a chat". */
+  private filterFor(userId: string, extra?: MetadataFilter<TSchema>): Record<string, unknown> {
+    return { userId: { $eq: userId }, ...(extra ?? {}), ...this.notChat };
+  }
+
+  /**
+   * Run a query and normalize the rows back into records. The handle is typed with the base schema
+   * while the index may cover more fields (metadata, the shared schema), so the query is asserted.
+   */
+  private async run(
+    filter: Record<string, unknown>,
+    limit: number,
+    userId: string,
+  ): Promise<RecalledMemory<TMetadata>[]> {
     const rows = (await this.index.query({
       filter: filter as InferFilterFromSchema<typeof MemorySchema>,
-      limit: params.topK,
+      limit,
     })) as unknown as {
       key: string;
       score: number;
       data?: Record<string, unknown>;
     }[];
-    const idPrefix = this.keyFor(params.userId, "");
-    return rows.map((r) => {
-      const data = r.data ?? {};
-      return {
-        ...this.toRecord(r.key.startsWith(idPrefix) ? r.key.slice(idPrefix.length) : r.key, data),
-        score: r.score,
-      };
-    });
+    const idPrefix = this.keyFor(userId, "");
+    return rows.map((r) => ({
+      ...this.toRecord(
+        r.key.startsWith(idPrefix) ? r.key.slice(idPrefix.length) : r.key,
+        r.data ?? {},
+      ),
+      score: r.score,
+    }));
   }
 
   /** Rebuild a stored document into a record. Metadata is stored flat so it can be indexed. */

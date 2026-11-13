@@ -48,10 +48,10 @@
     "zod": "^3.23.8 || ^4"
   },
   "peerDependencies": {
-    "@upstash/redis": ">=1.38.0"
+    "@upstash/redis": ">=1.41.0"
   },
   "devDependencies": {
-    "@upstash/redis": "^1.38.4",
+    "@upstash/redis": "^1.41.0",
     "dotenv": "^16.4.5"
   }
 }

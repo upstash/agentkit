@@ -18,7 +18,7 @@ export interface CreateAgentMemoryConfig {
   indexName?: string;
   /** Max memories returned by recall (tools and automatic recall). Defaults to `5`. */
   topK?: number;
-  /** Relevance floor (BM25 score) for recall with a query. */
+  /** Relevance floor (BM25 score), for keyword results only. */
   minScore?: number;
   /** Recall tool name. Defaults to `recall_memory`. */
   recallToolName?: string;
@@ -99,7 +99,7 @@ function appendInstructions(base: Instructions | undefined, block: string): Inst
 /**
  * Upstash long-term memory for the Vercel AI SDK, shaped like the AI SDK's memory providers: create
  * it once, then per request give the model memory tools, inject memories with `prepareStep`, or
- * both. Recall is Upstash Redis Search (fuzzy, BM25). The model is never wrapped.
+ * both. Recall is hybrid Upstash Redis Search (keyword + semantic). The model is never wrapped.
  */
 export function createAgentMemory(config: CreateAgentMemoryConfig = {}): UpstashAgentMemory {
   const { enableTelemetry, topK, minScore } = config;

@@ -62,14 +62,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
 ```ts
 createChatHistory({
   redis, // optional: defaults to Redis.fromEnv()
-  prefix: "agentkit:chat", // optional: base key prefix
-  indexName: "agentkit_chat", // optional: Redis Search index name (defaults to the prefix)
+  prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
   ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
 });
 ```
 
 Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users can't
-collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+collide on a `sessionId`). By default chats and memories share one search index (`agentkit`), so
+both work on a database that allows only one index. Chats are indexed over `userId` + `sessionId` (filters) and `userMessages` +
 `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
 overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other methods:
 `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats` (`{ userId }`).
@@ -106,7 +106,7 @@ await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do yo
 - **`userId`** _(required)_ — a string, or `(input, options) => string`.
 - `redis` — defaults to `Redis.fromEnv()`.
 - `topK` — max memories `recall` returns.
-- `minScore` — BM25 relevance floor.
+- `minScore` — BM25 relevance floor, for keyword results only.
 - `recallToolName` / `saveToolName` — override the tool names.
 
 `userId` is the only tenant boundary (required, non-empty, no `:`). **Derive it from a verified

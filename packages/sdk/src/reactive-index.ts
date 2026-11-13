@@ -22,8 +22,8 @@ export interface ReactiveSearchIndexConfig<TSchema extends AnySearchSchema> {
   redis: Redis;
   /** The Redis Search index name. */
   indexName: string;
-  /** The JSON-document key prefix the index covers (e.g. `"agentkit:memory:"`). */
-  prefix: string;
+  /** The JSON-document key prefix(es) the index covers (e.g. `"agentkit:memory:"`). */
+  prefix: string | string[];
   /** The Upstash Redis Search schema (an `s.object({...})`). */
   schema: TSchema;
   /**
@@ -34,10 +34,10 @@ export interface ReactiveSearchIndexConfig<TSchema extends AnySearchSchema> {
 }
 
 /**
- * A {@link SearchIndex} wrapper that **provisions the index reactively on the read path**. Writes go
- * straight to `redis.json.set` and never need the index to exist — so features don't call any
- * `ensure()` when saving. The first `query`/`aggregate`/`count` that hits a missing index creates it
- * (+ `waitIndexing`) and retries the op once; subsequent reads skip straight through.
+ * A {@link SearchIndex} wrapper that **provisions the index on the read path**. Writes go straight to
+ * `redis.json.set` and never need the index to exist. The first `query`/`aggregate`/`count` of an
+ * instance creates the index if needed (`existsOk`); a read that still finds it missing (dropped by
+ * another client) creates it again, waits for indexing and retries once.
  *
  * It mirrors the `SearchIndex` read surface (`query`/`aggregate`/`count`) plus `waitIndexing`/`drop`/
  * `describe`, and exposes the raw handle as `.index` for anything else.
@@ -47,7 +47,7 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
   readonly index: SearchIndex<TSchema>;
   private redis: Redis;
   private indexName: string;
-  private prefix: string;
+  private prefix: string | string[];
   private schema: TSchema;
   private created?: Promise<void>;
 
@@ -71,7 +71,19 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
         existsOk: true, // no-op if the index already exists
         // `createIndex`'s generic can't infer through ours; cast to its real parameter type.
       } as Parameters<Redis["search"]["createIndex"]>[0])
-      .then(() => undefined);
+      .then(
+        () => undefined,
+        (err: unknown) => {
+          // An index of this name with another definition (e.g. from an older version) is never
+          // dropped here, since other clients may be using it.
+          if (!/different configuration/i.test(String(err))) throw err;
+          throw new Error(
+            `Search index "${this.indexName}" exists with a different definition, e.g. from an ` +
+              `older @upstash/agentkit version. Stop every client, run \`SEARCH.DROP ${this.indexName}\` ` +
+              `(documents are kept and indexed again) and start again.`,
+          );
+        },
+      );
   }
 
   private ensure(): Promise<void> {
@@ -91,6 +103,9 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
     op: () => Promise<T>,
     isMissingResult?: (result: T) => boolean,
   ): Promise<T> {
+    // Create once per instance before the first read: an existing index with an older definition
+    // then fails here with a clear error, instead of every query against it failing.
+    await this.ensure();
     try {
       const result = await op();
       if (isMissingResult?.(result)) {
