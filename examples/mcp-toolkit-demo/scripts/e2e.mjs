@@ -68,9 +68,7 @@ async function waitFor(what, ready, seconds = 90) {
 }
 
 // 1. The QStash dev server. Its token and signing keys are read from what it prints.
-// Pinned: @upstash/qstash-cli 2.44.3 exits with code 1 and no output, even for `--help`.
-const QSTASH_CLI = "@upstash/qstash-cli@2.44.2";
-const qstash = start("QStash dev server", "npx", ["-y", QSTASH_CLI, "dev", "-port", QSTASH_PORT]);
+const qstash = start("QStash dev server", "npx", ["-y", "@upstash/qstash-cli", "dev", "-port", QSTASH_PORT]);
 const credentials = await waitFor("the QStash dev server", async () => {
   const read = (name) => new RegExp(`${name}=(\\S+)`).exec(qstash.output)?.[1];
   const [token, current, next] = ["QSTASH_TOKEN", "QSTASH_CURRENT_SIGNING_KEY", "QSTASH_NEXT_SIGNING_KEY"].map(read);
