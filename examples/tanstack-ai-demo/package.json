@@ -10,10 +10,10 @@
     "e2e": "vitest run --config e2e/vitest.config.ts"
   },
   "dependencies": {
-    "@tanstack/ai": "1.1.0",
+    "@tanstack/ai": "1.4.0",
     "@tanstack/ai-client": "1.1.0",
     "@tanstack/ai-memory": "1.1.0",
-    "@tanstack/ai-openai": "1.1.0",
+    "@tanstack/ai-openai": "1.1.1",
     "@tanstack/ai-persistence": "1.0.1",
     "@tanstack/ai-react": "1.0.2",
     "@upstash/agentkit-tanstack-ai": "workspace:*",
