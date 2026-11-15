@@ -25,7 +25,7 @@
     "@streamdown/mermaid": "1.0.2",
     "@tailwindcss/postcss": "4.3.0",
     "@upstash/agentkit-eve": "workspace:*",
-    "@upstash/box": "^0.7.5",
+    "@upstash/box": "^0.8.0",
     "@upstash/redis": "^1.38.4",
     "@vercel/connect": "2.5.6",
     "ai": "7.0.173",

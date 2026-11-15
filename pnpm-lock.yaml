@@ -127,8 +127,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/eve
       '@upstash/box':
-        specifier: ^0.7.5
-        version: 0.7.5(zod@4.4.3)
+        specifier: ^0.8.0
+        version: 0.8.0(zod@4.4.3)
       '@upstash/redis':
         specifier: ^1.38.4
         version: 1.38.4
@@ -373,8 +373,8 @@ importers:
         version: 4.4.3
     devDependencies:
       '@upstash/box':
-        specifier: ^0.7.5
-        version: 0.7.5(zod@4.4.3)
+        specifier: ^0.8.0
+        version: 0.8.0(zod@4.4.3)
       '@upstash/redis':
         specifier: ^1.38.4
         version: 1.38.4
@@ -2959,8 +2959,8 @@ packages:
       react:
         optional: true
 
-  '@upstash/box@0.7.5':
-    resolution: {integrity: sha512-PfUn8Ppz+gkI76vftM1VnFvLxJs4SgFy3CR3898ahl4YXReXdWrXwTkP3QjzHjVd9Lj3e1dkQ8iLod9fTCmALg==}
+  '@upstash/box@0.8.0':
+    resolution: {integrity: sha512-P9oMOEn8KqDjhbamnEk08PVLBmKek5hHOYTZbaU+bzzLIqxIDbEZHNzR1nCToahkaz933oUKck3Zib+DDO0lvw==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -7513,7 +7513,7 @@ snapshots:
     optionalDependencies:
       react: 19.2.6
 
-  '@upstash/box@0.7.5(zod@4.4.3)':
+  '@upstash/box@0.8.0(zod@4.4.3)':
     dependencies:
       ws: 8.21.3
       zod: 4.4.3
