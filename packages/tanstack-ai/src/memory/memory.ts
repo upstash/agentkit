@@ -95,9 +95,9 @@ const LABEL: Record<Source, string> = {
 /**
  * A TanStack AI `MemoryAdapter` on Upstash Redis Search — plug it into `memoryMiddleware()`.
  *
- * Unlike a plain key/value memory store, ranking happens **in the database**: recall is one BM25
- * `$smart` (typo-tolerant, fuzzy) query over the scope's memories, so it neither loads every record
- * per turn nor caps how many a user can have.
+ * Unlike a plain key/value memory store, ranking happens **in the database**: recall is one hybrid
+ * (keyword + semantic) query over the scope's memories, so it neither loads every record per turn
+ * nor caps how many a user can have.
  *
  * - **recall** injects the top matches as a system-prompt block, each labelled with where it came
  *   from, and offers the `save_memory` tool.

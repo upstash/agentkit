@@ -68,7 +68,7 @@ short memory instruction is added to your system prompt.
 
 ## What lands in Redis
 
-- `agentkit:memory:<userId>:<id>` — memories (searchable via the `agentkit:memory` index).
+- `agentkit:memory:<userId>:<id>` — memories, recalled by keyword and by meaning (hybrid search).
 - `agentkit:chat:<userId>:<sessionId>` — one JSON doc per session (only when `chatHistory` is
   enabled): the raw transcript plus `$smart`-indexed user/model text. Read it back with `ChatHistory`
   from `@upstash/agentkit-sdk` (`listChats` / `searchChats` / `getChat`).
@@ -78,7 +78,8 @@ short memory instruction is added to your system prompt.
 
 Memory, `search`, and `chatHistory` are three independent features: memory is what the model chooses
 to remember, `search` is RAG over documents **you** seed, and `chatHistory` is the transcript of what
-was actually said. They live in separate keyspaces and separate indexes.
+was actually said. Memory and chat history share one search index (`agentkit`), so they work on a
+database that allows only one (Upstash's Free plan). `search` needs an index of its own.
 
 ## Past conversations
 
@@ -192,3 +193,19 @@ AGENTKIT_MOCK_MODEL=1 npx eve eval
 
 See the demo's [README](../../examples/eve-extension-demo/README.md#end-to-end-eval-no-model-provider)
 for what it covers and how the fixture works.
+
+## Upgrading from full-text memory recall
+
+`@upstash/agentkit-eve-extension` 0.19 and earlier indexed memory `text` as a full-text field; it is now a hybrid field.
+Keys and documents are unchanged; only search indexes change:
+
+- **Default settings:** memory and chat history now share one index, `agentkit`. The old
+  `agentkit_memory` and `agentkit_chat` are unused; drop them when convenient. On a database with one
+  index slot (Free plan), reads fail with `the database has no index slots left` until you run
+  `SEARCH.DROP agentkit_memory` and `SEARCH.DROP agentkit_chat`.
+- **Memory with a custom `prefix` or `indexName`:** the first read fails with an error naming the index;
+  run `SEARCH.DROP <index>`.
+
+Dropping an index keeps its documents, and the next read indexes them again. Drop old indexes once
+every deployment runs the new version. `minScore` now switches recall to keyword only, so remove it
+for hybrid recall. Details: [Upgrading from full-text memory recall](https://upstash.com/docs/redis/sdks/agentkit/eve#upgrading-from-full-text-memory-recall).

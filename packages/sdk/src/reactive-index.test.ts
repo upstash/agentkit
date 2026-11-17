@@ -91,7 +91,7 @@ describe.skipIf(!hasRedisCreds)("ReactiveSearchIndex (live Redis)", () => {
    * Build a ReactiveSearchIndex whose `redis.search` is a single stable snapshot, and return a spy on
    * its `createIndex` (call-through). Call AFTER any setup `createIndex` so setup isn't counted.
    */
-  function bind(prefix: string, name: string) {
+  function bind(prefix: string, name: string, schema: typeof Schema = Schema, createFirst = true) {
     const search = redis.search; // snapshot once so the spy survives repeated `.search` access
     const createIndexSpy = vi.spyOn(search, "createIndex");
     const proxy = new Proxy(redis, {
@@ -101,7 +101,8 @@ describe.skipIf(!hasRedisCreds)("ReactiveSearchIndex (live Redis)", () => {
       redis: proxy,
       indexName: name,
       prefix: `${prefix}:`,
-      schema: Schema,
+      schema,
+      createFirst,
     });
     return { ri, createIndexSpy };
   }
@@ -128,41 +129,35 @@ describe.skipIf(!hasRedisCreds)("ReactiveSearchIndex (live Redis)", () => {
     await expect(raw.aggregate(AGGS)).resolves.toBeDefined();
   });
 
-  // --- 2. Reactive wrapper: provision exactly once on a missing index, retrying the op -------------
+  // --- 2. Reactive wrapper: create the index before an instance's first read ---------------------
 
-  it("provisions once and retries the op on a missing index (query)", async () => {
-    const { prefix, name } = names("reactive-query");
+  it("creates a missing index before the first read (query, count, aggregate)", async () => {
+    const { prefix, name } = names("reactive-first");
     const { ri, createIndexSpy } = bind(prefix, name);
     const querySpy = vi.spyOn(ri.index, "query");
 
-    expect(await ri.query({ filter: FILTER })).toEqual([]); // empty after provisioning
-    expect(createIndexSpy).toHaveBeenCalledTimes(1); // one create-index request
-    expect(querySpy).toHaveBeenCalledTimes(2); // initial (null) + retry after provisioning
-  });
-
-  it("provisions once and retries the op on a missing index (count)", async () => {
-    const { prefix, name } = names("reactive-count");
-    const { ri, createIndexSpy } = bind(prefix, name);
-    const countSpy = vi.spyOn(ri.index, "count");
-
+    expect(await ri.query({ filter: FILTER })).toEqual([]);
     expect(await ri.count({ filter: FILTER })).toEqual({ count: 0 });
-    expect(createIndexSpy).toHaveBeenCalledTimes(1);
-    expect(countSpy).toHaveBeenCalledTimes(2);
-  });
-
-  it("provisions once and retries the op on a missing index (aggregate)", async () => {
-    const { prefix, name } = names("reactive-agg");
-    const { ri, createIndexSpy } = bind(prefix, name);
-    const aggSpy = vi.spyOn(ri.index, "aggregate");
-
     await expect(ri.aggregate(AGGS)).resolves.toBeDefined();
     expect(createIndexSpy).toHaveBeenCalledTimes(1);
-    expect(aggSpy).toHaveBeenCalledTimes(2);
+    expect(querySpy).toHaveBeenCalledTimes(1); // no missing-index retry
   });
 
-  // --- 3. Reactive wrapper: do NOT provision just because the data is missing ----------------------
+  it("recreates the index and retries once when another client dropped it", async () => {
+    const { prefix, name } = names("reactive-dropped");
+    const { ri, createIndexSpy } = bind(prefix, name);
+    const querySpy = vi.spyOn(ri.index, "query");
 
-  it("does NOT send a create-index request when the index exists but has no data", async () => {
+    await ri.query({ filter: FILTER });
+    await redis.search.index({ name, schema: Schema }).drop();
+    expect(await ri.query({ filter: FILTER })).toEqual([]);
+    expect(createIndexSpy).toHaveBeenCalledTimes(2);
+    expect(querySpy).toHaveBeenCalledTimes(3); // first read, then null + retry
+  });
+
+  // --- 3. Reactive wrapper: an existing, empty index is not re-provisioned ------------------------
+
+  it("sends one idempotent create and no retry when the index exists but has no data", async () => {
     const { prefix, name } = names("reactive-empty");
     await seedEmptyIndex(prefix, name); // create the index BEFORE spying so setup isn't counted
     const { ri, createIndexSpy } = bind(prefix, name);
@@ -174,22 +169,50 @@ describe.skipIf(!hasRedisCreds)("ReactiveSearchIndex (live Redis)", () => {
     expect(await ri.count({ filter: FILTER })).toEqual({ count: 0 });
     await expect(ri.aggregate(AGGS)).resolves.toBeDefined();
 
-    // The crux: empty results are not the missing-index sentinels, so there is no re-provision...
-    expect(createIndexSpy).not.toHaveBeenCalled();
-    // ...and each op ran exactly once (no duplicate request from a spurious retry).
+    // One `existsOk` create for the instance (it checks the definition), and empty results are not
+    // the missing-index sentinels, so no op is retried.
+    expect(createIndexSpy).toHaveBeenCalledTimes(1);
     expect(querySpy).toHaveBeenCalledTimes(1);
     expect(countSpy).toHaveBeenCalledTimes(1);
     expect(aggSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("fails with SEARCH.DROP instructions when the index exists with another definition", async () => {
+    const { prefix, name } = names("reactive-mismatch");
+    await redis.search.createIndex({
+      name,
+      dataType: "json",
+      prefix: `${prefix}:`,
+      schema: s.object({ title: s.string() }),
+      existsOk: true,
+    } as CreateParams);
+    const { ri, createIndexSpy } = bind(prefix, name);
+    await expect(ri.query({ filter: FILTER })).rejects.toThrow(/SEARCH\.DROP/);
+
+    // The failed create is not remembered: after the drop the same instance creates and reads.
+    await redis.search.index({ name, schema: Schema }).drop();
+    expect(await ri.query({ filter: FILTER })).toEqual([]);
+    expect(createIndexSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("without createFirst, reads an existing index whose definition covers more fields", async () => {
+    // Search tools over an index the caller created: their schema may be a subset of the index's.
+    const { prefix, name } = names("reactive-subset");
+    await seedEmptyIndex(prefix, name);
+    const subset = s.object({ title: s.string(), tenant: s.string().noTokenize() });
+    const { ri, createIndexSpy } = bind(prefix, name, subset as unknown as typeof Schema, false);
+    expect(await ri.query({ filter: FILTER })).toEqual([]);
+    expect(createIndexSpy).not.toHaveBeenCalled();
+  });
+
   // --- 4. Reactive wrapper: provisioning is memoized across reads on one instance ------------------
 
-  it("provisions only once across repeated reads on the same instance", async () => {
+  it("creates only once across repeated reads on the same instance", async () => {
     const { prefix, name } = names("reactive-memo");
     const { ri, createIndexSpy } = bind(prefix, name);
 
-    await ri.query({ filter: FILTER }); // missing → provisions
-    await ri.query({ filter: FILTER }); // now exists → no re-provision
+    await ri.query({ filter: FILTER }); // first read → creates
+    await ri.query({ filter: FILTER }); // memoized → no second create
     await ri.count({ filter: FILTER });
 
     expect(createIndexSpy).toHaveBeenCalledTimes(1);

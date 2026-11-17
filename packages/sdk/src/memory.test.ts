@@ -76,15 +76,22 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     expect(aliceHits.every((h) => h.text.includes("alice"))).toBe(true);
   });
 
-  it("respects minScore", async () => {
+  it("with minScore, recalls by keyword only, above that BM25 floor", async () => {
     await memory.add({ text: "content about serverless databases", userId: "score" });
+    await memory.add({ text: "The user is vegetarian.", userId: "score" });
     await memory.searchIndex.waitIndexing();
-    const hits = await memory.recall({
-      query: "serverless databases",
-      userId: "score",
-      minScore: 1e9,
-    });
-    expect(hits).toHaveLength(0);
+    const hits = await pollUntil(
+      () => memory.recall({ query: "serverless databases", userId: "score", minScore: 0.1 }),
+      (found) => found.length > 0,
+    );
+    // Semantic neighbours that share no word are not padded in.
+    expect(hits.map((h) => h.text)).toEqual(["content about serverless databases"]);
+    expect(
+      await memory.recall({ query: "quantum chromodynamics", userId: "score", minScore: 0.1 }),
+    ).toEqual([]);
+    expect(
+      await memory.recall({ query: "serverless databases", userId: "score", minScore: 1e9 }),
+    ).toEqual([]);
   });
 
   it("recalls everything for a user when no query is given", async () => {
@@ -103,21 +110,18 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     expect(await memory.recall({ userId: "all-other", topK: 10 })).toHaveLength(0);
   });
 
-  it("returns nothing when a query matches nothing", async () => {
-    await memory.add({ text: "the user lives in Berlin", userId: "fb" });
+  it("recalls by meaning, not only by shared words", async () => {
+    await memory.add({ text: "The user is vegetarian.", userId: "meaning" });
+    await memory.add({ text: "The user's favorite editor is Neovim.", userId: "meaning" });
+    await memory.add({ text: "The user works as an airline pilot.", userId: "meaning" });
     await memory.searchIndex.waitIndexing();
-    // Establish that the doc is visible *first*, so the miss below is a real miss and not just a
-    // doc that hasn't been indexed yet — otherwise this test passes for the wrong reason.
-    const all = await pollUntil(
-      () => memory.recall({ userId: "fb", topK: 10 }),
-      (hits) => hits.some((h) => h.text.includes("Berlin")),
+    // "food" shares no word with "vegetarian": keyword search alone finds nothing here.
+    const hits = await pollUntil(
+      () =>
+        memory.recall({ query: "What food should I cook for them?", userId: "meaning", topK: 1 }),
+      (found) => found.length > 0,
     );
-    expect(all.some((h) => h.text.includes("Berlin"))).toBe(true);
-    // No fallback to "everything for the user": a miss answered with unrelated memories is
-    // indistinguishable from a hit to whoever asked.
-    expect(
-      await memory.recall({ query: "zzqqxx nonexistent topic", userId: "fb", topK: 10 }),
-    ).toEqual([]);
+    expect(hits[0]?.text).toBe("The user is vegetarian.");
   });
 
   it("forgets a memory", async () => {

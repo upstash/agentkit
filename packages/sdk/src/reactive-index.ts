@@ -22,8 +22,8 @@ export interface ReactiveSearchIndexConfig<TSchema extends AnySearchSchema> {
   redis: Redis;
   /** The Redis Search index name. */
   indexName: string;
-  /** The JSON-document key prefix the index covers (e.g. `"agentkit:memory:"`). */
-  prefix: string;
+  /** The JSON-document key prefix(es) the index covers (e.g. `"agentkit:memory:"`). */
+  prefix: string | string[];
   /** The Upstash Redis Search schema (an `s.object({...})`). */
   schema: TSchema;
   /**
@@ -31,13 +31,19 @@ export interface ReactiveSearchIndexConfig<TSchema extends AnySearchSchema> {
    * Can also be disabled with the `UPSTASH_DISABLE_TELEMETRY` env var. Defaults to `true`.
    */
   enableTelemetry?: boolean;
+  /**
+   * Create the index before the first read, so an index of this name with an older definition fails
+   * with a clear error. For indexes the library owns (memory, chat history). Off for an index the
+   * caller may have created themselves (search tools): it is then created only when missing.
+   */
+  createFirst?: boolean;
 }
 
 /**
- * A {@link SearchIndex} wrapper that **provisions the index reactively on the read path**. Writes go
- * straight to `redis.json.set` and never need the index to exist — so features don't call any
- * `ensure()` when saving. The first `query`/`aggregate`/`count` that hits a missing index creates it
- * (+ `waitIndexing`) and retries the op once; subsequent reads skip straight through.
+ * A {@link SearchIndex} wrapper that **provisions the index on the read path**. Writes go straight to
+ * `redis.json.set` and never need the index to exist. With `createFirst`, the first `query`/
+ * `aggregate`/`count` of an instance creates the index if needed (`existsOk`); a read that finds it
+ * missing creates it, waits for indexing and retries once.
  *
  * It mirrors the `SearchIndex` read surface (`query`/`aggregate`/`count`) plus `waitIndexing`/`drop`/
  * `describe`, and exposes the raw handle as `.index` for anything else.
@@ -47,8 +53,9 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
   readonly index: SearchIndex<TSchema>;
   private redis: Redis;
   private indexName: string;
-  private prefix: string;
+  private prefix: string | string[];
   private schema: TSchema;
+  private createFirst: boolean;
   private created?: Promise<void>;
 
   constructor(config: ReactiveSearchIndexConfig<TSchema>) {
@@ -57,6 +64,7 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
     this.indexName = config.indexName;
     this.prefix = config.prefix;
     this.schema = config.schema;
+    this.createFirst = config.createFirst ?? false;
     this.index = config.redis.search.index({ name: this.indexName, schema: this.schema });
   }
 
@@ -71,11 +79,37 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
         existsOk: true, // no-op if the index already exists
         // `createIndex`'s generic can't infer through ours; cast to its real parameter type.
       } as Parameters<Redis["search"]["createIndex"]>[0])
-      .then(() => undefined);
+      .then(
+        () => undefined,
+        (err: unknown) => {
+          // An existing index is never dropped here, since other clients may be using it.
+          if (/exceeded max index count/i.test(String(err))) {
+            throw new Error(
+              `Cannot create search index "${this.indexName}": the database has no index slots left ` +
+                `(the Free plan allows one). Indexes from earlier @upstash/agentkit versions are no ` +
+                `longer used: run \`SEARCH.DROP agentkit_memory\` and \`SEARCH.DROP agentkit_chat\` ` +
+                `(documents are kept and indexed again) and start again.`,
+              { cause: err },
+            );
+          }
+          if (!/different configuration/i.test(String(err))) throw err;
+          throw new Error(
+            `Search index "${this.indexName}" exists with a different definition, e.g. from an ` +
+              `older @upstash/agentkit version. Stop every client, run \`SEARCH.DROP ${this.indexName}\` ` +
+              `(documents are kept and indexed again) and start again.`,
+          );
+        },
+      );
   }
 
   private ensure(): Promise<void> {
-    if (!this.created) this.created = this.createIndex();
+    if (!this.created) {
+      // Forget a failed attempt, so the next read tries again (e.g. after the user drops an index).
+      this.created = this.createIndex().catch((err: unknown) => {
+        this.created = undefined;
+        throw err;
+      });
+    }
     return this.created;
   }
 
@@ -91,6 +125,9 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
     op: () => Promise<T>,
     isMissingResult?: (result: T) => boolean,
   ): Promise<T> {
+    // Owned indexes: create once per instance before the first read, so an existing index with an
+    // older definition fails here with a clear error instead of every query against it failing.
+    if (this.createFirst) await this.ensure();
     try {
       const result = await op();
       if (isMissingResult?.(result)) {

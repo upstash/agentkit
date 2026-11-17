@@ -62,7 +62,7 @@ export default defineMemorySaveTool({
 
 - **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
 - `topK` — max memories `recall` returns.
-- `minScore` — BM25 relevance floor.
+- `minScore` — a BM25 floor. Set it to recall by keyword only, above that floor; unset, recall is hybrid.
 - `redis` — defaults to `Redis.fromEnv()`.
 
 `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from eve's **verified
@@ -107,7 +107,7 @@ export default defineMemory({
 |  | `fileMemory({ backend: redisDocuments() })` | `redisMemory()` |
 | --- | --- | --- |
 | eve seam | `MemoryDocumentBackend` — storage only | `MemoryProvider` — recall + capture + tools |
-| Recall | eve's: the **whole** document, every turn | **top-K BM25** for what the caller just said |
+| Recall | eve's: the **whole** document, every turn | **top-K hybrid** (keyword + meaning) for what the caller just said |
 | Capture | none — the model calls `save_memory` | **automatic**, every turn |
 | Deletion | `<slot>__remove_memory` (by index) | `<slot>__forget_memory` (by id) |
 | Size | bounded (4,000 recalled chars / 64 KiB stored) | unbounded store, bounded recall |
@@ -130,7 +130,7 @@ eve 0.84+ drives a memory provider at two points. Both integrations recall at `t
 
 | eve phase | `fileMemory({ backend: redisDocuments() })` | `redisMemory()` |
 | --- | --- | --- |
-| `turn.started` | read the document, inject it whole | BM25 `$smart` recall for the turn's user text → one keyed message, injected **before** the model runs |
+| `turn.started` | read the document, inject it whole | hybrid recall for the turn's user text → one keyed message, injected **before** the model runs |
 | `turn.completed` | — | write this turn's messages (`rememberMessages`), then wait for indexing |
 
 One consequence worth knowing: capture runs **after** the response is delivered, which is why
@@ -224,7 +224,7 @@ store where every record has the same shape.
 The model gets `<slot>__save_memory`, `<slot>__search_memory` and `<slot>__read_session`, plus
 `<slot>__forget_memory` unless `rememberMessages` stores the assistant's replies (see above). `search_memory`
 is the manual counterpart to automatic recall: recall only ever surfaces what is relevant to the
-*current* message, so a fuzzy search lets the model go looking for an older fact when the
+*current* message, so a search lets the model go looking for an older fact when the
 conversation changes topic.
 
 **Scope is the tenant boundary.** eve locks it before calling the provider and hands over an opaque
@@ -545,6 +545,23 @@ client itself also disables it here.
 
 Tests run against a **real Upstash Redis** (and a real Box when `UPSTASH_BOX_API_KEY` is set); only LLM
 calls are mocked. Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (suites skip when absent).
+
+## Upgrading from full-text memory recall
+
+`@upstash/agentkit-eve` 0.19 and earlier indexed memory `text` as a full-text field; it is now a hybrid field.
+Keys and documents are unchanged; only search indexes change:
+
+- **Default settings:** memory and chat history now share one index, `agentkit`. The old
+  `agentkit_memory` and `agentkit_chat` are unused; drop them when convenient. On a database with one
+  index slot (Free plan), reads fail with `the database has no index slots left` until you run
+  `SEARCH.DROP agentkit_memory` and `SEARCH.DROP agentkit_chat`.
+- **Memory with a custom `prefix` or `indexName`:** the first read fails with an error naming the index;
+  run `SEARCH.DROP <index>`.
+- **Memory slots (`redisMemory()`):** run `SEARCH.DROP agentkit_memorySlot` (or your `indexName`).
+
+Dropping an index keeps its documents, and the next read indexes them again. Drop old indexes once
+every deployment runs the new version. `minScore` now switches recall to keyword only, so remove it
+for hybrid recall. Details: [Upgrading from full-text memory recall](https://upstash.com/docs/redis/sdks/agentkit/eve#upgrading-from-full-text-memory-recall).
 
 ## License
 
