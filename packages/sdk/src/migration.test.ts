@@ -46,8 +46,8 @@ async function oneIndexDatabase(): Promise<Redis> {
 const message = (text: string) => ({ role: "user", parts: [{ type: "text", text }] });
 
 // Upgrading from @upstash/agentkit-sdk 0.9.0 on a database it already wrote to, then doing what the
-// errors and the changeset say. The test database allows several indexes; the Free-plan case gets a
-// temporary one-index database of its own.
+// errors and the changeset say. The default-settings case runs on the test database, which allows
+// several indexes; the others each get a temporary one-index database of their own.
 describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 120_000 }, () => {
   const redis = testRedis();
   const prefix = uniquePrefix("migrate");
@@ -60,11 +60,14 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
   });
 
   it("custom prefix: the old memory index fails with SEARCH.DROP, and after the drop recall works", async () => {
+    // Its own temporary database, one index at a time, so it never competes for the shared test
+    // database's index slots with the suites running in parallel.
+    const db = await oneIndexDatabase();
     const memoryPrefix = `${prefix}:memory`;
     const chatPrefix = `${prefix}:chat`;
 
-    // 0.9.0: writes, and its first reads create its TEXT indexes.
-    const old = new OldAgentMemory({ redis, prefix: memoryPrefix });
+    // 0.9.0: writes, and its first read creates its TEXT index.
+    const old = new OldAgentMemory({ redis: db, prefix: memoryPrefix });
     await old.add({ userId, text: "The user is vegetarian." });
     await old.add({ userId, text: "The user lives in Lisbon." });
     expect(
@@ -75,7 +78,34 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
         )
       ).length,
     ).toBe(2);
-    const oldChats = new OldChatHistory({ redis, prefix: chatPrefix });
+
+    // This version: the memory index needs a HYBRID field, so the first read says what to do.
+    const memory = new AgentMemory({ redis: db, prefix: memoryPrefix });
+    const error = await memory.recall({ userId, query: "food" }).catch((e: unknown) => e);
+    expect(String(error)).toMatch(/different definition/);
+    expect(await followDropInstructions(db, error)).toEqual([memoryPrefix.replace(/\W/g, "_")]);
+
+    // Same instance, after the drop: the old documents are indexed again, and recall is hybrid.
+    await memory.count({ userId }); // creates the index
+    await memory.searchIndex.waitIndexing(); // the new index embeds the old documents first
+    const all = await pollUntil(
+      () => memory.recall({ userId }),
+      (hits) => hits.length === 2,
+    );
+    expect(all.map((h) => h.text).sort()).toEqual([
+      "The user is vegetarian.",
+      "The user lives in Lisbon.",
+    ]);
+    const byMeaning = await memory.recall({
+      userId,
+      query: "What food should I cook for them?",
+      topK: 1,
+    });
+    expect(byMeaning[0]?.text).toBe("The user is vegetarian.");
+    await memory.searchIndex.index.drop(); // free the slot for the chat index
+
+    // A custom-prefix chat index has the same definition as before: no error, old chats still there.
+    const oldChats = new OldChatHistory({ redis: db, prefix: chatPrefix });
     await oldChats.saveChat({ userId, sessionId: "s1", messages: [message("Hello from 0.9")] });
     expect(
       (
@@ -85,35 +115,8 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
         )
       ).length,
     ).toBe(1);
-
-    // This version: the memory index needs a HYBRID field, so the first read says what to do.
-    const memory = new AgentMemory({ redis, prefix: memoryPrefix });
-    const error = await memory.recall({ userId, query: "food" }).catch((e: unknown) => e);
-    expect(String(error)).toMatch(/SEARCH\.DROP/);
-    expect(await followDropInstructions(redis, error)).toEqual([memoryPrefix.replace(/\W/g, "_")]);
-
-    // Same instance, after the drop: the old documents are indexed again, and recall is hybrid.
-    const all = await pollUntil(
-      () => memory.recall({ userId }),
-      (hits) => hits.length === 2,
-    );
-    expect(all.map((h) => h.text).sort()).toEqual([
-      "The user is vegetarian.",
-      "The user lives in Lisbon.",
-    ]);
-    await memory.searchIndex.waitIndexing(); // the recreated index embeds the old documents first
-    const byMeaning = await pollUntil(
-      () => memory.recall({ userId, query: "What food should I cook for them?", topK: 1 }),
-      (hits) => hits.length > 0,
-    );
-    expect(byMeaning[0]?.text).toBe("The user is vegetarian.");
-
-    // A custom-prefix chat index has the same definition as before: no error, old chats still there.
-    const chats = new ChatHistory({ redis, prefix: chatPrefix });
+    const chats = new ChatHistory({ redis: db, prefix: chatPrefix });
     expect((await chats.listChats({ userId })).map((c) => c.sessionId)).toEqual(["s1"]);
-
-    await redis.search.index({ name: memoryPrefix.replace(/\W/g, "_") }).drop();
-    await redis.search.index({ name: chatPrefix.replace(/\W/g, "_") }).drop();
   });
 
   it("default settings: old data is found through the shared index, and the old indexes can go", async () => {
