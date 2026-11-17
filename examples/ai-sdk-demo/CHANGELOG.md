@@ -1,5 +1,14 @@
 # ai-sdk-demo
 
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [f5d4cae]
+- Updated dependencies [4b04fc0]
+  - @upstash/agentkit-ai-sdk@0.20.0
+  - @upstash/agentkit-sdk@0.20.0
+
 ## 0.1.5
 
 ### Patch Changes
