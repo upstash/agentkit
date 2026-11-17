@@ -4,6 +4,18 @@ Written by hand: this package is not versioned by Changesets. To release, bump `
 `pyproject.toml`, run `node scripts/sync-version.mjs` and `uv lock`, and add a `## <version>`
 section here. The release workflow publishes any version PyPI does not have yet.
 
+## 0.3.1
+
+### Patch Changes
+
+- Automatic recall leaves out memories mirrored from Hermes's built-in memory (`target` set by
+  `on_memory_write`). Hermes already puts MEMORY.md and USER.md in the prompt, so the mirrors
+  filled the 3 recall slots with facts the model had; on one real install 33 of 34 memories were
+  mirrors, and a fact saved with `upstash_memory_save` was rarely recalled. Recall asks Search for
+  20 and keeps the first 3 that are not mirrors (the fields are not indexed, so they can't be
+  excluded in the query, and the index schema is unchanged). Mirrors stay in Redis:
+  `upstash_memory_search` and other AgentKit clients still find them.
+
 ## 0.3.0
 
 ### Minor Changes
