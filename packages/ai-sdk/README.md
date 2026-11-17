@@ -263,6 +263,22 @@ client itself also disables it here.
 Tests run against a **real Upstash Redis** (only LLM calls are mocked). Set `UPSTASH_REDIS_REST_URL` /
 `UPSTASH_REDIS_REST_TOKEN` (suites skip when absent).
 
+## Upgrading from full-text memory recall
+
+`@upstash/agentkit-ai-sdk` 0.15 and earlier indexed memory `text` as a full-text field; it is now a hybrid field.
+Keys and documents are unchanged; only search indexes change:
+
+- **Default settings:** memory and chat history now share one index, `agentkit`. The old
+  `agentkit_memory` and `agentkit_chat` are unused; drop them when convenient. On a database with one
+  index slot (Free plan), reads fail with `the database has no index slots left` until you run
+  `SEARCH.DROP agentkit_memory` and `SEARCH.DROP agentkit_chat`.
+- **Memory with a custom `prefix` or `indexName`:** the first read fails with an error naming the index;
+  run `SEARCH.DROP <index>`.
+
+Dropping an index keeps its documents, and the next read indexes them again. Drop old indexes once
+every deployment runs the new version. `minScore` now switches recall to keyword only, so remove it
+for hybrid recall. Details: [Upgrading from full-text memory recall](https://upstash.com/docs/redis/sdks/agentkit/ai-sdk#upgrading-from-full-text-memory-recall).
+
 ## License
 
 MIT

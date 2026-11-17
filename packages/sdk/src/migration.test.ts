@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import type { Redis } from "@upstash/redis";
+import { Redis } from "@upstash/redis";
 // The last published version, installed under an alias: it writes the data and creates the indexes
 // an existing user has before upgrading.
 import { AgentMemory as OldAgentMemory, ChatHistory as OldChatHistory } from "agentkit-sdk-0.9";
@@ -19,20 +19,35 @@ async function pollUntil<T>(read: () => Promise<T>, ready: (value: T) => boolean
   return value;
 }
 
-/** Run what an error tells the user to: `SEARCH.DROP <index>`. */
-async function followDropInstruction(redis: Redis, error: unknown): Promise<string> {
-  const name = /SEARCH\.DROP (\w+)/.exec(String(error))?.[1];
-  if (!name) throw new Error(`no SEARCH.DROP instruction in: ${String(error)}`);
-  await redis.search.index({ name }).drop();
-  return name;
+/** Run what an error tells the user to: every `SEARCH.DROP <index>` in its message. */
+async function followDropInstructions(redis: Redis, error: unknown): Promise<string[]> {
+  const names = [...String(error).matchAll(/SEARCH\.DROP (\w+)/g)].map((m) => m[1] as string);
+  if (!names.length) throw new Error(`no SEARCH.DROP instruction in: ${String(error)}`);
+  for (const name of names) await redis.search.index({ name }).drop();
+  return names;
+}
+
+/**
+ * A new, empty database with the Free plan's one-index limit: a temporary database from
+ * https://upstash.com/start-redis (no account needed; it expires on its own after three days).
+ */
+async function oneIndexDatabase(): Promise<Redis> {
+  const res = await fetch("https://upstash.com/start-redis", {
+    method: "POST",
+    headers: { "Idempotency-Key": randomUUID() },
+  });
+  const body = await res.text();
+  const url = /\*\*Endpoint:\*\* (\S+)/.exec(body)?.[1];
+  const token = /\*\*Token:\*\* (\S+)/.exec(body)?.[1];
+  if (!res.ok || !url || !token) throw new Error(`start-redis failed (${res.status}): ${body}`);
+  return new Redis({ url, token });
 }
 
 const message = (text: string) => ({ role: "user", parts: [{ type: "text", text }] });
 
 // Upgrading from @upstash/agentkit-sdk 0.9.0 on a database it already wrote to, then doing what the
-// errors and the changeset say. The test database allows more than one index, so the Free-plan path
-// (the new `agentkit` index refused while `agentkit_memory` / `agentkit_chat` exist) cannot happen
-// here; the default-settings case checks the data side of it.
+// errors and the changeset say. The test database allows several indexes; the Free-plan case gets a
+// temporary one-index database of its own.
 describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", () => {
   const redis = testRedis();
   const prefix = uniquePrefix("migrate");
@@ -75,7 +90,7 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", () => {
     const memory = new AgentMemory({ redis, prefix: memoryPrefix });
     const error = await memory.recall({ userId, query: "food" }).catch((e: unknown) => e);
     expect(String(error)).toMatch(/SEARCH\.DROP/);
-    expect(await followDropInstruction(redis, error)).toBe(memoryPrefix.replace(/\W/g, "_"));
+    expect(await followDropInstructions(redis, error)).toEqual([memoryPrefix.replace(/\W/g, "_")]);
 
     // Same instance, after the drop: the old documents are indexed again, and recall is hybrid.
     const all = await pollUntil(
@@ -153,5 +168,52 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", () => {
       .drop()
       .catch(() => {});
     await check();
+  });
+
+  it("Free plan: the 0.9.0 index fills the only slot, and after the drops everything works", async () => {
+    // A user who ran 0.9.0 with default settings on a Free-plan database.
+    const free = await oneIndexDatabase();
+    const old = new OldAgentMemory({ redis: free });
+    await old.add({ userId, text: "The user is vegetarian." });
+    await pollUntil(
+      () => old.recall({ userId }),
+      (hits) => hits.length > 0,
+    ); // creates `agentkit_memory`, the database's only index
+    await new OldChatHistory({ redis: free }).saveChat({
+      userId,
+      sessionId: "old",
+      messages: [message("I am vegetarian, what should I cook?")],
+    });
+
+    // This version needs the `agentkit` index, and there is no slot for it.
+    const memory = new AgentMemory({ redis: free });
+    const chats = new ChatHistory({ redis: free });
+    const error = await memory.recall({ userId, query: "food" }).catch((e: unknown) => e);
+    expect(String(error)).toMatch(/no index slots left/);
+    await expect(chats.listChats({ userId })).rejects.toThrow(/no index slots left/);
+
+    // Do what the error says; the same instances then work, on the data 0.9.0 wrote.
+    expect(await followDropInstructions(free, error)).toEqual(["agentkit_memory", "agentkit_chat"]);
+    const recalled = await pollUntil(
+      () => memory.recall({ userId, query: "What food should I cook?", topK: 5 }),
+      (hits) => hits.length > 0,
+    );
+    expect(recalled.map((h) => h.text)).toEqual(["The user is vegetarian."]);
+    expect(await memory.count({ userId })).toBe(1);
+    const listed = await pollUntil(
+      () => chats.listChats({ userId }),
+      (rows) => rows.length > 0,
+    );
+    expect(listed.map((c) => c.sessionId)).toEqual(["old"]);
+    await memory.add({ userId, text: "The user lives in Lisbon." });
+    await memory.searchIndex.waitIndexing(); // a new HYBRID document is embedded before it is found
+    expect(
+      (
+        await pollUntil(
+          () => memory.list({ userId }),
+          (rows) => rows.length === 2,
+        )
+      ).length,
+    ).toBe(2);
   });
 });

@@ -1,9 +1,12 @@
 # @upstash/agentkit-sdk
 
 Core, framework-agnostic primitives for building AI agents on
-[Upstash Redis](https://upstash.com/). No vector database required: the "semantic" features (memory
-recall, search) run on [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction) and
-its `$smart` fuzzy operator (layered phrase / term / fuzzy / prefix matching, BM25-scored).
+[Upstash Redis](https://upstash.com/). No vector database required: the search features run on
+[Upstash Redis Search](https://upstash.com/docs/redis/search/introduction). Memory recall is hybrid
+(keyword and semantic results merged, with the text embedded by Redis itself); chat search uses the
+`$smart` fuzzy operator. With default settings, `AgentMemory` and `ChatHistory` share one index,
+`agentkit`, so they work on a database that allows only one (the Free plan). Setting `prefix`,
+`indexName` or `metadataSchema` gives a store its own index.
 
 ```bash
 pnpm add @upstash/agentkit-sdk @upstash/redis
@@ -43,7 +46,7 @@ await history.deleteChat({ userId: "user-123", sessionId: "session-abc" });
 new ChatHistory<MyMessage>({
   redis,
   prefix: "agentkit:chat", // optional: base key prefix
-  indexName: "agentkit_chat", // optional: Redis Search index name (defaults to the prefix)
+  indexName: "my_chats", // optional: Redis Search index name (defaults to the prefix)
   ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
   extractText: (messages) => ({ userMessages: "...", modelMessages: "..." }), // optional: override text extraction
 });
@@ -72,7 +75,7 @@ any user. A chat can't be read or overwritten under a different `userId`.
 
 ## Agent memory
 
-Long-term, fuzzily-recalled memory scoped per user.
+Long-term memory scoped per user, recalled by keyword and by meaning (hybrid search).
 
 ```ts
 await memory.add({ text: "The user prefers TypeScript", userId: "user-123" });
@@ -88,8 +91,8 @@ await memory.forget("pref-lang", { userId: "user-123" });
 new AgentMemory({
   redis,
   prefix: "agentkit:memory", // optional: base key prefix
-  indexName: "agentkit_memory", // optional: Redis Search index name (defaults to the prefix)
-  minScore: 0, // optional: default BM25 relevance floor for recall
+  indexName: "my_memory", // optional: Redis Search index name (defaults to the prefix)
+  minScore: 0, // optional: above 0, recall with a query is keyword only, above this BM25 floor
   metadataSchema: undefined, // optional: extra indexed fields — see below
 });
 ```
@@ -302,6 +305,24 @@ client itself also disables it here.
 Tested against a **real Upstash Redis** instance (no Redis mock); only LLM calls are mocked. Set
 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (suites skip when absent). Each suite uses a
 unique key prefix and cleans up afterwards.
+
+## Upgrading from full-text memory recall
+
+0.9 and earlier indexed `AgentMemory`'s `text` as a full-text field and gave `AgentMemory` and
+`ChatHistory` separate indexes. `text` is now a hybrid field, and with default settings both share one
+index, `agentkit`. Keys and documents are unchanged; only search indexes change:
+
+- **Default settings:** `agentkit_memory` and `agentkit_chat` are unused; drop them when convenient. On
+  a database with one index slot (Free plan), reads fail with `the database has no index slots left`
+  until you run `SEARCH.DROP agentkit_memory` and `SEARCH.DROP agentkit_chat`.
+- **`AgentMemory` with its own `prefix`, `indexName` or `metadataSchema`:** the first read fails with
+  `exists with a different definition`; run `SEARCH.DROP <index>` with the index it names.
+- **`ChatHistory` with its own `prefix` or `indexName`, and `createSearchTools`:** unchanged.
+
+Dropping an index keeps its documents: the next read creates the new index and indexes them again, and
+an instance that hit the error retries on that read. Drop old indexes once every deployment runs the
+new version, or an old instance recreates its index. `minScore` now switches recall to keyword only,
+above that BM25 floor; remove it for hybrid recall.
 
 ## License
 

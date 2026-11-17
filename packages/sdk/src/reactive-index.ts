@@ -86,9 +86,9 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
           if (/exceeded max index count/i.test(String(err))) {
             throw new Error(
               `Cannot create search index "${this.indexName}": the database has no index slots left ` +
-                `(the Free plan allows one). Indexes from earlier @upstash/agentkit versions, ` +
-                `\`agentkit_memory\` and \`agentkit_chat\`, are no longer used: drop them with ` +
-                `\`SEARCH.DROP\` (documents are kept and indexed again) and start again.`,
+                `(the Free plan allows one). Indexes from earlier @upstash/agentkit versions are no ` +
+                `longer used: run \`SEARCH.DROP agentkit_memory\` and \`SEARCH.DROP agentkit_chat\` ` +
+                `(documents are kept and indexed again) and start again.`,
               { cause: err },
             );
           }

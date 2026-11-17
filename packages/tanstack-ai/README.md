@@ -376,6 +376,18 @@ chat({ adapter, messages, tools });
 Reports the package name and version as a header on your redis client's requests. Opt out with
 `enableTelemetry: false` on any factory, on the redis client, or with `UPSTASH_DISABLE_TELEMETRY`.
 
+## Upgrading from full-text memory recall
+
+`@upstash/agentkit-tanstack-ai` 0.3 and earlier indexed memory `text` as a full-text field; it is now a hybrid field.
+Keys and documents are unchanged; only search indexes change:
+
+- **Memory (`upstashMemory()`):** the first read fails with an error naming the index; run
+  `SEARCH.DROP agentkit_tanstackMemory` (or your `indexName`).
+
+Dropping an index keeps its documents, and the next read indexes them again. Drop old indexes once
+every deployment runs the new version. `minScore` now switches recall to keyword only, so remove it
+for hybrid recall. Details: [Upgrading from full-text memory recall](https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai#upgrading-from-full-text-memory-recall).
+
 ## License
 
 MIT
