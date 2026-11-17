@@ -62,6 +62,9 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   wrapper**), `cachedTools`, `createMemoryTools`, `createSearchTools`,
   `createChatHistory` (→ `ChatHistory<UIMessage>`; also re-exports `ChatHistory`/`ChatRecord`/etc.).
   (**No model cache** — removed.)
+- **`createAgentMemory`** (`src/agent-memory.ts`) — the AI SDK memory-provider shape. **Not a model
+  wrapper** (other providers use `wrapLanguageModel`, which this repo forbids): automatic recall runs
+  in `prepareStep` on step 0 and the override carries forward.
 - **Only `cachedTools`** (no singular `cachedTool` — removed): `cachedTools(map, { userId, redis?, ttlSeconds? })`
   takes a map of `tool()`-built tools (so each keeps inference) and caches each under its **map key as
   the toolName**, scoped to `userId` — so the user never passes a tool name.

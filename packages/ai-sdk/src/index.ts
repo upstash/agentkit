@@ -13,6 +13,16 @@ export type { CacheUserId, CachedToolsOptions } from "./tools.js";
 export { createMemoryTools } from "./memory.js";
 export type { CreateMemoryToolsConfig, MemoryUserId } from "./memory.js";
 
+// Memory provider: one factory for tools + automatic recall via `prepareStep` (no model wrapper)
+export { createAgentMemory } from "./agent-memory.js";
+export type {
+  AgentMemoryRecallOptions,
+  AgentMemoryToolsOptions,
+  CreateAgentMemoryConfig,
+  RecallStepOptions,
+  UpstashAgentMemory,
+} from "./agent-memory.js";
+
 // Schema-driven Redis Search tools (search / aggregate / count)
 export { createSearchTools } from "./search-tools.js";
 export type { CreateSearchToolsConfig } from "./search-tools.js";
