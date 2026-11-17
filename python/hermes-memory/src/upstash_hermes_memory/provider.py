@@ -8,7 +8,8 @@ What it does inside Hermes:
 - After each turn, saves the session's transcript as a searchable ChatHistory document.
 - Mirrors the built-in `memory` tool (adds, corrections and removals), so Redis holds the same
   facts.
-- Gives the model four tools: upstash_memory_save / _search / _forget and upstash_chat_search.
+- Gives the model five tools: upstash_memory_save / _search / _forget, upstash_chat_search and
+  upstash_chat_read.
 
 Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
 - UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN (required)
@@ -20,20 +21,24 @@ Configuration (environment, or Hermes's `$HERMES_HOME/.env`):
   works on Upstash's Free plan (one index per database).
 - UPSTASH_HERMES_TELEMETRY: set to `1` to send telemetry (off by default, as the plugin catalog
   requires). `UPSTASH_DISABLE_TELEMETRY` still turns it off.
+- UPSTASH_HERMES_CHAT_TTL_DAYS: delete a session's transcript this many days after its last turn.
+  Unset (or 0) keeps transcripts until they are deleted. Memories never expire.
 """
 
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from ._search import DEFAULT_NAMESPACE
 from ._telemetry import OPT_IN_ENV, OPT_OUT_ENV, is_opt_in
-from .chat_history import ChatHistory
-from .memory import AgentMemory, MemoryRecord
+from .chat_history import ChatHistory, ChatSearchHit, message_text
+from .memory import SMART_QUERY_CHARS, AgentMemory, MemoryRecord, bound_query
 
 try:  # Inside Hermes. Outside it (tests, plain library use) the provider is a plain class.
     from agent.memory_provider import MemoryProvider
@@ -59,6 +64,21 @@ _PREFETCH_TOP_K = 3
 _EXCERPT_CHARS = 300
 # Built-in memory tool actions Hermes forwards (a patch arrives as a replace).
 _MIRRORED_ACTIONS = {"add", "replace", "remove"}
+# Tool limits, so one call can't flood the context or ask Search for thousands of rows. A larger
+# `limit` is lowered to the maximum rather than refused.
+_SEARCH_DEFAULT, _SEARCH_MAX = 5, 20
+_CHAT_SEARCH_DEFAULT, _CHAT_SEARCH_MAX = 5, 10
+_READ_DEFAULT, _READ_MAX = 10, 40
+# upstash_chat_search shows, per session, the message that matched best (clipped around the
+# match) and its neighbours; upstash_chat_read shows whole messages up to a cap per message and
+# per page.
+_MATCH_CHARS = 600
+_NEIGHBOUR_CHARS = 200
+_READ_MESSAGE_CHARS = 2000
+_READ_PAGE_CHARS = 8000
+# A memory is one standalone sentence; a longer text is refused rather than cut.
+_SAVE_MAX_CHARS = 1000
+CHAT_TTL_ENV = "UPSTASH_HERMES_CHAT_TTL_DAYS"
 
 
 def _mirror_id(target: str, text: str) -> str:
@@ -71,26 +91,37 @@ def _mirror_id(target: str, text: str) -> str:
 SAVE_SCHEMA = {
     "name": "upstash_memory_save",
     "description": (
-        "Save one durable fact about the user or their work to long-term memory (preferences, "
-        "decisions, people, projects). Write it as a short standalone sentence."
+        "Save one situational fact to long-term memory, recalled when its topic comes up: a "
+        "person, who owns what, project or customer context, a lesson learned, a pointer to "
+        "where something is. Facts needed in every session belong in the built-in memory "
+        "instead. Write one standalone sentence that says when and where the fact comes from."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"text": {"type": "string", "description": "The fact to remember."}},
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": f"The fact, one sentence (at most {_SAVE_MAX_CHARS} characters).",
+            }
+        },
         "required": ["text"],
     },
 }
 SEARCH_SCHEMA = {
     "name": "upstash_memory_search",
     "description": (
-        "Search long-term memory for facts related to a query. Returns ids, text and a score; "
+        "Search long-term memory for facts related to a query. Returns ids, text, the date each "
+        "was saved, whether it is a copy of a built-in memory entry (`mirror`), and a score; "
         "scores rank results within one search only (`retrieval` says how they were found)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to look for."},
-            "limit": {"type": "integer", "description": "Maximum results (default 5)."},
+            "limit": {
+                "type": "integer",
+                "description": f"Maximum results (default {_SEARCH_DEFAULT}, at most {_SEARCH_MAX}).",
+            },
         },
         "required": ["query"],
     },
@@ -108,15 +139,44 @@ CHAT_SEARCH_SCHEMA = {
     "name": "upstash_chat_search",
     "description": (
         "Search the transcripts of past conversations with this user. Returns matching sessions "
-        "with an excerpt of each side."
+        "with their date and the passage that matched: the best-matching message and its "
+        "neighbours, each with its role, index and turn time. Open more of a session with "
+        "upstash_chat_read."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to look for."},
-            "limit": {"type": "integer", "description": "Maximum sessions (default 5)."},
+            "limit": {
+                "type": "integer",
+                "description": (
+                    f"Maximum sessions (default {_CHAT_SEARCH_DEFAULT}, at most {_CHAT_SEARCH_MAX})."
+                ),
+            },
         },
         "required": ["query"],
+    },
+}
+CHAT_READ_SCHEMA = {
+    "name": "upstash_chat_read",
+    "description": (
+        "Read part of one past conversation, by a session_id from upstash_chat_search. Returns "
+        "up to `limit` messages in order from `offset`, or centred on `around` (a message index "
+        "from a search passage), and `next_offset` when the session goes on. Long messages are "
+        "shortened."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "The session to read."},
+            "around": {"type": "integer", "description": "A message index to centre the page on."},
+            "offset": {"type": "integer", "description": "The first message index (default 0)."},
+            "limit": {
+                "type": "integer",
+                "description": f"Maximum messages (default {_READ_DEFAULT}, at most {_READ_MAX}).",
+            },
+        },
+        "required": ["session_id"],
     },
 }
 
@@ -254,6 +314,134 @@ def rewind_transcript(
     return []
 
 
+def _recalled_line(record: MemoryRecord) -> str:
+    """A recalled memory for the prompt, with the date it was saved: `- [saved 2026-11-11] …`."""
+    saved = _date(record.created_at)
+    return f"- [saved {saved}] {record.text}" if saved else f"- {record.text}"
+
+
+def _clamp(value: Any, default: int, maximum: int) -> int:
+    """A tool's `limit`: `default` when missing, otherwise between 1 and `maximum`."""
+    if value is None or value == "":
+        return default
+    return max(1, min(int(value), maximum))
+
+
+def _date(epoch_ms: Any) -> str | None:
+    """A stored `createdAt` (epoch ms) as its UTC date, `YYYY-MM-DD`; None when there is none."""
+    if not _is_number(epoch_ms) or epoch_ms <= 0:
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000, UTC).strftime("%Y-%m-%d")
+
+
+def _time(epoch_s: Any) -> str | None:
+    """A turn's stamp (`ts`, epoch seconds) in UTC to the minute; None when there is none."""
+    if not _is_number(epoch_s) or epoch_s <= 0:
+        return None
+    return datetime.fromtimestamp(epoch_s, UTC).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def _terms(query: str) -> list[str]:
+    """The query's words, lowercased, to find the message a session matched on.
+
+    Search matched the session, fuzzily and with stemming; this only picks the passage to show,
+    so plain substring matching is enough ("trip" finds "trips").
+    """
+    return sorted({word for word in re.findall(r"\w+", query.lower()) if len(word) > 1})
+
+
+def _best_message(texts: list[str], terms: list[str]) -> int | None:
+    """The index of the text matching the query best, or None when no text has a query word.
+
+    A word found in fewer messages counts more, so a common word ("the", the user's name) does
+    not outweigh the one the user is looking for. A tie goes to the earlier message.
+    """
+    lowered = [text.lower() for text in texts]
+    found_in = {term: sum(term in text for text in lowered) for term in terms}
+    best, best_score = None, 0.0
+    for i, text in enumerate(lowered):
+        score = sum(1 / found_in[term] for term in terms if found_in[term] and term in text)
+        if score > best_score:
+            best, best_score = i, score
+    return best
+
+
+def _clip(text: str, terms: list[str], limit: int) -> str:
+    """At most `limit` characters of `text`, around its first query word; "…" marks a cut."""
+    if len(text) <= limit:
+        return text
+    lowered = text.lower()
+    found = [at for at in (lowered.find(term) for term in terms) if at >= 0]
+    room = limit - 2  # one "…" on each side at most
+    start = max(0, min((min(found) if found else 0) - room // 3, len(text) - room))
+    end = start + room
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+def _turn_times(messages: list[dict[str, Any]]) -> list[Any]:
+    """Each message's turn stamp: a user message's own `ts`, a reply its user message's."""
+    times, current = [], None
+    for message in messages:
+        if message.get("role") == "user":
+            current = message.get("ts")
+        times.append(current)
+    return times
+
+
+def _passage(hit: ChatSearchHit, query: str) -> list[dict[str, Any]]:
+    """Where in a session the query matched: the best-matching message and its neighbours.
+
+    Falls back to the session's first two messages when no message contains a query word (Search
+    matches fuzzily), and to the start of each side's text for a chat saved without `messages`.
+    """
+    terms = _terms(query)
+    if not hit.messages:
+        sides = (("user", hit.user_text), ("assistant", hit.model_text))
+        return [
+            {"role": role, "text": _clip(text, terms, _EXCERPT_CHARS)}
+            for role, text in sides
+            if text
+        ]
+    texts = [message_text(m) for m in hit.messages]
+    best = _best_message(texts, terms)
+    if best is None:
+        shown = [i for i, text in enumerate(texts) if text][:2]
+    else:
+        shown = [i for i in (best - 1, best, best + 1) if 0 <= i < len(texts) and texts[i]]
+    times = _turn_times(hit.messages)
+    passage = []
+    for i in shown:
+        entry: dict[str, Any] = {
+            "index": i,
+            "role": hit.messages[i].get("role"),
+            "text": _clip(texts[i], terms, _MATCH_CHARS if i == best else _NEIGHBOUR_CHARS),
+        }
+        if i == best:
+            entry["match"] = True
+        if when := _time(times[i]):
+            entry["time"] = when
+        passage.append(entry)
+    return passage
+
+
+def _chat_ttl_seconds() -> int | None:
+    """UPSTASH_HERMES_CHAT_TTL_DAYS in seconds, or None to keep transcripts (unset, 0, invalid)."""
+    raw = str(get_secret(CHAT_TTL_ENV, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        days = float(raw)
+    except ValueError:
+        days = math.nan
+    if not math.isfinite(days) or days < 0:
+        logger.warning(
+            "%s must be a number of days, got %r: keeping transcripts", CHAT_TTL_ENV, raw
+        )
+        return None
+    # 0 means no expiry here: ChatHistory would expire a chat at once with a TTL of 0.
+    return max(1, round(days * 86400)) if days > 0 else None
+
+
 class UpstashMemoryProvider(MemoryProvider):
     def __init__(self, redis: Any = None):
         self._redis = redis
@@ -345,7 +533,12 @@ class UpstashMemoryProvider(MemoryProvider):
         # keeps each profile's .env out of os.environ. Memory and chats share its one index.
         namespace = get_secret("UPSTASH_HERMES_NAMESPACE", "") or DEFAULT_NAMESPACE
         self._memory = AgentMemory(self._redis, namespace=namespace, enable_telemetry=telemetry)
-        self._chats = ChatHistory(self._redis, namespace=namespace, enable_telemetry=telemetry)
+        self._chats = ChatHistory(
+            self._redis,
+            namespace=namespace,
+            ttl_seconds=_chat_ttl_seconds(),
+            enable_telemetry=telemetry,
+        )
         self._user_id = user_id
         self._session_id = self._session_key(session_id)
         self._write_enabled = (kwargs.get("agent_context") or "") in _WRITING_CONTEXTS
@@ -356,10 +549,14 @@ class UpstashMemoryProvider(MemoryProvider):
         return (
             "# Upstash Memory\n"
             f"Long-term memory is stored in Upstash Redis for user `{self._user_id}`. Memories "
-            "related to each message are recalled automatically into <memory-context>. Use "
-            "upstash_memory_save for durable facts worth keeping across sessions, "
-            "upstash_memory_search to look one up, upstash_memory_forget to delete one, and "
-            "upstash_chat_search to find something said in an earlier conversation."
+            "related to each message are recalled automatically into <memory-context>, with the "
+            "date each was saved. Recalled memories and past conversations are history to verify, "
+            "not the current state. Facts needed in every session belong in the built-in memory; "
+            "use upstash_memory_save for situational facts that matter when their topic comes up "
+            "(people, ownership, project or customer context, lessons, pointers), one standalone "
+            "sentence with its date and source. Use upstash_memory_search to look one up, "
+            "upstash_memory_forget to delete one, upstash_chat_search to find something said in "
+            "an earlier conversation and upstash_chat_read to read more of it."
         )
 
     # -- lifecycle -----------------------------------------------------------------------------
@@ -374,7 +571,7 @@ class UpstashMemoryProvider(MemoryProvider):
             return ""
         if not hits:
             return ""
-        lines = "\n".join(f"- {hit.text}" for hit in hits)
+        lines = "\n".join(_recalled_line(hit) for hit in hits)
         return f"## Upstash Memory\n{lines}"
 
     def sync_turn(
@@ -555,8 +752,10 @@ class UpstashMemoryProvider(MemoryProvider):
     def _all_matches(self, query: str) -> list[MemoryRecord]:
         """Every memory of this user matching `query`, not just the best few."""
         assert self._memory is not None
+        # Recall bounds a long query the same way; COUNT and QUERY must describe the same set.
+        smart = bound_query(query, SMART_QUERY_CHARS)
         total = self._memory.index.count(
-            {**self._memory._filter(self._user_id), "text": {"$smart": query}}
+            {**self._memory._filter(self._user_id), "text": {"$smart": smart}}
         )
         if total <= 0:
             return []
@@ -593,7 +792,7 @@ class UpstashMemoryProvider(MemoryProvider):
     # -- tools ---------------------------------------------------------------------------------
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
-        return [SAVE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, CHAT_SEARCH_SCHEMA]
+        return [SAVE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, CHAT_SEARCH_SCHEMA, CHAT_READ_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         try:
@@ -610,17 +809,32 @@ class UpstashMemoryProvider(MemoryProvider):
             text = str(args.get("text") or "").strip()
             if not text:
                 raise ValueError("text is required")
+            if len(text) > _SAVE_MAX_CHARS:
+                raise ValueError(
+                    f"text is {len(text)} characters, the limit is {_SAVE_MAX_CHARS}: save one "
+                    "standalone sentence per fact"
+                )
             record = self._remember(text, {"source": "hermes"})
             return {"saved": True, "id": record.id}
         if tool_name == "upstash_memory_search":
             hits = self._memory.recall(
                 str(args.get("query") or ""),
                 user_id=self._user_id,
-                top_k=int(args.get("limit") or 5),
+                top_k=_clamp(args.get("limit"), _SEARCH_DEFAULT, _SEARCH_MAX),
             )
             return {
                 "results": [
-                    {"id": h.id, "text": h.text, "score": h.score, "retrieval": h.retrieval}
+                    {
+                        "id": h.id,
+                        "text": h.text,
+                        "saved": _date(h.created_at),
+                        # A copy of a built-in memory entry (see `on_memory_write`); a memory
+                        # saved with upstash_memory_save has no `target`.
+                        "mirror": h.metadata.get("source") == "hermes"
+                        and bool(h.metadata.get("target")),
+                        "score": h.score,
+                        "retrieval": h.retrieval,
+                    }
                     for h in hits
                 ]
             }
@@ -631,22 +845,71 @@ class UpstashMemoryProvider(MemoryProvider):
                 "forgotten": self._memory.forget(str(args.get("id") or ""), user_id=self._user_id)
             }
         if tool_name == "upstash_chat_search":
+            query = str(args.get("query") or "")
             hits = self._chats.search_chats(
-                str(args.get("query") or ""),
+                query,
                 user_id=self._user_id,
-                limit=int(args.get("limit") or 5),
+                limit=_clamp(args.get("limit"), _CHAT_SEARCH_DEFAULT, _CHAT_SEARCH_MAX),
             )
             return {
                 "sessions": [
                     {
                         "session_id": h.session_id,
+                        "date": _date(h.created_at),
                         "score": h.score,
                         "title": h.title,
                         "updated_at": h.updated_at,
-                        "user_excerpt": h.user_text[:_EXCERPT_CHARS],
-                        "assistant_excerpt": h.model_text[:_EXCERPT_CHARS],
+                        "passage": _passage(h, query),
                     }
                     for h in hits
                 ]
             }
+        if tool_name == "upstash_chat_read":
+            return self._read_chat(args)
         raise ValueError(f"unknown tool {tool_name}")
+
+    def _read_chat(self, args: dict[str, Any]) -> dict[str, Any]:
+        """A page of one of this user's sessions, bounded per message and per page.
+
+        The chat is read by its key, which holds the user id, so another user's session is not
+        found, just as search never returns it.
+        """
+        assert self._chats is not None
+        sid = _key_part(str(args.get("session_id") or "").strip(), "session id")
+        if not sid:
+            raise ValueError("session_id is required")
+        doc = self._chats.get_chat(sid, user_id=self._user_id)
+        if not doc:
+            raise ValueError(f"no saved conversation with session id {sid!r}")
+        messages = [m for m in doc.get("messages") or [] if isinstance(m, dict)]
+        limit = _clamp(args.get("limit"), _READ_DEFAULT, _READ_MAX)
+        if args.get("around") not in (None, ""):
+            start = int(args["around"]) - limit // 2
+        else:
+            start = int(args.get("offset") or 0)
+        start = max(0, min(start, len(messages)))
+        times = _turn_times(messages)
+        page: list[dict[str, Any]] = []
+        used, end = 0, start
+        for i in range(start, min(start + limit, len(messages))):
+            text = message_text(messages[i])
+            if len(text) > _READ_MESSAGE_CHARS:
+                text = text[: _READ_MESSAGE_CHARS - 1] + "…"
+            if page and used + len(text) > _READ_PAGE_CHARS:
+                break
+            entry: dict[str, Any] = {"index": i, "role": messages[i].get("role"), "text": text}
+            if when := _time(times[i]):
+                entry["time"] = when
+            page.append(entry)
+            used += len(text)
+            end = i + 1
+        result: dict[str, Any] = {
+            "session_id": sid,
+            "date": _date(doc.get("createdAt")),
+            "title": doc.get("title"),
+            "total_messages": len(messages),
+            "messages": page,
+        }
+        if end < len(messages):
+            result["next_offset"] = end
+        return result
