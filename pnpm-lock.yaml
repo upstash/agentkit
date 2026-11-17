@@ -447,6 +447,9 @@ importers:
       '@upstash/redis':
         specifier: ^1.41.0
         version: 1.41.0
+      agentkit-sdk-0.9:
+        specifier: npm:@upstash/agentkit-sdk@0.9.0
+        version: '@upstash/agentkit-sdk@0.9.0(@upstash/redis@1.41.0)'
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
@@ -3020,6 +3023,11 @@ packages:
 
   '@upsetjs/venn.js@2.0.0':
     resolution: {integrity: sha512-WbBhLrooyePuQ1VZxrJjtLvTc4NVfpOyKx0sKqioq9bX1C1m7Jgykkn8gLrtwumBioXIqam8DLxp88Adbue6Hw==}
+
+  '@upstash/agentkit-sdk@0.9.0':
+    resolution: {integrity: sha512-6cAbVlg2lHfVRBaiVW2YireWjWsYHOF6KE9+yvwK/8FAxqC93QfBc2ocEWknXFdlyQR//AYYQoHVQho7OS/H2Q==}
+    peerDependencies:
+      '@upstash/redis': '>=1.38.0'
 
   '@upstash/blob@0.0.7':
     resolution: {integrity: sha512-Q2+GqZdnZxjzdHrROd/dSGVmR7im4FJ6SSKh5qfOLyYiZmtzMiLjd+yG0vwq2urtZ+UswpF4MlLQ//UEIUNkCw==}
@@ -7620,6 +7628,12 @@ snapshots:
     optionalDependencies:
       d3-selection: 3.0.0
       d3-transition: 3.0.1(d3-selection@3.0.0)
+
+  '@upstash/agentkit-sdk@0.9.0(@upstash/redis@1.41.0)':
+    dependencies:
+      '@upstash/ratelimit': 2.0.8(@upstash/redis@1.41.0)
+      '@upstash/redis': 1.41.0
+      zod: 4.4.3
 
   '@upstash/blob@0.0.7(react@19.2.6)':
     optionalDependencies:
