@@ -1,5 +1,14 @@
 # tanstack-ai-demo
 
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies [4b04fc0]
+- Updated dependencies [b64f89f]
+- Updated dependencies [b64f89f]
+  - @upstash/agentkit-tanstack-ai@0.4.0
+
 ## 0.0.3
 
 ### Patch Changes

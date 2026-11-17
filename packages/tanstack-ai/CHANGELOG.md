@@ -1,5 +1,42 @@
 # @upstash/agentkit-tanstack-ai
 
+## 0.4.0
+
+### Minor Changes
+
+- 4b04fc0: Hybrid memory recall, and one search index for memory and chat history.
+
+  - **Hybrid recall:** memory `text` is now a Redis Search `HYBRID` field, and recall with a query merges keyword (`$smart`) and semantic (`$ann`) results with `$rrf`. Upstash Redis Search embeds the text itself. A query like "what should I cook?" now finds "The user is vegetarian." `minScore` now switches recall to keyword only, above that BM25 floor: hybrid scores have no cutoff, so leave it unset for hybrid recall. If the server rejects a hybrid query, recall warns and uses keyword for that call.
+  - **One index:** with default settings, `AgentMemory` and `ChatHistory` share one index, `agentkit`, over `agentkit:memory:` and `agentkit:chat:`, so they work on a database that allows only one index (Upstash's Free plan). Chats are told apart from memories by `sessionId`, so chats saved by earlier versions are still listed and never recalled as memories. It is the same index the Python package (`upstash-hermes-memory`) uses. A store with its own `prefix`, `indexName` or `metadataSchema` keeps its own index.
+  - Needs `@upstash/redis` 1.41.0 or later.
+
+  **Upgrading:** keys and documents are unchanged; chats and memories saved by earlier versions are found by the new index. Indexes created by earlier versions (`agentkit_memory`, `agentkit_chat`, and any custom memory index) have a `TEXT` field where a `HYBRID` one is now needed:
+
+  - **Default settings:** `agentkit_memory` and `agentkit_chat` are no longer used. On a database with one index slot (Free plan), drop them with `SEARCH.DROP` before upgrading, or reads fail with an error that names them. Elsewhere they can be dropped any time.
+  - **Custom `prefix` / `indexName`:** the existing memory index fails with an error that says to run `SEARCH.DROP <index>`; documents are kept and indexed again on the next read.
+  - `createSearchTools` over an index you created yourself keeps working as before.
+
+- b64f89f: Add stores for TanStack AI's sandbox and MCP packages, all on Upstash Redis.
+
+  - `@upstash/agentkit-tanstack-ai/sandbox` (needs `@tanstack/ai-sandbox` >= 1.0.0):
+    - `upstashSandboxCheckpointStore()` is a `SandboxCheckpointStore` for portable sandbox snapshots. It supports `forkFromCheckpoint`, which branches a thread, files and transcript included.
+    - `upstashSandboxInstanceStore()` lets any server resume a thread's sandbox.
+    - Both pass TanStack's sandbox conformance suites.
+  - `@upstash/agentkit-tanstack-ai/mcp` (needs `@tanstack/ai-mcp` >= 1.0.0):
+    - `upstashMcpTaskStore()` is the `taskStore` for `createMCPServer`.
+    - `upstashMcpEventStore()` stores MCP Events webhook subscriptions, shared across instances.
+    - `upstashMcpSessionStore()` is the `McpSessionStore` for MCP Apps.
+      - The JSON part of each server descriptor is stored in Redis. With `encryptionKey`, each stored entry is encrypted.
+      - Functions such as `needsApproval` come back through your `resolve` callback.
+      - It fails closed: it returns `null` rather than a descriptor that lost its approval gate.
+  - `upstashPersistence({ bucket })` is now typed with a required `blobs` store, so you can pass it straight to `createSandboxSnapshots()`.
+
+### Patch Changes
+
+- b64f89f: Fix a race in the `upstashPersistence()` log store's `subscribe`: a write from another machine that landed before the subscriber's first poll was treated as the starting point and never reported, so the listener could miss it. A watch now starts from the store's own last write to that log.
+- Updated dependencies [4b04fc0]
+  - @upstash/agentkit-sdk@0.20.0
+
 ## 0.3.0
 
 ### Minor Changes
