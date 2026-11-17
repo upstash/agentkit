@@ -168,6 +168,11 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
         );
       }
       plain = await box.open<PlainServer>(stored.s, aad(threadId, serverId));
+    } else if (box) {
+      // With a key, only sealed entries are trusted: a plain one could have been planted in Redis.
+      throw new Error(
+        `@upstash/agentkit-tanstack-ai: MCP session server ${JSON.stringify(serverId)} is not encrypted, but \`encryptionKey\` is set.`,
+      );
     } else {
       plain = stored;
     }
