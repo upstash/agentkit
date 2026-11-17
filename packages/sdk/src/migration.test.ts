@@ -31,12 +31,17 @@ async function followDropInstructions(redis: Redis, error: unknown): Promise<str
  * A new, empty database with the Free plan's one-index limit: a temporary database from
  * https://upstash.com/start-redis (no account needed; it expires on its own after three days).
  */
-async function oneIndexDatabase(): Promise<Redis> {
+async function oneIndexDatabase(skip: () => void): Promise<Redis> {
   const res = await fetch("https://upstash.com/start-redis", {
     method: "POST",
     headers: { "Idempotency-Key": randomUUID() },
   });
   const body = await res.text();
+  if (!res.ok) {
+    // e.g. 429 when too many databases were requested from this address: not a failure of ours.
+    console.warn(`start-redis answered ${res.status}; skipping this test`);
+    skip();
+  }
   const url = /\*\*Endpoint:\*\* (\S+)/.exec(body)?.[1];
   const token = /\*\*Token:\*\* (\S+)/.exec(body)?.[1];
   if (!res.ok || !url || !token) throw new Error(`start-redis failed (${res.status}): ${body}`);
@@ -59,10 +64,10 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     await cleanupKeys(redis, `agentkit:chat:${userId}`);
   });
 
-  it("custom prefix: the old memory index fails with SEARCH.DROP, and after the drop recall works", async () => {
+  it("custom prefix: the old memory index fails with SEARCH.DROP, and after the drop recall works", async (ctx) => {
     // Its own temporary database, one index at a time, so it never competes for the shared test
     // database's index slots with the suites running in parallel.
-    const db = await oneIndexDatabase();
+    const db = await oneIndexDatabase(() => ctx.skip());
     const memoryPrefix = `${prefix}:memory`;
     const chatPrefix = `${prefix}:chat`;
 
@@ -172,9 +177,9 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     await check();
   });
 
-  it("Free plan: the 0.9.0 index fills the only slot, and after the drops everything works", async () => {
+  it("Free plan: the 0.9.0 index fills the only slot, and after the drop everything works", async (ctx) => {
     // A user who ran 0.9.0 with default settings on a Free-plan database.
-    const free = await oneIndexDatabase();
+    const free = await oneIndexDatabase(() => ctx.skip());
     const old = new OldAgentMemory({ redis: free });
     await old.add({ userId, text: "The user is vegetarian." });
     await pollUntil(
@@ -195,7 +200,8 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     await expect(chats.listChats({ userId })).rejects.toThrow(/no index slots left/);
 
     // Do what the error says; the same instances then work, on the data 0.9.0 wrote.
-    expect(await followDropInstructions(free, error)).toEqual(["agentkit_memory", "agentkit_chat"]);
+    // On a one-index database 0.9.0 could only ever create `agentkit_memory`; only it is named.
+    expect(await followDropInstructions(free, error)).toEqual(["agentkit_memory"]);
     const recalled = await pollUntil(
       () => memory.recall({ userId, query: "What food should I cook?", topK: 5 }),
       (hits) => hits.length > 0,
@@ -217,5 +223,14 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
         )
       ).length,
     ).toBe(2);
+
+    // A second store with its own index has no slot either; with no old index left to drop, the
+    // error doesn't name one.
+    const other = await new AgentMemory({ redis: free, prefix: "other:memory" })
+      .count({ userId })
+      .catch((e: unknown) => e);
+    expect(String(other)).toMatch(/no index slots left/);
+    expect(String(other)).toMatch(/SEARCH\.DROP <name>/);
+    expect(String(other)).not.toMatch(/agentkit_memory/);
   });
 });

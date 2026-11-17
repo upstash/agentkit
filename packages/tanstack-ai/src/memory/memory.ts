@@ -135,10 +135,20 @@ export function upstashMemory(config: UpstashMemoryConfig = {}): MemoryAdapter {
   // (any read does, reactively), once per adapter.
   let provisioned: Promise<unknown> | undefined;
 
+  // `memoryMiddleware` catches recall errors and only reports them to devtools, so an index that
+  // needs a `SEARCH.DROP` would leave memory silently empty. Log that once per adapter.
+  let loggedIndexError = false;
+  const logIndexError = (error: unknown) => {
+    if (loggedIndexError || !/SEARCH\.DROP/.test(String(error))) return;
+    loggedIndexError = true;
+    console.error(`[agentkit] upstashMemory: ${error instanceof Error ? error.message : error}`);
+  };
+
   const add = async (userId: string, text: string, source: Source) => {
     const trimmed = text.trim().slice(0, maxChars);
-    provisioned ??= memory.count({ userId }).catch((error) => {
+    provisioned ??= memory.count({ userId }).catch((error: unknown) => {
       provisioned = undefined;
+      logIndexError(error);
       throw error;
     });
     await provisioned;
@@ -173,10 +183,9 @@ export function upstashMemory(config: UpstashMemoryConfig = {}): MemoryAdapter {
 
     async recall(scope, query): Promise<RecallResult> {
       const userId = memoryScopeKey(scope, scopeBy);
-      const hits = await memory.recall({
-        userId,
-        query,
-        topK,
+      const hits = await memory.recall({ userId, query, topK }).catch((error: unknown) => {
+        logIndexError(error);
+        throw error;
       });
       const lines = hits.map((h) => {
         const source = h.metadata?.source as Source | undefined;

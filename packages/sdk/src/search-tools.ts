@@ -38,6 +38,8 @@ export interface SearchToolDefs {
 interface FieldInfo {
   path: string;
   type: string;
+  /** A `noTokenize()` TEXT field: matched as one exact value, not fuzzy text. */
+  exact?: boolean;
 }
 
 /** Walk an Upstash search schema into a flat list of `{ path, type }` field descriptors. */
@@ -46,8 +48,9 @@ function describeSchema(schema: Record<string, unknown>, prefix = ""): FieldInfo
   for (const [key, value] of Object.entries(schema)) {
     const path = prefix ? `${prefix}.${key}` : key;
     if (value && typeof value === "object") {
-      const type = (value as { type?: unknown }).type;
-      if (typeof type === "string") out.push({ path, type });
+      const { type, noTokenize } = value as { type?: unknown; noTokenize?: unknown };
+      if (typeof type === "string")
+        out.push({ path, type, ...(noTokenize ? { exact: true } : {}) });
       else out.push(...describeSchema(value as Record<string, unknown>, path));
     }
   }
@@ -74,7 +77,13 @@ function operatorsFor(type: string): string {
 }
 
 function fieldGuide(fields: FieldInfo[]): string {
-  return fields.map((f) => `- \`${f.path}\` (${f.type}): ${operatorsFor(f.type)}`).join("\n");
+  return fields
+    .map((f) =>
+      f.exact
+        ? `- \`${f.path}\` (TEXT, exact value): \`$eq\` (whole-value match, not fuzzy)`
+        : `- \`${f.path}\` (${f.type}): ${operatorsFor(f.type)}`,
+    )
+    .join("\n");
 }
 
 const FILTER_GUIDE = [

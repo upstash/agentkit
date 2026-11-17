@@ -124,6 +124,12 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
   addTelemetry(redis, config.enableTelemetry);
   const p = config.prefix ?? "agentkit:tanstack";
   const ttl = config.ttlSeconds ?? 1800;
+  if ("encryptionKey" in config && config.encryptionKey === undefined) {
+    // Usually `process.env.SOMETHING` that isn't set: say so instead of storing plaintext silently.
+    console.warn(
+      "@upstash/agentkit-tanstack-ai: upstashMcpSessionStore got `encryptionKey: undefined`, so entries are stored unencrypted.",
+    );
+  }
   const box = config.encryptionKey === undefined ? undefined : secretBox(config.encryptionKey);
   const key = (threadId: string) => `${p}:mcp:session:${encodeURIComponent(threadId)}`;
   const aad = (threadId: string, serverId: string) =>
@@ -167,7 +173,16 @@ export function upstashMcpSessionStore(config: UpstashMcpSessionStoreConfig = {}
           `@upstash/agentkit-tanstack-ai: MCP session server ${JSON.stringify(serverId)} is encrypted; pass \`encryptionKey\`.`,
         );
       }
-      plain = await box.open<PlainServer>(stored.s, aad(threadId, serverId));
+      plain = await box
+        .open<PlainServer>(stored.s, aad(threadId, serverId))
+        .catch((err: unknown) => {
+          throw new Error(
+            `@upstash/agentkit-tanstack-ai: MCP session server ${JSON.stringify(serverId)} could not be ` +
+              "decrypted: the `encryptionKey` is wrong (e.g. rotated), or the entry was copied from " +
+              "another thread or prefix. It expires after `ttlSeconds`.",
+            { cause: err },
+          );
+        });
     } else if (box) {
       // With a key, only sealed entries are trusted: a plain one could have been planted in Redis.
       throw new Error(

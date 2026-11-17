@@ -98,6 +98,12 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
   if (config.requireEncryption && config.encryptionKey === undefined) {
     throw new Error("@upstash/agentkit-tanstack-ai: `requireEncryption` needs an `encryptionKey`.");
   }
+  if ("encryptionKey" in config && config.encryptionKey === undefined) {
+    // Usually `process.env.SOMETHING` that isn't set: say so instead of storing plaintext silently.
+    console.warn(
+      "@upstash/agentkit-tanstack-ai: upstashCredentials got `encryptionKey: undefined`, so secrets are stored unencrypted.",
+    );
+  }
   const box = config.encryptionKey === undefined ? undefined : secretBox(config.encryptionKey);
   // Bind the ciphertext to its owner, id and the clear-text type/expiry that `list` shows.
   const aad = (scope: CredentialScope, id: string, type: string, expiresAt: number | undefined) =>
@@ -138,10 +144,15 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
         `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} is encrypted; pass \`encryptionKey\`.`,
       );
     }
-    return box.open<Credential>(
-      { iv: stored.iv, ct: stored.ct },
-      aad(scope, id, stored.t, stored.x),
-    );
+    return box
+      .open<Credential>({ iv: stored.iv, ct: stored.ct }, aad(scope, id, stored.t, stored.x))
+      .catch((err: unknown) => {
+        throw new Error(
+          `@upstash/agentkit-tanstack-ai: credential ${JSON.stringify(id)} could not be decrypted: ` +
+            "the `encryptionKey` is wrong, or the row was copied from another prefix or owner.",
+          { cause: err },
+        );
+      });
   }
 
   const checkId = (id: string) => {

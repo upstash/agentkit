@@ -1,6 +1,9 @@
 import type { FlatIndexSchema, NestedIndexSchema, Redis, SearchIndex } from "@upstash/redis";
 import { addTelemetry } from "./telemetry.js";
 
+/** Default index names of @upstash/agentkit versions before the shared `agentkit` index. */
+const LEGACY_INDEXES = ["agentkit_memory", "agentkit_chat"];
+
 /** The schema type accepted by `redis.search.index` / `createIndex` (an `s.object({...})`). */
 export type AnySearchSchema = NestedIndexSchema | FlatIndexSchema;
 
@@ -81,25 +84,44 @@ export class ReactiveSearchIndex<TSchema extends AnySearchSchema> {
       } as Parameters<Redis["search"]["createIndex"]>[0])
       .then(
         () => undefined,
-        (err: unknown) => {
+        async (err: unknown) => {
           // An existing index is never dropped here, since other clients may be using it.
           if (/exceeded max index count/i.test(String(err))) {
-            throw new Error(
-              `Cannot create search index "${this.indexName}": the database has no index slots left ` +
-                `(the Free plan allows one). Indexes from earlier @upstash/agentkit versions are no ` +
-                `longer used: run \`SEARCH.DROP agentkit_memory\` and \`SEARCH.DROP agentkit_chat\` ` +
-                `(documents are kept and indexed again) and start again.`,
-              { cause: err },
-            );
+            throw new Error(await this.noSlotsMessage(), { cause: err });
           }
           if (!/different configuration/i.test(String(err))) throw err;
           throw new Error(
             `Search index "${this.indexName}" exists with a different definition, e.g. from an ` +
-              `older @upstash/agentkit version. Stop every client, run \`SEARCH.DROP ${this.indexName}\` ` +
-              `(documents are kept and indexed again) and start again.`,
+              `older @upstash/agentkit version. Run \`SEARCH.DROP ${this.indexName}\`: documents are ` +
+              `kept and indexed again, and this client retries on its next read. An instance still on ` +
+              `the older version recreates the old index, so upgrade every instance first.`,
           );
         },
       );
+  }
+
+  /** The "no index slots" error, naming only old AgentKit indexes that actually exist. */
+  private async noSlotsMessage(): Promise<string> {
+    const head =
+      `Cannot create search index "${this.indexName}": the database has no index slots left ` +
+      `(the Free plan allows one).`;
+    const old: string[] = [];
+    for (const name of LEGACY_INDEXES) {
+      if (name === this.indexName) continue;
+      const info = await this.redis.search
+        .index({ name })
+        .describe()
+        .catch(() => null);
+      if (info) old.push(name);
+    }
+    if (!old.length) {
+      return `${head} Drop an index this database no longer uses with \`SEARCH.DROP <name>\`.`;
+    }
+    return (
+      `${head} Indexes from earlier @upstash/agentkit versions are no longer used: run ` +
+      old.map((name) => `\`SEARCH.DROP ${name}\``).join(" and ") +
+      ` (documents are kept and indexed again).`
+    );
   }
 
   private ensure(): Promise<void> {

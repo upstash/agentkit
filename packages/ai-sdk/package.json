@@ -30,7 +30,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm -w exec vitest run packages/ai-sdk/"
   },
   "keywords": [
     "upstash",

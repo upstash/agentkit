@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runPersistenceConformance } from "@tanstack/ai-persistence/testkit";
 import type { PersistenceConformanceCheck } from "@tanstack/ai-persistence/testkit";
+import { withGenerationPersistence } from "@tanstack/ai-persistence";
 import type { BlobStore } from "@tanstack/ai-persistence";
+import { Redis } from "@upstash/redis";
 import { Bucket } from "@upstash/blob";
 import { upstashPersistence } from "./persistence.js";
 import { testBucket, type TestBucket } from "../testing/test-bucket.js";
@@ -84,7 +86,7 @@ describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
   });
 
   it("deleting an artifact while it is re-saved elsewhere leaves no dangling index entry", async () => {
-    const { artifacts } = upstashPersistence({ redis, prefix: `${prefix}:artdel` }).stores;
+    const { artifacts } = upstashPersistence({ redis, prefix: `${prefix}:artdel`, bucket }).stores;
     const base = {
       artifactId: "x",
       blobKey: "bk",
@@ -145,11 +147,11 @@ describe.skipIf(!hasRedisCreds)("upstashPersistence (live Redis)", () => {
     expect(await got!.text()).toBe("second");
   });
 
-  it("omits the blobs store when no bucket is given", () => {
+  it("omits the blobs and artifacts stores when no bucket is given", () => {
     const stores = upstashPersistence({ redis, prefix: `${prefix}:nob` }).stores;
     expect(stores.blobs).toBeUndefined();
+    expect(stores.artifacts).toBeUndefined();
     expect(stores.generationRuns).toBeDefined();
-    expect(stores.artifacts).toBeDefined();
   });
 });
 
@@ -259,7 +261,8 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
   });
 
   it("moves a re-saved artifact between run and thread indexes", async () => {
-    const { artifacts } = upstashPersistence({ redis, prefix }).stores;
+    // Artifact records come with a bucket; these tests never touch its bytes.
+    const { artifacts } = upstashPersistence({ redis, prefix, bucket: {} as TestBucket }).stores;
     const base = {
       artifactId: "a1",
       blobKey: "bk",
@@ -277,7 +280,8 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
   });
 
   it("concurrent saves of one artifact settle on a single indexed copy", async () => {
-    const { artifacts } = upstashPersistence({ redis, prefix }).stores;
+    // Artifact records come with a bucket; these tests never touch its bytes.
+    const { artifacts } = upstashPersistence({ redis, prefix, bucket: {} as TestBucket }).stores;
     const base = {
       artifactId: "a2",
       blobKey: "bk",
@@ -452,5 +456,16 @@ describe.skipIf(!hasRedisCreds)("key-locking scripts (live Redis)", () => {
       /at most 10000/,
     );
     expect(await log.read({ logId: "cap" })).toEqual([]);
+  });
+});
+
+// No Redis needed: TanStack checks the stores when the middleware is created.
+describe("upstashPersistence without a bucket", () => {
+  it("works with withGenerationPersistence (runs only, no artifact bytes)", () => {
+    const redis = new Redis({ url: "https://example.invalid", token: "unused" });
+    expect(() => withGenerationPersistence(upstashPersistence({ redis }))).not.toThrow();
+    expect(() =>
+      withGenerationPersistence(upstashPersistence({ redis, bucket: {} as TestBucket })),
+    ).not.toThrow();
   });
 });

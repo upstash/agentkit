@@ -60,9 +60,15 @@ export default defineExtension({
       .union([
         z.boolean(),
         z.object({
-          /** Base key prefix for stored chats; defaults to `agentkit:chat`. */
+          /**
+           * Base key prefix for stored chats; defaults to `agentkit:chat`. Setting it (or
+           * `indexName`) gives chats their own index instead of sharing `agentkit` with memory.
+           */
           prefix: z.string().min(1).optional(),
-          /** Redis Search index name. Defaults to the (identifier-safe) `prefix`. */
+          /**
+           * Redis Search index name. Unset (with no `prefix`), chats share the `agentkit` index with
+           * memory; with a `prefix` it defaults to the identifier-safe `prefix`.
+           */
           indexName: z.string().min(1).optional(),
           /** Optional TTL (seconds) per chat. Omit for no expiry. */
           ttlSeconds: z.number().int().positive().optional(),

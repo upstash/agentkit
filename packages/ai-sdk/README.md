@@ -34,14 +34,15 @@ export async function POST(req: Request) {
   const userId = await getSessionUserId(req); // your auth session — never trust a client-sent id
   const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
 
-  const result = streamText({ model, messages: convertToModelMessages(messages) });
+  const result = streamText({ model, messages: await convertToModelMessages(messages) });
 
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) =>
-        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" });
+      },
     }),
   });
 }
@@ -93,11 +94,11 @@ can't be read or overwritten under a different `userId`.
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const tools = createMemoryTools({ userId });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "What do you know about me?" });
 ```
 
 <details>
@@ -159,12 +160,12 @@ generated from your schema. Use these over your own documents for RAG.
 ```ts
 import { s } from "@upstash/redis";
 import { createSearchTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
 const tools = createSearchTools({ schema, indexName: "users" });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "How many users named Ada live in London?" });
 ```
 
 <details>
