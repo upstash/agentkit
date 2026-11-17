@@ -9,7 +9,7 @@ your `agent/` tree:
 | `redisDocuments` / `redisMemory` (`@upstash/agentkit-eve/memory`) | Upstash Redis behind eve's native [memory slots](https://eve.dev/docs/memory) — storage for `fileMemory()`, or a full ranked/auto-capturing provider. |
 | `defineSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimitAuth` | A rate-limit gate for your channel's `auth` walk. |
-| `upstash` (`@upstash/agentkit-eve/sandbox`) | Upstash Box sandbox backend for `defineSandbox`. |
+| `UpstashSandbox` (`@upstash/agentkit-eve/sandbox`) | Upstash Box sandbox backend for `defineSandbox`. |
 | `defineCachedTool` | A `defineTool` whose result is memoized in Redis. |
 
 > **Prefer one mount file over per-tool files?**

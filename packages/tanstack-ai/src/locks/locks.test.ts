@@ -34,13 +34,17 @@ describe.skipIf(!hasRedisCreds)("upstashLocks (live Redis)", () => {
   });
 
   it("different keys do not block each other", async () => {
+    // Check that the two sections overlap, not a wall-clock bound, which depends on Redis latency.
     const locks = upstashLocks({ redis, prefix });
-    const started = Date.now();
-    await Promise.all([
-      locks.withLock("k:a", () => sleep(300)),
-      locks.withLock("k:b", () => sleep(300)),
-    ]);
-    expect(Date.now() - started).toBeLessThan(550);
+    let active = 0;
+    let maxActive = 0;
+    const section = async () => {
+      maxActive = Math.max(maxActive, ++active);
+      await sleep(300);
+      active--;
+    };
+    await Promise.all([locks.withLock("k:a", section), locks.withLock("k:b", section)]);
+    expect(maxActive).toBe(2);
   });
 
   it("passes a live signal and releases on failure", async () => {

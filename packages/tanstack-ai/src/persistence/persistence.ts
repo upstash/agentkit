@@ -64,10 +64,13 @@ export interface UpstashPersistenceConfig {
   logPollIntervalMs?: number;
 }
 
-/** The stores {@link upstashPersistence} returns; `blobs` is present when a `bucket` is passed. */
+/**
+ * The stores {@link upstashPersistence} returns. `artifacts` and `blobs` are present together, when a
+ * `bucket` is passed: TanStack's generation persistence needs both or neither.
+ */
 export type UpstashPersistenceStores = ChatPersistenceStores & {
   generationRuns: GenerationRunStore;
-  artifacts: ArtifactStore;
+  artifacts?: ArtifactStore;
   /** The session index: one entry per tenant and thread (title, members, usage, ...). */
   sessions: SessionIndexStore;
   /** The append-only session log: records, ownership fence, input lane, snapshots. */
@@ -115,15 +118,15 @@ return 1`;
  *   time, so `findActiveRun`, `listByThread`, `listByParentRun` and `listReclaimable` are index reads.
  * - **interrupts**: human-in-the-loop pauses, indexed by thread and run; `commitBatch` is atomic.
  * - **metadata**: one document per `(namespace, key)`, both parts escaped so they never collide.
- * - **generationRuns** / **artifacts**: one-shot generation jobs (image, video, speech) and records of
- *   what they produced.
+ * - **generationRuns**: one-shot generation jobs (image, video, speech).
  * - **sessions**: the session index (`SessionIndexStore`): one entry per `(tenantId, threadId)` with
  *   members, title, usage and app metadata; `list` reads newest-first per tenant and `upsertIf` is a
  *   compare-and-set on a revision.
  * - **log**: the append-only session log (`LogStore`): records at consecutive positions, the
  *   ownership fence with epochs, the input lane, snapshots, truncation and worker affinity; each call is
  *   one Lua script and the store clock is the Redis clock.
- * - **blobs** (when `bucket` is given): the produced bytes in Upstash Blob, records in Redis.
+ * - **artifacts** / **blobs** (when `bucket` is given): the produced bytes in Upstash Blob, and
+ *   records of them in Redis.
  *
  * Records are RedisJSON documents written by single commands or single Lua scripts, so concurrent
  * instances cannot interleave a write. Checked against TanStack's `runPersistenceConformance` suite.
@@ -137,7 +140,7 @@ return 1`;
  */
 export function upstashPersistence(
   config: UpstashPersistenceConfig & { bucket: BlobBucketLike },
-): AIPersistence<UpstashPersistenceStores & { blobs: BlobStore }>;
+): AIPersistence<UpstashPersistenceStores & { artifacts: ArtifactStore; blobs: BlobStore }>;
 export function upstashPersistence(
   config?: UpstashPersistenceConfig,
 ): AIPersistence<UpstashPersistenceStores>;
@@ -392,14 +395,14 @@ export function upstashPersistence(
       interrupts,
       metadata,
       generationRuns: redisGenerationRunStore(redis, p),
-      artifacts: redisArtifactStore(redis, p),
       sessions: redisSessionIndexStore(redis, p),
       log: redisLogStore(redis, p, {
         ...(config.logPollIntervalMs !== undefined
           ? { pollIntervalMs: config.logPollIntervalMs }
           : {}),
       }),
-      ...(blobs ? { blobs } : {}),
+      // Artifacts record bytes kept in the bucket, so they come with it (TanStack requires both).
+      ...(blobs ? { artifacts: redisArtifactStore(redis, p), blobs } : {}),
     },
   } as AIPersistence<UpstashPersistenceStores>;
 }

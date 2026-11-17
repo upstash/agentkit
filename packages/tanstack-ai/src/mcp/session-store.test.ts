@@ -155,7 +155,7 @@ describe.skipIf(!hasRedisCreds)("upstashMcpSessionStore (live Redis)", () => {
     await redis.hset(`${p}:mcp:session:u`, {
       docs: (await redis.hget(`${p}:mcp:session:t`, "docs"))!,
     });
-    await expect(store.get("u", "docs")).rejects.toThrow();
+    await expect(store.get("u", "docs")).rejects.toThrow(/could not be decrypted/);
     // And a store without the key refuses instead of handing out a partial descriptor.
     await expect(upstashMcpSessionStore({ redis, prefix: p }).get("t", "docs")).rejects.toThrow(
       /encryptionKey/,

@@ -3,14 +3,13 @@ import { defineMemory } from "eve/memory";
 import { byPrincipal } from "eve/memory/scope";
 
 // AgentKit's own memory provider: it recalls the top-K memories that are *relevant to this turn*
-// (BM25 fuzzy search over Upstash Redis Search) rather than replaying one bounded document, and it
+// (hybrid keyword + semantic search over Upstash Redis Search) rather than replaying one bounded document, and it
 // contributes `recall__save_memory` / `recall__forget_memory` so the model curates what it keeps.
 export default defineMemory({
   description: "Everything the caller has told this agent before, recalled by relevance.",
   provider: redisMemory({
     // `redis` omitted → Redis.fromEnv() inside the package.
     topK: 5, // optional: max memories recalled per turn (default 5)
-    minScore: 0.1, // optional: minimum BM25 relevance (default 0 — BM25 scores are unbounded)
     // rememberMessages defaults to true, which means "fromUser" — the caller's messages are stored,
     // the model's replies are not. Widen with "all" / "fromModel" (both drop `forget_memory`, since
     // a reply confirming a deletion quotes the deleted text), or `false` to capture nothing.

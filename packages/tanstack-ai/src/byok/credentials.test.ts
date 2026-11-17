@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { Redis } from "@upstash/redis";
 import { storedProviderKeys } from "@tanstack/ai/byok/server";
 import { upstashCredentials } from "./credentials.js";
 import { cleanupKeys, hasRedisCreds, testRedis, uniquePrefix } from "../testing/test-support.js";
@@ -123,12 +124,12 @@ describe.skipIf(!hasRedisCreds)("upstashCredentials (live Redis)", () => {
       prefix: p,
       encryptionKey: randomBytes(32).toString("base64"),
     });
-    await expect(other.get({ scope, id: "new" })).rejects.toThrow();
+    await expect(other.get({ scope, id: "new" })).rejects.toThrow(/could not be decrypted/);
 
     // Ciphertext copied to another id (or owner) must not decrypt.
     const stolen = await redis.hget(`${p}:credentials:t:u`, "new");
     await redis.hset(`${p}:credentials:t:u`, { moved: stolen as never });
-    await expect(enc.get({ scope, id: "moved" })).rejects.toThrow();
+    await expect(enc.get({ scope, id: "moved" })).rejects.toThrow(/could not be decrypted/);
   });
 
   it("rejects a bad encryption key and a bad id", async () => {
@@ -208,5 +209,18 @@ describe.skipIf(!hasRedisCreds)("upstashCredentials (live Redis)", () => {
     await expect(
       store.set({ scope: {}, id: "__proto__", credential: { type: "api_key", value: "x" } }),
     ).rejects.toThrow(/__proto__/);
+  });
+});
+
+describe("upstashCredentials config", () => {
+  it("warns when `encryptionKey` is passed but undefined (e.g. an unset env var)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const redis = new Redis({ url: "https://example.invalid", token: "unused" });
+    upstashCredentials({ redis, encryptionKey: undefined });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/stored unencrypted/));
+    warn.mockClear();
+    upstashCredentials({ redis });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

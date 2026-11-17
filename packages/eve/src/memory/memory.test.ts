@@ -1142,7 +1142,7 @@ describe.skipIf(!hasRedisCreds)("redisMemory() — MemoryProvider (live Redis)",
     );
     expect(doc!.text).toBe("");
     expect(doc!.deleted).toBe(true);
-  });
+  }, 120_000); // dozens of sequential saves: slow against a remote database
 
   // ---------------------------------------------------------------------------------------
   // Persistence: what capture wrote is really in Redis, and recall gets it back

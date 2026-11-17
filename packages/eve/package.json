@@ -38,7 +38,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm -w exec vitest run packages/eve/"
   },
   "keywords": [
     "upstash",
@@ -53,7 +54,6 @@
     "tools"
   ],
   "dependencies": {
-    "@upstash/agentkit-ai-sdk": "workspace:*",
     "@upstash/agentkit-sdk": "workspace:*",
     "zod": "^3.23.8 || ^4"
   },
