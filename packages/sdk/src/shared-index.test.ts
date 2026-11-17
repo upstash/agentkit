@@ -57,4 +57,29 @@ describe.skipIf(!hasRedisCreds)("shared index (live Redis)", () => {
       "s1",
     ]);
   });
+
+  it("treats a chat saved before the shared index (no `kind`) as a chat, not a memory", async () => {
+    const oldUser = `${userId}-old`;
+    await chats.saveChat({
+      userId: oldUser,
+      sessionId: "old",
+      messages: [{ role: "user", parts: [{ type: "text", text: "An old conversation." }] }],
+    });
+    await redis.json.del(`agentkit:chat:${oldUser}:old`, "$.kind"); // as an older version wrote it
+    await memory.add({ userId: oldUser, text: "The user is vegetarian." });
+    await memory.searchIndex.waitIndexing();
+
+    const listed = await pollUntil(
+      () => chats.listChats({ userId: oldUser }),
+      (rows) => rows.length > 0,
+    );
+    expect(listed.map((c) => c.sessionId)).toEqual(["old"]);
+    expect((await memory.list({ userId: oldUser })).map((m) => m.text)).toEqual([
+      "The user is vegetarian.",
+    ]);
+    expect(await memory.count({ userId: oldUser })).toBe(1);
+
+    await cleanupKeys(redis, `agentkit:memory:${oldUser}`);
+    await cleanupKeys(redis, `agentkit:chat:${oldUser}`);
+  });
 });

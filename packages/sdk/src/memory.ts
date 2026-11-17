@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { s } from "@upstash/redis";
+import { errors, s } from "@upstash/redis";
 import type { FlatIndexSchema, InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex } from "./reactive-index.js";
 import {
+  IS_CHAT,
   SHARED_INDEX_NAME,
   SHARED_MEMORY_PREFIX,
   SHARED_PREFIXES,
@@ -137,7 +138,7 @@ export interface AgentMemoryConfig<TSchema = EmptySchema> {
    * re-index, existing records untouched.
    */
   metadataSchema?: TSchema & MetadataSchemaShape<TSchema>;
-  /** Default relevance floor for {@link AgentMemory.recall}: BM25, so keyword results only. */
+  /** Default BM25 floor for {@link AgentMemory.recall}. Above 0, recall with a query is keyword only. */
   minScore?: number;
   /**
    * Report the sdk name + version to Upstash as a header on the requests made by your redis client.
@@ -180,8 +181,8 @@ export class AgentMemory<
     const prefix = config.prefix ?? SHARED_MEMORY_PREFIX;
     this.keyPrefix = `${prefix}:`;
     this.metadataFields = Object.keys(config.metadataSchema ?? {});
-    // Search has no `$ne`, and memories carry no `kind`, hence `$mustNot`.
-    this.notChat = shared ? { $mustNot: [{ kind: { $eq: "chat" } }] } : {};
+    // Search has no `$ne`, hence `$mustNot`.
+    this.notChat = shared ? { $mustNot: [IS_CHAT] } : {};
     const schema = shared
       ? (SharedSchema as unknown as typeof MemorySchema)
       : config.metadataSchema === undefined
@@ -193,6 +194,7 @@ export class AgentMemory<
             ...(config.metadataSchema as Record<string, never>),
           }) as typeof MemorySchema);
     this.index = new ReactiveSearchIndex({
+      createFirst: true,
       redis: this.redis,
       // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
       indexName: shared
@@ -245,10 +247,12 @@ export class AgentMemory<
 
   /**
    * Recall the memories most relevant to `query` for `userId`: keyword (`$smart`) and semantic
-   * (`$ann`) results merged with `$rrf`. If the hybrid query fails, recall falls back to keyword once.
-   * Omit `query` (or pass an empty string) to return the user's memories, unranked.
+   * (`$ann`) results merged with `$rrf`. Omit `query` (or pass an empty string) to return the user's
+   * memories, unranked.
    *
-   * `minScore` applies to keyword results only (hybrid scores are on another scale).
+   * `minScore` (BM25) switches recall to keyword only, with that floor: hybrid scores are rank-fusion
+   * values with no relevance meaning, so they cannot be cut off. If the server rejects the hybrid
+   * query, recall warns and uses keyword once.
    */
   async recall(params: {
     userId: string;
@@ -263,23 +267,27 @@ export class AgentMemory<
     const topK = params.topK ?? 5;
     const filter = this.filterFor(userId, params.filter);
     if (!query || !query.trim()) return this.run(filter, topK, userId);
-    try {
-      return await this.run(
-        {
-          $rrf: {
-            retrievers: [
-              { ...filter, text: { $smart: query } },
-              { $ann: { field: "text", query, filter } },
-            ],
-          },
-        },
-        topK,
-        userId,
-      );
-    } catch {
+    const keyword = async () => {
       const minScore = params.minScore ?? this.minScore;
       const hits = await this.run({ ...filter, text: { $smart: query } }, topK, userId);
       return hits.filter((h) => h.score >= minScore);
+    };
+    if ((params.minScore ?? this.minScore) > 0) return keyword();
+    const hybrid = {
+      $rrf: {
+        retrievers: [
+          { ...filter, text: { $smart: query } },
+          { $ann: { field: "text", query, filter } },
+        ],
+      },
+    };
+    try {
+      return await this.run(hybrid, topK, userId);
+    } catch (err) {
+      // Only a server-side rejection; a bug or a network error is not hidden.
+      if (!(err instanceof errors.UpstashError)) throw err;
+      console.warn("[agentkit] hybrid memory recall failed, using keyword recall:", err.message);
+      return keyword();
     }
   }
 

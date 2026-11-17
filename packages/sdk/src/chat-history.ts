@@ -3,6 +3,7 @@ import type { InferFilterFromSchema, Redis } from "@upstash/redis";
 import { ReactiveSearchIndex } from "./reactive-index.js";
 import {
   SHARED_CHAT_PREFIX,
+  IS_CHAT,
   SHARED_INDEX_NAME,
   SHARED_PREFIXES,
   SharedSchema,
@@ -150,7 +151,7 @@ export class ChatHistory<TMessage = unknown> {
   private index: ReactiveSearchIndex<typeof ChatHistorySchema>;
   private ttlSeconds?: number;
   private extract: (messages: TMessage[]) => ExtractedText;
-  /** In the shared index, chats are told apart from memories by `kind`. */
+  /** In the shared index, chats are told apart from memories by `sessionId` ({@link IS_CHAT}). */
   private shared: boolean;
 
   constructor(config: ChatHistoryConfig<TMessage>) {
@@ -160,6 +161,7 @@ export class ChatHistory<TMessage = unknown> {
     const prefix = config.prefix ?? SHARED_CHAT_PREFIX;
     this.keyPrefix = `${prefix}:`;
     this.index = new ReactiveSearchIndex({
+      createFirst: true,
       redis: this.redis,
       // Index names must be identifier-safe; the key prefix keeps the human-readable base prefix.
       indexName: this.shared
@@ -277,9 +279,7 @@ export class ChatHistory<TMessage = unknown> {
     limit?: number,
   ): Promise<{ score: number; data: ChatDoc<TMessage> }[]> {
     // In the shared index, a user's memories match a `userId` filter too.
-    const scoped = this.shared
-      ? ({ $and: [{ kind: { $eq: "chat" } }, filter] } as typeof filter)
-      : filter;
+    const scoped = this.shared ? ({ $and: [IS_CHAT, filter] } as typeof filter) : filter;
     return this.index.query({
       filter: scoped,
       ...(limit !== undefined ? { limit } : {}),

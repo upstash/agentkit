@@ -62,7 +62,7 @@ export default defineMemorySaveTool({
 
 - **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
 - `topK` — max memories `recall` returns.
-- `minScore` — BM25 relevance floor, for keyword results only.
+- `minScore` — a BM25 floor. Set it to recall by keyword only, above that floor; unset, recall is hybrid.
 - `redis` — defaults to `Redis.fromEnv()`.
 
 `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from eve's **verified

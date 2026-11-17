@@ -18,7 +18,7 @@ export interface CreateAgentMemoryConfig {
   indexName?: string;
   /** Max memories returned by recall (tools and automatic recall). Defaults to `5`. */
   topK?: number;
-  /** Relevance floor (BM25 score), for keyword results only. */
+  /** BM25 floor. Set, recall with a query is keyword only, above it; unset, recall is hybrid. */
   minScore?: number;
   /** Recall tool name. Defaults to `recall_memory`. */
   recallToolName?: string;

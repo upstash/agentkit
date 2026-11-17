@@ -21,3 +21,10 @@ export const SharedSchema = s.object({
   userMessages: s.string(),
   modelMessages: s.string(),
 });
+
+/**
+ * Matches chat rows in the shared index. Chats are told apart by `sessionId`, which every chat has and
+ * no memory does, rather than by `kind`: chats saved before the shared index have no `kind`. Search has
+ * no "field exists" operator; `$regex` on the untokenized `sessionId` serves as one.
+ */
+export const IS_CHAT = { sessionId: { $regex: ".+" } };

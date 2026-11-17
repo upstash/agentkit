@@ -154,8 +154,8 @@ export interface RedisMemoryConfig {
   topK?: number;
 
   /**
-   * Minimum BM25 relevance, for keyword results only (recall falls back to keyword if a hybrid
-   * query fails). Hybrid scores are rank-fusion values and are not filtered.
+   * Minimum BM25 relevance. Set above 0, recall with a query is keyword only, above that floor;
+   * unset, recall is hybrid (rank-fusion scores, which have no cutoff).
    *
    * @default 0 — `AgentMemory`'s own default
    */

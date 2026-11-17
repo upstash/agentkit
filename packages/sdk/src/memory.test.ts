@@ -76,14 +76,22 @@ describe.skipIf(!hasRedisCreds)("AgentMemory (live Redis)", () => {
     expect(aliceHits.every((h) => h.text.includes("alice"))).toBe(true);
   });
 
-  it("does not apply minScore to hybrid results (their scores are rank-fusion values)", async () => {
+  it("with minScore, recalls by keyword only, above that BM25 floor", async () => {
     await memory.add({ text: "content about serverless databases", userId: "score" });
+    await memory.add({ text: "The user is vegetarian.", userId: "score" });
     await memory.searchIndex.waitIndexing();
     const hits = await pollUntil(
-      () => memory.recall({ query: "serverless databases", userId: "score", minScore: 1e9 }),
+      () => memory.recall({ query: "serverless databases", userId: "score", minScore: 0.1 }),
       (found) => found.length > 0,
     );
-    expect(hits[0]?.text).toContain("serverless");
+    // Semantic neighbours that share no word are not padded in.
+    expect(hits.map((h) => h.text)).toEqual(["content about serverless databases"]);
+    expect(
+      await memory.recall({ query: "quantum chromodynamics", userId: "score", minScore: 0.1 }),
+    ).toEqual([]);
+    expect(
+      await memory.recall({ query: "serverless databases", userId: "score", minScore: 1e9 }),
+    ).toEqual([]);
   });
 
   it("recalls everything for a user when no query is given", async () => {

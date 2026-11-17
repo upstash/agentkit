@@ -106,7 +106,7 @@ await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do yo
 - **`userId`** _(required)_ — a string, or `(input, options) => string`.
 - `redis` — defaults to `Redis.fromEnv()`.
 - `topK` — max memories `recall` returns.
-- `minScore` — BM25 relevance floor, for keyword results only.
+- `minScore` — a BM25 floor. Set it to recall by keyword only, above that floor; unset, recall is hybrid.
 - `recallToolName` / `saveToolName` — override the tool names.
 
 `userId` is the only tenant boundary (required, non-empty, no `:`). **Derive it from a verified

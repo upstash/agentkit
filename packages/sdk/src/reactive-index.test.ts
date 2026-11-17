@@ -91,7 +91,7 @@ describe.skipIf(!hasRedisCreds)("ReactiveSearchIndex (live Redis)", () => {
    * Build a ReactiveSearchIndex whose `redis.search` is a single stable snapshot, and return a spy on
    * its `createIndex` (call-through). Call AFTER any setup `createIndex` so setup isn't counted.
    */
-  function bind(prefix: string, name: string) {
+  function bind(prefix: string, name: string, schema: typeof Schema = Schema, createFirst = true) {
     const search = redis.search; // snapshot once so the spy survives repeated `.search` access
     const createIndexSpy = vi.spyOn(search, "createIndex");
     const proxy = new Proxy(redis, {
@@ -101,7 +101,8 @@ describe.skipIf(!hasRedisCreds)("ReactiveSearchIndex (live Redis)", () => {
       redis: proxy,
       indexName: name,
       prefix: `${prefix}:`,
-      schema: Schema,
+      schema,
+      createFirst,
     });
     return { ri, createIndexSpy };
   }
@@ -185,8 +186,23 @@ describe.skipIf(!hasRedisCreds)("ReactiveSearchIndex (live Redis)", () => {
       schema: s.object({ title: s.string() }),
       existsOk: true,
     } as CreateParams);
-    const { ri } = bind(prefix, name);
+    const { ri, createIndexSpy } = bind(prefix, name);
     await expect(ri.query({ filter: FILTER })).rejects.toThrow(/SEARCH\.DROP/);
+
+    // The failed create is not remembered: after the drop the same instance creates and reads.
+    await redis.search.index({ name, schema: Schema }).drop();
+    expect(await ri.query({ filter: FILTER })).toEqual([]);
+    expect(createIndexSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("without createFirst, reads an existing index whose definition covers more fields", async () => {
+    // Search tools over an index the caller created: their schema may be a subset of the index's.
+    const { prefix, name } = names("reactive-subset");
+    await seedEmptyIndex(prefix, name);
+    const subset = s.object({ title: s.string(), tenant: s.string().noTokenize() });
+    const { ri, createIndexSpy } = bind(prefix, name, subset as unknown as typeof Schema, false);
+    expect(await ri.query({ filter: FILTER })).toEqual([]);
+    expect(createIndexSpy).not.toHaveBeenCalled();
   });
 
   // --- 4. Reactive wrapper: provisioning is memoized across reads on one instance ------------------
