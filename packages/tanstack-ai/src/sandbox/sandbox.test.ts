@@ -116,4 +116,25 @@ describe.skipIf(!hasRedisCreds)("sandbox stores (live Redis)", () => {
     expect(await checkpoints.getHead("t")).toBe("007");
     expect((await checkpoints.list("t")).map((c) => c.id)).toEqual(["007"]);
   });
+
+  it("stores symlink entries (recorded by @tanstack/ai-sandbox 1.3.0+)", async () => {
+    const checkpoints = upstashSandboxCheckpointStore({ redis, prefix: next() });
+    const writer = await checkpoints.acquireWriter("t");
+    const files = [{ path: "CLAUDE.md", kind: "symlink" as const, target: "AGENTS.md" }];
+    await checkpoints.append({
+      checkpoint: {
+        id: "c1",
+        threadId: "t",
+        parentCheckpointId: null,
+        createdAt: 1,
+        reason: "automatic",
+        files,
+        conversation: [],
+        artifacts: [],
+      },
+      expectedHeadId: null,
+      writer,
+    });
+    expect((await checkpoints.get("c1"))?.files).toEqual(files);
+  });
 });

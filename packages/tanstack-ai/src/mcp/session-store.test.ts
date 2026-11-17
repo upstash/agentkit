@@ -160,6 +160,9 @@ describe.skipIf(!hasRedisCreds)("upstashMcpSessionStore (live Redis)", () => {
     await expect(upstashMcpSessionStore({ redis, prefix: p }).get("t", "docs")).rejects.toThrow(
       /encryptionKey/,
     );
+    // A plain entry (written without the key, or planted in Redis) is refused by a keyed store.
+    await upstashMcpSessionStore({ redis, prefix: p }).set("v", { docs: docs() });
+    await expect(store.get("v", "docs")).rejects.toThrow(/not encrypted/);
   });
 
   it("slides the TTL on get", async () => {

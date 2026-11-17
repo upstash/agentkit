@@ -476,8 +476,8 @@ importers:
         specifier: 1.0.1
         version: 1.0.1(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))
       '@tanstack/ai-sandbox':
-        specifier: 1.2.1
-        version: 1.2.1(@tanstack/ai-persistence@1.0.1(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0)))(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))(zod@4.4.3)
+        specifier: 1.3.0
+        version: 1.3.0(@tanstack/ai-persistence@1.0.1(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0)))(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))(zod@4.4.3)
       '@upstash/blob':
         specifier: 0.0.7
         version: 0.0.7(react@19.2.6)
@@ -2576,11 +2576,11 @@ packages:
       react-dom:
         optional: true
 
-  '@tanstack/ai-sandbox@1.2.1':
-    resolution: {integrity: sha512-fhQx9b5gThjAQhkHeQisp8fKwslVmxPTdjYDaMxteIcmSLRikheeYTHPD9RuqHx7EZ+aJGPpIm5or6dEDM2bdA==}
+  '@tanstack/ai-sandbox@1.3.0':
+    resolution: {integrity: sha512-KG3Hfp5kksI61158O0SXr15Wwm7SkZgow7hIjeODh4ZECYyaNPIFRqqfw2+XC2IkYBwsgTu1OLb80jVaeM3RWg==}
     peerDependencies:
       '@ngrok/ngrok': ^1.0.0
-      '@tanstack/ai': ^1.3.0
+      '@tanstack/ai': ^1.4.0
       '@tanstack/ai-harness': ^0.3.0
       '@tanstack/ai-persistence': ^1.0.1
       vitest: ^4.1.10
@@ -7214,7 +7214,7 @@ snapshots:
       - octane
       - zod
 
-  '@tanstack/ai-sandbox@1.2.1(@tanstack/ai-persistence@1.0.1(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0)))(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))(zod@4.4.3)':
+  '@tanstack/ai-sandbox@1.3.0(@tanstack/ai-persistence@1.0.1(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0)))(@tanstack/ai@1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@2.1.9(@types/node@20.19.43)(lightningcss@1.32.0))(zod@4.4.3)':
     dependencies:
       '@modelcontextprotocol/server': 2.3.1
       '@tanstack/ai': 1.4.0(@opentelemetry/api@1.9.1)(zod@4.4.3)

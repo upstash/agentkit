@@ -51,8 +51,11 @@ function validateEntries(checkpoint: SandboxCheckpoint): void {
       if (typeof e.blobKey !== "string" || !FILE_KEY.test(e.blobKey)) {
         throw invalid("File entries require a valid content-addressed blobKey");
       }
+    } else if (e.kind === "symlink") {
+      // @tanstack/ai-sandbox 1.3.0+ records workspace symlinks.
+      if (typeof e.target !== "string") throw invalid("Symlink entries require a string target");
     } else if (e.kind !== "dir") {
-      throw invalid("Checkpoint entry kind must be file or dir");
+      throw invalid("Checkpoint entry kind must be file, dir or symlink");
     }
   }
 }
