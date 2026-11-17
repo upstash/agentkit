@@ -75,6 +75,14 @@ export type RedisMemoryCaptureContext =
  */
 export type RememberMessages = boolean | "fromUser" | "fromModel" | "all";
 
+/** Activity text channels show for each tool. Fixed strings: a thread status is visible to everyone. */
+const TOOL_LABELS = {
+  save_memory: "Saving to memory",
+  search_memory: "Searching memory",
+  forget_memory: "Forgetting a memory",
+  read_session: "Reading an earlier conversation",
+} as const;
+
 /** Configuration for {@link redisMemory}. */
 export interface RedisMemoryConfig {
   /**
@@ -649,6 +657,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
 
     {
       set.save_memory = defineTool({
+        label: { start: () => TOOL_LABELS.save_memory },
         description:
           "Save one concise, durable fact or preference about the user to long-term memory so " +
           "it can be recalled in future conversations. Omit secrets and current-task details.",
@@ -691,6 +700,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
       } as Parameters<typeof defineTool>[0]);
 
       set.search_memory = defineTool({
+        label: { start: () => TOOL_LABELS.search_memory },
         description:
           "Search this caller's long-term memory for something specific. Automatic recall already " +
           "puts the memories relevant to the current message in context — use this when you need " +
@@ -735,6 +745,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
 
       if (!capturesAgentMessages(config.rememberMessages)) {
         set.forget_memory = defineTool({
+          label: { start: () => TOOL_LABELS.forget_memory },
           description:
             `Permanently redact one entry by id — from recalled memories, \`${slot}__search_memory\` ` +
             `or \`${slot}__read_session\`. Its text is erased and it stops being recalled or ` +
@@ -779,6 +790,7 @@ export function redisMemory(config: RedisMemoryConfig = {}): MemoryProvider {
 
     {
       set.read_session = defineTool({
+        label: { start: () => TOOL_LABELS.read_session },
         description:
           "Read an earlier conversation in full, by the id shown as `session=<id>` next to a " +
           "recalled memory or a search result. Use it when something matched but you need the " +
