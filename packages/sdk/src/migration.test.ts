@@ -48,7 +48,7 @@ const message = (text: string) => ({ role: "user", parts: [{ type: "text", text 
 // Upgrading from @upstash/agentkit-sdk 0.9.0 on a database it already wrote to, then doing what the
 // errors and the changeset say. The test database allows several indexes; the Free-plan case gets a
 // temporary one-index database of its own.
-describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", () => {
+describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 120_000 }, () => {
   const redis = testRedis();
   const prefix = uniquePrefix("migrate");
   const userId = `migrate-${randomUUID().slice(0, 8)}`;
@@ -101,6 +101,7 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", () => {
       "The user is vegetarian.",
       "The user lives in Lisbon.",
     ]);
+    await memory.searchIndex.waitIndexing(); // the recreated index embeds the old documents first
     const byMeaning = await pollUntil(
       () => memory.recall({ userId, query: "What food should I cook for them?", topK: 1 }),
       (hits) => hits.length > 0,
@@ -138,6 +139,7 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", () => {
     const memory = new AgentMemory({ redis });
     const chats = new ChatHistory({ redis });
     const check = async () => {
+      await memory.searchIndex.waitIndexing();
       // The 0.9.0 chat (no `kind`) is still a chat, and never a memory.
       const listed = await pollUntil(
         () => chats.listChats({ userId }),
