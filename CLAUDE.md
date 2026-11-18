@@ -257,9 +257,8 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   bounded to 4,000 recalled chars / 64 KiB stored); `redisMemory()` = a whole provider (top-K BM25
   recall of *relevant* memories, automatic capture, `forget_memory` by id, unbounded store). The
   demo declares both slots.
-- **`EVAL` works on Upstash Redis over REST — verified live, not assumed** (2026-09, an
-  `upstash start-redis` DB). `redis.eval(script, keys, args)` from `@upstash/redis` is accepted with
-  auto-pipelining on (the default), a Lua table return round-trips as a JSON array, and
+- **`EVAL` works on Upstash Redis over REST: verified live, not assumed** (2026-09).
+  `redis.eval(script, keys, args)` from `@upstash/redis` is accepted with auto-pipelining on (the default), a Lua table return round-trips as a JSON array, and
   `HGET`/`HSET`/`EXPIRE` inside the script behave normally (`SCRIPT LOAD`/`EVALSHA` work too, but the
   backend just sends the ~300-byte script each time — writes are rare and `EVALSHA` would need a
   `NOSCRIPT` fallback). This is the *only* way to satisfy `MemoryDocumentBackend.write`'s
@@ -600,63 +599,32 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   search-tools.test.ts`, `packages/ai-sdk/src/memory.test.ts`, `packages/eve/src/memory.test.ts` and
   `packages/sdk/src/memory.test.ts` still seed before the index reliably exists, so they flake the same
   way (`expected 0 to be greater than 0`, `recalled[0]` undefined) — measured 2026-09 at roughly 4-in-6
-  red **on a one-index throwaway DB**, and confirmed identical on pristine `main`, so it is *not* a
+  red **on a one-index (Free-plan) DB**, and confirmed identical on pristine `main`, so it is *not* a
   regression from any dependency bump. On the real 10-index DB the pressure is far lower. Until they
   get the same treatment, verify a suspicious red by `FLUSHDB` -> one warm-up run (which provisions the
   index) -> a second measured run, and always A/B against `git stash` before blaming a bump.
-- **`upstash start-redis` needs no account or API key** (confirmed 2026-09): `npm i -g @upstash/cli`
-  then `upstash start-redis` prints a free REST URL + token, valid 72h. That is how to get creds in a
-  box that has none — write them to the repo-root `.env` (gitignored) and the suites stop skipping.
-- **Throwaway DBs from `upstash start-redis` (the `@upstash/cli` command; `npm i -g @upstash/cli`)
-  cap at *one* search index**, not 10 — `ERR Exceeded max index count of 1`. A single `pnpm test`
-  cascades into bogus create-index failures on one. Run **one test file at a time** with a `FLUSHDB`
-  between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`; FLUSHDB does drop
-  indexes, and `SEARCH.DROP <name>` is the only other lever — there is no list command).
-- **Throwaway DBs also *die* mid-run, and the failure mode looks exactly like a code regression.**
-  Measured 2026-09-15: every `start-redis` database (they all live behind the shared
-  `p2-global-eph.upstash.io` endpoint) went unreachable after roughly 3–6 test files — the REST
-  endpoint stops completing the TLS handshake, so `curl` hangs to its timeout and vitest reports
-  `Test timed out in 30000ms` / `Hook timed out in 10000ms` across **every** live suite at once,
-  including ones that never touch search (`tool-cache`, `chat-history`). Metrics for the dead DB show
-  `commands_total` stuck at a tiny number. Re-fetching the same credentials with the
-  `Idempotency-Key` header does **not** revive it; only a brand-new `upstash start-redis` does.
-  So: **`PING` before each test file, and reprovision + rerun the file when the ping fails** — a
-  self-healing loop turns a cascade of red into a clean green run. A whole-suite red where the
-  failures are timeouts rather than assertions is an infrastructure death, not a regression;
-  confirm with `curl … '["PING"]'` before believing it. (`curl -X POST https://upstash.com/start-redis`
-  returns the same kind of database as the CLI.)
-  **But `start-redis` is rate-limited:** measured 2026-10-01, ~20 provisions inside a few minutes (one per
-  test file) got `HTTP 429` with an empty body and **no `Retry-After`**, and it stayed 429 for 10+ minutes.
-  A 429 makes the Endpoint/Token greps come back empty, so a script that doesn't check the status code
-  silently runs the suite with **no** Redis. Reuse one database and reprovision only when its PING fails;
-  check for `200` before parsing.
-  On a box where `npm i -g` is not writable, install the CLI to a prefix:
-  `npm i -g @upstash/cli --prefix /tmp/upstash-cli` → `/tmp/upstash-cli/bin/upstash`.
-- **A brand-new throwaway DB is often DEAD ON ARRIVAL — always `PING` it before writing it to `.env`.**
-  The note above says "only a brand-new `start-redis` does [revive things]"; that is too optimistic.
-  Measured 2026-09-22: a just-provisioned database answered `curl` with **exit 35 / `SSL_ERROR_SYSCALL`**
-  on the very first request and never recovered, and three consecutive fresh databases each failed the
-  6th of 6 warm-up pings. They all share the `p2-global-eph.upstash.io` endpoint, so "fresh" buys
-  nothing on its own. **Provision in a loop and only accept a candidate that answers several
-  consecutive `PING`s**, e.g.:
-  ```bash
-  for i in $(seq 1 6); do
-    out=$(curl -s -X POST https://upstash.com/start-redis)
-    U=$(echo "$out" | grep -oP '(?<=\*\*Endpoint:\*\* )\S+'); T=$(echo "$out" | grep -oP '(?<=\*\*Token:\*\* )\S+')
-    ok=0; for n in $(seq 1 6); do
-      [ "$(curl -s --max-time 12 "$U" -H "Authorization: Bearer $T" -d '["PING"]')" = '{"result":"PONG"}' ] && ok=$((ok+1)); sleep 2
-    done
-    [ $ok -ge 6 ] && { printf 'UPSTASH_REDIS_REST_URL=%s\nUPSTASH_REDIS_REST_TOKEN=%s\n' "$U" "$T" > .env; break; }
-  done
-  ```
-  A healthy DB runs a whole eval in **~350ms**; when you see a mocked eval take **3–4 minutes**, that is
-  `@upstash/redis` burning its retry/backoff budget against a dead endpoint, *not* slow code. The
-  distinguishing detail in a failing eval gate: `observed <tool> calls: {}` means the tool **mounted and
-  ran** (and Redis failed underneath), whereas `observed tools: [<other>]` means the tool **never
-  mounted** — only the latter is a real code problem.
-  **Idle control settles it:** provision one more DB, run nothing against it, PING it every 15s. On
-  2026-09-30 an untouched DB passed 6/6 warm-up PINGs and was dead 25s later; when that happens, no
-  live result from that box means anything.
+- **Test credentials:** the live suites read `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`
+  from the repo-root `.env` (gitignored) or the environment, and skip themselves without them. Use a
+  Pay-as-you-go (or larger) database from the [Upstash Console](https://console.upstash.com); CI's
+  database allows 10 search indexes. The Free-plan case in `packages/sdk/src/migration.test.ts`
+  also needs `UPSTASH_REDIS_FREE_REST_URL` / `UPSTASH_REDIS_FREE_REST_TOKEN`, a Free-plan database
+  with no other search index (it creates and drops the `agentkit` indexes there), and skips without
+  them.
+- **A Free-plan database caps at *one* search index**, not 10: `ERR Exceeded max index count of 1`.
+  A single `pnpm test` cascades into bogus create-index failures on one. Run **one test file at a
+  time** with a `FLUSHDB` between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`;
+  FLUSHDB does drop indexes, and `SEARCH.DROP <name>` is the only other lever, since there is no list
+  command).
+- **An unreachable database looks exactly like a code regression.** vitest reports `Test timed out
+  in 30000ms` / `Hook timed out in 10000ms` across **every** live suite at once, including ones that
+  never touch search (`tool-cache`, `chat-history`). A whole-suite red where the failures are
+  timeouts rather than assertions is an infrastructure problem, not a regression; confirm with
+  `curl … '["PING"]'` before believing it. A healthy DB runs a whole mocked eval in **~350ms**; when
+  one takes **3-4 minutes**, that is `@upstash/redis` burning its retry/backoff budget against an
+  endpoint that does not answer, *not* slow code. The distinguishing detail in a failing eval gate:
+  `observed <tool> calls: {}` means the tool **mounted and ran** (and Redis failed underneath),
+  whereas `observed tools: [<other>]` means the tool **never mounted**; only the latter is a real
+  code problem.
 - **The read-your-writes sync-token bug is FIXED as of `@upstash/redis@1.38.4`** (the repo is pinned
   `^1.38.4`; `packages/eve`'s peer floor is `>=1.38.4`). Historically, in **1.38.0 and earlier back to
   1.34.5**, `HttpClient.request()` built `requestHeaders` from `this.headers` and only *then* copied
@@ -1313,7 +1281,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   update "@ai-sdk/*"`, one `ai@7.0.107` in the lockfile). `packages/eve`'s peer stayed **`>=0.32.0`** and
   it ships **no changeset**: its `dist` is **byte-identical** to published `0.9.0`. Test-baseline note: on a
   pay-as-you-go database `vitest run` is **142 passed / 6 skipped / 0 failed** — the "11 failures" earlier
-  automated runs reported were the free `start-redis` database's 1-search-index cap, not eve.
+  automated runs reported were a Free-plan database's 1-search-index cap, not eve.
 - **Extension packaging changed 0.24 → 0.25**: 0.24 shipped source the consumer recompiles; 0.25 ships
   prebuilt `dist/extension` + `_manifest.json` (see the eve-extension section). 0.25 rejects
   0.24-format packages at discovery.
@@ -1736,7 +1704,7 @@ find node_modules -path "*/zod/package.json" | while read f; do echo "$f $(node 
 - **@upstash/box 0.8.0 (2026-11-15):** `packages/eve` devDependency and `examples/eve-demo` moved `^0.7.5` → `^0.8.0` (a caret on 0.x never picks up the next minor); peer stays `>=0.7.1`, no code change, no changeset. 0.8.0 deprecates `BoxApiKey.UpstashKey` (Upstash no longer provides model keys for box agents), which `./sandbox` does not use; typecheck, build, the 25 offline `sandbox.test.ts` cases and the eve-demo build pass (the 3 live-Box cases need `UPSTASH_BOX_API_KEY`). No new `ai` / `@tanstack/ai*` release since 7.0.173 / 1.4.0. eve `latest` is `1.0.0-rc.18` (still no stable after 0.91.0): published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on it with one eve/ai/zod, `eve build` clean, mocked `eve eval` 4/4; this repo with every eve pin on rc.18 also passes lint, typecheck, build, the eve example builds and both mocked evals. A dist built on rc.18 stamps `builtWithEve: 1.0.0-rc.18` and is refused by rc.17 and rc.9 alike (`was built with eve 1.0.0-rc.18. Upgrade eve to 1.0.0-rc.18 or later`), so the extension's peer floor must equal the exact RC it is built on (PR #104).
 - **ai 7.0.173 (2026-11-14):** pins moved 7.0.172 → 7.0.173 with `@ai-sdk/*` refreshed (`openai ^4.0.118`, `react ^4.0.177`; one `ai@7.0.173` in the lockfile); no code change, devDependency/example pins only (no changeset). **eve `1.0.0-rc.17` raised its `ai` peer to `^7.0.172`**, so the eve 1.0 adoption (PR #104) needs at least this pin. eve still on 0.91.0 here (no stable since); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on rc.17 with one eve/ai/zod, `eve build` clean, mocked `eve eval` 4/4. TanStack: no new `@tanstack/ai*` contract release since 1.4.0; the `spawn.d.ts` TS2307 (`skipLibCheck: false`) is still in 1.4.0.
 - **ai 7.0.172 (2026-11-13):** pins moved 7.0.170 → 7.0.172 with `@ai-sdk/*` refreshed (`openai ^4.0.117`, `provider ^4.0.38`, `react ^4.0.176`; one `ai@7.0.172` in the lockfile); no code change. Behaviour note from 7.0.171: `toUIMessageStream` now sends a failed tool call's real error text to the client (was "An error occurred."; opt back in with `redactToolErrors: true`), so any message an agentkit tool throws is user-visible. eve still on 0.91.0 (npm `latest` is `1.0.0-rc.13`, not adopted); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on rc.13 with one eve/ai/zod, `eve build` clean, mocked `eve eval` 4/4.
-- **ai 7.0.170 + @tanstack/ai 1.4.0 + @tanstack/ai-openai 1.1.1 (2026-11-12):** devDependency/example pins only (no published-content change, no changeset); `@ai-sdk/*` ranges moved with `pnpm -r update "@ai-sdk/*"` (one `ai@7.0.170` in the lockfile) and `pnpm dedupe` dropped a stale second `@tanstack/ai@1.1.0` that `@tanstack/ai-client@1.1.0` (`^1.1.0`) kept in the lockfile. eve stays on 0.91.0: no stable release since, npm `latest` is `1.0.0-rc.10` (not adopted; eve 1.0 adoption is PR #104); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on it, `eve build` clean and the mocked `eve eval` passes 4/4. A `skipLibCheck: false` consumer of `ai` errors inside `@ai-sdk/provider` (`TS7016 … module 'json-schema'`, no `@types/json-schema` dependency) on 7.0.163 through 7.0.170 alike: upstream, fixed by `npm i -D @types/json-schema`. The free throwaway Redis caps search indexes at 1: run index-using test files one at a time with `FLUSHDB` in between (`FLUSHDB` drops the indexes too; `SEARCH.DROPINDEX` is not available).
+- **ai 7.0.170 + @tanstack/ai 1.4.0 + @tanstack/ai-openai 1.1.1 (2026-11-12):** devDependency/example pins only (no published-content change, no changeset); `@ai-sdk/*` ranges moved with `pnpm -r update "@ai-sdk/*"` (one `ai@7.0.170` in the lockfile) and `pnpm dedupe` dropped a stale second `@tanstack/ai@1.1.0` that `@tanstack/ai-client@1.1.0` (`^1.1.0`) kept in the lockfile. eve stays on 0.91.0: no stable release since, npm `latest` is `1.0.0-rc.10` (not adopted; eve 1.0 adoption is PR #104); published `@upstash/agentkit-eve-extension@0.19.0` + `@upstash/agentkit-eve@0.19.0` install on it, `eve build` clean and the mocked `eve eval` passes 4/4. A `skipLibCheck: false` consumer of `ai` errors inside `@ai-sdk/provider` (`TS7016 … module 'json-schema'`, no `@types/json-schema` dependency) on 7.0.163 through 7.0.170 alike: upstream, fixed by `npm i -D @types/json-schema`. A Free-plan database caps search indexes at 1: run index-using test files one at a time with `FLUSHDB` in between (`FLUSHDB` drops the indexes too; `SEARCH.DROPINDEX` is not available).
 - **ai 7.0.163 (2026-11-05):** pins bumped from 7.0.159 (no code change); `examples/ai-sdk-demo`'s `@ai-sdk/react` raised to `^4.0.167` because 4.0.160 depends on an *exact* `ai@7.0.156`, which split the `UIMessage` type from the demo's `ai@7.0.163` and failed `next build` (`SteeringMessageUIPart`). Re-checked 2026-11-05: published `@upstash/agentkit-eve-extension@0.19.0` / `@upstash/agentkit-eve@0.19.0` build clean on `eve@1.0.0-rc.5` (the 0.91.0 build stays); TanStack AI 1.x (ai 1.1.0, ai-persistence 1.0.1, ai-memory 1.1.0) still not adopted (same `threadId`/`blobKey` test-file errors).
 - **TanStack AI 1.x applied (2026-11-05):** `@tanstack/ai` 1.1.0, `ai-persistence` 1.0.1, `ai-memory` 1.1.0 (devDeps, exact) and the tanstack-ai-demo's `ai-client` 1.1.0 / `ai-react` 1.0.2 / `ai-openai` 1.1.0. `src` needed no change; only tests did: `chat()` calls pass `threadId` (`middleware.test.ts`, `search-tools.test.ts`) and `ArtifactRecord` fixtures carry `blobKey` (`persistence.test.ts`). The peer floors (`>=0.65.0` / `>=0.8.0` / `>=0.2.8`) are untouched: the source is unchanged and still works on 0.x, and published `@upstash/agentkit-tanstack-ai@0.2.0` imports on 1.x, so no changeset. Upstream `@tanstack/ai@1.1.0`'s `spawn.d.ts` still has the broken `import('../../..')` (TS2307 with `skipLibCheck: false`). The 1.0 contracts `SessionIndexStore` and `CredentialStore` are implemented in the follow-up below.
 - **Sandbox + MCP stores (2026-11-11, `@upstash/agentkit-tanstack-ai` minor):** `./sandbox` =

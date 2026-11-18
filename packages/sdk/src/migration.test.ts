@@ -28,26 +28,19 @@ async function followDropInstructions(redis: Redis, error: unknown): Promise<str
 }
 
 /**
- * A new, empty database with the Free plan's one-index limit: a temporary database from
- * https://upstash.com/start-redis (no account needed; it expires on its own after three days).
+ * A Free-plan database (one search index), opted in with `UPSTASH_REDIS_FREE_REST_URL` and
+ * `UPSTASH_REDIS_FREE_REST_TOKEN`. It must have no other search index. The test creates and drops
+ * the `agentkit` indexes there and deletes the keys it writes.
  */
-async function oneIndexDatabase(): Promise<Redis> {
-  const res = await fetch("https://upstash.com/start-redis", {
-    method: "POST",
-    headers: { "Idempotency-Key": randomUUID() },
-  });
-  const body = await res.text();
-  const url = /\*\*Endpoint:\*\* (\S+)/.exec(body)?.[1];
-  const token = /\*\*Token:\*\* (\S+)/.exec(body)?.[1];
-  if (!res.ok || !url || !token) throw new Error(`start-redis failed (${res.status}): ${body}`);
-  return new Redis({ url, token });
-}
+const freeUrl = process.env.UPSTASH_REDIS_FREE_REST_URL;
+const freeToken = process.env.UPSTASH_REDIS_FREE_REST_TOKEN;
+const DEFAULT_INDEXES = ["agentkit", "agentkit_memory", "agentkit_chat"];
 
 const message = (text: string) => ({ role: "user", parts: [{ type: "text", text }] });
 
 // Upgrading from @upstash/agentkit-sdk 0.9.0 on a database it already wrote to, then doing what the
-// errors and the changeset say. The default-settings case runs on the test database, which allows
-// several indexes; the others each get a temporary one-index database of their own.
+// errors and the changeset say. The custom-prefix and default-settings cases run on the test
+// database, which allows several indexes; the Free-plan case needs a one-index database of its own.
 describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 120_000 }, () => {
   const redis = testRedis();
   const prefix = uniquePrefix("migrate");
@@ -57,17 +50,22 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     await cleanupKeys(redis, prefix);
     await cleanupKeys(redis, `agentkit:memory:${userId}`);
     await cleanupKeys(redis, `agentkit:chat:${userId}`);
+    // The custom-prefix case's own indexes (the memory one is dropped by the test already).
+    for (const name of [`${prefix}:memory`, `${prefix}:chat`]) {
+      await redis.search
+        .index({ name: name.replace(/\W/g, "_") })
+        .drop()
+        .catch(() => {});
+    }
   });
 
   it("custom prefix: the old memory index fails with SEARCH.DROP, and after the drop recall works", async () => {
-    // Its own temporary database, one index at a time, so it never competes for the shared test
-    // database's index slots with the suites running in parallel.
-    const db = await oneIndexDatabase();
+    // Index names come from the unique prefix, so they never collide with other runs.
     const memoryPrefix = `${prefix}:memory`;
     const chatPrefix = `${prefix}:chat`;
 
     // 0.9.0: writes, and its first read creates its TEXT index.
-    const old = new OldAgentMemory({ redis: db, prefix: memoryPrefix });
+    const old = new OldAgentMemory({ redis, prefix: memoryPrefix });
     await old.add({ userId, text: "The user is vegetarian." });
     await old.add({ userId, text: "The user lives in Lisbon." });
     expect(
@@ -80,10 +78,10 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     ).toBe(2);
 
     // This version: the memory index needs a HYBRID field, so the first read says what to do.
-    const memory = new AgentMemory({ redis: db, prefix: memoryPrefix });
+    const memory = new AgentMemory({ redis, prefix: memoryPrefix });
     const error = await memory.recall({ userId, query: "food" }).catch((e: unknown) => e);
     expect(String(error)).toMatch(/different definition/);
-    expect(await followDropInstructions(db, error)).toEqual([memoryPrefix.replace(/\W/g, "_")]);
+    expect(await followDropInstructions(redis, error)).toEqual([memoryPrefix.replace(/\W/g, "_")]);
 
     // Same instance, after the drop: the old documents are indexed again, and recall is hybrid.
     await memory.count({ userId }); // creates the index
@@ -102,7 +100,7 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     await memory.searchIndex.index.drop(); // free the slot for the chat index
 
     // A custom-prefix chat index has the same definition as before: no error, old chats still there.
-    const oldChats = new OldChatHistory({ redis: db, prefix: chatPrefix });
+    const oldChats = new OldChatHistory({ redis, prefix: chatPrefix });
     await oldChats.saveChat({ userId, sessionId: "s1", messages: [message("Hello from 0.9")] });
     expect(
       (
@@ -112,7 +110,7 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
         )
       ).length,
     ).toBe(1);
-    const chats = new ChatHistory({ redis: db, prefix: chatPrefix });
+    const chats = new ChatHistory({ redis, prefix: chatPrefix });
     expect((await chats.listChats({ userId })).map((c) => c.sessionId)).toEqual(["s1"]);
   });
 
@@ -172,50 +170,74 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     await check();
   });
 
-  it("Free plan: the 0.9.0 index fills the only slot, and after the drops everything works", async () => {
-    // A user who ran 0.9.0 with default settings on a Free-plan database.
-    const free = await oneIndexDatabase();
-    const old = new OldAgentMemory({ redis: free });
-    await old.add({ userId, text: "The user is vegetarian." });
-    await pollUntil(
-      () => old.recall({ userId }),
-      (hits) => hits.length > 0,
-    ); // creates `agentkit_memory`, the database's only index
-    await new OldChatHistory({ redis: free }).saveChat({
-      userId,
-      sessionId: "old",
-      messages: [message("I am vegetarian, what should I cook?")],
-    });
-
-    // This version needs the `agentkit` index, and there is no slot for it.
-    const memory = new AgentMemory({ redis: free });
-    const chats = new ChatHistory({ redis: free });
-    const error = await memory.recall({ userId, query: "food" }).catch((e: unknown) => e);
-    expect(String(error)).toMatch(/no index slots left/);
-    await expect(chats.listChats({ userId })).rejects.toThrow(/no index slots left/);
-
-    // Do what the error says; the same instances then work, on the data 0.9.0 wrote.
-    expect(await followDropInstructions(free, error)).toEqual(["agentkit_memory", "agentkit_chat"]);
-    const recalled = await pollUntil(
-      () => memory.recall({ userId, query: "What food should I cook?", topK: 5 }),
-      (hits) => hits.length > 0,
-    );
-    expect(recalled.map((h) => h.text)).toEqual(["The user is vegetarian."]);
-    expect(await memory.count({ userId })).toBe(1);
-    const listed = await pollUntil(
-      () => chats.listChats({ userId }),
-      (rows) => rows.length > 0,
-    );
-    expect(listed.map((c) => c.sessionId)).toEqual(["old"]);
-    await memory.add({ userId, text: "The user lives in Lisbon." });
-    await memory.searchIndex.waitIndexing(); // a new HYBRID document is embedded before it is found
-    expect(
-      (
+  it.skipIf(!freeUrl || !freeToken)(
+    "Free plan: the 0.9.0 index fills the only slot, and after the drops everything works",
+    async () => {
+      // A user who ran 0.9.0 with default settings on a Free-plan database.
+      const free = new Redis({ url: freeUrl!, token: freeToken! });
+      // Never drop an index this test did not create.
+      for (const name of DEFAULT_INDEXES) {
+        expect(
+          await free.search.index({ name }).describe(),
+          `index ${name} already exists`,
+        ).toBeNull();
+      }
+      try {
+        const old = new OldAgentMemory({ redis: free });
+        await old.add({ userId, text: "The user is vegetarian." });
         await pollUntil(
-          () => memory.list({ userId }),
-          (rows) => rows.length === 2,
-        )
-      ).length,
-    ).toBe(2);
-  });
+          () => old.recall({ userId }),
+          (hits) => hits.length > 0,
+        ); // creates `agentkit_memory`, the database's only index
+        await new OldChatHistory({ redis: free }).saveChat({
+          userId,
+          sessionId: "old",
+          messages: [message("I am vegetarian, what should I cook?")],
+        });
+
+        // This version needs the `agentkit` index, and there is no slot for it.
+        const memory = new AgentMemory({ redis: free });
+        const chats = new ChatHistory({ redis: free });
+        const error = await memory.recall({ userId, query: "food" }).catch((e: unknown) => e);
+        expect(String(error)).toMatch(/no index slots left/);
+        await expect(chats.listChats({ userId })).rejects.toThrow(/no index slots left/);
+
+        // Do what the error says; the same instances then work, on the data 0.9.0 wrote.
+        expect(await followDropInstructions(free, error)).toEqual([
+          "agentkit_memory",
+          "agentkit_chat",
+        ]);
+        const recalled = await pollUntil(
+          () => memory.recall({ userId, query: "What food should I cook?", topK: 5 }),
+          (hits) => hits.length > 0,
+        );
+        expect(recalled.map((h) => h.text)).toEqual(["The user is vegetarian."]);
+        expect(await memory.count({ userId })).toBe(1);
+        const listed = await pollUntil(
+          () => chats.listChats({ userId }),
+          (rows) => rows.length > 0,
+        );
+        expect(listed.map((c) => c.sessionId)).toEqual(["old"]);
+        await memory.add({ userId, text: "The user lives in Lisbon." });
+        await memory.searchIndex.waitIndexing(); // a new HYBRID document is embedded before it is found
+        expect(
+          (
+            await pollUntil(
+              () => memory.list({ userId }),
+              (rows) => rows.length === 2,
+            )
+          ).length,
+        ).toBe(2);
+      } finally {
+        for (const name of DEFAULT_INDEXES) {
+          await free.search
+            .index({ name })
+            .drop()
+            .catch(() => {});
+        }
+        await cleanupKeys(free, `agentkit:memory:${userId}`);
+        await cleanupKeys(free, `agentkit:chat:${userId}`);
+      }
+    },
+  );
 });
