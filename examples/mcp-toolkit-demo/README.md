@@ -30,7 +30,7 @@ extension, like Claude Code, gets a native task from the same server and polls `
 
 ## Run it
 
-You need an [Upstash Redis database](https://upstash.com/start-redis). QStash you can run locally,
+You need an [Upstash Redis database](https://console.upstash.com/redis). QStash you can run locally,
 fully offline.
 
 ```bash
