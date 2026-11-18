@@ -97,7 +97,7 @@ describe.skipIf(!hasRedisCreds)("upgrade from 0.9.0 (live Redis)", { timeout: 12
     // No word in common with either memory, so only the semantic half of hybrid recall can rank.
     const byMeaning = await memory.recall({ userId, query: "dietary restrictions", topK: 1 });
     expect(byMeaning[0]?.text).toBe("The user is vegetarian.");
-    await memory.searchIndex.index.drop(); // free the slot for the chat index
+    await memory.searchIndex.index.drop();
 
     // A custom-prefix chat index has the same definition as before: no error, old chats still there.
     const oldChats = new OldChatHistory({ redis, prefix: chatPrefix });
