@@ -601,7 +601,7 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   way (`expected 0 to be greater than 0`, `recalled[0]` undefined) — measured 2026-09 at roughly 4-in-6
   red **on a one-index (Free-plan) DB**, and confirmed identical on pristine `main`, so it is *not* a
   regression from any dependency bump. On the real 10-index DB the pressure is far lower. Until they
-  get the same treatment, verify a suspicious red by `FLUSHDB` -> one warm-up run (which provisions the
+  get the same treatment, verify a suspicious red (on a database you own and can wipe) by `FLUSHDB` -> one warm-up run (which provisions the
   index) -> a second measured run, and always A/B against `git stash` before blaming a bump.
 - **Test credentials:** the live suites read `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`
   from the repo-root `.env` (gitignored) or the environment, and skip themselves without them. Use a
@@ -612,7 +612,8 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   them.
 - **A Free-plan database caps at *one* search index**, not 10: `ERR Exceeded max index count of 1`.
   A single `pnpm test` cascades into bogus create-index failures on one. Run **one test file at a
-  time** with a `FLUSHDB` between (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`;
+  time**, with a `FLUSHDB` between only if the database is yours to wipe (never the shared Free-plan
+  test database above, which the migration test expects to hold nothing but its own indexes) (`curl "$URL" -H "Authorization: Bearer $TOKEN" -d '["FLUSHDB"]'`;
   FLUSHDB does drop indexes, and `SEARCH.DROP <name>` is the only other lever, since there is no list
   command).
 - **An unreachable database looks exactly like a code regression.** vitest reports `Test timed out
