@@ -73,7 +73,7 @@
     "zod": "^3.23.8 || ^4"
   },
   "devDependencies": {
-    "@tanstack/ai": "1.4.0",
+    "@tanstack/ai": "1.5.0",
     "@tanstack/ai-mcp": "1.2.0",
     "@tanstack/ai-memory": "1.1.0",
     "@tanstack/ai-persistence": "1.0.1",
