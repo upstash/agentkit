@@ -13,7 +13,7 @@ the TS default extractor; `messages` keeps the raw transcript and is not indexed
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from ._search import DEFAULT_NAMESPACE, SearchIndex, dumps, index_name_for, shared_index
@@ -57,24 +57,26 @@ return 1
 """
 
 
+def message_text(message: dict[str, Any]) -> str:
+    """A saved message's text: its text `parts` (AI SDK messages) or its string `content`."""
+    parts = message.get("parts")
+    if isinstance(parts, list):
+        return " ".join(
+            p["text"]
+            for p in parts
+            if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str)
+        ).strip()
+    if isinstance(message.get("content"), str):
+        return message["content"].strip()
+    return ""
+
+
 def extract_text(messages: list[dict[str, Any]]) -> dict[str, str]:
     """Split a transcript into searchable user and model text (the TS `defaultExtractText`)."""
     user: list[str] = []
     model: list[str] = []
     for message in messages:
-        parts = message.get("parts")
-        if isinstance(parts, list):
-            text = " ".join(
-                p["text"]
-                for p in parts
-                if isinstance(p, dict)
-                and p.get("type") == "text"
-                and isinstance(p.get("text"), str)
-            ).strip()
-        elif isinstance(message.get("content"), str):
-            text = message["content"].strip()
-        else:
-            text = ""
+        text = message_text(message)
         if not text:
             continue
         if message.get("role") == "user":
@@ -92,6 +94,10 @@ class ChatSearchHit:
     updated_at: int
     user_text: str = ""
     model_text: str = ""
+    # The raw transcript and when the chat was first saved (epoch ms, 0 if unknown), so a caller
+    # can show where in the session the query matched and when.
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    created_at: int = 0
 
 
 class ChatHistory:
@@ -244,6 +250,8 @@ class ChatHistory:
                     updated_at=data.get("updatedAt") or 0,
                     user_text=data.get("userMessages") or "",
                     model_text=data.get("modelMessages") or "",
+                    messages=[m for m in data.get("messages") or [] if isinstance(m, dict)],
+                    created_at=data.get("createdAt") or 0,
                 )
             )
         return hits

@@ -4,6 +4,42 @@ Written by hand: this package is not versioned by Changesets. To release, bump `
 `pyproject.toml`, run `node scripts/sync-version.mjs` and `uv lock`, and add a `## <version>`
 section here. The release workflow publishes any version PyPI does not have yet.
 
+## 0.4.0
+
+### Minor Changes
+
+- New tool `upstash_chat_read`: reads a page of one past session by `session_id` (from `offset`,
+  or centred on `around`, a message index from a search passage), so the model can open a session
+  `upstash_chat_search` found. At most 40 messages, 2000 characters per message and 8000 per page;
+  `next_offset` says where the next page starts. Only the current user's sessions are read.
+- `upstash_chat_search` returns the passage that matched instead of the first 300 characters of
+  each side of the session: the message with the most query words (rarer words count more),
+  clipped around the match, and its neighbours, with `index`, `role` and the turn `time` when the
+  turn was stamped, plus the session `date`. With no query word in any message, the passage is the
+  session's start. `user_excerpt` and `assistant_excerpt` are gone. `ChatSearchHit` carries
+  `messages` and `created_at`.
+- Provenance: automatic recall writes each memory as `- [saved YYYY-MM-DD] <text>` (UTC, from
+  `createdAt`), and `upstash_memory_search` results carry `saved` and `mirror` (a copy of a
+  built-in memory entry, or a direct save). The system prompt says recalled memories and past
+  conversations are history to verify, not the current state.
+- Wording: the system prompt and `upstash_memory_save` no longer invite saving preferences or
+  durable facts. Facts the agent needs in every session belong in Hermes's built-in memory;
+  `upstash_memory_save` is for situational facts (people, ownership, project or customer context,
+  lessons, pointers), one standalone sentence with its date and source.
+- `UPSTASH_HERMES_CHAT_TTL_DAYS`: deletes a session's transcript that many days after its last
+  turn (the `ChatHistory` TTL). Unset or `0` keeps transcripts, as before.
+
+### Patch Changes
+
+- Fix: a long message no longer makes hybrid recall fail. The embedder rejected an `$ann` query
+  over its 8191-token limit ("the embedder rejected an $ann query text"), so a long cron prompt
+  fell back to keyword recall. Recall cuts the query to its start, between words: 2000 characters
+  for `$ann` and 8000 for `$smart` (`bound_query`, `ANN_QUERY_CHARS`, `SMART_QUERY_CHARS`).
+- Tool `limit`s are clamped (memory search at most 20, chat search at most 10, chat read at most
+  40; at least 1), and `upstash_memory_save` refuses a text over 1000 characters with an error
+  that says so.
+- Docs: the README leads with `hermes plugins install upstash` and documents each tool.
+
 ## 0.3.0
 
 ### Minor Changes

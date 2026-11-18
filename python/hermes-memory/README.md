@@ -14,17 +14,27 @@ your AI SDK app saves is recalled by your Hermes agent, and the other way round.
   corrects (`replace`/`patch`) or removes one, the Redis copy is updated or deleted too.
 - **Tools:** `upstash_memory_save`, `upstash_memory_search`, `upstash_memory_forget` and
   `upstash_chat_search` (search past conversations).
+- **Reading past sessions:** `upstash_chat_read` opens a session that `upstash_chat_search` found,
+  one bounded page at a time. See [Tools](#tools).
 
 Subagents, cron jobs and context flushes can read memory but never write it.
 
 ## Setup
 
+Install it from the Hermes plugin catalog:
+
 ```bash
-# into the Python environment Hermes runs in
+hermes plugins install upstash
+```
+
+Answer yes to `Use 'upstash' as the memory provider now?` (or pass `--enable`). Without the
+catalog, install the package into the Python environment Hermes runs in instead:
+
+```bash
 pip install upstash-hermes-memory
 ```
 
-Then select it in Hermes's `config.yaml`:
+and select it in Hermes's `config.yaml`:
 
 ```yaml
 memory:
@@ -40,6 +50,21 @@ these):
 | `UPSTASH_HERMES_USER_ID` | Whose memories these are. Defaults to the gateway user, then the Hermes profile name, then `default`. |
 | `UPSTASH_HERMES_NAMESPACE` | Key namespace. Default `agentkit`, so memories sit at the TS SDK's default keys and are shared with AgentKit apps on the same database. |
 | `UPSTASH_HERMES_TELEMETRY` | Set to `1` to send telemetry. Off by default; see [Telemetry](#telemetry). |
+| `UPSTASH_HERMES_CHAT_TTL_DAYS` | Delete a session's transcript this many days after its last turn (for example `90`). Unset or `0` keeps transcripts. Memories never expire. |
+
+## Tools
+
+| Tool | |
+| --- | --- |
+| `upstash_memory_save` | Saves one situational fact, recalled when its topic comes up: a person, who owns what, project or customer context, a lesson, a pointer. Facts the agent needs in every session belong in Hermes's built-in memory, which is in every prompt. One standalone sentence with its date and source, at most 1000 characters (a longer text is refused). |
+| `upstash_memory_search` | Searches memories (`limit` default 5, at most 20). Each result has `saved` (the UTC date from `createdAt`) and `mirror` (`true` for a copy of a built-in memory entry, `false` for a direct save). |
+| `upstash_memory_forget` | Deletes one memory by id. |
+| `upstash_chat_search` | Searches past sessions (`limit` default 5, at most 10). Each session has its `date` and a `passage`: the message that matched the query words best (clipped to 600 characters around the match) and its neighbours (200 each), with `index`, `role` and the turn `time` when stored. With no query word in any message (Search matches fuzzily), the passage is the session's start. |
+| `upstash_chat_read` | Reads one session by `session_id`: up to `limit` messages (default 10, at most 40) from `offset`, or centred on `around` (an `index` from a passage), with `next_offset` when there is more. A message is cut at 2000 characters and a page at 8000. Only the current user's sessions are found. |
+
+Automatic recall puts each memory in the prompt as `- [saved 2026-11-11] <text>`, and the system
+prompt tells the model that recalled memories and past conversations are history to verify, not the
+current state. Larger `limit`s are lowered to the maximum.
 
 ## Semantic recall
 
@@ -60,6 +85,9 @@ vector database), and recall merges a keyword query with a semantic `$ann` query
   only order one search's results; `min_score` applies to keyword results only.
 - If a hybrid query fails, recall falls back to keyword search for that call (logged at most
   every 10 minutes).
+- A long message (a cron prompt, a pasted log) is cut to its start for recall: 2000 characters for
+  `$ann`, whose embedding model (OpenAI `text-embedding-3`) rejects text over 8191 tokens, and
+  8000 for `$smart`. Before 0.4.0 such a message made hybrid recall fail and fall back to keyword.
 - Chat history stays keyword-only: a `HYBRID` field gets one embedding for its whole value, and a
   chat document holds a whole session.
 - Every memory in the index is embedded, whichever user or profile wrote it, and each recall
