@@ -4,7 +4,8 @@ Enable it with `memory.provider: upstash` in Hermes's config.yaml. Hermes finds 
 `hermes_agent.memory_providers` entry point this package declares.
 
 What it does inside Hermes:
-- Before each turn, recalls the memories closest to the user's message into the prompt.
+- Before each turn, recalls the memories closest to the user's message into the prompt (except
+  copies of the built-in memory, which Hermes already puts there).
 - After each turn, saves the session's transcript as a searchable ChatHistory document.
 - Mirrors the built-in `memory` tool (adds, corrections and removals), so Redis holds the same
   facts.
@@ -56,6 +57,10 @@ _WRITING_CONTEXTS = {"", "primary"}
 # similarity scores do not separate related from unrelated memories well enough for a cutoff), so
 # automatic recall injects only a few. The search tool has its own limit.
 _PREFETCH_TOP_K = 3
+# Automatic recall skips mirrors of the built-in memory (Hermes already puts MEMORY.md and USER.md
+# in the prompt), and Search can't exclude them (`source` and `target` are not indexed), so it asks
+# for this many and keeps the first `_PREFETCH_TOP_K` that are not mirrors.
+_PREFETCH_CANDIDATES = 20
 _EXCERPT_CHARS = 300
 # Built-in memory tool actions Hermes forwards (a patch arrives as a replace).
 _MIRRORED_ACTIONS = {"add", "replace", "remove"}
@@ -66,6 +71,15 @@ def _mirror_id(target: str, text: str) -> str:
     same entry overwrite it and a replace or remove can delete it without searching."""
     digest = hashlib.sha256(f"{target}\n{text.strip()}".encode()).hexdigest()[:32]
     return f"hermes-{digest}"
+
+
+def _is_mirror(record: MemoryRecord) -> bool:
+    """Whether a memory is a copy of a built-in memory entry (see `on_memory_write`).
+
+    Memories saved with upstash_memory_save carry `source: "hermes"` too, but never a `target`.
+    The id is not checked: copies mirrored by 0.1.x have random ids.
+    """
+    return record.metadata.get("source") == "hermes" and bool(record.metadata.get("target"))
 
 
 SAVE_SCHEMA = {
@@ -365,13 +379,22 @@ class UpstashMemoryProvider(MemoryProvider):
     # -- lifecycle -----------------------------------------------------------------------------
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        """The memories closest to `query`, for the prompt, leaving out built-in memory mirrors.
+
+        Hermes injects MEMORY.md and USER.md into every prompt, so their mirrors would only fill
+        the few recall slots with facts the model already has. They stay in Redis for
+        upstash_memory_search and for other AgentKit clients. The provider can't tell whether
+        built-in memory is on (Hermes does not pass it to `initialize`); with it off, nothing new
+        is mirrored, and copies mirrored earlier are left out here too.
+        """
         if not self._memory or not query.strip():
             return ""
         try:
-            hits = self._memory.recall(query, user_id=self._user_id, top_k=_PREFETCH_TOP_K)
+            hits = self._memory.recall(query, user_id=self._user_id, top_k=_PREFETCH_CANDIDATES)
         except Exception as error:  # noqa: BLE001 - a Redis outage must never break a turn
             logger.warning("upstash memory recall failed: %s", error)
             return ""
+        hits = [hit for hit in hits if not _is_mirror(hit)][:_PREFETCH_TOP_K]
         if not hits:
             return ""
         lines = "\n".join(f"- {hit.text}" for hit in hits)
