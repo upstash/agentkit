@@ -103,8 +103,11 @@ partial answer and clears `activeStreamId`, and resumed readers see the stream f
 - **Publishes are batched.** The producer awaits each publish before reading the next chunk
   ([vercel/resumable-stream#52](https://github.com/vercel/resumable-stream/issues/52)). Publishes are
   queued per channel, resolve at once and go out in order, one pipeline request at a time; the DONE
-  message waits for its channel to flush. A failed send is logged and rejects that channel's later
-  publishes.
+  message waits for its channel to flush.
+- **Publishes never reject.** resumable-stream awaits them inside the producer's read loop, so a
+  rejection would freeze the original reader's stream as well. A failed send is logged once, and
+  that channel's remaining messages are dropped: its resumed reader is cut off and closed by
+  resumable-stream's DONE watchdog, while the producer and other readers carry on.
 - **Subscriptions** hold one HTTP request open per channel: the producer's for the whole generation,
   and each resumed reader's. A dropped connection is not reopened. Stream ids cannot contain a comma.
 - **Commands:** starting a stream is a SUBSCRIBE and two SETs (plus an INCR with

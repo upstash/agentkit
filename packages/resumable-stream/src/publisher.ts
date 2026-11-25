@@ -8,11 +8,11 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 interface Entry {
   payload: string;
   bytes: number;
-  settle?: { resolve: (n: number) => void; reject: (error: unknown) => void };
+  settle?: (receivers: number) => void;
 }
 interface Queue {
   entries: Entry[];
-  error?: unknown;
+  failed?: boolean;
 }
 
 /**
@@ -22,8 +22,11 @@ interface Queue {
  *   rejected for its size (vercel/resumable-stream#55).
  * - Publishes are queued per channel and resolve at once; the queue sends them in order, one
  *   pipeline request at a time, so the producer does not wait a round trip per chunk
- *   (vercel/resumable-stream#52). The DONE message waits until its channel is flushed. A failed
- *   send is logged, and that channel's later publishes and its DONE reject with the error.
+ *   (vercel/resumable-stream#52). The DONE message waits until its channel is flushed.
+ * - Publishes never reject: resumable-stream awaits them in the producer's read loop, so a
+ *   rejection would freeze the original reader's stream too. A failed send is logged once, and
+ *   that channel's unsent and later messages are dropped; its listener is broken anyway and
+ *   resumable-stream's DONE watchdog closes it.
  */
 export function createUpstashPublisher(
   redis: Redis = Redis.fromEnv(),
@@ -47,11 +50,11 @@ export function createUpstashPublisher(
         const pipeline = redis.pipeline();
         for (const entry of batch) pipeline.publish(channel, entry.payload);
         await pipeline.exec();
-        for (const entry of batch) entry.settle?.resolve(1);
+        for (const entry of batch) entry.settle?.(1);
       } catch (error) {
-        queue.error = error;
+        queue.failed = true;
         console.error(`[agentkit-resumable-stream] publish to ${channel} failed:`, error);
-        for (const entry of [...batch, ...queue.entries.splice(0)]) entry.settle?.reject(error);
+        for (const entry of [...batch, ...queue.entries.splice(0)]) entry.settle?.(0);
         return;
       }
     }
@@ -62,25 +65,23 @@ export function createUpstashPublisher(
     connect: async () => undefined,
     publish: (channel, message) => {
       let queue = queues.get(channel);
-      if (queue?.error !== undefined) {
+      if (queue?.failed) {
         if (message === DONE_MESSAGE) queues.delete(channel);
-        return Promise.reject(queue.error);
+        return Promise.resolve(0);
       }
       const idle = !queue;
       if (!queue) queues.set(channel, (queue = { entries: [] }));
       const entries = queue.entries;
-      const sent = new Promise<number>((resolve, reject) => {
+      const sent = new Promise<number>((resolve) => {
         const pieces = splitMessage(message, maxMessageBytes);
         pieces.forEach((piece, i) => {
           const payload = encodeMessage(piece);
-          const settle = i === pieces.length - 1 ? { resolve, reject } : undefined;
+          const settle = i === pieces.length - 1 ? resolve : undefined;
           entries.push({ payload, bytes: encoder.encode(payload).byteLength, settle });
         });
       });
       if (idle) void drain(channel, queue);
-      if (message === DONE_MESSAGE) return sent;
-      sent.catch(() => undefined); // logged in drain, and rejects the channel's next publish
-      return Promise.resolve(1);
+      return message === DONE_MESSAGE ? sent : Promise.resolve(1);
     },
     set: (key, value, options) =>
       options?.EX ? redis.set(key, value, { ex: options.EX }) : redis.set(key, value),

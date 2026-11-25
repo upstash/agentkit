@@ -1,8 +1,10 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { Redis } from "@upstash/redis";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { DONE_MESSAGE } from "./codec.js";
 import { createResumableStreamContext } from "./context.js";
+import { createUpstashPublisher } from "./publisher.js";
 import { createStopSignal, requestStop } from "./stop.js";
 import { createUpstashSubscriber } from "./subscriber.js";
 
@@ -125,5 +127,28 @@ describe.skipIf(!hasRedisCreds)("resumable-stream on Upstash Redis", () => {
     expect(await until(async () => (await receivers()) === 1)).toBe(true);
     await subscriber.unsubscribe(channel);
     expect(await until(async () => (await receivers()) === 0)).toBe(true);
+  });
+
+  it("never rejects a publish after a failed send", async () => {
+    // The server refuses a wrong token, so every send fails. A rejection would stop the producer's
+    // read loop and freeze the original reader, so the channel's messages are dropped instead.
+    const url = process.env.UPSTASH_REDIS_REST_URL!;
+    const publisher = createUpstashPublisher(new Redis({ url, token: "wrong", retry: false }));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      // DONE in the batch that fails.
+      void publisher.publish(`${keyPrefix}:broken:1`, "a");
+      await expect(publisher.publish(`${keyPrefix}:broken:1`, DONE_MESSAGE)).resolves.toBe(0);
+      expect(errors).toHaveBeenCalledTimes(1);
+
+      // Publishes and DONE after the channel failed.
+      await expect(publisher.publish(`${keyPrefix}:broken:2`, "a")).resolves.toBe(1);
+      expect(await until(() => errors.mock.calls.length === 2)).toBe(true);
+      await expect(publisher.publish(`${keyPrefix}:broken:2`, "b")).resolves.toBe(0);
+      await expect(publisher.publish(`${keyPrefix}:broken:2`, DONE_MESSAGE)).resolves.toBe(0);
+      expect(errors).toHaveBeenCalledTimes(2); // once per channel
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
