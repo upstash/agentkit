@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "e2e": "vitest run --config e2e/vitest.config.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.118",
@@ -24,6 +25,8 @@
     "@types/node": "^20",
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",
-    "typescript": "^5"
+    "dotenv": "^16.4.5",
+    "typescript": "^5",
+    "vitest": "^2.0.0"
   }
 }

@@ -17,6 +17,11 @@ const FILLER =
   "from Upstash Redis, open the chat in a second tab and both follow along, or press Stop in either " +
   "tab and the generation ends everywhere, whichever server instance is running it.";
 
+/** The whole answer the scripted model streams for a user message (the E2E suite checks against it). */
+export function scriptedAnswer(said: string): string {
+  return [`You said: ${said}.`, FILLER, FILLER, FILLER].join(" ");
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function mockModel(): LanguageModel {
@@ -28,7 +33,7 @@ function mockModel(): LanguageModel {
         .map((part) => (part.type === "text" ? part.text : ""))
         .join("")
         .trim();
-      const words = [`You said: ${said}.`, FILLER, FILLER, FILLER].join(" ").split(" ");
+      const words = scriptedAnswer(said).split(" ");
       let i = 0;
       // Pulled one word at a time, so a stopped `streamText` (which cancels it) ends it at once.
       const stream = new ReadableStream<StreamPart>({

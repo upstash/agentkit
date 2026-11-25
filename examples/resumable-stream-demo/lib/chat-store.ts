@@ -8,6 +8,8 @@ import { Redis } from "@upstash/redis";
 import type { UIMessage } from "ai";
 
 const key = (id: string) => `resumable-stream-demo:chat:${id}`;
+/** The key of a chat, for the E2E suite to clean up. */
+export const chatKey = key;
 const TTL_SECONDS = 7 * 24 * 3600;
 
 let client: Redis | undefined;

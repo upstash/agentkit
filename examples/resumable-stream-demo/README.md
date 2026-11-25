@@ -47,3 +47,21 @@ Open <http://localhost:3000>; it redirects to a new chat.
    generation running on port 3000.
 
 Chats are stored under `resumable-stream-demo:chat:<id>` and expire after a week.
+
+## End-to-end tests
+
+```bash
+pnpm build && pnpm e2e
+```
+
+Starts **two** production servers of this app against the same Upstash Redis, with the scripted
+model (one word every 50 ms), and drives them over HTTP the way `useChat` does:
+
+| Scenario | What it proves |
+| --- | --- |
+| A client drops mid-answer on A, resumes on B | B replays the stream from the start and carries it to the end: the whole answer, once, in order; then no active stream, and the full answer saved |
+| Stop on B while A is generating | A's stream ends early, the partial answer is saved, and the active stream is cleared |
+| A resume after the answer is done | A 204 on either instance |
+
+Chats use fresh ids and are deleted afterwards. Needs `UPSTASH_REDIS_REST_URL` and
+`UPSTASH_REDIS_REST_TOKEN` (the suite skips without them).
