@@ -1,0 +1,57 @@
+{
+  "name": "@upstash/agentkit-resumable-stream",
+  "version": "0.0.0",
+  "description": "Upstash Redis provider for resumable-stream: an HTTP publisher and subscriber that work on serverless and edge runtimes, plus an active-stream registry and a stop signal that works across instances.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/upstash/agentkit.git",
+    "directory": "packages/resumable-stream"
+  },
+  "homepage": "https://github.com/upstash/agentkit/tree/main/packages/resumable-stream",
+  "bugs": {
+    "url": "https://github.com/upstash/agentkit/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "upstash",
+    "redis",
+    "resumable-stream",
+    "ai-sdk",
+    "streaming",
+    "sse",
+    "pubsub",
+    "serverless",
+    "edge",
+    "llm"
+  ],
+  "dependencies": {
+    "@upstash/redis": "^1.41.0"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.5",
+    "resumable-stream": "2.2.13"
+  },
+  "peerDependencies": {
+    "resumable-stream": ">=2.2.10"
+  }
+}
