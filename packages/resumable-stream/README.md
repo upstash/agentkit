@@ -83,6 +83,9 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 The stopped `streamText` ends its stream, so `onEnd` still runs (with `isAborted: true`), saves the
 partial answer and clears `activeStreamId`, and resumed readers see the stream finish.
 
+A runnable version of this flow, with chat storage in Upstash Redis and a scripted model when no
+OpenAI key is set, is in [`examples/resumable-stream-demo`](../../examples/resumable-stream-demo).
+
 ## API
 
 - `createResumableStreamContext({ waitUntil, redis?, keyPrefix?, ... })`: `resumable-stream/generic`'s

@@ -277,6 +277,52 @@ importers:
         specifier: ^5
         version: 5.9.3
 
+  examples/resumable-stream-demo:
+    dependencies:
+      '@ai-sdk/openai':
+        specifier: ^4.0.118
+        version: 4.0.118(zod@4.4.3)
+      '@ai-sdk/react':
+        specifier: ^4.0.177
+        version: 4.0.177(react@19.2.6)(zod@4.4.3)
+      '@upstash/agentkit-resumable-stream':
+        specifier: workspace:*
+        version: link:../../packages/resumable-stream
+      '@upstash/redis':
+        specifier: ^1.41.0
+        version: 1.41.0
+      ai:
+        specifier: 7.0.173
+        version: 7.0.173(zod@4.4.3)
+      next:
+        specifier: 16.2.9
+        version: 16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react:
+        specifier: 19.2.6
+        version: 19.2.6
+      react-dom:
+        specifier: 19.2.6
+        version: 19.2.6(react@19.2.6)
+      resumable-stream:
+        specifier: 2.2.13
+        version: 2.2.13
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^20
+        version: 20.19.43
+      '@types/react':
+        specifier: 19.2.15
+        version: 19.2.15
+      '@types/react-dom':
+        specifier: 19.2.3
+        version: 19.2.3(@types/react@19.2.15)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+
   examples/tanstack-ai-demo:
     dependencies:
       '@tanstack/ai':

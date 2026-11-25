@@ -25,8 +25,10 @@ embeddings — keep that in mind when naming/among scoring. The one exception is
 | `upstash-hermes-memory` (`python/hermes-memory`, **PyPI**) | Hermes Agent memory provider (`UpstashMemoryProvider`, entry point `hermes_agent.memory_providers: upstash`) plus Python ports of `AgentMemory` / `ChatHistory` that write the TS keys and indexes byte for byte. See **Python packages** below. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
-`eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
-(Next.js; the MCP server plus a browser client that shows the JSON-RPC wire log).
+`eve-extension-demo` (a minimal eve scaffold that mounts the extension), `mcp-toolkit-demo`
+(Next.js; the MCP server plus a browser client that shows the JSON-RPC wire log), and
+`resumable-stream-demo` (Next.js; the AI SDK resume-streams guide on `@upstash/agentkit-resumable-stream`,
+with a stop route; scripted `ai/test` model without `OPENAI_API_KEY`).
 `langchain` was **removed** — don't reintroduce it. A first `tanstack-ai` adapter was removed in June 2026
 (it only wrapped memory + a model cache); the current `packages/tanstack-ai` is a different package that
 implements TanStack AI's own backend contracts (see its section below) — keep it.
