@@ -118,12 +118,12 @@ describe.skipIf(!hasRedisCreds)("resumable-stream on Upstash Redis", () => {
   it("unsubscribe ends the subscription on the server", async () => {
     const redis = Redis.fromEnv();
     const channel = `${keyPrefix}:channel`;
-    const numsub = async () =>
-      Number(((await redis.exec(["PUBSUB", "NUMSUB", channel])) as [string, number])[1]);
+    // PUBLISH returns how many subscribers received the message. PUBSUB NUMSUB lagged in CI.
+    const receivers = () => redis.publish(channel, '{"d":"ping"}');
     const subscriber = createUpstashSubscriber();
     await subscriber.subscribe(channel, () => undefined);
-    expect(await numsub()).toBe(1);
+    expect(await until(async () => (await receivers()) === 1)).toBe(true);
     await subscriber.unsubscribe(channel);
-    expect(await until(async () => (await numsub()) === 0)).toBe(true);
+    expect(await until(async () => (await receivers()) === 0)).toBe(true);
   });
 });
