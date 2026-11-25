@@ -7,9 +7,11 @@ import {
   type UIMessage,
 } from "ai";
 import { after } from "next/server";
+import { createResumableStreamContext } from "resumable-stream/generic";
 import {
-  createResumableStreamContext,
   createStopSignal,
+  createUpstashPublisher,
+  createUpstashSubscriber,
 } from "@upstash/agentkit-resumable-stream";
 import { readChat, saveMessages, setActiveStreamId } from "@/lib/chat-store";
 import { chatModel } from "@/lib/model";
@@ -45,10 +47,12 @@ export async function POST(req: Request) {
     }),
     // A copy of the SSE stream goes to Upstash Redis, so a reload can resume it on any instance.
     async consumeSseStream({ stream }) {
-      await createResumableStreamContext({ waitUntil: after }).createNewResumableStream(
-        streamId,
-        () => stream,
-      );
+      const streamContext = createResumableStreamContext({
+        waitUntil: after,
+        publisher: createUpstashPublisher(),
+        subscriber: createUpstashSubscriber(),
+      });
+      await streamContext.createNewResumableStream(streamId, () => stream);
       await setActiveStreamId(id, streamId);
     },
   });

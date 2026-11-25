@@ -1,9 +1,9 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { Redis } from "@upstash/redis";
+import { createResumableStreamContext } from "resumable-stream/generic";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { DONE_MESSAGE } from "./codec.js";
-import { createResumableStreamContext } from "./context.js";
 import { createUpstashPublisher } from "./publisher.js";
 import { createStopSignal, requestStop } from "./stop.js";
 import { createUpstashSubscriber } from "./subscriber.js";
@@ -14,8 +14,15 @@ const hasRedisCreds = Boolean(
 
 /** Each "instance" gets its own client and context, as two serverless invocations would. */
 const keyPrefix = `test:resumable:${randomUUID().slice(0, 8)}`;
-const instance = () =>
-  createResumableStreamContext({ waitUntil: null, keyPrefix, redis: Redis.fromEnv() });
+const instance = () => {
+  const redis = Redis.fromEnv();
+  return createResumableStreamContext({
+    waitUntil: null,
+    keyPrefix,
+    publisher: createUpstashPublisher(redis),
+    subscriber: createUpstashSubscriber(redis),
+  });
+};
 
 function source() {
   let write!: (chunk: string) => void;

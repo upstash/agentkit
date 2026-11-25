@@ -13,7 +13,7 @@ A minimal Next.js chat that follows the AI SDK's
 
 | File | What it does |
 | --- | --- |
-| `app/api/chat/route.ts` | POST: `streamText`, with a copy of the stream sent to Redis (`consumeSseStream`) |
+| `app/api/chat/route.ts` | POST: `streamText`, with a copy of the stream sent to Redis (`consumeSseStream`) through `resumable-stream/generic` and the Upstash publisher and subscriber |
 | `app/api/chat/[id]/stream/route.ts` | GET: resumes the chat's active stream |
 | `app/api/chat/[id]/stop/route.ts` | POST: `requestStop` for the chat's active stream |
 | `app/chat/[id]/chat.tsx` | The `useChat` client |

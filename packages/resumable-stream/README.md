@@ -13,6 +13,19 @@ npm install @upstash/agentkit-resumable-stream resumable-stream
 `resumable-stream` 2.2.10 or later is a peer dependency. Set `UPSTASH_REDIS_REST_URL` and
 `UPSTASH_REDIS_REST_TOKEN`; every function defaults to `Redis.fromEnv()`.
 
+Pass the publisher and subscriber to `resumable-stream/generic`'s context:
+
+```ts
+import { createResumableStreamContext } from "resumable-stream/generic";
+import { createUpstashPublisher, createUpstashSubscriber } from "@upstash/agentkit-resumable-stream";
+
+const streamContext = createResumableStreamContext({
+  waitUntil: after, // from "next/server", or your platform's waitUntil
+  publisher: createUpstashPublisher(),
+  subscriber: createUpstashSubscriber(),
+});
+```
+
 ## Next.js App Router
 
 The AI SDK flow. `readChat`/`saveChat` are your chat storage; keep `activeStreamId` on the chat
@@ -22,7 +35,8 @@ record, as the AI SDK docs do. The client is `useChat({ id, resume: true })`.
 // app/api/chat/route.ts: POST creates the stream
 import { convertToModelMessages, createUIMessageStreamResponse, generateId, streamText, toUIMessageStream } from "ai";
 import { after } from "next/server";
-import { createResumableStreamContext, createStopSignal } from "@upstash/agentkit-resumable-stream";
+import { createResumableStreamContext } from "resumable-stream/generic";
+import { createStopSignal, createUpstashPublisher, createUpstashSubscriber } from "@upstash/agentkit-resumable-stream";
 
 export async function POST(req: Request) {
   const { id, message } = await req.json();
@@ -47,7 +61,12 @@ export async function POST(req: Request) {
       },
     }),
     async consumeSseStream({ stream }) {
-      await createResumableStreamContext({ waitUntil: after }).createNewResumableStream(streamId, () => stream);
+      const streamContext = createResumableStreamContext({
+        waitUntil: after,
+        publisher: createUpstashPublisher(),
+        subscriber: createUpstashSubscriber(),
+      });
+      await streamContext.createNewResumableStream(streamId, () => stream);
       await saveChat({ id, activeStreamId: streamId });
     },
   });
@@ -58,12 +77,18 @@ export async function POST(req: Request) {
 // app/api/chat/[id]/stream/route.ts: GET resumes it
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
 import { after } from "next/server";
-import { createResumableStreamContext } from "@upstash/agentkit-resumable-stream";
+import { createResumableStreamContext } from "resumable-stream/generic";
+import { createUpstashPublisher, createUpstashSubscriber } from "@upstash/agentkit-resumable-stream";
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const { activeStreamId } = await readChat((await params).id);
   if (!activeStreamId) return new Response(null, { status: 204 });
-  const stream = await createResumableStreamContext({ waitUntil: after }).resumeExistingStream(activeStreamId);
+  const streamContext = createResumableStreamContext({
+    waitUntil: after,
+    publisher: createUpstashPublisher(),
+    subscriber: createUpstashSubscriber(),
+  });
+  const stream = await streamContext.resumeExistingStream(activeStreamId);
   if (!stream) return new Response(null, { status: 204 }); // finished or expired
   return new Response(stream, { headers: UI_MESSAGE_STREAM_HEADERS });
 }
@@ -88,10 +113,9 @@ OpenAI key is set, is in [`examples/resumable-stream-demo`](../../examples/resum
 
 ## API
 
-- `createResumableStreamContext({ waitUntil, redis?, keyPrefix?, ... })`: `resumable-stream/generic`'s
-  context with the publisher and subscriber below (pass `publisher` / `subscriber` to replace them).
 - `createUpstashPublisher(redis?, { maxMessageBytes? })` and `createUpstashSubscriber(redis?)`: the
-  generic `Publisher` and `Subscriber`, for calling `resumable-stream/generic` yourself. Use them
+  generic `Publisher` and `Subscriber` to pass to `createResumableStreamContext` from
+  `resumable-stream/generic` (with `waitUntil`, `keyPrefix` and its other options). Use them
   together: messages travel as `{"d":"<text>"}`, because Upstash delivers subscriptions as
   Server-Sent Events, which `@upstash/redis` splits on newlines and JSON-parses.
 - `requestStop(streamId, redis?)` and `createStopSignal(streamId, { redis?, pollIntervalMs? })`, which
