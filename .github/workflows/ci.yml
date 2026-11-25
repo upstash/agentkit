@@ -78,6 +78,23 @@ jobs:
           fi
           pnpm e2e
 
+      - name: E2E (resumable-stream demo, two instances, mocked model)
+        # Starts two production servers of examples/resumable-stream-demo against the same Upstash
+        # Redis, with the scripted model, and checks: an answer dropped mid-way on one instance is
+        # resumed whole on the other, Stop on one instance ends a generation running on the other and
+        # saves the partial answer, and a finished answer has no stream to resume. Uses the app built
+        # above; skipped without Redis secrets (e.g. fork PRs).
+        working-directory: examples/resumable-stream-demo
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: |
+          if [ -z "$UPSTASH_REDIS_REST_URL" ]; then
+            echo "No Redis secrets available — skipping the resumable-stream e2e suite."
+            exit 0
+          fi
+          pnpm e2e
+
       - name: E2E (MCP toolkit demo, local QStash, no model)
         # Starts the local QStash dev server and the demo built above, and drives it with raw JSON-RPC
         # as a model and a host would (no model, no QStash account). Against both task servers: run to
