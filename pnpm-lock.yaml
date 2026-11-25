@@ -45,8 +45,8 @@ importers:
   examples/ai-sdk-demo:
     dependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.122
-        version: 4.0.122(zod@4.4.3)
+        specifier: ^4.0.123
+        version: 4.0.123(zod@4.4.3)
       '@ai-sdk/react':
         specifier: ^4.0.186
         version: 4.0.186(react@19.2.6)(zod@4.4.3)
@@ -94,8 +94,8 @@ importers:
   examples/eve-demo:
     dependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.122
-        version: 4.0.122(zod@4.4.3)
+        specifier: ^4.0.123
+        version: 4.0.123(zod@4.4.3)
       '@radix-ui/react-use-controllable-state':
         specifier: 1.2.2
         version: 1.2.2(@types/react@19.2.15)(react@19.2.6)
@@ -134,7 +134,7 @@ importers:
         version: 1.41.0
       '@vercel/connect':
         specifier: 2.9.1
-        version: 2.9.1(@ai-sdk/mcp@2.0.104(zod@4.4.3))(ai@7.0.181(zod@4.4.3))(eve@1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
+        version: 2.9.1(@ai-sdk/mcp@2.0.104(zod@4.4.3))(ai@7.0.181(zod@4.4.3))(eve@1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
       ai:
         specifier: 7.0.181
         version: 7.0.181(zod@4.4.3)
@@ -148,8 +148,8 @@ importers:
         specifier: 1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       eve:
-        specifier: 1.4.0
-        version: 1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: 1.5.0
+        version: 1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       lucide-react:
         specifier: 1.16.0
         version: 1.16.0(react@19.2.6)
@@ -206,8 +206,8 @@ importers:
   examples/eve-extension-demo:
     dependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.122
-        version: 4.0.122(zod@4.4.3)
+        specifier: ^4.0.123
+        version: 4.0.123(zod@4.4.3)
       '@upstash/agentkit-eve-extension':
         specifier: workspace:*
         version: link:../../packages/eve-extension
@@ -216,13 +216,13 @@ importers:
         version: 1.41.0
       '@vercel/connect':
         specifier: 2.9.1
-        version: 2.9.1(@ai-sdk/mcp@2.0.104(zod@4.4.3))(ai@7.0.181(zod@4.4.3))(eve@1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
+        version: 2.9.1(@ai-sdk/mcp@2.0.104(zod@4.4.3))(ai@7.0.181(zod@4.4.3))(eve@1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))
       ai:
         specifier: 7.0.181
         version: 7.0.181(zod@4.4.3)
       eve:
-        specifier: 1.4.0
-        version: 1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: 1.5.0
+        version: 1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -400,8 +400,8 @@ importers:
         version: 4.4.3
     devDependencies:
       '@ai-sdk/openai':
-        specifier: ^4.0.122
-        version: 4.0.122(zod@4.4.3)
+        specifier: ^4.0.123
+        version: 4.0.123(zod@4.4.3)
       '@ai-sdk/provider':
         specifier: ^4.0.39
         version: 4.0.39
@@ -437,8 +437,8 @@ importers:
         specifier: ^16.4.5
         version: 16.6.1
       eve:
-        specifier: 1.4.0
-        version: 1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: 1.5.0
+        version: 1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   packages/eve-extension:
     dependencies:
@@ -456,8 +456,8 @@ importers:
         specifier: 24.x
         version: 24.13.2
       eve:
-        specifier: 1.4.0
-        version: 1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+        specifier: 1.5.0
+        version: 1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -575,8 +575,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/openai@4.0.122':
-    resolution: {integrity: sha512-8Q2DX7Fte5Sgt5jl/3B9vJFWO3LQQjgr/ErfDpdNdR5e20UC6RCHLXJ/MRhjLV2mMZkKBahV8DoYxBXgMCKGPA==}
+  '@ai-sdk/openai@4.0.123':
+    resolution: {integrity: sha512-6BazIkzKXr48DtdYKIBfYnyg5ecW77fkIZGJNC/wvVBx7LsELMXgvvWW2C0/kAjh+441g6osdDANpKQ4LKZxaw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -3704,8 +3704,8 @@ packages:
     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
     engines: {node: '>=0.10.0'}
 
-  eve@1.4.0:
-    resolution: {integrity: sha512-se+2rYc0RFaKokwR18eta9JIanzW90qEuwdIhdztlpaUTYYjug81FTSDI+szeXrgXabGiD3lWBC5tuzAuBttfg==}
+  eve@1.5.0:
+    resolution: {integrity: sha512-LXy9WDAtGR82qQC5X+NmyHBTh8fuYWlsna5Aj6aHYpVYB+DCAWJ/9DdNYyQYYr2fLOqOKWhwIQLTZYGkMQ1/NQ==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -5402,7 +5402,7 @@ snapshots:
       pkce-challenge: 5.0.2
       zod: 4.4.3
 
-  '@ai-sdk/openai@4.0.122(zod@4.4.3)':
+  '@ai-sdk/openai@4.0.123(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 4.0.39
       '@ai-sdk/provider-utils': 5.0.83(zod@4.4.3)
@@ -7752,13 +7752,13 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@2.9.1(@ai-sdk/mcp@2.0.104(zod@4.4.3))(ai@7.0.181(zod@4.4.3))(eve@1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))':
+  '@vercel/connect@2.9.1(@ai-sdk/mcp@2.0.104(zod@4.4.3))(ai@7.0.181(zod@4.4.3))(eve@1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)))':
     dependencies:
       '@vercel/oidc': 4.0.8
     optionalDependencies:
       '@ai-sdk/mcp': 2.0.104(zod@4.4.3)
       ai: 7.0.181(zod@4.4.3)
-      eve: 1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
+      eve: 1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -8367,7 +8367,7 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  eve@1.4.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
+  eve@1.5.0(@opentelemetry/api@1.9.1)(ai@7.0.181(zod@4.4.3))(next@16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
       ai: 7.0.181(zod@4.4.3)
       nitro: 3.0.261103-rc

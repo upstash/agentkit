@@ -14,7 +14,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.122",
+    "@ai-sdk/openai": "^4.0.123",
     "@radix-ui/react-use-controllable-state": "1.2.2",
     "@shikijs/core": "4.1.0",
     "@shikijs/engine-javascript": "4.1.0",
@@ -32,7 +32,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
-    "eve": "1.4.0",
+    "eve": "1.5.0",
     "lucide-react": "1.16.0",
     "motion": "12.40.0",
     "nanoid": "5.1.11",

@@ -37,7 +37,7 @@ unavailable, use https://eve.dev/docs/extensions as a fallback.
 agent-shaped source tree into `dist/extension/`, emits type declarations and a
 compatibility manifest, and fills the package `exports` map. Ship `dist/` only.
 `eve` is a required peer so the consumer's eve is the one that runs, but NOT a
-wildcard: keep the floor (`>=1.4.0`) equal to the manifest's `builtWithEve`
+wildcard: keep the floor (`>=1.5.0`) equal to the manifest's `builtWithEve`
 (eve refuses a dist built with a newer eve than its own), so an incompatible eve fails at install instead of at
 `eve build` (see issue #22). eve validates the real compatibility from the
 generated manifest.
