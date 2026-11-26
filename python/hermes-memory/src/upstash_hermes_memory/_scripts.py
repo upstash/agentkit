@@ -77,9 +77,9 @@ def eval_script(
         rejected = redis in _flags_rejected
     except TypeError:  # a client that can't be weakly referenced
         rejected = False
-    # True always sends the flags, even to a client which rejected them for another store.
-    with_flags = enable_upstash_script_flags is True or (
-        enable_upstash_script_flags is not False and not rejected
+    # Set: the option decides. Unset: the flags, unless this client rejected them before.
+    with_flags = (
+        enable_upstash_script_flags if enable_upstash_script_flags is not None else not rejected
     )
     if not with_flags:
         return run(script)
