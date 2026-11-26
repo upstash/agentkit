@@ -58,13 +58,25 @@ describe.skipIf(!hasRedisCreds)("createScriptRunner (live Redis)", () => {
   afterEach(() => warn.mockRestore());
   afterAll(() => cleanupKeys(redis, prefix));
 
-  it("Upstash Redis accepts the flags", async () => {
-    const run = createScriptRunner(redis, {
-      prefix: "agentkit-test-js",
-      enableUpstashScriptFlags: true,
-    });
-    expect(await run(INCR, [`${prefix}:a`], [])).toBe(1);
-    expect(await run(INCR, [`${prefix}:a`], [])).toBe(2);
+  it("Upstash Redis accepts the flags, sent in a first-line shebang", async () => {
+    const sent: string[] = [];
+    const recording = {
+      eval: (script: string, keys: string[], args: unknown[]) => {
+        sent.push(script);
+        return redis.eval(script, keys, args);
+      },
+    };
+    for (const enableUpstashScriptFlags of [true, undefined]) {
+      const run = createScriptRunner(recording, {
+        prefix: "agentkit-test-js",
+        enableUpstashScriptFlags,
+      });
+      await run(INCR, [`${prefix}:a`], []);
+    }
+    expect(await redis.get(`${prefix}:a`)).toBe(2);
+    const shebang = "#!lua script_name=agentkit-test-js-test_incr flags=allow-key-locking";
+    expect(sent).toEqual([`${shebang}\n${INCR.script}`, `${shebang}\n${INCR.script}`]);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("unset: falls back without the flags once rejected, warns once, and remembers it", async () => {

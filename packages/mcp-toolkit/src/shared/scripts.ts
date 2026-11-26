@@ -87,7 +87,10 @@ export const evalScript = async <T>(
   args: unknown[],
 ): Promise<T> => {
   const client = redis as EvalCapableRedis;
-  const withFlags = enableUpstashScriptFlags !== false && !flagsRejected.has(client);
+  // `true` always sends the flags, even to a client which rejected them for another store.
+  const withFlags =
+    enableUpstashScriptFlags === true ||
+    (enableUpstashScriptFlags !== false && !flagsRejected.has(client));
   if (!withFlags) return (await client.eval(info.script, keys, args)) as T;
   try {
     return (await client.eval(buildScript(info, true), keys, args)) as T;

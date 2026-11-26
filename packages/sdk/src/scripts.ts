@@ -104,7 +104,10 @@ export const createScriptRunner = (
   const client = redis as EvalCapableRedis;
   const { prefix, enableUpstashScriptFlags } = options;
   return async <T>(info: LuaScript, keys: string[], args: unknown[]): Promise<T> => {
-    const withFlags = enableUpstashScriptFlags !== false && !flagsRejected.has(client);
+    // `true` always sends the flags, even to a client which rejected them for another store.
+    const withFlags =
+      enableUpstashScriptFlags === true ||
+      (enableUpstashScriptFlags !== false && !flagsRejected.has(client));
     if (!withFlags) {
       return (await client.eval(info.script, keys, args)) as T;
     }
