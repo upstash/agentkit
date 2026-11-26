@@ -1,6 +1,7 @@
 /**
- * The script runner against a Redis server other than Upstash (Redis or Valkey behind SRH, see the
- * `non-upstash` CI job). Runs only when NON_UPSTASH_REDIS_REST_URL / _TOKEN are set.
+ * The script runner against a Redis server other than Upstash, reached over REST (for example
+ * Redis or Valkey behind serverless-redis-http). Runs only when NON_UPSTASH_REDIS_REST_URL /
+ * _TOKEN are set; not part of CI.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Redis } from "@upstash/redis";

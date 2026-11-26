@@ -449,11 +449,10 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
   `@upstash/ratelimit`): unset = send the flags, and if the server rejects them (Redis 7+/Valkey
   "shebang" errors, Redis 6 "near '#'", old Upstash "Unknown metadata value") rerun without them,
   warn once, and remember that per client; `false` = never send them; `true` = always send and throw.
-  `true` sends the flags even to a client that fell back for another store. The fallback is
-  tested against real Redis 6.2 / 7.4 and Valkey 8 behind serverless-redis-http by the
-  `non-upstash` CI job (`*.non-upstash.test.ts`, `test_scripts_non_upstash.py`, which run only
-  with `NON_UPSTASH_REDIS_REST_URL` / `_TOKEN` set). Locally, any REST proxy in front of a plain
-  Redis works.
+  `true` sends the flags even to a client that fell back for another store. To check the fallback
+  against a real Redis or Valkey, run `*.non-upstash.test.ts` and `test_scripts_non_upstash.py`
+  locally with `NON_UPSTASH_REDIS_REST_URL` / `_TOKEN` pointing at a REST proxy (e.g.
+  serverless-redis-http) in front of it; they skip otherwise and are not part of CI.
   In Python the `script_name` part is only sent with telemetry on (the Hermes catalog requires usage
   reporting to be opt-in); `allow-key-locking` is sent either way.
 - **Every `EVAL` script runs with `flags=allow-key-locking`** (same as `@upstash/ratelimit` since
