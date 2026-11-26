@@ -434,11 +434,25 @@ implements TanStack AI's own backend contracts (see its section below) — keep 
 - **Removed entirely:** the model cache (`ModelCache`/`SemanticCache`, `cachedModel`, `modelCacheMiddleware`),
   Telemetry, the generic Sandbox (sandbox is eve-only), and dead core exports `ChatMessage`/`Logger`/`noopLogger`.
 
-## Lua scripts: always `allow-key-locking`
+## Lua scripts: named, and always `allow-key-locking`
 
-- **Every `EVAL` script starts with `#!lua flags=allow-key-locking` on its very first line** (same as
-  `@upstash/ratelimit` since #154). Upstash then locks only the keys the script declares instead of the
-  whole database. The price: **every key a script touches must be in `KEYS`** — a key built or read
+- **No script source carries a shebang; the scripts helper adds it.** Scripts are defined with `lua(name,
+  body)` and run through a script runner (`createScriptRunner` in `packages/sdk/src/scripts.ts`, used
+  by tanstack-ai via `src/scripts.ts` and by eve; mcp-toolkit has its own copy in
+  `src/shared/scripts.ts` because it depends on no agentkit package; Python in
+  `upstash_hermes_memory/_scripts.py`). The runner sends `#!lua script_name=<package>-<lang>-<name>
+  flags=allow-key-locking` on the first line, e.g. `agentkit-tanstack-ai-js-lock_acquire`, so
+  Upstash's script stats can tell which SDK script ran (same scheme as `@upstash/ratelimit`'s
+  `ratelimit-js-<script>`). Names are unique per package and checked by each package's
+  `scripts.test.ts`; the server truncates names at 100 bytes.
+- **`enableUpstashScriptFlags`** on every store that runs scripts (same option as
+  `@upstash/ratelimit`): unset = send the flags, and if the server rejects them (Redis 7+/Valkey
+  "shebang" errors, Redis 6 "near '#'", old Upstash "Unknown metadata value") rerun without them,
+  warn once, and remember that per client; `false` = never send them; `true` = always send and throw.
+  In Python the `script_name` part is only sent with telemetry on (the Hermes catalog requires usage
+  reporting to be opt-in); `allow-key-locking` is sent either way.
+- **Every `EVAL` script runs with `flags=allow-key-locking`** (same as `@upstash/ratelimit` since
+  #154). Upstash then locks only the keys the script declares instead of the whole database. The price: **every key a script touches must be in `KEYS`** — a key built or read
   inside Lua fails with `ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is
   set` (verified live 2026-09-27). Don't pass placeholder keys for optional indexes either; make `KEYS`
   variable-length and test `if KEYS[n]` in the script.

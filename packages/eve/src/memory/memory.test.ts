@@ -727,6 +727,28 @@ describe("redisMemory() — tool activity labels (offline)", () => {
 // 1. MemoryDocumentBackend (live Redis)
 // -------------------------------------------------------------------------------------------
 
+describe.skipIf(!hasRedisCreds)("redisDocuments() — enableUpstashScriptFlags (live Redis)", () => {
+  const redis = testRedis();
+  const prefix = `test:memfileFlags:${uniqueUserId("doc")}`;
+
+  afterAll(async () => {
+    await cleanupKeys(redis, prefix);
+  });
+
+  for (const enableUpstashScriptFlags of [true, false]) {
+    it(`${enableUpstashScriptFlags}: the compare-and-set script runs on Upstash Redis`, async () => {
+      const backend = new RedisMemoryDocumentBackend({ redis, prefix, enableUpstashScriptFlags });
+      const key = `scope-${enableUpstashScriptFlags}`;
+      const first = await backend.write({ key, content: "a", expectedVersion: null, signal });
+      await backend.write({ key, content: "b", expectedVersion: first.version, signal });
+      await expect(
+        backend.write({ key, content: "c", expectedVersion: first.version, signal }),
+      ).rejects.toThrow(MemoryDocumentConflictError);
+      expect((await backend.read({ key, signal }))?.content).toBe("b");
+    });
+  }
+});
+
 describe.skipIf(!hasRedisCreds)("redisDocuments() — MemoryDocumentBackend (live Redis)", () => {
   const redis = testRedis();
   const prefix = `test:memfile:${uniqueUserId("doc")}`;

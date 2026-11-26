@@ -12,6 +12,8 @@ import {
 } from "../../shared/clients.js";
 import { fromBase64, fromUtf8 } from "../../shared/crypto.js";
 import { isTerminal } from "../memory.js";
+import { evalScript } from "../../shared/scripts.js";
+import type { LuaScript, ScriptFlagsConfig } from "../../shared/scripts.js";
 import type {
   Task,
   TaskDispatcher,
@@ -32,7 +34,7 @@ const DEFAULT_RETRY_DELAY = "min(pow(3, retried) * 1000, 300000)";
 /** Delivery retries. 5 is the most QStash's free tier and local dev server accept. */
 const DEFAULT_RETRIES = 5;
 
-export type RedisTaskStoreConfig = {
+export type RedisTaskStoreConfig = ScriptFlagsConfig & {
   /**
    * The Upstash Redis client. Defaults to one from `UPSTASH_REDIS_REST_URL` / `_TOKEN`. A client
    * built with `automaticDeserialization: false` is not supported.
@@ -48,14 +50,16 @@ export type RedisTaskStoreConfig = {
  * Applies fields only while the task is non-terminal, and returns `HGETALL` after the call, or nil
  * when the task is missing. Values are JSON-encoded, hence the quoted statuses.
  */
-const GUARDED_WRITE_SCRIPT = `#!lua flags=allow-key-locking
-local status = redis.call('HGET', KEYS[1], 'status')
+const GUARDED_WRITE_SCRIPT: LuaScript = {
+  name: "tasks_guarded_write",
+  script: `local status = redis.call('HGET', KEYS[1], 'status')
 if not status then return false end
 if status ~= '"completed"' and status ~= '"failed"' and status ~= '"cancelled"' then
   redis.call('HSET', KEYS[1], unpack(ARGV))
 end
 return redis.call('HGETALL', KEYS[1])
-`;
+`,
+};
 
 /**
  * Records answers while the task is `input_required`: each into its own `response:<key>` field, and
@@ -63,8 +67,9 @@ return redis.call('HGETALL', KEYS[1])
  * and the keys it waited on are returned; otherwise an empty list. `inputRequests` is only decoded
  * for its keys, never re-encoded. ARGV: lastUpdatedAt, statusMessage, then key/answer pairs.
  */
-const RESPOND_SCRIPT = `#!lua flags=allow-key-locking
-if redis.call('HGET', KEYS[1], 'status') ~= '"input_required"' then return {} end
+const RESPOND_SCRIPT: LuaScript = {
+  name: "tasks_respond",
+  script: `if redis.call('HGET', KEYS[1], 'status') ~= '"input_required"' then return {} end
 local raw = redis.call('HGET', KEYS[1], 'inputRequests')
 if not raw then return {} end
 local open = cjson.decode(raw)
@@ -82,7 +87,8 @@ end
 redis.call('HSET', KEYS[1], 'status', '"working"', 'statusMessage', ARGV[2], 'lastUpdatedAt', ARGV[1])
 redis.call('HDEL', KEYS[1], 'inputRequests')
 return keys
-`;
+`,
+};
 
 /** The hash field prefix of a stored answer. */
 const RESPONSE_FIELD = "response:";
@@ -95,9 +101,11 @@ const RESPONSE_FIELD = "response:";
 export class RedisTaskStore implements TaskStore {
   private readonly prefix: string;
   private readonly redis: () => Redis;
+  private readonly scriptFlags: boolean | undefined;
 
   constructor(config: RedisTaskStoreConfig = {}) {
     this.prefix = config.prefix ?? "mcp:task:";
+    this.scriptFlags = config.enableUpstashScriptFlags;
     this.redis = lazy(() => resolveRedis("RedisTaskStore", config.redis, config.enableTelemetry));
   }
 
@@ -138,7 +146,9 @@ export class RedisTaskStore implements TaskStore {
     responses: Record<string, TaskInputResponse>,
     statusMessage: string,
   ): Promise<string[]> {
-    const reply = await this.redis().eval<string[], unknown[] | null>(
+    const reply = await evalScript<unknown[] | null>(
+      this.redis(),
+      this.scriptFlags,
       RESPOND_SCRIPT,
       [this.key(taskId)],
       [
@@ -171,7 +181,9 @@ export class RedisTaskStore implements TaskStore {
 
   private async guardedWrite(taskId: string, patch: TaskPatch): Promise<Task | null> {
     const fields = toFields({ ...patch, lastUpdatedAt: new Date().toISOString() });
-    const reply = await this.redis().eval<string[], unknown[] | null>(
+    const reply = await evalScript<unknown[] | null>(
+      this.redis(),
+      this.scriptFlags,
       GUARDED_WRITE_SCRIPT,
       [this.key(taskId)],
       Object.entries(fields).flat(),

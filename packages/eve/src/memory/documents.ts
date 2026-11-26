@@ -79,6 +79,8 @@ import type {
   MemoryDocumentReadInput,
   MemoryDocumentWriteInput,
 } from "eve/memory/file";
+import { createScriptRunner, lua } from "@upstash/agentkit-sdk";
+import type { ScriptRunner } from "@upstash/agentkit-sdk";
 import { addTelemetry } from "../telemetry.js";
 
 /** Configuration for {@link redisDocuments}. */
@@ -114,6 +116,17 @@ export interface RedisDocumentsConfig {
    * @default true
    */
   enableTelemetry?: boolean;
+  /**
+   * Whether to send the lua script with flags which only Upstash Redis understands: `script_name`,
+   * which names it (`agentkit-eve-js-memory_document_cas`) in Upstash's script metrics, and
+   * `flags=allow-key-locking`, which lets writes to different documents run in parallel.
+   *
+   * - unset (default): send the flags. If the server rejects them, the script is sent again without
+   *   them, a warning is printed once and the flags are left off for that Redis client from then on.
+   * - `false`: never send the flags. Use this with Redis servers other than Upstash Redis.
+   * - `true`: always send the flags and throw if the server rejects them.
+   */
+  enableUpstashScriptFlags?: boolean;
 }
 
 /**
@@ -135,15 +148,17 @@ const CONTENT_MARKER = "eve-memory-document-v1:";
  * caller turns the second case into eve's `MemoryDocumentConflictError`. Returning the *current*
  * version rather than a bare `0` keeps the failure debuggable.
  */
-const CAS_SCRIPT = `#!lua flags=allow-key-locking
-local current = redis.call('HGET', KEYS[1], 'version')
+const CAS_SCRIPT = lua(
+  "memory_document_cas",
+  `local current = redis.call('HGET', KEYS[1], 'version')
 if current == false then current = '' end
 if current ~= ARGV[2] then return {0, current} end
 redis.call('HSET', KEYS[1], 'content', ARGV[1], 'version', ARGV[3])
 local ttl = tonumber(ARGV[4])
 if ttl and ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
 return {1, ARGV[3]}
-`;
+`,
+);
 
 /** Monotonic-ish, collision-proof opaque version. eve only ever compares versions for equality. */
 let versionCounter = 0;
@@ -160,11 +175,16 @@ function nextVersion(): string {
  */
 export class RedisMemoryDocumentBackend implements MemoryDocumentBackend {
   private readonly redis: Redis;
+  private readonly evalScript: ScriptRunner;
   private readonly prefix: string;
   private readonly ttlSeconds: number;
   constructor(config: RedisDocumentsConfig = {}) {
     this.redis = config.redis ?? Redis.fromEnv();
     addTelemetry(this.redis, config.enableTelemetry);
+    this.evalScript = createScriptRunner(this.redis, {
+      prefix: "agentkit-eve-js",
+      enableUpstashScriptFlags: config.enableUpstashScriptFlags,
+    });
     this.prefix = config.prefix ?? "agentkit:memoryFile";
     this.ttlSeconds = config.ttlSeconds ?? 0;
   }
@@ -216,7 +236,7 @@ export class RedisMemoryDocumentBackend implements MemoryDocumentBackend {
     // REST has no WATCH (and a MULTI cannot branch on a read), so the compare and the swap happen
     // inside one Lua script — see the
     // module docstring for the live verification that EVAL works on Upstash's REST API.
-    const [ok] = await this.redis.eval<string[], [number, string]>(
+    const [ok] = await this.evalScript<[number, string]>(
       CAS_SCRIPT,
       [this.keyFor(key)],
       [`${CONTENT_MARKER}${content}`, expectedVersion ?? "", version, String(this.ttlSeconds)],

@@ -13,7 +13,9 @@ import type {
   BlobStore,
 } from "@tanstack/ai-persistence";
 import { addTelemetry } from "../telemetry.js";
-import { KEY_LOCKING, loadDocs } from "./records.js";
+import { loadDocs } from "./records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig } from "../scripts.js";
 
 /**
  * Commit a put: point the key at its newly uploaded object version, write the record (keeping the
@@ -21,7 +23,9 @@ import { KEY_LOCKING, loadDocs } from "./records.js";
  * and the version it replaced, whose bytes the caller then deletes.
  * KEYS: record document, key index, current-version pointer. ARGV: record JSON, key, version path.
  */
-const PUT_RECORD = `${KEY_LOCKING}local previous = redis.call("GET", KEYS[3]) or ""
+const PUT_RECORD = lua(
+  "blob_put",
+  `local previous = redis.call("GET", KEYS[3]) or ""
 redis.call("SET", KEYS[3], ARGV[3])
 local created = redis.call("JSON.GET", KEYS[1], "$.createdAt")
 redis.call("JSON.SET", KEYS[1], "$", ARGV[1])
@@ -29,13 +33,17 @@ if created and created ~= "[]" then
   redis.call("JSON.SET", KEYS[1], "$.createdAt", string.sub(created, 2, -2))
 end
 redis.call("ZADD", KEYS[2], 0, ARGV[2])
-return {redis.call("JSON.GET", KEYS[1]), previous}`;
+return {redis.call("JSON.GET", KEYS[1]), previous}`,
+);
 
 /** Remove a key's record, pointer and index entry at once; returns the version path to delete. */
-const DELETE_RECORD = `${KEY_LOCKING}local previous = redis.call("GET", KEYS[3]) or ""
+const DELETE_RECORD = lua(
+  "blob_delete",
+  `local previous = redis.call("GET", KEYS[3]) or ""
 redis.call("DEL", KEYS[1], KEYS[3])
 redis.call("ZREM", KEYS[2], ARGV[1])
-return previous`;
+return previous`,
+);
 
 /**
  * The slice of an `@upstash/blob` `Bucket` this store uses — pass `Bucket.fromEnv()`. Structural,
@@ -53,7 +61,7 @@ export interface BlobBucketLike {
   signedReadUrl?(path: string): Promise<{ url: string }>;
 }
 
-export interface UpstashBlobStoreConfig {
+export interface UpstashBlobStoreConfig extends ScriptFlagsConfig {
   /** The Upstash Blob bucket holding the bytes, e.g. `Bucket.fromEnv()` from `@upstash/blob`. */
   bucket: BlobBucketLike;
   /** Upstash Redis client holding each blob's record and the key index. */
@@ -153,6 +161,7 @@ function isNotFound(error: unknown): boolean {
 export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
   const { bucket, redis, prefix } = config;
   addTelemetry(redis, config.enableTelemetry);
+  const evalScript = scriptRunner(redis, config.enableUpstashScriptFlags);
   const pathPrefix = config.pathPrefix ?? "agentkit/tanstack/";
   const recordKey = (key: string) => `${prefix}:blob:${key}`;
   const versionKey = (key: string) => `${prefix}:blobVersion:${key}`;
@@ -224,7 +233,7 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
         createdAt: now,
         updatedAt: now,
       };
-      const [stored_, previous] = (await redis.eval(
+      const [stored_, previous] = (await evalScript(
         PUT_RECORD,
         [recordKey(key), indexKey, versionKey(key)],
         [JSON.stringify(record), key, path],
@@ -279,7 +288,7 @@ export function upstashBlobStore(config: UpstashBlobStoreConfig): BlobStore {
 
     async delete(key: string): Promise<void> {
       assertKey(key);
-      const previous = await redis.eval(
+      const previous = await evalScript(
         DELETE_RECORD,
         [recordKey(key), indexKey, versionKey(key)],
         [key],

@@ -2,9 +2,10 @@ import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
 import type { MCPEventStore, MCPEventSubscription } from "@tanstack/ai-mcp/events";
 import { addTelemetry } from "../telemetry.js";
-import { KEY_LOCKING } from "../persistence/records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig } from "../scripts.js";
 
-export interface UpstashMcpEventStoreConfig {
+export interface UpstashMcpEventStoreConfig extends ScriptFlagsConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** Base key prefix. Defaults to `agentkit:tanstack`. */
@@ -22,7 +23,9 @@ export interface UpstashMcpEventStoreConfig {
  * Returns the new revision, or -1 if the revision moved. Revisions come from one counter, so a
  * delete and re-create never brings an old revision back.
  */
-const WRITE = `${KEY_LOCKING}if ARGV[3] ~= "" and tostring(redis.call("HGET", KEYS[1], "r")) ~= ARGV[3] then return -1 end
+const WRITE = lua(
+  "mcp_event_write",
+  `if ARGV[3] ~= "" and tostring(redis.call("HGET", KEYS[1], "r")) ~= ARGV[3] then return -1 end
 local prev = redis.call("HGET", KEYS[1], "i")
 if prev and prev ~= ARGV[4] then redis.call("HDEL", KEYS[2], prev) end
 local rev = redis.call("INCR", KEYS[4])
@@ -34,14 +37,18 @@ else
   redis.call("HDEL", KEYS[1], "i")
 end
 redis.call("SADD", KEYS[3], "~" .. ARGV[1])
-return rev`;
+return rev`,
+);
 
 /** KEYS: document hash, id→key hash, key set. ARGV: key. */
-const DELETE = `${KEY_LOCKING}local prev = redis.call("HGET", KEYS[1], "i")
+const DELETE = lua(
+  "mcp_event_delete",
+  `local prev = redis.call("HGET", KEYS[1], "i")
 if prev then redis.call("HDEL", KEYS[2], prev) end
 redis.call("DEL", KEYS[1])
 redis.call("SREM", KEYS[3], "~" .. ARGV[1])
-return 1`;
+return 1`,
+);
 
 interface Stored {
   d: MCPEventSubscription;
@@ -75,6 +82,7 @@ const LIST_BATCH = 100;
 export function upstashMcpEventStore(config: UpstashMcpEventStoreConfig = {}): MCPEventStore {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
+  const evalScript = scriptRunner(redis, config.enableUpstashScriptFlags);
   const p = config.prefix ?? "agentkit:tanstack";
   const k = {
     doc: (key: string) => `${p}:mcp:eventSub:${encodeURIComponent(key)}`,
@@ -101,7 +109,7 @@ export function upstashMcpEventStore(config: UpstashMcpEventStoreConfig = {}): M
     },
 
     async set(subscription) {
-      await redis.eval(WRITE, keys(subscription.key), [
+      await evalScript(WRITE, keys(subscription.key), [
         subscription.key,
         JSON.stringify(subscription),
         "",
@@ -117,7 +125,7 @@ export function upstashMcpEventStore(config: UpstashMcpEventStoreConfig = {}): M
         // field set to `undefined` is dropped (JSON leaves it out).
         const next = { ...stored.d, ...patch, key } as MCPEventSubscription;
         const id = patch.id === undefined && stored.d.id !== undefined ? stored.d.id : next.id;
-        const result = (await redis.eval(WRITE, keys(key), [
+        const result = (await evalScript(WRITE, keys(key), [
           key,
           JSON.stringify(next),
           String(stored.r),
@@ -128,7 +136,7 @@ export function upstashMcpEventStore(config: UpstashMcpEventStoreConfig = {}): M
     },
 
     async delete(key) {
-      await redis.eval(DELETE, [k.doc(key), k.ids, k.all], [key]);
+      await evalScript(DELETE, [k.doc(key), k.ids, k.all], [key]);
     },
 
     async *list() {

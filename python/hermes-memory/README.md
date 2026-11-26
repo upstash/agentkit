@@ -70,8 +70,9 @@ vector database), and recall merges a keyword query with a semantic `$ann` query
 
 Off by default. Set `UPSTASH_HERMES_TELEMETRY=1` to opt in: requests to your Upstash database then
 carry `upstash-hermes-memory@<version>` in the `Upstash-Telemetry-Sdk` header, next to the
-`upstash-redis` client's own telemetry headers (SDK version, Python version, platform). Nothing
-else is collected and nothing goes anywhere but your database. Without the opt-in the provider
+`upstash-redis` client's own telemetry headers (SDK version, Python version, platform), and the
+lua script that appends to a chat is named `agentkit-hermes-memory-py-chat_append` in your
+database's script stats. Nothing else is collected and nothing goes anywhere but your database. Without the opt-in the provider
 creates its Redis client with `allow_telemetry=False`, so none of these headers are sent.
 `UPSTASH_DISABLE_TELEMETRY=1` turns telemetry off even when opted in.
 

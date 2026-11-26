@@ -376,6 +376,19 @@ chat({ adapter, messages, tools });
 Reports the package name and version as a header on your redis client's requests. Opt out with
 `enableTelemetry: false` on any factory, on the redis client, or with `UPSTASH_DISABLE_TELEMETRY`.
 
+## Script flags
+
+The stores send their lua scripts with flags which only Upstash Redis understands: a `script_name`
+(for example `agentkit-tanstack-ai-js-lock_acquire`) which shows up in the script stats of your
+database, and `allow-key-locking`, which lets scripts for different keys run in parallel. If the
+server rejects the flags, the scripts are sent again without them and a warning is printed once.
+To send the scripts without the flags from the start, for example with a Redis server other than
+Upstash Redis, pass `enableUpstashScriptFlags: false` to any factory:
+
+```ts
+withPersistence(upstashPersistence({ enableUpstashScriptFlags: false }));
+```
+
 ## Upgrading from full-text memory recall
 
 `@upstash/agentkit-tanstack-ai` 0.3 and earlier indexed memory `text` as a full-text field; it is now a hybrid field.

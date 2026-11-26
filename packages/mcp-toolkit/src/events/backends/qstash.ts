@@ -19,13 +19,15 @@ import type {
   Subscription,
   SubscriptionStore,
 } from "../types.js";
+import { evalScript } from "../../shared/scripts.js";
+import type { LuaScript, ScriptFlagsConfig } from "../../shared/scripts.js";
 
 /** The most keys one `MGET` reads; `find` splits larger lookups. */
 const MAX_BATCH = 1000;
 /** Delivery retries after the first failed attempt. */
 const DELIVERY_RETRIES = 3;
 
-export type RedisSubscriptionStoreConfig = {
+export type RedisSubscriptionStoreConfig = ScriptFlagsConfig & {
   /** The Upstash Redis client. Defaults to one from `UPSTASH_REDIS_REST_URL` / `_TOKEN`. */
   redis?: Redis;
   /** Key prefix. Defaults to `mcp-events:`. */
@@ -40,8 +42,9 @@ export type RedisSubscriptionStoreConfig = {
  * none). Both indexes are sorted sets scored by expiry; expired entries are pruned first, so only
  * live subscriptions count. Returns 1 when stored, 0 when refused.
  */
-const PUT_SCRIPT = `#!lua flags=allow-key-locking
-redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', ARGV[4])
+const PUT_SCRIPT: LuaScript = {
+  name: "events_subscription_put",
+  script: `redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', ARGV[4])
 local limit = tonumber(ARGV[6])
 if limit >= 0 and not redis.call('ZSCORE', KEYS[3], ARGV[5])
   and redis.call('ZCARD', KEYS[3]) >= limit then
@@ -54,7 +57,8 @@ redis.call('ZADD', KEYS[3], ARGV[3], ARGV[5])
 local last = redis.call('ZRANGE', KEYS[3], -1, -1, 'WITHSCORES')
 redis.call('PEXPIREAT', KEYS[3], last[2])
 return 1
-`;
+`,
+};
 
 /**
  * One key per subscription, expiring with it, plus a sorted set per event and one per subscriber,
@@ -64,9 +68,11 @@ return 1
 export class RedisSubscriptionStore implements SubscriptionStore {
   private readonly prefix: string;
   private readonly redis: () => Redis;
+  private readonly scriptFlags: boolean | undefined;
 
   constructor(config: RedisSubscriptionStoreConfig = {}) {
     this.prefix = config.prefix ?? "mcp-events:";
+    this.scriptFlags = config.enableUpstashScriptFlags;
     this.redis = lazy(() =>
       resolveRedis("RedisSubscriptionStore", config.redis, config.enableTelemetry),
     );
@@ -76,7 +82,9 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     const now = Date.now();
     const ttl = subscription.expiresAt - now;
     if (ttl <= 0) return true; // already expired: nothing to keep, and not a limit problem
-    const stored = await this.redis().eval<string[], number>(
+    const stored = await evalScript<number>(
+      this.redis(),
+      this.scriptFlags,
       PUT_SCRIPT,
       [
         this.subKey(subscription.id),

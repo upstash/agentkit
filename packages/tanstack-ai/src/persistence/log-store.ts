@@ -9,7 +9,9 @@ import type {
   OfferedInput,
   OrphanedLog,
 } from "@tanstack/ai-persistence";
-import { KEY_LOCKING, assertId } from "./records.js";
+import { assertId } from "./records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { LuaScript, ScriptFlagsConfig } from "../scripts.js";
 
 // How the log lives in Redis. Per log (`<prefix>:log:<logId>:`):
 //   meta    hash   head, first, epoch, owner, harness, exp, rel, wake, aff, del, laneH, oseq
@@ -24,7 +26,7 @@ import { KEY_LOCKING, assertId } from "./records.js";
 // Every script declares the same nine keys, runs atomically, and uses `%.0f` for numbers it writes
 // (Lua would print epoch milliseconds in scientific notation).
 
-const PRELUDE = `${KEY_LOCKING}local M, RECS, SNAP, OFFERS, INFO, PEND, TICK, DUE, HOSTS =
+const PRELUDE = `local M, RECS, SNAP, OFFERS, INFO, PEND, TICK, DUE, HOSTS =
   KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[9]
 local LOGM = ARGV[1]
 local function fmt(n) return string.format("%.0f", n) end
@@ -62,7 +64,9 @@ end
 `;
 
 /** ARGV: member, epoch, seq, badJson, nRecords, nConsumes, records..., consumes... */
-const APPEND = `${PRELUDE}local epoch, seq = tonumber(ARGV[2]), tonumber(ARGV[3])
+const APPEND = lua(
+  "log_append",
+  `${PRELUDE}local epoch, seq = tonumber(ARGV[2]), tonumber(ARGV[3])
 local nrec, ncon = tonumber(ARGV[5]), tonumber(ARGV[6])
 if not canWrite(epoch) then return {"OWN"} end
 if seq ~= geti("head", 0) + 1 then return {"CONFLICT"} end
@@ -79,10 +83,13 @@ if nrec > 0 then redis.call("HSET", M, "head", fmt(seq + nrec - 1)) end
 for i = 1, ncon do redis.call("ZREM", PEND, ARGV[6 + nrec + i]) end
 local tick = redis.call("INCR", TICK)
 refresh()
-return {"OK", tick}`;
+return {"OK", tick}`,
+);
 
 /** ARGV: member, after, limit (-1 = all). */
-const READ = `${PRELUDE}local after, limit = tonumber(ARGV[2]), tonumber(ARGV[3])
+const READ = lua(
+  "log_read",
+  `${PRELUDE}local after, limit = tonumber(ARGV[2]), tonumber(ARGV[3])
 local first = geti("first", 1)
 if after < first - 1 then return {"TRUNC", fmt(first)} end
 if limit == 0 then return {"OK"} end
@@ -94,10 +101,13 @@ else
 end
 local out = {"OK"}
 for i = 1, #rows do out[i + 1] = rows[i] end
-return out`;
+return out`,
+);
 
 /** ARGV: member, harness, ownerId, ttlMs, affinity, hasAffinity. */
-const ACQUIRE = `${PRELUDE}local harness, ownerId, ttl, aff = ARGV[2], ARGV[3], tonumber(ARGV[4]), ARGV[5]
+const ACQUIRE = lua(
+  "log_acquire",
+  `${PRELUDE}local harness, ownerId, ttl, aff = ARGV[2], ARGV[3], tonumber(ARGV[4]), ARGV[5]
 local hasAff = ARGV[6] == "1"
 local n = now()
 local ep = geti("epoch", 0)
@@ -120,34 +130,49 @@ local newep = ep + 1
 redis.call("HSET", M, "harness", harness, "owner", ownerId, "epoch", fmt(newep), "exp", fmt(n + ttl), "rel", "0")
 redis.call("HDEL", M, "wake", "del")
 refresh()
-return {"OK", fmt(newep), expired and "1" or "0"}`;
+return {"OK", fmt(newep), expired and "1" or "0"}`,
+);
 
 /** ARGV: member, ownerId, epoch, ttlMs. */
-const RENEW = `${PRELUDE}local epoch = tonumber(ARGV[3])
+const RENEW = lua(
+  "log_renew",
+  `${PRELUDE}local epoch = tonumber(ARGV[3])
 if redis.call("HGET", M, "owner") ~= ARGV[2] or geti("epoch", 0) ~= epoch or redis.call("HGET", M, "rel") == "1" then return {0} end
 redis.call("HSET", M, "exp", fmt(now() + tonumber(ARGV[4])))
 refresh()
-return {1}`;
+return {1}`,
+);
 
 /** ARGV: member, ownerId, epoch, wakeInMs ("" = none). */
-const RELEASE = `${PRELUDE}local epoch = tonumber(ARGV[3])
+const RELEASE = lua(
+  "log_release",
+  `${PRELUDE}local epoch = tonumber(ARGV[3])
 if redis.call("HGET", M, "owner") ~= ARGV[2] or geti("epoch", 0) ~= epoch or redis.call("HGET", M, "rel") == "1" then return {0} end
 redis.call("HSET", M, "rel", "1")
 if ARGV[4] ~= "" then redis.call("HSET", M, "wake", fmt(now() + tonumber(ARGV[4]))) end
 refresh()
-return {1}`;
+return {1}`,
+);
 
 /** ARGV: member, epoch, affinity ("" with clear = "1" unpins). */
-const PIN = `${PRELUDE}if not owned(tonumber(ARGV[2])) then return {"OWN"} end
+const PIN = lua(
+  "log_pin",
+  `${PRELUDE}if not owned(tonumber(ARGV[2])) then return {"OWN"} end
 if ARGV[4] == "1" then redis.call("HDEL", M, "aff") else redis.call("HSET", M, "aff", ARGV[3]) end
-return {"OK"}`;
+return {"OK"}`,
+);
 
 /** ARGV: member, hostId, ttlMs. Uses KEYS[9] only. */
-const MARK = `${PRELUDE}redis.call("HSET", HOSTS, ARGV[2], fmt(now() + tonumber(ARGV[3])))
-return {"OK"}`;
+const MARK = lua(
+  "log_mark_host",
+  `${PRELUDE}redis.call("HSET", HOSTS, ARGV[2], fmt(now() + tonumber(ARGV[3])))
+return {"OK"}`,
+);
 
 /** ARGV: member, harness, inputId, record JSON. */
-const OFFER = `${PRELUDE}local harness, id, rec = ARGV[2], ARGV[3], ARGV[4]
+const OFFER = lua(
+  "log_offer",
+  `${PRELUDE}local harness, id, rec = ARGV[2], ARGV[3], ARGV[4]
 if redis.call("HGET", M, "del") == "1" then return {"deleted"} end
 local prev = redis.call("HGET", OFFERS, id)
 if prev then
@@ -163,28 +188,37 @@ if redis.call("HEXISTS", M, "laneH") == 0 then
 end
 local tick = redis.call("INCR", TICK)
 refresh()
-return {"offered", tick}`;
+return {"offered", tick}`,
+);
 
 /** Pending offers in offer order, as ~id, ~record, ~offeredAt triples ("~" keeps the client from parsing them). */
-const LIST_OFFERS = `${PRELUDE}local ids = redis.call("ZRANGE", PEND, 0, -1)
+const LIST_OFFERS = lua(
+  "log_list_offers",
+  `${PRELUDE}local ids = redis.call("ZRANGE", PEND, 0, -1)
 local out = {}
 for _, id in ipairs(ids) do
   out[#out + 1] = "~" .. id
   out[#out + 1] = "~" .. redis.call("HGET", OFFERS, id)
   out[#out + 1] = "~" .. redis.call("HGET", INFO, id)
 end
-return out`;
+return out`,
+);
 
 /** ARGV: member, epoch, snapshot JSON (seq first), seq. */
-const PUT_SNAPSHOT = `${PRELUDE}if not owned(tonumber(ARGV[2])) then return {"OWN"} end
+const PUT_SNAPSHOT = lua(
+  "log_put_snapshot",
+  `${PRELUDE}if not owned(tonumber(ARGV[2])) then return {"OWN"} end
 local seq = tonumber(ARGV[4])
 local head, first = geti("head", 0), geti("first", 1)
 if seq > head or seq < first - 1 then return {"RANGE", fmt(head), fmt(first)} end
 redis.call("SET", SNAP, ARGV[3])
-return {"OK"}`;
+return {"OK"}`,
+);
 
 /** ARGV: member, epoch, beforeSeq. */
-const TRUNCATE = `${PRELUDE}if not owned(tonumber(ARGV[2])) then return {"OWN"} end
+const TRUNCATE = lua(
+  "log_truncate",
+  `${PRELUDE}if not owned(tonumber(ARGV[2])) then return {"OWN"} end
 local before = tonumber(ARGV[3])
 local snap = redis.call("GET", SNAP)
 local sseq = nil
@@ -193,23 +227,30 @@ if not (sseq and sseq >= before - 1) then return {"NOSNAP"} end
 if before - geti("first", 1) <= 0 then return {"OK"} end
 redis.call("ZREMRANGEBYSCORE", RECS, "-inf", fmt(before - 1))
 redis.call("HSET", M, "first", fmt(before))
-return {"OK"}`;
+return {"OK"}`,
+);
 
-const DELETE_LOG = `${PRELUDE}redis.call("DEL", RECS, SNAP, OFFERS, INFO, PEND)
+const DELETE_LOG = lua(
+  "log_delete",
+  `${PRELUDE}redis.call("DEL", RECS, SNAP, OFFERS, INFO, PEND)
 redis.call("HDEL", M, "head", "first", "aff", "wake", "laneH", "oseq")
 redis.call("HSET", M, "del", "1")
 if geti("epoch", 0) > 0 then redis.call("HSET", M, "rel", "1") end
 local tick = redis.call("INCR", TICK)
 refresh()
-return {"OK", tick}`;
+return {"OK", tick}`,
+);
 
 /** What `listLogsWithoutOwner` needs about one log. Strings are "~"-prefixed. */
-const ORPHAN_INFO = `${PRELUDE}return {geti("epoch", 0), redis.call("HGET", M, "rel") == "1" and 1 or 0,
+const ORPHAN_INFO = lua(
+  "log_orphan_info",
+  `${PRELUDE}return {geti("epoch", 0), redis.call("HGET", M, "rel") == "1" and 1 or 0,
   geti("exp", 0), redis.call("ZCARD", PEND), "~" .. (redis.call("HGET", M, "harness") or ""),
   "~" .. (redis.call("HGET", M, "laneH") or ""), "~" .. (redis.call("HGET", M, "aff") or ""),
-  redis.call("ZRANGE", PEND, 0, 0)[1] and 1 or 0}`;
+  redis.call("ZRANGE", PEND, 0, 0)[1] and 1 or 0}`,
+);
 
-const TIME = `return redis.call("TIME")`;
+const TIME = lua("log_time", `return redis.call("TIME")`, { keyLocking: false });
 
 function assertMs(name: string, value: number, allowZero: boolean): void {
   if (!Number.isFinite(value) || (allowZero ? value < 0 : value <= 0)) {
@@ -224,7 +265,7 @@ const MAX_APPEND_RECORDS = 10_000;
 
 const tilde = (v: unknown) => String(v).slice(1);
 
-export interface UpstashLogStoreConfig {
+export interface UpstashLogStoreConfig extends ScriptFlagsConfig {
   /**
    * How often `subscribe` checks Redis for writes from other machines (the REST API keeps no
    * blocking reads). Writes through the same store call listeners immediately.
@@ -258,6 +299,7 @@ export function redisLogStore(
   config: UpstashLogStoreConfig = {},
 ): LogStore {
   const pollMs = config.pollIntervalMs ?? 250;
+  const evalScript = scriptRunner(redis, config.enableUpstashScriptFlags);
   const due = `${prefix}:logDue`;
   const hosts = `${prefix}:logHosts`;
   const keys = (logId: string) => {
@@ -274,9 +316,9 @@ export function redisLogStore(
       hosts,
     ];
   };
-  const run = async (script: string, logId: string, args: (string | number)[] = []) => {
+  const run = async (script: LuaScript, logId: string, args: (string | number)[] = []) => {
     assertId(logId, "logId");
-    return (await redis.eval(script, keys(logId), [`~${logId}`, ...args.map(String)])) as unknown[];
+    return (await evalScript(script, keys(logId), [`~${logId}`, ...args.map(String)])) as unknown[];
   };
 
   const watches = new Map<string, Watch>();
@@ -459,12 +501,12 @@ export function redisLogStore(
       assertMs("ttlMs", ttlMs, false);
       assertId(hostId, "hostId");
       // MARK touches only the shared hosts hash; it still takes a log's key tuple, so use a fixed one.
-      await redis.eval(MARK, keys("_hosts"), ["~_hosts", hostId, String(ttlMs)]);
+      await evalScript(MARK, keys("_hosts"), ["~_hosts", hostId, String(ttlMs)]);
     },
 
     async listLogsWithoutOwner({ limit, harnesses, affinity }) {
       if (limit <= 0) return [];
-      const [sec, usec] = (await redis.eval(TIME, [], [])) as [string, string];
+      const [sec, usec] = (await evalScript(TIME, [], [])) as [string, string];
       const now = Number(sec) * 1000 + Math.floor(Number(usec) / 1000);
       const out: OrphanedLog[] = [];
       const batch = Math.max(limit * 2, 50);

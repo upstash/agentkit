@@ -1,6 +1,7 @@
 import type { Redis } from "@upstash/redis";
 import { addTelemetry } from "../telemetry.js";
-import { KEY_LOCKING } from "../persistence/records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig, ScriptRunner } from "../scripts.js";
 
 /**
  * Every stored event carries this prefix. `@upstash/redis` auto-deserializes replies, so a field
@@ -15,13 +16,16 @@ const MARKER = "agentkit-event-v1:";
  * Under `allow-key-locking` both keys are declared.
  * KEYS: stream, closed flag. ARGV: ttlSeconds (0 = none), encoded events… Returns the entry ids.
  */
-const APPEND = `${KEY_LOCKING}if redis.call("EXISTS", KEYS[2]) == 1 then
+const APPEND = lua(
+  "event_log_append",
+  `if redis.call("EXISTS", KEYS[2]) == 1 then
   return redis.error_reply("EVENTLOG_CLOSED")
 end
 local ids = {}
 for i = 2, #ARGV do ids[#ids + 1] = redis.call("XADD", KEYS[1], "*", "e", ARGV[i]) end
 if tonumber(ARGV[1]) > 0 then redis.call("EXPIRE", KEYS[1], ARGV[1]) end
-return ids`;
+return ids`,
+);
 
 /** Thrown by `append` on a log that has been closed. */
 export class EventLogClosedError extends Error {
@@ -31,7 +35,7 @@ export class EventLogClosedError extends Error {
   }
 }
 
-export interface EventLogConfig {
+export interface EventLogConfig extends ScriptFlagsConfig {
   /** Upstash Redis client. */
   redis: Redis;
   /** Base key prefix. Defaults to `agentkit:log`. */
@@ -83,6 +87,7 @@ const PAGE = 500;
  */
 export class EventLog<T = unknown> {
   private redis: Redis;
+  private evalScript: ScriptRunner;
   private prefix: string;
   private ttlSeconds: number;
   private pollIntervalMs: number;
@@ -90,6 +95,7 @@ export class EventLog<T = unknown> {
   constructor(config: EventLogConfig) {
     this.redis = config.redis;
     addTelemetry(config.redis, config.enableTelemetry);
+    this.evalScript = scriptRunner(config.redis, config.enableUpstashScriptFlags);
     this.prefix = config.prefix ?? "agentkit:log";
     this.ttlSeconds = config.ttlSeconds ?? 86_400;
     this.pollIntervalMs = config.pollIntervalMs ?? 250;
@@ -116,7 +122,7 @@ export class EventLog<T = unknown> {
     assertLogId(logId);
     if (events.length === 0) return [];
     try {
-      const ids = (await this.redis.eval(
+      const ids = (await this.evalScript(
         APPEND,
         [this.streamKey(logId), this.closedKey(logId)],
         [String(this.ttlSeconds), ...events.map((event) => MARKER + JSON.stringify(event))],

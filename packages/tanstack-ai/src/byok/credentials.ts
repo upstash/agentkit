@@ -2,10 +2,12 @@ import type { Redis } from "@upstash/redis";
 import { Redis as RedisClient } from "@upstash/redis";
 import type { Credential, CredentialScope, CredentialStore } from "@tanstack/ai/byok";
 import { addTelemetry } from "../telemetry.js";
-import { KEY_LOCKING, assertId } from "../persistence/records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig } from "../scripts.js";
+import { assertId } from "../persistence/records.js";
 import { secretBox } from "../secret-box.js";
 
-export interface UpstashCredentialsConfig {
+export interface UpstashCredentialsConfig extends ScriptFlagsConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** Base key prefix. Defaults to `agentkit:tanstack`. */
@@ -44,7 +46,9 @@ export interface UpstashCredentialsConfig {
  * KEYS: owner hash, revision counter. ARGV: credential id, the JSON object text after `{"r":N,`,
  * "1" to compare, expected revision ("" = absent). Returns the new revision, or -1 on a conflict.
  */
-const SET = `${KEY_LOCKING}if ARGV[3] == "1" then
+const SET = lua(
+  "credentials_set",
+  `if ARGV[3] == "1" then
   local cur = redis.call("HGET", KEYS[1], ARGV[1])
   local r = ""
   if cur then r = string.match(cur, '^{"r":(%d+),') or "" end
@@ -52,7 +56,8 @@ const SET = `${KEY_LOCKING}if ARGV[3] == "1" then
 end
 local rev = redis.call("INCR", KEYS[2])
 redis.call("HSET", KEYS[1], ARGV[1], '{"r":' .. rev .. ',' .. ARGV[2])
-return rev`;
+return rev`,
+);
 
 /** What is stored per credential. `t`/`x` stay in the clear so `list` never decrypts. */
 interface Stored {
@@ -90,6 +95,7 @@ const seg = (v: string | undefined) => (v === undefined ? NONE : encodeURICompon
 export function upstashCredentials(config: UpstashCredentialsConfig = {}): CredentialStore {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
+  const evalScript = scriptRunner(redis, config.enableUpstashScriptFlags);
   const p = config.prefix ?? "agentkit:tanstack";
   const counter = `${p}:credentialRevision`;
   const owner = (scope: CredentialScope) =>
@@ -162,7 +168,7 @@ export function upstashCredentials(config: UpstashCredentialsConfig = {}): Crede
     compare?: { revision: string | null },
   ): Promise<number> {
     checkId(id);
-    return (await redis.eval(
+    return (await evalScript(
       SET,
       [owner(scope), counter],
       [id, await pack(scope, id, credential), compare ? "1" : "0", compare?.revision ?? ""],

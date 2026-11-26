@@ -16,22 +16,16 @@ import type {
   SessionIndexStore,
 } from "@tanstack/ai-persistence";
 import { addTelemetry } from "../telemetry.js";
-import {
-  CREATE,
-  KEY_LOCKING,
-  PATCH,
-  assertId,
-  checkRun,
-  loadDocs,
-  toMergePatches,
-} from "./records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig } from "../scripts.js";
+import { CREATE, PATCH, assertId, checkRun, loadDocs, toMergePatches } from "./records.js";
 import { redisArtifactStore, redisGenerationRunStore } from "./generation-stores.js";
 import { upstashBlobStore } from "./blob-store.js";
 import { redisSessionIndexStore } from "./sessions.js";
 import { redisLogStore } from "./log-store.js";
 import type { BlobBucketLike } from "./blob-store.js";
 
-export interface UpstashPersistenceConfig {
+export interface UpstashPersistenceConfig extends ScriptFlagsConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /** Base key prefix. Defaults to `agentkit:tanstack`. */
@@ -79,20 +73,25 @@ export type UpstashPersistenceStores = ChatPersistenceStores & {
  * Settle a batch of interrupts atomically: every document must exist and be pending, or nothing
  * changes. ARGV[i] is the merge patch for KEYS[i].
  */
-const COMMIT_BATCH = `${KEY_LOCKING}for i = 1, #KEYS do
+const COMMIT_BATCH = lua(
+  "interrupts_commit",
+  `for i = 1, #KEYS do
   local status = redis.call("JSON.GET", KEYS[i], "$.status")
   if not status then return redis.error_reply("missing:" .. i) end
   if status ~= '["pending"]' then return redis.error_reply("nonpending:" .. i) end
 end
 for i = 1, #KEYS do redis.call("JSON.MERGE", KEYS[i], "$", ARGV[i]) end
-return #KEYS`;
+return #KEYS`,
+);
 
 /**
  * {@link PATCH} for a run that also keeps the detached-runs index in step with the patched record, in
  * the same script, so a crash or a racing update can never leave a detached run out of the index.
  * KEYS: run document, detached index. ARGV: the two merge patches, runId.
  */
-const UPDATE_RUN = `${KEY_LOCKING}if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
+const UPDATE_RUN = lua(
+  "run_update",
+  `if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
 redis.call("JSON.MERGE", KEYS[1], "$", ARGV[1])
 if ARGV[2] ~= "{}" then redis.call("JSON.MERGE", KEYS[1], "$", ARGV[2]) end
 local status = redis.call("JSON.GET", KEYS[1], "$.status")
@@ -102,7 +101,8 @@ if status == '["running"]' and tonumber(since) then
 else
   redis.call("ZREM", KEYS[2], ARGV[3])
 end
-return 1`;
+return 1`,
+);
 
 /**
  * Every TanStack AI persistence store on Upstash Redis — pass the result to `withPersistence()` or
@@ -146,6 +146,8 @@ export function upstashPersistence(
 ): AIPersistence<UpstashPersistenceStores> {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
+  const evalScript = scriptRunner(redis, config.enableUpstashScriptFlags);
+  const scriptFlags = { enableUpstashScriptFlags: config.enableUpstashScriptFlags };
   const p = config.prefix ?? "agentkit:tanstack";
   const k = {
     thread: (id: string) => `${p}:thread:${id}`,
@@ -165,7 +167,7 @@ export function upstashPersistence(
   const loadRuns = async (ids: string[]) =>
     (await loadDocs<RunRecord>(redis, ids.map(k.run))).map((r) => checkRun(r)!);
   const loadInterrupts = (ids: string[]) => loadDocs<InterruptRecord>(redis, ids.map(k.interrupt));
-  const patch = (key: string, fields: object) => redis.eval(PATCH, [key], toMergePatches(fields));
+  const patch = (key: string, fields: object) => evalScript(PATCH, [key], toMergePatches(fields));
 
   const messages: MessageStore = {
     loadThread: (async (threadId: string) => {
@@ -210,7 +212,7 @@ export function upstashPersistence(
       };
       const indexes = [k.threadRuns(input.threadId)];
       if (input.parentRunId !== undefined) indexes.push(k.parentRuns(input.parentRunId));
-      const stored = await redis.eval(
+      const stored = await evalScript(
         CREATE,
         [k.run(input.runId), ...indexes],
         [JSON.stringify(record), String(input.startedAt), input.runId],
@@ -221,7 +223,7 @@ export function upstashPersistence(
     async update(runId, fields) {
       assertId(runId, "runId");
       if ("detachedSince" in fields || "status" in fields) {
-        await redis.eval(
+        await evalScript(
           UPDATE_RUN,
           [k.run(runId), k.detached],
           [...toMergePatches(fields), runId],
@@ -271,7 +273,7 @@ export function upstashPersistence(
   const interrupts: InterruptStore = {
     async create(record) {
       assertId(record.interruptId, "interruptId");
-      await redis.eval(
+      await evalScript(
         CREATE,
         [
           k.interrupt(record.interruptId),
@@ -320,7 +322,7 @@ export function upstashPersistence(
         ),
       );
       try {
-        await redis.eval(
+        await evalScript(
           COMMIT_BATCH,
           entries.map((e) => k.interrupt(e.interruptId)),
           patches,
@@ -380,6 +382,7 @@ export function upstashPersistence(
         bucket: config.bucket,
         redis,
         prefix: p,
+        enableUpstashScriptFlags: config.enableUpstashScriptFlags,
         ...(config.blobPathPrefix !== undefined ? { pathPrefix: config.blobPathPrefix } : {}),
       })
     : undefined;
@@ -391,10 +394,11 @@ export function upstashPersistence(
       runs,
       interrupts,
       metadata,
-      generationRuns: redisGenerationRunStore(redis, p),
-      artifacts: redisArtifactStore(redis, p),
-      sessions: redisSessionIndexStore(redis, p),
+      generationRuns: redisGenerationRunStore(redis, p, scriptFlags),
+      artifacts: redisArtifactStore(redis, p, scriptFlags),
+      sessions: redisSessionIndexStore(redis, p, scriptFlags),
       log: redisLogStore(redis, p, {
+        ...scriptFlags,
         ...(config.logPollIntervalMs !== undefined
           ? { pollIntervalMs: config.logPollIntervalMs }
           : {}),
