@@ -41,8 +41,8 @@
  *
  * So the compare and the swap have to happen inside a single server-side command.
  *
- * That command is `EVAL`. **Verified live against an Upstash Redis instance** (2026-09, an
- * `upstash start-redis` database on the current REST API), not assumed:
+ * That command is `EVAL`. **Verified live against an Upstash Redis instance** (2026-09, on the
+ * current REST API), not assumed:
  * - `EVAL` is accepted over the REST API and through `@upstash/redis`'s `redis.eval(script, keys,
  *   args)`, including with auto-pipelining enabled (the default);
  * - a Lua table return (`{0, currentVersion}` / `{1, newVersion}`) round-trips as a JSON array, so
