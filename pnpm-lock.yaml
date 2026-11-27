@@ -277,6 +277,58 @@ importers:
         specifier: ^5
         version: 5.9.3
 
+  examples/resumable-stream-demo:
+    dependencies:
+      '@ai-sdk/openai':
+        specifier: ^4.0.118
+        version: 4.0.118(zod@4.4.3)
+      '@ai-sdk/react':
+        specifier: ^4.0.177
+        version: 4.0.177(react@19.2.6)(zod@4.4.3)
+      '@upstash/agentkit-resumable-stream':
+        specifier: workspace:*
+        version: link:../../packages/resumable-stream
+      '@upstash/redis':
+        specifier: ^1.41.0
+        version: 1.41.0
+      ai:
+        specifier: 7.0.173
+        version: 7.0.173(zod@4.4.3)
+      next:
+        specifier: 16.2.9
+        version: 16.2.9(@opentelemetry/api@1.9.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react:
+        specifier: 19.2.6
+        version: 19.2.6
+      react-dom:
+        specifier: 19.2.6
+        version: 19.2.6(react@19.2.6)
+      resumable-stream:
+        specifier: 2.2.13
+        version: 2.2.13
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^20
+        version: 20.19.43
+      '@types/react':
+        specifier: 19.2.15
+        version: 19.2.15
+      '@types/react-dom':
+        specifier: 19.2.3
+        version: 19.2.3(@types/react@19.2.15)
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@20.19.43)(lightningcss@1.32.0)
+
   examples/tanstack-ai-demo:
     dependencies:
       '@tanstack/ai':
@@ -434,6 +486,19 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
+
+  packages/resumable-stream:
+    dependencies:
+      '@upstash/redis':
+        specifier: ^1.41.0
+        version: 1.41.0
+    devDependencies:
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
+      resumable-stream:
+        specifier: 2.2.13
+        version: 2.2.13
 
   packages/sdk:
     dependencies:
@@ -4811,6 +4876,9 @@ packages:
   resolve-from@5.0.0:
     resolution: {integrity: sha512-qYg9KP24dD5qka9J47d0aVky0N+b4fTU89LN9iDnjB5waksiC49rvMB0PrUJQGoTmH50XPiqOvAjDfaijGxYZw==}
     engines: {node: '>=8'}
+
+  resumable-stream@2.2.13:
+    resolution: {integrity: sha512-qy1ZZUP7sFKGXSx7OdbjU3f07VfSM7CghOlUaKT+35AuADX0sAYndmeCb5kVwgi4MSfkZZiL4yrdxWX1xx/Lnw==}
 
   reusify@1.1.0:
     resolution: {integrity: sha512-g6QUff04oZpHs0eG5p83rFLhHeV00ug/Yf9nZM6fLeUrPguBTkTQOdpAWWspMh55TZfVQDPaN3NQJfbVRAxdIw==}
@@ -9715,6 +9783,8 @@ snapshots:
   resolve-from@4.0.0: {}
 
   resolve-from@5.0.0: {}
+
+  resumable-stream@2.2.13: {}
 
   reusify@1.1.0: {}
 

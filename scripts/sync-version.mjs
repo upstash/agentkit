@@ -26,6 +26,7 @@ const TARGETS = {
   "packages/eve-extension": "extension/lib/version.ts",
   "packages/tanstack-ai": "src/version.ts",
   "packages/mcp-toolkit": "src/version.ts",
+  "packages/resumable-stream": "src/version.ts",
 };
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

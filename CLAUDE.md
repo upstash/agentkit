@@ -19,13 +19,16 @@ embeddings — keep that in mind when naming/among scoring. The one exception is
 | `@upstash/agentkit-ai-sdk` (`packages/ai-sdk`) | Vercel AI SDK adapter. |
 | `@upstash/agentkit-eve` (`packages/eve`) | Eve framework adapter. Depends on the ai-sdk package. |
 | `@upstash/agentkit-tanstack-ai` (`packages/tanstack-ai`) | TanStack AI backends: persistence stores, `StreamDurability`, `LockStore`, `MemoryAdapter`, middlewares, search tools. |
+| `@upstash/agentkit-resumable-stream` (`packages/resumable-stream`) | Upstash provider for `resumable-stream/generic`: HTTP publisher/subscriber (JSON envelope, splits large messages, ordered per-channel publish queue, never rejects), `requestStop`/`createStopSignal`. No context wrapper: apps call `createResumableStreamContext` from `resumable-stream/generic` with our publisher and subscriber. Depends only on `@upstash/redis`; `resumable-stream >=2.2.10` is a peer. Tested against real Redis only. |
 | `@upstash/agentkit-eve-extension` (`packages/eve-extension`) | AgentKit as a mountable **eve extension** (eve ≥0.24): one `agent/extensions/<ns>.ts` file composes memory tools, search tools, a chat-history hook, and an instructions fragment under `<ns>__*`. |
 | `@upstash/mcp-toolkit` (`packages/mcp-toolkit`) | Durable building blocks for the official `@modelcontextprotocol/server` v2: `/tasks` (**long-running MCP tools** — native MCP Tasks for clients that declare the extension, else start + `task_status` + `task_cancel`) and `/events` (**MCP Events**, webhook delivery). `/tasks` and `/events` are generic (the `McpTasks` / `McpEvents` classes, interfaces, memory backends); every Upstash backend for both is in `/upstash` (no `/tasks/upstash`, no `/events/upstash`). `@upstash/redis`, `@upstash/qstash` and `@upstash/workflow` are regular dependencies (the package "just works"); only `@modelcontextprotocol/server` is a peer. Renamed from `@upstash/mcp-tasks` before its first release. **Not an `agentkit-*` package** — separate name, versioned independently (the changesets `linked` glob only covers `@upstash/agentkit-*`), and it depends on none of the others. |
 | `upstash-hermes-memory` (`python/hermes-memory`, **PyPI**) | Hermes Agent memory provider (`UpstashMemoryProvider`, entry point `hermes_agent.memory_providers: upstash`) plus Python ports of `AgentMemory` / `ChatHistory` that write the TS keys and indexes byte for byte. See **Python packages** below. |
 
 Examples (`examples/`): `ai-sdk-demo` (hand-written Next.js), `eve-demo` (a real `eve` CLI scaffold),
-`eve-extension-demo` (a minimal eve scaffold that mounts the extension), and `mcp-toolkit-demo`
-(Next.js; the MCP server plus a browser client that shows the JSON-RPC wire log).
+`eve-extension-demo` (a minimal eve scaffold that mounts the extension), `mcp-toolkit-demo`
+(Next.js; the MCP server plus a browser client that shows the JSON-RPC wire log), and
+`resumable-stream-demo` (Next.js; the AI SDK resume-streams guide on `@upstash/agentkit-resumable-stream`,
+with a stop route; scripted `ai/test` model without `OPENAI_API_KEY`).
 `langchain` was **removed** — don't reintroduce it. A first `tanstack-ai` adapter was removed in June 2026
 (it only wrapped memory + a model cache); the current `packages/tanstack-ai` is a different package that
 implements TanStack AI's own backend contracts (see its section below) — keep it.
