@@ -1,5 +1,12 @@
 # mcp-toolkit-demo
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [dae29d8]
+  - @upstash/mcp-toolkit@0.3.0
+
 ## 0.1.2
 
 ### Patch Changes
