@@ -44,6 +44,30 @@ _FALLBACK_ERRORS = (UpstashError, httpx.HTTPError)
 # `userId` in metadata would move the memory into another user's searches.
 RESERVED_FIELDS = frozenset({"kind", "text", "userId", "createdAt"})
 
+# How much of a query recall sends. Search embeds an `$ann` query with an OpenAI text-embedding-3
+# model, which takes at most 8191 tokens and rejects longer text, so a whole cron prompt or a
+# pasted log as the message made every hybrid recall fall back to keyword. 2000 characters stays
+# under that even for scripts that take several tokens per character. Full-text search has no
+# such limit (only the request size), so `$smart` keeps more of the text, bounded all the same.
+ANN_QUERY_CHARS = 2000
+SMART_QUERY_CHARS = 8000
+
+
+def bound_query(query: str, limit: int) -> str:
+    """`query` as it is when it fits in `limit` characters, else its start, cut between words.
+
+    Whitespace is collapsed first in a long query, so indentation and blank lines don't use it up.
+    """
+    if len(query) <= limit:
+        return query
+    text = " ".join(query.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    # A single huge token (a base64 blob) has no space to cut at: keep the hard cut.
+    return cut[:space] if space > limit // 2 else cut
+
 
 def _check_id(value: str, what: str) -> None:
     """User and session ids sit in the middle of the key, so they may not contain `:`."""
@@ -141,7 +165,10 @@ class AgentMemory:
         `mode="auto"` uses hybrid search ($rrf of $smart and $ann). A failed hybrid query falls
         back to keyword search ($smart: full-text plus fuzzy matching) once. `mode="keyword"`
         always uses keyword search, for callers that need COUNT and QUERY to describe the same
-        set.
+        set (bound the COUNT's query with `bound_query(query, SMART_QUERY_CHARS)` too).
+
+        A long query is cut to its start: `ANN_QUERY_CHARS` for `$ann`, `SMART_QUERY_CHARS` for
+        `$smart`.
         """
         if mode not in ("auto", "keyword"):
             raise ValueError(f"mode must be 'auto' or 'keyword' (got {mode!r})")
@@ -150,6 +177,8 @@ class AgentMemory:
         if not (query and query.strip()):
             rows = self._memories(self.index.query(base, limit=top_k), user_id)
             return [self._record(row, user_id) for row in rows]
+        full = query
+        query = bound_query(full, SMART_QUERY_CHARS)
         if mode == "auto":
             hybrid = {
                 "$rrf": {
@@ -158,7 +187,7 @@ class AgentMemory:
                         {
                             "$ann": {
                                 "field": "text",
-                                "query": query,
+                                "query": bound_query(full, ANN_QUERY_CHARS),
                                 "filter": self._filter(user_id),
                             }
                         },

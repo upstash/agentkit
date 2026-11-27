@@ -1,6 +1,8 @@
 """The Hermes provider: its contract with Hermes, then its lifecycle against the test Redis."""
 
 import json
+import random
+import string
 
 import pytest
 from upstash_hermes_memory import UpstashMemoryProvider
@@ -62,7 +64,7 @@ def test_save_then_prefetch(provider):
 
     # No waiting here: the save tool only returns once the fact is searchable.
     block = provider.prefetch("what is my dog called?")
-    assert block.startswith("## Upstash Memory")
+    assert block.startswith("## Upstash Memory\n- [saved 20")
     assert "Karabas" in block
 
     found = json.loads(provider.handle_tool_call("upstash_memory_search", {"query": "dog"}))
@@ -84,6 +86,62 @@ def test_turns_become_a_searchable_transcript(provider):
         "sessions"
     ]
     assert [s["session_id"] for s in found] == ["s-1"]
+
+
+def test_chat_search_shows_the_matching_turn_and_chat_read_opens_it(provider, redis):
+    # Search returns the raw `messages` with each row, so the passage comes from the transcript.
+    history = _stamped(
+        ("good morning", "morning!"),
+        ("review the deploy checklist", "two items left"),
+        ("book the Lisbon flights for May", "booked, leaving May 3"),
+        ("thanks", "anytime"),
+        start=1_794_387_600.0,
+    )
+    for n in range(0, len(history), 2):
+        user, reply = history[n]["content"], history[n + 1]["content"]
+        provider.sync_turn(user, reply, session_id="s-pass", messages=history[: n + 2])
+    provider._chats.index.wait_indexing()
+
+    (found,) = json.loads(
+        provider.handle_tool_call("upstash_chat_search", {"query": "Lisbon flights"})
+    )["sessions"]
+    (best,) = [p for p in found["passage"] if p.get("match")]
+    assert (best["index"], best["role"], best["text"]) == (
+        4,
+        "user",
+        "book the Lisbon flights for May",
+    )
+    # `_stamped` turns are a second apart; the session date is when the chat was first saved.
+    assert best["time"] == "2026-11-11T09:00Z" and len(found["date"]) == len("YYYY-MM-DD")
+
+    page = json.loads(
+        provider.handle_tool_call(
+            "upstash_chat_read", {"session_id": "s-pass", "around": best["index"], "limit": 2}
+        )
+    )
+    assert [m["text"] for m in page["messages"]] == ["two items left", best["text"]]
+    assert page["total_messages"] == 8 and page["next_offset"] == 5
+
+    other = UpstashMemoryProvider(redis)
+    other.initialize("s-other", platform="cli", agent_identity="someone-else")
+    refused = json.loads(other.handle_tool_call("upstash_chat_read", {"session_id": "s-pass"}))
+    assert "error" in refused
+
+
+def test_a_very_long_message_still_recalls_by_meaning(provider):
+    # A whole cron prompt as the message used to make the embedder reject the $ann query ("the
+    # embedder rejected an $ann query text"), so recall fell back to keyword. The limit is in
+    # tokens, so the filler is varied words: the same sentence repeated compresses well enough
+    # that even 100k characters of it are accepted.
+    provider.handle_tool_call("upstash_memory_save", {"text": "Weekly reports go out on Mondays"})
+    rng = random.Random(7)
+    filler = " ".join(
+        "".join(rng.choices(string.ascii_lowercase, k=rng.randint(3, 9))) for _ in range(8000)
+    )
+    prompt = "When are the weekly reports sent? " + filler
+    hits = provider._memory.recall(prompt, user_id="arda", top_k=3)
+    assert [h.retrieval for h in hits][:1] == ["hybrid"]
+    assert "Weekly reports go out on Mondays" in [h.text for h in hits]
 
 
 def test_a_resumed_session_appends_instead_of_overwriting(provider, redis):

@@ -9,6 +9,7 @@ import pytest
 from upstash_hermes_memory import AgentMemory, ChatHistory, UpstashMemoryProvider
 from upstash_hermes_memory import provider as provider_module
 from upstash_hermes_memory._search import SHARED_SCHEMA, shared_index
+from upstash_hermes_memory.memory import ANN_QUERY_CHARS, SMART_QUERY_CHARS, bound_query
 from upstash_redis.errors import UpstashError
 
 MISMATCH = "ERR Index agentkit already exists with a different configuration"
@@ -24,8 +25,9 @@ class Row:
     data: dict[str, Any]
 
 
-def memory_row(id, text="x", score=1.0):
-    return Row(f"agentkit:memory:u1:{id}", score, {"text": text, "userId": "u1", "createdAt": 1})
+def memory_row(id, text="x", score=1.0, **metadata):
+    doc = {"text": text, "userId": "u1", "createdAt": 1, **metadata}
+    return Row(f"agentkit:memory:u1:{id}", score, doc)
 
 
 class FakeRedis:
@@ -41,6 +43,8 @@ class FakeRedis:
         self.hybrid_error: Exception | None = None
         self.keyword_error: Exception | None = None
         self.wait_result: int | None = None
+        # Longest `$ann` query text the embedder takes; None for no limit.
+        self.embed_limit: int | None = None
         self.commands: list[list[Any]] = []
         self._headers: dict[str, str] = {}
 
@@ -67,6 +71,10 @@ class FakeRedis:
             error = self.hybrid_error if "$rrf" in filter else self.keyword_error
             if error:
                 raise error
+            if self.embed_limit is not None and "$rrf" in filter:
+                ann = filter["$rrf"]["retrievers"][1]["$ann"]
+                if len(ann["query"]) > self.embed_limit:
+                    raise UpstashError("ERR the embedder rejected an $ann query text")
             limit = int(command[command.index("LIMIT") + 1]) if "LIMIT" in command else 10
             return self.memories[:limit]
         if op == "SEARCH.COUNT":
@@ -252,3 +260,119 @@ def test_wait_indexing_recreates_an_index_that_was_dropped_under_it():
     redis.index_schema = None  # another client dropped it
     memory.index.wait_indexing()
     assert redis.index_schema == HYBRID and memory.index._ready
+
+
+# -- long queries --------------------------------------------------------------------------------
+
+# 2026-11-11T09:00:00Z, the `createdAt` of the memories below.
+NOV_11 = 1_794_387_600_000
+
+
+def test_a_long_query_is_cut_so_the_embedder_takes_it():
+    # A whole cron prompt as the message: the embedder used to reject the $ann query once a day
+    # and recall fell back to keyword.
+    redis = FakeRedis(HYBRID, [memory_row("1", "Weeks start Monday")])
+    redis.embed_limit = ANN_QUERY_CHARS
+    prompt = "Morning briefing: what day does the week begin? " + "Check the inbox. " * 5000
+    hits = AgentMemory(redis).recall(prompt, user_id="u1")
+    assert [h.retrieval for h in hits] == ["hybrid"]
+    (query,) = redis.queries()
+    keyword, ann = query["$rrf"]["retrievers"]
+    assert len(ann["$ann"]["query"]) <= ANN_QUERY_CHARS
+    assert len(keyword["text"]["$smart"]) <= SMART_QUERY_CHARS
+    for text in (ann["$ann"]["query"], keyword["text"]["$smart"]):
+        assert text.startswith("Morning briefing: what day does the week begin?")
+
+
+def test_bound_query_keeps_a_short_query_and_cuts_a_long_one_between_words():
+    assert bound_query("  a  short\nquery ", 100) == "  a  short\nquery "
+    assert bound_query("alpha   beta\n\ngamma", 16) == "alpha beta gamma"
+    assert bound_query("alpha beta gamma delta", 13) == "alpha beta"
+    assert bound_query("x" * 50, 10) == "x" * 10  # no space to cut at
+
+
+def test_mirror_deletion_counts_and_queries_the_same_bounded_text(hybrid_provider):
+    provider, redis = hybrid_provider
+    provider._all_matches("entry " * 3000)
+    counted = [json.loads(c[2]) for c in redis.commands if c[0] == "SEARCH.COUNT"]
+    smart = [f["text"]["$smart"] for f in counted + redis.queries() if "text" in f]
+    assert len(set(smart)) == 1 and len(smart[0]) <= SMART_QUERY_CHARS
+
+
+# -- provenance and tool limits ------------------------------------------------------------------
+
+
+def test_prefetch_lines_say_when_each_memory_was_saved(hybrid_provider):
+    provider, redis = hybrid_provider
+    redis.memories = [memory_row("1", "Weeks start Monday", createdAt=NOV_11)]
+    assert provider.prefetch("week") == "## Upstash Memory\n- [saved 2026-11-11] Weeks start Monday"
+    redis.memories = [memory_row("2", "No date", createdAt=0)]
+    assert provider.prefetch("week") == "## Upstash Memory\n- No date"
+
+
+def test_search_results_say_when_saved_and_whether_a_mirror(hybrid_provider):
+    provider, redis = hybrid_provider
+    redis.memories = [
+        memory_row("m", "Prefers Turkish", createdAt=NOV_11, source="hermes", target="user"),
+        memory_row("s", "Ada owns billing", createdAt=NOV_11, source="hermes"),
+    ]
+    found = json.loads(provider.handle_tool_call("upstash_memory_search", {"query": "x"}))
+    assert [(r["id"], r["saved"], r["mirror"]) for r in found["results"]] == [
+        ("m", "2026-11-11", True),
+        ("s", "2026-11-11", False),
+    ]
+
+
+def test_the_system_prompt_frames_recall_as_history_and_saves_as_situational(hybrid_provider):
+    provider, _ = hybrid_provider
+    block = provider.system_prompt_block()
+    assert "history to verify, not the current state" in block
+    assert "every session belong in the built-in memory" in block
+    assert "upstash_chat_read" in block
+    for text in (block, provider_module.SAVE_SCHEMA["description"]):
+        assert "durable" not in text and "preferences" not in text
+
+
+@pytest.mark.parametrize(
+    ("tool", "limit", "sent"),
+    [
+        ("upstash_memory_search", 1000, "20"),
+        ("upstash_memory_search", 0, "1"),
+        ("upstash_memory_search", None, "5"),
+        ("upstash_chat_search", 500, "10"),
+        ("upstash_chat_search", -3, "1"),
+    ],
+)
+def test_tool_limits_are_clamped(hybrid_provider, tool, limit, sent):
+    provider, redis = hybrid_provider
+    args = {"query": "x"} if limit is None else {"query": "x", "limit": limit}
+    result = json.loads(provider.handle_tool_call(tool, args))
+    assert "error" not in result
+    (command,) = [c for c in redis.commands if c[0] == "SEARCH.QUERY"]
+    assert command[command.index("LIMIT") + 1] == sent
+
+
+def test_an_overlong_save_is_refused_and_nothing_is_written(hybrid_provider):
+    provider, redis = hybrid_provider
+    result = json.loads(provider.handle_tool_call("upstash_memory_save", {"text": "x" * 1001}))
+    assert "limit is 1000" in result["error"]
+    assert "JSON.SET" not in redis.ops()
+
+
+@pytest.mark.parametrize(
+    ("days", "ttl"),
+    [(None, None), ("", None), ("0", None), ("30", 30 * 86400), ("0.5", 43200), ("soon", None)],
+)
+def test_chat_retention_comes_from_ttl_days(monkeypatch, days, ttl):
+    env = {"UPSTASH_HERMES_USER_ID": "u1"}
+    if days is not None:
+        env["UPSTASH_HERMES_CHAT_TTL_DAYS"] = days
+    monkeypatch.setattr(provider_module, "get_secret", lambda n, d=None: env.get(n, d))
+    redis = FakeRedis(HYBRID)
+    expired = []
+    redis.expire = lambda key, seconds: expired.append((key, seconds)) or True
+    provider = UpstashMemoryProvider(redis)
+    provider.initialize("s1", platform="cli")
+    assert provider._chats.ttl_seconds == ttl
+    provider.sync_turn("hi", "hello", session_id="s1")
+    assert expired == ([] if ttl is None else [("agentkit:chat:u1:s1", ttl)])
