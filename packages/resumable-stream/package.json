@@ -1,6 +1,6 @@
 {
   "name": "@upstash/agentkit-resumable-stream",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Upstash Redis provider for resumable-stream: an HTTP publisher and subscriber that work on serverless and edge runtimes, plus an active-stream registry and a stop signal that works across instances.",
   "license": "MIT",
   "repository": {

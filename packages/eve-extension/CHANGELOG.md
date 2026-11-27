@@ -1,5 +1,12 @@
 # @upstash/agentkit-eve-extension
 
+## 0.21.0
+
+### Patch Changes
+
+- Updated dependencies [dae29d8]
+  - @upstash/agentkit-sdk@0.21.0
+
 ## 0.20.0
 
 ### Minor Changes
