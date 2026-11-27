@@ -6,7 +6,9 @@ import type {
   SessionIndexPage,
   SessionIndexStore,
 } from "@tanstack/ai-persistence";
-import { KEY_LOCKING, assertId } from "./records.js";
+import { assertId } from "./records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig } from "../scripts.js";
 
 /**
  * Write a session entry and keep the per-tenant index in step, optionally compare-and-set on the
@@ -16,7 +18,9 @@ import { KEY_LOCKING, assertId } from "./records.js";
  * ARGV: entry JSON, updatedAt (the index score), index member, "1" to compare, expected revision ("" = absent).
  * Returns the new revision, or -1 on a revision conflict.
  */
-const UPSERT = `${KEY_LOCKING}local cur = redis.call("GET", KEYS[1])
+const UPSERT = lua(
+  "session_upsert",
+  `local cur = redis.call("GET", KEYS[1])
 if ARGV[4] == "1" then
   local r = ""
   if cur then r = string.match(cur, '^{"r":(%d+),') or "" end
@@ -25,12 +29,16 @@ end
 local rev = redis.call("INCR", KEYS[3])
 redis.call("SET", KEYS[1], '{"r":' .. rev .. ',"e":' .. ARGV[1] .. '}')
 redis.call("ZADD", KEYS[2], ARGV[2], ARGV[3])
-return rev`;
+return rev`,
+);
 
 /** Remove an entry and its index member. KEYS: document, tenant index. ARGV: index member. */
-const DELETE = `${KEY_LOCKING}redis.call("DEL", KEYS[1])
+const DELETE = lua(
+  "session_delete",
+  `redis.call("DEL", KEYS[1])
 redis.call("ZREM", KEYS[2], ARGV[1])
-return 1`;
+return 1`,
+);
 
 interface StoredSession {
   r: number;
@@ -71,7 +79,12 @@ const SCAN_BATCH = 200;
  * other tenants. Writes are single Lua scripts, so concurrent hosts cannot interleave an
  * `upsertIf`. Checked against TanStack's `runPersistenceConformance` suite.
  */
-export function redisSessionIndexStore(redis: Redis, prefix: string): SessionIndexStore {
+export function redisSessionIndexStore(
+  redis: Redis,
+  prefix: string,
+  options: ScriptFlagsConfig = {},
+): SessionIndexStore {
+  const evalScript = scriptRunner(redis, options.enableUpstashScriptFlags);
   const tenant = (t: string | undefined) => encodeURIComponent(t ?? "");
   const k = {
     doc: (key: SessionIndexKey) =>
@@ -95,7 +108,7 @@ export function redisSessionIndexStore(redis: Redis, prefix: string): SessionInd
         "@upstash/agentkit-tanstack-ai: session `updatedAt` must be a finite number.",
       );
     }
-    return (await redis.eval(
+    return (await evalScript(
       UPSERT,
       [k.doc(entry), k.index(entry.tenantId), k.counter],
       [
@@ -202,7 +215,7 @@ export function redisSessionIndexStore(redis: Redis, prefix: string): SessionInd
 
     async delete(key) {
       assertId(key.threadId, "threadId");
-      await redis.eval(DELETE, [k.doc(key), k.index(key.tenantId)], [member(key.threadId)]);
+      await evalScript(DELETE, [k.doc(key), k.index(key.tenantId)], [member(key.threadId)]);
     },
   };
 }

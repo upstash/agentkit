@@ -701,7 +701,7 @@ Optional: `title`, `input`. Returns the event's handle, `{ name, emit }`. Call i
 delivery's endpoint.
 
 **`RedisTaskStore`** / **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix`
-(`mcp:task:` / `mcp-events:`), `enableTelemetry`.
+(`mcp:task:` / `mcp-events:`), `enableTelemetry`, `enableUpstashScriptFlags`.
 
 **`QStashDispatcher`**: `url` is required. Optional: `qstash`, `receiver`, `retries` (5),
 `retryDelay`, `enableTelemetry`.
@@ -718,6 +718,13 @@ available, the route throws on its first request instead of running a delivery u
 **Telemetry.** The Redis and QStash clients get `@upstash/mcp-toolkit@<version>` added to their
 `Upstash-Telemetry-Sdk` header. Turn it off with `enableTelemetry: false` or
 `UPSTASH_DISABLE_TELEMETRY`.
+
+**Script flags.** The Redis stores send their lua scripts with flags which only Upstash Redis
+understands: a `script_name` (for example `mcp-toolkit-js-tasks_guarded_write`) which shows up in
+the script stats of your database, and `allow-key-locking`, which lets scripts for different tasks
+run in parallel. If the server rejects the flags, the scripts are sent again without them and a
+warning is printed once. `enableUpstashScriptFlags: false` sends them without the flags from the
+start, for example with a Redis server other than Upstash Redis.
 
 </details>
 

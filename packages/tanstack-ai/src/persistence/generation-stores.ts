@@ -5,15 +5,9 @@ import type {
   GenerationRunRecord,
   GenerationRunStore,
 } from "@tanstack/ai-persistence";
-import {
-  CREATE,
-  KEY_LOCKING,
-  PATCH,
-  assertId,
-  checkRun,
-  loadDocs,
-  toMergePatches,
-} from "./records.js";
+import { CREATE, PATCH, assertId, checkRun, loadDocs, toMergePatches } from "./records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig } from "../scripts.js";
 
 /**
  * Replace an artifact document and move it between indexes if its run or thread changed. Which
@@ -24,7 +18,9 @@ import {
  * KEYS: document, side hash, new run index, new thread index, [old run index, old thread index].
  * ARGV: expected old run index ("" = none), expected old thread index, document JSON, createdAt, id.
  */
-const SAVE_ARTIFACT = `${KEY_LOCKING}local curRun = redis.call("HGET", KEYS[2], "run") or ""
+const SAVE_ARTIFACT = lua(
+  "artifact_save",
+  `local curRun = redis.call("HGET", KEYS[2], "run") or ""
 local curThread = redis.call("HGET", KEYS[2], "thread") or ""
 if curRun ~= ARGV[1] or curThread ~= ARGV[2] then return 0 end
 if KEYS[5] and KEYS[5] ~= KEYS[3] then redis.call("ZREM", KEYS[5], ARGV[5]) end
@@ -33,7 +29,8 @@ redis.call("JSON.SET", KEYS[1], "$", ARGV[3])
 redis.call("HSET", KEYS[2], "run", KEYS[3], "thread", KEYS[4])
 redis.call("ZADD", KEYS[3], ARGV[4], ARGV[5])
 redis.call("ZADD", KEYS[4], ARGV[4], ARGV[5])
-return 1`;
+return 1`,
+);
 
 /**
  * Delete an artifact and unindex it, but only from the indexes it is actually in: the caller reads
@@ -44,20 +41,28 @@ return 1`;
  * KEYS: document, side hash, [run index, thread index]. ARGV: expected run index, expected thread
  * index ("" = none), id.
  */
-const DELETE_ARTIFACT = `${KEY_LOCKING}local curRun = redis.call("HGET", KEYS[2], "run") or ""
+const DELETE_ARTIFACT = lua(
+  "artifact_delete",
+  `local curRun = redis.call("HGET", KEYS[2], "run") or ""
 local curThread = redis.call("HGET", KEYS[2], "thread") or ""
 if curRun ~= ARGV[1] or curThread ~= ARGV[2] then return 0 end
 redis.call("DEL", KEYS[1], KEYS[2])
 if KEYS[3] then redis.call("ZREM", KEYS[3], ARGV[3]) end
 if KEYS[4] then redis.call("ZREM", KEYS[4], ARGV[3]) end
-return 1`;
+return 1`,
+);
 
 /**
  * `GenerationRunStore`: one record per one-shot generation job (image, video, speech,
  * transcription), written by `withGenerationPersistence`. A JSON document per run and a per-thread
  * sorted set by `startedAt`, so `findLatestForThread` is one index read.
  */
-export function redisGenerationRunStore(redis: Redis, prefix: string): GenerationRunStore {
+export function redisGenerationRunStore(
+  redis: Redis,
+  prefix: string,
+  options: ScriptFlagsConfig = {},
+): GenerationRunStore {
+  const evalScript = scriptRunner(redis, options.enableUpstashScriptFlags);
   const run = (id: string) => `${prefix}:generationRun:${id}`;
   const thread = (id: string) => `${prefix}:threadGenerationRuns:${id}`;
   return {
@@ -73,7 +78,7 @@ export function redisGenerationRunStore(redis: Redis, prefix: string): Generatio
         status: input.status ?? "running",
         startedAt: input.startedAt,
       };
-      const stored = await redis.eval(
+      const stored = await evalScript(
         CREATE,
         [run(input.runId), thread(input.threadId)],
         [JSON.stringify(record), String(input.startedAt), input.runId],
@@ -83,7 +88,7 @@ export function redisGenerationRunStore(redis: Redis, prefix: string): Generatio
 
     async update(runId, fields) {
       assertId(runId, "runId");
-      await redis.eval(PATCH, [run(runId)], toMergePatches(fields));
+      await evalScript(PATCH, [run(runId)], toMergePatches(fields));
     },
 
     async get(runId) {
@@ -104,7 +109,12 @@ export function redisGenerationRunStore(redis: Redis, prefix: string): Generatio
  * bytes). Indexed by run and by thread, sorted by `createdAt` then id (sorted-set ties sort by bytes,
  * matching the reference store). The bytes themselves live in the blob store.
  */
-export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore {
+export function redisArtifactStore(
+  redis: Redis,
+  prefix: string,
+  options: ScriptFlagsConfig = {},
+): ArtifactStore {
+  const evalScript = scriptRunner(redis, options.enableUpstashScriptFlags);
   const k = {
     artifact: (id: string) => `${prefix}:artifact:${id}`,
     where: (id: string) => `${prefix}:artifactIndexes:${id}`,
@@ -122,7 +132,7 @@ export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore 
     for (let attempt = 0; attempt < 5; attempt++) {
       const { run, thread } = await readIndexes(id);
       const indexed = Boolean(run && thread);
-      const deleted = await redis.eval(
+      const deleted = await evalScript(
         DELETE_ARTIFACT,
         [k.artifact(id), k.where(id), ...(indexed ? [run!, thread!] : [])],
         [indexed ? run! : "", indexed ? thread! : "", id],
@@ -142,7 +152,7 @@ export function redisArtifactStore(redis: Redis, prefix: string): ArtifactStore 
       const id = record.artifactId;
       for (let attempt = 0; attempt < 5; attempt++) {
         const { run: oldRun, thread: oldThread } = await readIndexes(id);
-        const saved = await redis.eval(
+        const saved = await evalScript(
           SAVE_ARTIFACT,
           [
             k.artifact(id),

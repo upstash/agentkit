@@ -15,7 +15,8 @@ import {
   type SandboxCheckpointWriterLease,
 } from "@tanstack/ai-sandbox";
 import { addTelemetry } from "../telemetry.js";
-import { KEY_LOCKING } from "../persistence/records.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig } from "../scripts.js";
 import {
   assertValidIdentifier,
   blobKeysOf,
@@ -23,7 +24,7 @@ import {
   validateCheckpoint,
 } from "./validate.js";
 
-export interface UpstashSandboxCheckpointStoreConfig {
+export interface UpstashSandboxCheckpointStoreConfig extends ScriptFlagsConfig {
   /** Upstash Redis client. Defaults to `Redis.fromEnv()`. */
   redis?: Redis;
   /**
@@ -59,26 +60,35 @@ end
 `;
 
 /** KEYS: writer, fence counter. ARGV: now, ownerToken, expiresAt, px. Returns the fence, or -1 if held. */
-const ACQUIRE = `${KEY_LOCKING}local w = redis.call("GET", KEYS[1])
+const ACQUIRE = lua(
+  "checkpoint_acquire",
+  `local w = redis.call("GET", KEYS[1])
 if w then
   local e = string.match(w, "|([^|]*)$")
   if e and tonumber(e) > tonumber(ARGV[1]) then return -1 end
 end
 local fence = redis.call("INCR", KEYS[2])
 redis.call("SET", KEYS[1], ARGV[2] .. "|" .. fence .. "|" .. ARGV[3], "PX", ARGV[4])
-return fence`;
+return fence`,
+);
 
 /** KEYS: writer. ARGV: ownerToken, fence, now, new expiresAt, px. Returns 1, or 0 if the lease is gone. */
-const RENEW = `${KEY_LOCKING}${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return 0 end
+const RENEW = lua(
+  "checkpoint_renew",
+  `${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return 0 end
 redis.call("SET", KEYS[1], ARGV[1] .. "|" .. ARGV[2] .. "|" .. ARGV[4], "PX", ARGV[5])
-return 1`;
+return 1`,
+);
 
 /** KEYS: writer. ARGV: ownerToken, fence. Deletes the lease only if it is still this one. */
-const RELEASE = `${KEY_LOCKING}local w = redis.call("GET", KEYS[1])
+const RELEASE = lua(
+  "checkpoint_release",
+  `local w = redis.call("GET", KEYS[1])
 if w and w:sub(1, #ARGV[1] + #ARGV[2] + 2) == ARGV[1] .. "|" .. ARGV[2] .. "|" then
   redis.call("DEL", KEYS[1])
 end
-return 1`;
+return 1`,
+);
 
 /**
  * KEYS: writer, checkpoint doc, thread head, thread index, blob reference counts.
@@ -86,7 +96,9 @@ return 1`;
  * head, checkpoint JSON, createdAt, member ("~" + id), blob keys…
  * Checks run in the reference store's order: writer, duplicate id, stale head, parent.
  */
-const APPEND = `${KEY_LOCKING}${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return "WRITER_LOST" end
+const APPEND = lua(
+  "checkpoint_append",
+  `${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return "WRITER_LOST" end
 if redis.call("EXISTS", KEYS[2]) == 1 then return "DUPLICATE" end
 local head = redis.call("GET", KEYS[3]) or ""
 if head ~= ARGV[4] then return "STALE_HEAD:" .. head end
@@ -95,13 +107,16 @@ redis.call("SET", KEYS[2], ARGV[6])
 redis.call("SET", KEYS[3], ARGV[8])
 redis.call("ZADD", KEYS[4], ARGV[7], ARGV[8])
 for i = 9, #ARGV do redis.call("HINCRBY", KEYS[5], ARGV[i], 1) end
-return "OK"`;
+return "OK"`,
+);
 
 /**
  * KEYS: writer, thread head, checkpoint doc, thread index, blob reference counts.
  * ARGV: ownerToken, fence, now, member ("~" + id).
  */
-const DELETE_HEAD = `${KEY_LOCKING}${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return "WRITER_LOST" end
+const DELETE_HEAD = lua(
+  "checkpoint_delete_head",
+  `${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return "WRITER_LOST" end
 if (redis.call("GET", KEYS[2]) or "") ~= ARGV[4] then return "NOT_HEAD" end
 local raw = redis.call("GET", KEYS[3])
 if not raw then return "MISSING" end
@@ -126,7 +141,8 @@ end
 if type(cp.artifacts) == "table" then
   for _, a in ipairs(cp.artifacts) do unref(a.blobKey) end
 end
-return "OK"`;
+return "OK"`,
+);
 
 /**
  * KEYS: destination writer, source checkpoint doc, destination checkpoint doc, destination head,
@@ -135,7 +151,9 @@ return "OK"`;
  * ARGV: ownerToken, fence, now, checkpoint JSON, transcript JSON, member, createdAt, ttl ("0" = none),
  * blob keys…
  */
-const FORK = `${KEY_LOCKING}${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return "WRITER_LOST" end
+const FORK = lua(
+  "checkpoint_fork",
+  `${WRITER_OK}if not writerOk(KEYS[1], ARGV[1], ARGV[2], ARGV[3]) then return "WRITER_LOST" end
 if redis.call("EXISTS", KEYS[2]) == 0 then return "SOURCE_NOT_FOUND" end
 if redis.call("EXISTS", KEYS[3]) == 1 or redis.call("EXISTS", KEYS[4]) == 1
   or redis.call("ZCARD", KEYS[5]) > 0 or redis.call("EXISTS", KEYS[7]) == 1 then
@@ -151,7 +169,8 @@ for i = 9, #ARGV do redis.call("HINCRBY", KEYS[6], ARGV[i], 1) end
 redis.call("SET", KEYS[3], ARGV[4])
 redis.call("SET", KEYS[4], ARGV[6])
 redis.call("ZADD", KEYS[5], ARGV[7], ARGV[6])
-return "OK"`;
+return "OK"`,
+);
 
 /** A checkpoint is JSON by contract; copying through JSON also detaches it from the caller's object. */
 const copy = (checkpoint: SandboxCheckpoint): SandboxCheckpoint =>
@@ -186,6 +205,7 @@ export function upstashSandboxCheckpointStore(
 ): ForkCapableSandboxCheckpointStore {
   const redis = config.redis ?? RedisClient.fromEnv();
   addTelemetry(redis, config.enableTelemetry);
+  const evalScript = scriptRunner(redis, config.enableUpstashScriptFlags);
   const p = config.prefix ?? "agentkit:tanstack";
   const now = config.now ?? (() => Date.now());
   const leaseDurationMs = config.leaseDurationMs ?? 120_000;
@@ -275,7 +295,7 @@ export function upstashSandboxCheckpointStore(
       const stored: SandboxCheckpoint = { ...checkpoint, parentCheckpointId };
       const thread = stored.threadId;
 
-      const result = (await redis.eval(
+      const result = (await evalScript(
         APPEND,
         [k.writer(thread), k.doc(stored.id), k.head(thread), k.index(thread), k.refs],
         [
@@ -315,7 +335,7 @@ export function upstashSandboxCheckpointStore(
           "Checkpoint writer thread does not match operation thread",
         );
       }
-      const result = (await redis.eval(
+      const result = (await evalScript(
         DELETE_HEAD,
         [k.writer(threadId), k.head(threadId), k.doc(checkpointId), k.index(threadId), k.refs],
         [...writerArgs(writer), member(checkpointId)],
@@ -335,7 +355,7 @@ export function upstashSandboxCheckpointStore(
       assertValidIdentifier(threadId, "Thread id");
       const ownerToken = globalThis.crypto.randomUUID();
       const lease = { expiresAt: now() + leaseDurationMs };
-      const fence = (await redis.eval(
+      const fence = (await evalScript(
         ACQUIRE,
         [k.writer(threadId), k.fence(threadId)],
         [String(now()), ownerToken, String(lease.expiresAt), px],
@@ -355,7 +375,7 @@ export function upstashSandboxCheckpointStore(
         renewAfterMs,
         renew: async () => {
           const expiresAt = now() + leaseDurationMs;
-          const ok = (await redis.eval(
+          const ok = (await evalScript(
             RENEW,
             [k.writer(threadId)],
             [ownerToken, String(fence), String(now()), String(expiresAt), px],
@@ -365,7 +385,7 @@ export function upstashSandboxCheckpointStore(
           return { expiresAt };
         },
         release: async () => {
-          await redis.eval(RELEASE, [k.writer(threadId)], [ownerToken, String(fence)]);
+          await evalScript(RELEASE, [k.writer(threadId)], [ownerToken, String(fence)]);
         },
       };
     },
@@ -432,7 +452,7 @@ export function upstashSandboxCheckpointStore(
       };
       validateCheckpoint(checkpoint);
       const d = destinationThreadId;
-      const result = (await redis.eval(
+      const result = (await evalScript(
         FORK,
         [
           k.writer(d),

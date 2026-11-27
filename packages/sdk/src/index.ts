@@ -7,6 +7,11 @@ export { key, now, stableHash, stableStringify } from "./utils.js";
 export { addTelemetry, SDK_TELEMETRY } from "./telemetry.js";
 export { VERSION } from "./version.js";
 
+// Lua scripts — sends a script with Upstash's `script_name` and `allow-key-locking` flags, and
+// without them on servers which reject the flags. Adapter packages pass their own name prefix.
+export { buildScript, createScriptRunner, isScriptFlagError, lua } from "./scripts.js";
+export type { LuaScript, ScriptRunner } from "./scripts.js";
+
 // Reactive search index — provisions the Upstash index on first read; the type each feature's
 // `.searchIndex` getter returns.
 export { ReactiveSearchIndex } from "./reactive-index.js";

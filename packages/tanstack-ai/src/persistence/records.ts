@@ -1,33 +1,39 @@
 import type { Redis } from "@upstash/redis";
 import type { RunStatus } from "@tanstack/ai";
+import { lua } from "../scripts.js";
 
 /**
  * Shared plumbing for the persistence stores. Records are RedisJSON documents, so values keep their
  * JSON types natively (no per-field encoding) and patches are applied server-side.
  *
- * Every script runs with `allow-key-locking`: Upstash locks only the keys a script declares, and an
- * undeclared key is an error, so each script touches exactly its `KEYS`.
+ * Every script runs with `allow-key-locking` (see `ScriptFlagsConfig`): Upstash locks only the keys a
+ * script declares, and an undeclared key is an error, so each script touches exactly its `KEYS`.
  */
-export const KEY_LOCKING = "#!lua flags=allow-key-locking\n";
 
 /**
  * Create a document only if it does not exist yet, add it to every index in KEYS[2..], and return the
  * stored document either way (the idempotent `createOrResume` contract).
  * KEYS: document, indexes… ARGV: document JSON, index score, index member.
  */
-export const CREATE = `${KEY_LOCKING}if redis.call("JSON.SET", KEYS[1], "$", ARGV[1], "NX") then
+export const CREATE = lua(
+  "record_create",
+  `if redis.call("JSON.SET", KEYS[1], "$", ARGV[1], "NX") then
   for i = 2, #KEYS do redis.call("ZADD", KEYS[i], ARGV[2], ARGV[3]) end
 end
-return redis.call("JSON.GET", KEYS[1])`;
+return redis.call("JSON.GET", KEYS[1])`,
+);
 
 /**
  * Patch an existing document with two JSON merge patches (see {@link toMergePatches}). A missing
  * document is a no-op: `JSON.MERGE` would otherwise create it.
  */
-export const PATCH = `${KEY_LOCKING}if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
+export const PATCH = lua(
+  "record_patch",
+  `if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end
 redis.call("JSON.MERGE", KEYS[1], "$", ARGV[1])
 if ARGV[2] ~= "{}" then redis.call("JSON.MERGE", KEYS[1], "$", ARGV[2]) end
-return 1`;
+return 1`,
+);
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);

@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ._scripts import eval_script
 from ._search import DEFAULT_NAMESPACE, SearchIndex, dumps, index_name_for, shared_index
 from ._telemetry import add_telemetry
 from .memory import _check_id
@@ -29,8 +30,7 @@ DEFAULT_PREFIX = f"{DEFAULT_NAMESPACE}:chat"
 # ARGV: updatedAt, then for userMessages and modelMessages each the new text as a JSON string
 # alone and with a leading "\n" (empty when that side has no text), then one JSON value per message.
 # The text is encoded by the caller, as `JSON.stringify` would, never by cjson in the script.
-_APPEND_SCRIPT = """#!lua flags=allow-key-locking
-local key = KEYS[1]
+_APPEND_SCRIPT = """local key = KEYS[1]
 if redis.call('EXISTS', key) == 0 then return 0 end
 local kind = redis.call('JSON.TYPE', key, '$.messages')
 if type(kind) ~= 'table' or kind[1] ~= 'array' then return 0 end
@@ -105,8 +105,11 @@ class ChatHistory:
         ttl_seconds: int | None = None,
         min_score: float = 0,
         enable_telemetry: bool = False,
+        enable_upstash_script_flags: bool | None = None,
     ):
         self.redis = redis
+        self.enable_telemetry = enable_telemetry
+        self.enable_upstash_script_flags = enable_upstash_script_flags
         self.ttl_seconds = ttl_seconds
         self.min_score = min_score
         if prefix is None and index_name is None:
@@ -190,17 +193,19 @@ class ChatHistory:
             return [dumps(text[side]), dumps("\n" + text[side])] if text[side] else ["", ""]
 
         key = self._key(user_id, session_id)
-        appended = self.redis.execute(
+        appended = eval_script(
+            self.redis,
+            "chat_append",
+            _APPEND_SCRIPT,
+            [key],
             [
-                "EVAL",
-                _APPEND_SCRIPT,
-                "1",
-                key,
                 str(int(time.time() * 1000)),
                 *encoded("userMessages"),
                 *encoded("modelMessages"),
                 *(dumps(message) for message in messages),
-            ]
+            ],
+            enable_upstash_script_flags=self.enable_upstash_script_flags,
+            enable_telemetry=self.enable_telemetry,
         )
         if appended != 1:
             return False

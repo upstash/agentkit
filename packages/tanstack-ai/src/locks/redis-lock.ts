@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Redis } from "@upstash/redis";
 import { addTelemetry } from "../telemetry.js";
+import { lua, scriptRunner } from "../scripts.js";
+import type { ScriptFlagsConfig, ScriptRunner } from "../scripts.js";
 
 /**
- * Every script runs with `allow-key-locking`, so Upstash locks only the keys it declares rather than
+ * Every script runs with `allow-key-locking` (see `ScriptFlagsConfig`), so Upstash locks only the keys it declares rather than
  * the whole database. That makes declaring every touched key in `KEYS` mandatory (an undeclared key
  * is an error), which these scripts do.
  *
@@ -12,27 +14,33 @@ import { addTelemetry } from "../telemetry.js";
  * ever had, so a holder that stalled past its lease can compare its token against the store and
  * learn it was superseded (a lease alone tells the winner it won, but gives a loser nothing to read).
  */
-const ACQUIRE = `#!lua flags=allow-key-locking
-if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
+const ACQUIRE = lua(
+  "lock_acquire",
+  `if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
   return redis.call("INCR", KEYS[2])
 end
-return 0`;
+return 0`,
+);
 
 /** Release only our own lease: a holder whose lease expired must not delete the next holder's. */
-const RELEASE = `#!lua flags=allow-key-locking
-if redis.call("GET", KEYS[1]) == ARGV[1] then
+const RELEASE = lua(
+  "lock_release",
+  `if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("DEL", KEYS[1])
 end
-return 0`;
+return 0`,
+);
 
 /** Extend only our own lease — the same ownership check as release. */
-const EXTEND = `#!lua flags=allow-key-locking
-if redis.call("GET", KEYS[1]) == ARGV[1] then
+const EXTEND = lua(
+  "lock_extend",
+  `if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("PEXPIRE", KEYS[1], ARGV[2])
 end
-return 0`;
+return 0`,
+);
 
-export interface RedisLockConfig {
+export interface RedisLockConfig extends ScriptFlagsConfig {
   /** Upstash Redis client. */
   redis: Redis;
   /** Base key prefix. Defaults to `agentkit:lock`. */
@@ -119,14 +127,14 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * ```
  */
 export class RedisLock {
-  private redis: Redis;
+  private evalScript: ScriptRunner;
   private prefix: string;
   private leaseMs: number;
   private acquireTimeoutMs: number;
   private retryDelayMs: number;
 
   constructor(config: RedisLockConfig) {
-    this.redis = config.redis;
+    this.evalScript = scriptRunner(config.redis, config.enableUpstashScriptFlags);
     addTelemetry(config.redis, config.enableTelemetry);
     this.prefix = config.prefix ?? "agentkit:lock";
     this.leaseMs = config.leaseMs ?? 30_000;
@@ -151,17 +159,17 @@ export class RedisLock {
     const token = randomUUID();
     const leaseKey = this.leaseKey(key);
     const fencingToken = Number(
-      await this.redis.eval(ACQUIRE, [leaseKey, this.fenceKey(key)], [token, String(leaseMs)]),
+      await this.evalScript(ACQUIRE, [leaseKey, this.fenceKey(key)], [token, String(leaseMs)]),
     );
     if (!fencingToken) return null;
-    const redis = this.redis;
+    const evalScript = this.evalScript;
     return {
       key,
       token,
       fencingToken,
       extend: async (ms?: number) =>
-        Number(await redis.eval(EXTEND, [leaseKey], [token, String(ms ?? leaseMs)])) === 1,
-      release: async () => Number(await redis.eval(RELEASE, [leaseKey], [token])) === 1,
+        Number(await evalScript(EXTEND, [leaseKey], [token, String(ms ?? leaseMs)])) === 1,
+      release: async () => Number(await evalScript(RELEASE, [leaseKey], [token])) === 1,
     };
   }
 

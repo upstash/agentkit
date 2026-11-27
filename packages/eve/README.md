@@ -195,7 +195,7 @@ that followed it.
 <summary>Options for <code>redisDocuments()</code> and <code>redisMemory()</code></summary>
 
 `redisDocuments({ … })` — `redis` (defaults to `Redis.fromEnv()`), `prefix`
-(`agentkit:memoryFile`), `ttlSeconds`, `enableTelemetry`. One Redis hash per scope key; the
+(`agentkit:memoryFile`), `ttlSeconds`, `enableTelemetry`, `enableUpstashScriptFlags` (see [Script flags](#script-flags)). One Redis hash per scope key; the
 conditional write eve requires is a Lua `EVAL` compare-and-set.
 
 `redisMemory({ … })` — `redis`, `prefix` (`agentkit:memorySlot`) / `indexName`, `topK` (5),
@@ -540,6 +540,15 @@ export default defineMemoryRecallTool({ userId: (_, ctx) => ctx.session.id, enab
 
 or by setting the `UPSTASH_DISABLE_TELEMETRY` environment variable. Disabling telemetry on the redis
 client itself also disables it here.
+
+## Script flags
+
+`redisDocuments()` sends its compare-and-set lua script with flags which only Upstash Redis
+understands: a `script_name` (`agentkit-eve-js-memory_document_cas`) which shows up in the script
+stats of your database, and `allow-key-locking`, which lets writes to different documents run in
+parallel. If the server rejects the flags, the script is sent again without them and a warning is
+printed once. Pass `enableUpstashScriptFlags: false` to send it without the flags from the start,
+for example with a Redis server other than Upstash Redis.
 
 ## Testing
 
