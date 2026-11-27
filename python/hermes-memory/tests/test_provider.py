@@ -189,6 +189,23 @@ def test_built_in_memory_writes_are_mirrored(provider):
     ]
 
 
+def test_prefetch_recalls_saved_memories_but_not_mirrors(provider):
+    # Both carry `source: "hermes"`; only the mirror has a `target`.
+    provider.on_memory_write("add", "user", "The user's cat is named Pamuk")
+    saved = json.loads(
+        provider.handle_tool_call(
+            "upstash_memory_save", {"text": "The user's dog is named Karabas"}
+        )
+    )
+    block = provider.prefetch("what are my pets called?")
+    assert "Karabas" in block
+    assert "Pamuk" not in block
+    found = json.loads(provider.handle_tool_call("upstash_memory_search", {"query": "named"}))
+    assert sorted(r["id"] for r in found["results"]) == sorted(
+        [saved["id"], provider_module._mirror_id("user", "The user's cat is named Pamuk")]
+    )
+
+
 def test_built_in_corrections_replace_the_mirrored_fact(provider):
     # The shape Hermes sends (memory_manager.notify_memory_tool_write); a patch arrives like this too.
     provider.on_memory_write("add", "user", "Lives in Ankara")

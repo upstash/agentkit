@@ -24,8 +24,19 @@ class Row:
     data: dict[str, Any]
 
 
-def memory_row(id, text="x", score=1.0):
-    return Row(f"agentkit:memory:u1:{id}", score, {"text": text, "userId": "u1", "createdAt": 1})
+def memory_row(id, text="x", score=1.0, **metadata):
+    doc = {"text": text, "userId": "u1", "createdAt": 1, **metadata}
+    return Row(f"agentkit:memory:u1:{id}", score, doc)
+
+
+def mirror_row(id, text="x", target="memory"):
+    """A memory mirrored from the built-in memory tool (`on_memory_write`)."""
+    return memory_row(f"hermes-{id}", text, source="hermes", target=target)
+
+
+def saved_row(id, text="x"):
+    """A memory saved with upstash_memory_save: `source: "hermes"` too, but no `target`."""
+    return memory_row(id, text, source="hermes")
 
 
 class FakeRedis:
@@ -223,8 +234,46 @@ def test_prefetch_injects_three_memories(hybrid_provider):
     provider, redis = hybrid_provider
     block = provider.prefetch("what do I prefer")
     assert block.count("\n- ") == 3
+    # Over-fetched, so mirrors left out still leave three (see the tests below).
     (limit,) = [c[c.index("LIMIT") + 1] for c in redis.commands if c[0] == "SEARCH.QUERY"]
-    assert limit == "3"
+    assert limit == str(provider_module._PREFETCH_CANDIDATES)
+
+
+def _lines(block):
+    return [line[2:] for line in block.splitlines() if line.startswith("- ")]
+
+
+def test_prefetch_leaves_out_built_in_memory_mirrors(hybrid_provider):
+    provider, redis = hybrid_provider
+    redis.memories = [
+        mirror_row("a", "mirror 1", "memory"),
+        mirror_row("b", "mirror 2", "user"),
+        saved_row("s1", "saved 1"),
+        mirror_row("c", "mirror 3"),
+        memory_row("ts1", "from a TS app"),  # no metadata at all
+        saved_row("s2", "saved 2"),
+        saved_row("s3", "saved 3"),
+    ]
+    assert _lines(provider.prefetch("anything")) == ["saved 1", "from a TS app", "saved 2"]
+
+
+def test_prefetch_keeps_a_direct_save_that_carries_source_hermes(hybrid_provider):
+    provider, redis = hybrid_provider
+    redis.memories = [mirror_row("a", "mirror"), saved_row("s1", "The dog is named Karabas")]
+    assert _lines(provider.prefetch("dog")) == ["The dog is named Karabas"]
+
+
+def test_prefetch_injects_nothing_when_every_candidate_is_a_mirror(hybrid_provider):
+    provider, redis = hybrid_provider
+    redis.memories = [mirror_row(str(i)) for i in range(30)]
+    assert provider.prefetch("anything") == ""
+
+
+def test_the_search_tool_still_returns_mirrors(hybrid_provider):
+    provider, redis = hybrid_provider
+    redis.memories = [mirror_row("a", "mirror"), saved_row("s1", "saved")]
+    result = json.loads(provider.handle_tool_call("upstash_memory_search", {"query": "x"}))
+    assert [r["id"] for r in result["results"]] == ["hermes-a", "s1"]
 
 
 def test_prefetch_survives_a_redis_outage(hybrid_provider):

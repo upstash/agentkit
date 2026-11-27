@@ -11,7 +11,11 @@ your AI SDK app saves is recalled by your Hermes agent, and the other way round.
 - **Chat history:** after each turn, the turn is appended in place to the session's searchable
   transcript document, so a write stays the size of one turn however long the session runs.
 - **Mirroring:** facts the built-in `memory` tool adds are also saved to Redis, and when Hermes
-  corrects (`replace`/`patch`) or removes one, the Redis copy is updated or deleted too.
+  corrects (`replace`/`patch`) or removes one, the Redis copy is updated or deleted too. Automatic
+  recall leaves these copies out, since Hermes already puts its built-in memory in the prompt;
+  `upstash_memory_search` and other AgentKit clients still find them. This holds with built-in
+  memory turned off too (the provider can't tell): nothing new is mirrored then, but copies
+  mirrored earlier are still left out of recall.
 - **Tools:** `upstash_memory_save`, `upstash_memory_search`, `upstash_memory_forget` and
   `upstash_chat_search` (search past conversations).
 
@@ -53,7 +57,8 @@ vector database), and recall merges a keyword query with a semantic `$ann` query
   until you replace it: stop every client of the namespace (Hermes gateway, desktop app, cron jobs,
   other profiles on it) and run `SEARCH.DROP agentkit` (or your namespace's index). Your memories
   and chats are kept, and the next start creates the new index and indexes them again.
-- Automatic recall injects up to **3** memories: the semantic side has no relevance
+- Automatic recall injects up to **3** memories, not counting built-in memory mirrors (it asks for
+  20 and drops those): the semantic side has no relevance
   threshold and returns up to its limit even for unrelated text, and in a small-store test its
   similarity scores did not separate related from unrelated memories well enough for a cutoff. `upstash_memory_search` keeps its limit.
 - Results carry `retrieval: "hybrid"` or `"keyword"`. Hybrid scores are rank-fusion values that
