@@ -10,11 +10,11 @@
     "e2e": "vitest run --config e2e/vitest.config.ts"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.118",
-    "@ai-sdk/react": "^4.0.177",
+    "@ai-sdk/openai": "^4.0.125",
+    "@ai-sdk/react": "^4.0.189",
     "@upstash/agentkit-resumable-stream": "workspace:*",
     "@upstash/redis": "^1.41.0",
-    "ai": "7.0.173",
+    "ai": "7.0.184",
     "next": "16.2.9",
     "react": "19.2.6",
     "react-dom": "19.2.6",

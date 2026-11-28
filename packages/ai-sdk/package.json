@@ -53,7 +53,7 @@
     "@ai-sdk/openai": "^4.0.125",
     "@ai-sdk/provider": "^4.0.39",
     "@upstash/redis": "^1.41.0",
-    "ai": "7.0.183",
+    "ai": "7.0.184",
     "dotenv": "^16.4.5"
   },
   "peerDependencies": {
